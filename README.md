@@ -1,5 +1,4 @@
-# TrackTx 
-# The Integrative Data Processing Pipeline for transcription tracking
+# TrackTx - The Integrative Data Processing Pipeline for Tracking Transcription
 
 ## Instructions
 Download and put the script.command in a location where you want to run the script from. Double-click the file to start the pipeline and follow the instructions in the terminal window. 
