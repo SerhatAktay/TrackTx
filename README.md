@@ -7,7 +7,7 @@ download and put the **script.command** in a location where you want to run the 
 ### Prerequisites
 
 #### Software
-This pipeline uses bash and R and the required packages will all be installed automatically using Conda. If you do not have conda installed on your system you can do so by visiting "https://docs.conda.io/projects/miniconda/en/latest/" and installing miniconda. 
+This pipeline uses bash and R and the required packages will all be installed automatically using Conda and it's recommended that you install [miniConda](https://docs.conda.io/projects/miniconda/en/latest/) before running the pipeline. 
 
 #### Data
 The pipeline downloads all data needed, including reference genomes and experimental data (from GEO). If you want to use your own reference genome and/or your own locally stored data you can do so by following the instructions in the pipeline. 
