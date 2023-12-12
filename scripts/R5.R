@@ -11,10 +11,19 @@ suppressWarnings()
 
 ###########
 
-library(DESeq2)
-library(dplyr)
-library(ggrepel)
-library(ggplot2)
+## Required packages
+packages = c("DESeq2", "dplyr", "ggrepel", "ggplot2")
+
+## Load or install & load all
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
 
 ###########
 
