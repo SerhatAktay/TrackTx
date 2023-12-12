@@ -7,7 +7,7 @@ suppressWarnings()
 ##########
 
 ## Required packages
-packages = c("gtools", "dplyr", "ggrepel", "ggplot2")
+packages = c("gtools", "dplyr")
 
 ## Load or install & load all
 package.check <- lapply(
