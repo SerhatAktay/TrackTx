@@ -9,6 +9,12 @@ sample <- args[7]
 ## Required packages
 packages = c("gtools", "dplyr")
 
+suppressPackageStartupMessages({
+  for (pkg in packages) {
+    library(pkg, character.only = TRUE)
+  }
+})
+
 ## Load or install & load all
 package.check <- lapply(
   packages,
@@ -19,12 +25,6 @@ package.check <- lapply(
     }
   }
 )
-
-suppressPackageStartupMessages({
-  for (pkg in packages) {
-    library(pkg, character.only = TRUE)
-  }
-})
 
 #-----------------------------------------
 
