@@ -7,6 +7,8 @@ sample_list <- args[samples_to_extract]
 conditions_to_extract <- (3 + number_of_samples):(2 + (2 * number_of_samples))
 sample_conditions <- args[conditions_to_extract]
 
+suppressWarnings()
+
 ###########
 
 library(DESeq2)
