@@ -12,7 +12,21 @@ path_2 <- paste0(organism, "/analysis/functionalGenomicRegions_", sample_2, "_no
 
 #-----------------------------------------
 
-library(data.table)
+## Required packages
+packages = c("data.table")
+
+## Load or install & load all
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+
+#-----------------------------------------
 
 # Read in the two .bed files as data.tables
 file1 <- fread(path_1, sep = "\t", header=FALSE)
