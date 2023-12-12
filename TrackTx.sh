@@ -901,7 +901,7 @@ functionalgenomicregions () {
 
 CompGeneExpression () {
 
-    mkdir ${organism}/analysis/differential_expression
+    mkdir -p ${organism}/analysis/differential_expression
     cd ${organism}/samples
     declare -a sample_list
     for file in *.fastq; do
