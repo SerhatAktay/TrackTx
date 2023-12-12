@@ -2,6 +2,8 @@ args <- commandArgs()
 organism <- args[6]
 sample <- args[7]
 
+suppressWarnings()
+
 library(dplyr)
 library(gtools)
 
