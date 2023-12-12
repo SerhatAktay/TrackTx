@@ -4,8 +4,23 @@ sample <- args[7]
 
 suppressWarnings()
 
-library(dplyr)
-library(gtools)
+##########
+
+## Required packages
+packages = c("gtools", "dplyr", "ggrepel", "ggplot2")
+
+## Load or install & load all
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+
+##########
 
 col_names <- c("chr", "start", "end", "score", "gene", "strand", "start_2", "end_2", "colour")
 
