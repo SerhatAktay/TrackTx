@@ -11,11 +11,6 @@ sample_conditions <- args[conditions_to_extract]
 
 #-----------------------------------------
 
-# Set options to suppress warnings globally
-options(warn = -1)
-
-#-----------------------------------------
-
 ## Required packages
 packages = c("DESeq2", "dplyr", "ggrepel", "ggplot2")
 
@@ -29,6 +24,12 @@ package.check <- lapply(
     }
   }
 )
+
+suppressPackageStartupMessages({
+  for (pkg in packages) {
+    library(pkg, character.only = TRUE)
+  }
+})
 
 #-----------------------------------------
 
