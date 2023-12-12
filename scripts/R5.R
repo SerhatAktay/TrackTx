@@ -14,6 +14,12 @@ sample_conditions <- args[conditions_to_extract]
 ## Required packages
 packages = c("DESeq2", "dplyr", "ggrepel", "ggplot2")
 
+suppressPackageStartupMessages({
+  for (pkg in packages) {
+    library(pkg, character.only = TRUE)
+  }
+})
+
 ## Load or install & load all
 package.check <- lapply(
   packages,
@@ -24,12 +30,6 @@ package.check <- lapply(
     }
   }
 )
-
-suppressPackageStartupMessages({
-  for (pkg in packages) {
-    library(pkg, character.only = TRUE)
-  }
-})
 
 #-----------------------------------------
 
