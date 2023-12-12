@@ -1,3 +1,5 @@
+#-----------------------------------------
+
 # Retrieve command-line arguments in R
 args <- commandArgs(trailingOnly = TRUE)
 organism <- args[1]
@@ -7,9 +9,12 @@ sample_list <- args[samples_to_extract]
 conditions_to_extract <- (3 + number_of_samples):(2 + (2 * number_of_samples))
 sample_conditions <- args[conditions_to_extract]
 
-suppressWarnings()
+#-----------------------------------------
 
-###########
+# Set options to suppress warnings globally
+options(warn = -1)
+
+#-----------------------------------------
 
 ## Required packages
 packages = c("DESeq2", "dplyr", "ggrepel", "ggplot2")
@@ -25,7 +30,7 @@ package.check <- lapply(
   }
 )
 
-###########
+#-----------------------------------------
 
 data_frames_list <- setNames(
   lapply(sample_list, function(sample_file) {
@@ -53,6 +58,8 @@ merged_df <- Reduce(function(x, y) merge(x, y, by = "gene", all = TRUE), data_fr
 merged_df <- merged_df %>%
   distinct(gene, .keep_all = TRUE)
 
+#-----------------------------------------
+                    
 coldata <- data.frame(
   sampleID = sample_list,
   condition = sample_conditions
@@ -64,6 +71,8 @@ row.names(count_matrix) <- count_matrix$gene
 count_matrix <- count_matrix[, -1]
 count_matrix <- na.omit(count_matrix)
 
+#-----------------------------------------
+
 # Create a DESeqDataSet object
 dds <- DESeqDataSetFromMatrix(countData = count_matrix,
                               colData = coldata,
@@ -74,6 +83,8 @@ dds <- DESeq(dds)
 
 # Get differential expression results
 results <- results(dds)
+
+#-----------------------------------------
 
 # Extract top up- and downregulated genes
 top_upregulated <- head(results[order(-results$log2FoldChange), ], 50)
@@ -90,6 +101,8 @@ merged_regulated_genes <- rbind(upregulated_df, downregulated_df)
 genes_file <- paste0(organism, "/analysis/differential_expression/top_regulated_genes.txt")
 write.table(merged_regulated_genes, file = genes_file, quote = FALSE, sep = "\t")
 
+#-----------------------------------------
+                    
 # Create a volcano plot
 ggplot(result_df, aes(x = log2FoldChange, y = -log10(pvalue))) +
   geom_point(aes(color = ifelse(row.names(result_df) %in% row.names(upregulated_df), "Upregulated", 
