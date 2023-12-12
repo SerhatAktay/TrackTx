@@ -6,11 +6,6 @@ sample <- args[7]
 
 #-----------------------------------------
 
-# Set options to suppress warnings globally
-options(warn = -1)
-
-#-----------------------------------------
-
 ## Required packages
 packages = c("gtools", "dplyr")
 
@@ -24,6 +19,12 @@ package.check <- lapply(
     }
   }
 )
+
+suppressPackageStartupMessages({
+  for (pkg in packages) {
+    library(pkg, character.only = TRUE)
+  }
+})
 
 #-----------------------------------------
 
