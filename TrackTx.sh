@@ -900,26 +900,50 @@ functionalgenomicregions () {
 #-----------------------------------------------------------------------
 
 CompGeneExpression () {
+
+    mkdir ${organism}/analysis/differential_expression
     cd ${organism}/samples
     declare -a sample_list
     for file in *.fastq; do
-        sample_list=("${sample_list[@]}" "$file")
+       sample_list=("${sample_list[@]}" "$file")
     done
-    sample_1=("${sample_list[0]%.*}")
-    sample_2=("${sample_list[1]%.*}")
+    sample_list=("${sample_list[@]%.*}")
     cd ../../
 
-    wget --progress=bar:force:noscroll -cO - https://raw.githubusercontent.com/SerhatAktay/TrackTx/master/scripts/R3.R > R3.R
+    #---------------------------------------------------
 
-    mkdir -p ${organism}/analysis
+    read -p "You need at least three samples to use DEseq2 to determine which genes are up/down regulated. Do you want to continue? (y/n) " continue_DEseq2
+    case ${continue_DEseq2:0:1} in
+    y|Y ) continue_DEseq2=true;;
+    * ) echo "Thank you for using TrackTx"; break 2;; esac
+    
+    if [ "$continue_DEseq2" = true ]; then
 
-    # Set file paths
-    path_1="${organism}/analysis/functionalGenomicRegions_${sample_1}_norm.bed"
-    path_2="${organism}/analysis/functionalGenomicRegions_${sample_2}_norm.bed"
+        wget -q -cO - https://raw.githubusercontent.com/SerhatAktay/TrackTx/master/scripts/R4.R > R4.R
+        wget -q -cO - https://raw.githubusercontent.com/SerhatAktay/TrackTx/master/scripts/R5.R > R5.R
 
-    Rscript R3.R $organism $sample_1 $sample_2 --save
+        for sample in ${sample_list[@]}; do 
+            Rscript R4.R $organism $sample  --save
+        done
 
-    rm R3.R
+        # Initialize an empty array for user input
+        condition_list=()
+
+        # Loop to read user input until the new list has the same length as sample_list
+        for item in "${sample_list[@]}"; do
+            read -p "Enter condition for sample $item (eg. "control" or "treatment"): " user_input
+            condition_list+=("$user_input")
+        done
+
+        # Print the user-inputted list
+        echo "User-inputted list: ${condition_list[@]}"
+
+        number_of_samples=${#sample_list[@]}
+
+        Rscript R5.R $organism $number_of_samples ${sample_list[@]} ${condition_list[@]}
+
+        rm R4.R R5.R
+    fi
 }
 
 #-----------------------------------------------------------------------
@@ -1747,7 +1771,7 @@ download_and_convert () {
 while true; do
     options=("Download genome and build bowtie2 alignment" "Download/load experimental data" "Perform quality control" 
          "Convert fastq files" "Map functional genomic regions" "Do step 1-5 all in one"
-         "Compare gene expression" "Map Sat III repeats" "Quit")
+         "Compare gene expression using DEseq2" "Map Sat III repeats" "Quit")
     echo "Choose an option: "
     select opt in "${options[@]}"; do
         case $REPLY in
