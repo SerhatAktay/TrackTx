@@ -1,10 +1,15 @@
+#-----------------------------------------
+
 args <- commandArgs()
 organism <- args[6]
 sample <- args[7]
 
-suppressWarnings()
+#-----------------------------------------
 
-##########
+# Set options to suppress warnings globally
+options(warn = -1)
+
+#-----------------------------------------
 
 ## Required packages
 packages = c("gtools", "dplyr")
@@ -20,7 +25,7 @@ package.check <- lapply(
   }
 )
 
-##########
+#-----------------------------------------
 
 col_names <- c("chr", "start", "end", "score", "gene", "strand", "start_2", "end_2", "colour")
 
@@ -36,7 +41,7 @@ df <- df[, !colnames(df) %in% c("start_2", "end_2", "colour")]
 df_minus <- df[df$strand == "-", ]
 df_plus <- df[df$strand == "+", ]
 
-# Assuming 'your_dataframe' is your dataframe
+# Collapse genes into one line per row per strand
 df_minus <- df_minus %>%
   group_by(gene) %>%
   summarise(
@@ -60,6 +65,8 @@ df_plus <- df_plus %>%
     # Add other columns you want to summarize
   ) %>%
   ungroup()
+
+#-----------------------------------------
 
 data <- rbind(df_minus, df_plus)
 
