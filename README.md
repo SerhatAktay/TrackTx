@@ -1,8 +1,12 @@
 # TrackTx - The Integrative Data Processing Pipeline for Tracking Transcription
 
 ## Instructions
-To run the script from a terminal window download the file **TrackTx.sh** and run in terminal by using the command "*./TrackTx.sh*" after you are in the correct folder **or**
-download and put the **script.command** in a location where you want to run the script from. Double-click the file to start the pipeline and follow the instructions in the terminal window. 
+To run the pipeline start by cloning this repo, cd to the newly downloaded folder (TrackTx) and then start the pipeline by running **./TrackTx.sh** in the terminal. 
+
+**Terminal commands to run the pipeline**
+**Clone:** git clone https://github.com/SerhatAktay/TrackTx.git
+**Change directory:** cd TrackTx
+**Start pipeline:** ./TrackTx.sh
 
 ### Prerequisites
 
