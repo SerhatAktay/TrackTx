@@ -20,4 +20,4 @@ The pipeline downloads all data needed, including reference genomes and experime
 It's recommended to run the pipeline using a virtual machine or similar that will lessen the burden on your computer. It's also recommended to run the pipeline using a window manager such as [screen](https://linux.die.net/man/1/screen) so that you don't need to keep the computer on and connected at all times. It takes up to 10 hours to run two human samples so allocate enough time. 
 
 ## Contact
-If you run into errors, bugs, or have questions either use the "Issues" section on this repo-page or contact me at <serhat.aktay@scilifelab.se>. 
+If you run into errors, bugs, or have questions either use the "Issues" section on this repo or contact me at <serhat.aktay@scilifelab.se>. 
