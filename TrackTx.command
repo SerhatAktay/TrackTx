@@ -98,7 +98,7 @@ if [ "${#missing_commands[@]}" -gt 0 ]; then
             done
         }
             
-        ENV_NAME="TrackTxw"
+        ENV_NAME="TrackTx"
 
         # Check if Conda environment exists
         if conda info --envs | grep -q "$ENV_NAME"; then
@@ -283,6 +283,7 @@ sample () {
         echo "Move your files into the folder named 'data', it's found in the folder '${organism}'"
         echo "Name the files/samples so that sample 1 contains 'sample_1', sample 2 contains 'sample_2' etc."
         echo
+        read -p "How many samples do you want to analyse?: " cvar2
         read -p "Do you need to split the files based on a barcode? (y/n): " answer2
         read -p "Do you have replicates that you want to concatenate? (y/n)? " answer4
         read -p "Have you moved all the files into the specified folder? (y/n): " answer
@@ -291,7 +292,6 @@ sample () {
 
         case ${answer4:0:1} in
                 y|Y )
-                    read -p "How many samples do you want to analyse?: " cvar2
                     name_loop=1; name_loop2=0
                     while [ $name_loop -le $cvar2 ] ; do
                         read -p "What would you like to call sample ${name_loop}? " sample_names[$name_loop2]
@@ -912,19 +912,12 @@ CompGeneExpression () {
 
     #---------------------------------------------------
 
-    read -p "You need at least three samples to use DEseq2 to determine which genes are up/down regulated. Do you want to continue? (y/n) " continue_DEseq2
+    echo; read -p "You need at least three samples to use DEseq2 to determine which genes are up/down regulated. Do you want to continue? (y/n) " continue_DEseq2
     case ${continue_DEseq2:0:1} in
     y|Y ) continue_DEseq2=true;;
-    * ) echo "Thank you for using TrackTx"; break 2;; esac
+    * ) echo "Thank you for using TrackTx"; exit 1;; esac
     
     if [ "$continue_DEseq2" = true ]; then
-
-        wget -q -cO - https://raw.githubusercontent.com/SerhatAktay/TrackTx/master/scripts/R4.R > R4.R
-        wget -q -cO - https://raw.githubusercontent.com/SerhatAktay/TrackTx/master/scripts/R5.R > R5.R
-
-        for sample in ${sample_list[@]}; do 
-            Rscript R4.R $organism $sample  --save
-        done
 
         # Initialize an empty array for user input
         condition_list=()
@@ -935,10 +928,16 @@ CompGeneExpression () {
             condition_list+=("$user_input")
         done
 
-        # Print the user-inputted list
-        echo "User-inputted list: ${condition_list[@]}"
-
         number_of_samples=${#sample_list[@]}
+
+        echo; echo "Running DEseq2 on ${number_of_samples} samples..."
+
+        wget -q -cO - https://raw.githubusercontent.com/SerhatAktay/TrackTx/master/scripts/R4.R > R4.R
+        wget -q -cO - https://raw.githubusercontent.com/SerhatAktay/TrackTx/master/scripts/R5.R > R5.R
+
+        for sample in ${sample_list[@]}; do 
+            Rscript R4.R $organism $sample  --save
+        done
 
         Rscript R5.R $organism $number_of_samples ${sample_list[@]} ${condition_list[@]}
 
@@ -1075,6 +1074,7 @@ download_and_convert () {
                     done
                 done ;;
             * )
+                cvar1=0
                 read -p "How many samples (without replicates) do you want to analyse?: " cvar3
                 name_loop=1; name_loop2=0
                 while [ $name_loop -le $cvar3 ] ; do
@@ -1095,22 +1095,17 @@ download_and_convert () {
         echo "Move your files into the folder named 'data', it's found in the folder '${organism}'"
         echo "Name the files/samples so that sample 1 contains 'sample1', sample 2 contains 'sample2' etc."
         echo
+        read -p "How many samples do you want to analyse?: " cvar2
         read -p "Do you need to split the files based on a barcode? (y/n): " answer2
         read -p "Do you have replicates that you want to concatenate? (y/n)? " answer4
-
-        case ${answer4:0:1} in
-                y|Y )
-                    read -p "How many samples do you want to analyse?: " cvar2
-                    name_loop=1; name_loop2=0
-                    while [ $name_loop -le $cvar2 ] ; do
-                        read -p "What would you like to call sample ${name_loop}? " sample_names[$name_loop2]
-                        name_loop=$((name_loop+1))
-                        name_loop2=$((name_loop2+1))
-                    done;;
-                * ) echo;;
-        esac
-
         read -p "Have you moved all the files into the specified folder? (y/n): " answer
+        
+        name_loop=1; name_loop2=0
+        while [ $name_loop -le $cvar2 ] ; do
+            read -p "What would you like to call sample ${name_loop}? " sample_names[$name_loop2]
+            name_loop=$((name_loop+1))
+            name_loop2=$((name_loop2+1))
+        done
     fi
 
     #-------------------------------------------
@@ -1220,35 +1215,41 @@ download_and_convert () {
     elif [ $fastq_source == "Load_files" ]; then    #Use your own fastq-files
         cd ${organism}/data
 
-        case ${answer2:0:1} in
-            y|Y ) cat *.fastq | fastx_barcode_splitter.pl --bcfile barcodes.txt --bol --mismatches 2 --partial 2 --prefix ../samples/ --suffix ".fastq" --quiet;;
-            * ) mv *.fastq ~-/${organism}/samples/;; 
-        esac
-
-        cd ../samples
-
-        #--------------------------------------------------
-
         case ${answer:0:1} in
             y|Y )
-                case ${answer4:0:1} in
-                y|Y )
-                    loop3=0
-                    for ((i=1;i<=cvar2;i++)); do
-                        cat *sample_${i}*.fastq > ~-/${organism}/samples/${sample_names[$loop3]}.fastq
+            case ${answer2:0:1} in
+            y|Y )   cat *.fastq | fastx_barcode_splitter.pl --bcfile barcodes.txt --bol --mismatches 2 --partial 2 --prefix ../samples/ --suffix ".fastq" --quiet
+
+                    cd ~-/${organism}/samples
+
+                    loop1=0; loop2=1; loop3=0;
+                    while [ $loop2 -le $cvar2 ] ; do
+                        cat *sample_${loop1}*.fastq *sample_${(loop1+1)}*.fastq > ${sample_names[$loop3]}.fastq
+                        loop1=$((loop1+2))
+                        loop2=$((loop2+1))
                         loop3=$((loop3+1))
                     done
-                ;;
-                * )
-                    loop3=0;
-                    for ((i=1;i<=cvar2;i++)); do
-                        cp sample_${i}.fastq ~-/${organism}/samples/${sample_names[$loop3]}.fastq
-                        loop3=$((loop3+1))
-                    done;;
-                esac;;
+                    cd ../../ ;;
+            * );; 
+            esac
+
+            case ${answer4:0:1} in
+            y|Y )
+                loop1=0; loop2=1; loop3=0;
+                while [ $loop2 -le $cvar2 ] ; do
+                    cat *sample_${loop1}*.fastq *sample_${(loop1+1)}*.fastq > ~-/${organism}/samples/${sample_names[$loop3]}.fastq
+                    loop1=$((loop1+2))
+                    loop2=$((loop2+1))
+                    loop3=$((loop3+1))
+                done;;
             * )
-                echo "move the files and come back later"
-            ;;
+                loop3=0;
+                for ((i=1;i<=cvar2;i++)); do
+                    cp *sample_${i}*.fastq ~-/${organism}/samples/${sample_names[$loop3]}.fastq
+                    loop3=$((loop3+1))
+                done;;
+            esac;;
+        * ) echo "move the files and come back later";;
         esac
     fi
 
@@ -1279,7 +1280,6 @@ download_and_convert () {
                 fastx_quality_stats -i "../../samples/${x}.fastq" -o "$output_report"
 
                 echo "Quality report generated: $output_report"
-                mv $output_report ../data/quality_reports 
                 
             done 
             cd ../../../
@@ -1418,13 +1418,18 @@ download_and_convert () {
             bamToBed -i ${x}_${spikeIn_org}_spikeIn.bam > ${x}_${spikeIn_org}_spikeIn.bed
             sort -k1,1V -k2,2n ${x}_${spikeIn_org}_spikeIn.bed -o ${x}_${spikeIn_org}_spikeIn.bed; fi
 
-
-
         if [ "$spikeIn_org" != false ]; then
             nSpikeIn=$(grep -c ^ ${x}_${spikeIn_org}_spikeIn.bed)
             ## n is calculated by summing the reads, which is equivalent to the number of lines in the dm6 bed file. Since we only retained uniquely mapping reads (see the bowtie2 line), only reads that uniquely mapped to dm6 are counted here.
             echo; echo "Number of reads mapping to spikeIn dm6 genome is: $nSpikeIn"; fi
             # prints the number of reads that uniquely map to spike-in genome
+
+        grep -v "_" ${x}.bed > ${x}_temp.bed 
+        grep -v "chrM" ${x}_temp.bed  > ${x}.bed
+        grep -v "_" ${x}_allMap.bed > ${x}_allMap_temp.bed 
+        grep -v "chrM" ${x}_allMap_temp.bed  > ${x}_allMap.bed
+
+        rm ${x}_temp.bed ${x}_allMap_temp.bed
 
     # ---------------[PART 3]-----------------------------
    
