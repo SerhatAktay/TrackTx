@@ -384,7 +384,7 @@ convert () {
     if [ -z "$adapter_sequence" ]; then
         echo 
     elif [ $adapter_sequence == "molgen" ]; then 
-        adapter_sequence="TGGAATTCTCGGGTGCCAAGGAACTCCAGTCAC" # for K562 and MEF
+        adapter_sequence="TGGAATTCTCGGGTGCCAAGGAACTCCAGTCAC" # for K562, MEF
     fi
     
     read -p "Does your sample contain UMIs (y/n)?: " UMI_status
@@ -392,28 +392,30 @@ convert () {
     y|Y ) UMI_status=true;;
     * ) UMI_status=false;; esac
 
-    read -p "Does your sample contain a barcode (y/n)?: " barcode_status
+    read -p "Does your sample contain a barcode that should be trimmed (y/n)?: " barcode_status
     case ${barcode_status:0:1} in
     y|Y ) barcode_status=true
           read -p "How long is the barcode (how many bp)?: " barcode_length;;
     * ) barcode_status=false;; esac
-    
-    options=("Homo Sapiens (T2T-CHM13v2/hs1)" "Homo Sapiens (hg38)" "Mus Musculus (GRCm39)" "Drosophila Melanogaster (DM6)" "Canis Lupus Familiaris (canFam6)" "No spike in")
-    PS3="Select the genome you'd like to use as 'spike in': "
-    IFS=$'\n'
-    select opt in "${options[@]}" "Quit"; do 
-        case "$REPLY" in
-        1) spikeIn_org="hs1";; 
-        2) spikeIn_org="hg38";; 
-        3) spikeIn_org="mm39";;
-        4) spikeIn_org="dm6";; 
-        5) spikeIn_org="canFam6";; 
-        6) spikeIn_org=false;;
-        $((${#options[@]}))) echo "Goodbye!"; exit 0; ;;
-        *) echo "Invalid option. Try another one.";continue;;
-        esac
-        break
-    done
+
+    read -p "Did you use a spike in organism (y/n)?: " spikeIn_status
+    case ${spikeIn_status:0:1} in
+    y|Y )   options=("Homo Sapiens (T2T-CHM13v2/hs1)" "Homo Sapiens (hg38)" "Mus Musculus (GRCm39)" "Drosophila Melanogaster (DM6)" "Canis Lupus Familiaris (canFam6)" "No spike in")
+            PS3="Select the genome you'd like to use as 'spike in': "
+            IFS=$'\n'
+            select opt in "${options[@]}" "Quit"; do 
+                case "$REPLY" in
+                1) spikeIn_org="hs1";; 
+                2) spikeIn_org="hg38";; 
+                3) spikeIn_org="mm39";;
+                4) spikeIn_org="dm6";; 
+                5) spikeIn_org="canFam6";; 
+                $((${#options[@]}))) echo "Goodbye!"; exit 0; ;;
+                *) echo "Invalid option. Try another one.";continue;;
+                esac
+                break
+            done ;;
+    * ) spikeIn_org=false;; esac
     echo
 
     #-----------------------------------------------------------------------
@@ -428,7 +430,7 @@ convert () {
         sample_list+=("$filename")  # Append the filename to the array
     done
 
-    cd ${organism}/genome
+    cd ${organism}/genome/
 
     if [ ! -f chrm_sizes_${organism}.txt ]; then
         if fetchChromSizes ${organism} > chrm_sizes_$organism.temp; then
@@ -440,9 +442,10 @@ convert () {
             echo; echo "Could not find a list of chromosome sizes - create a list in txt.format with the chromosomes and the size of each chromosome, name it chrm_sizes_${organism} and put it in the 'genome' folder before you start the conversion to bigWig."
             exit
         fi
-    else
+    else 
         echo
     fi
+    
     cd ../../
 
     #-----------------------------------------------
@@ -470,7 +473,7 @@ convert () {
 
     ### Remove the adapter sequence:
         if [ -n "$adapter_sequence" ]; then
-            echo "removing adapter sequence from ${x}:"
+            echo "removing the adapter sequence from ${x}:"
             fastx_clipper -v -n -a ${adapter_sequence} -l 12 -i ${x}.fa -o ${x}_clipped.fa 
         else
             rsync -ah --progress ${x}.fa ${x}_clipped.fa; fi
@@ -484,17 +487,17 @@ convert () {
     
     ### Remove the 7bp barcode:
         if [ "$barcode_status" = true ]; then    
-            echo trimming the ${barcode_length} bp molecular barcodes on left from ${x} :
+            echo "trimming the ${barcode_length} bp molecular barcodes on left from ${x}:"
             fastx_trimmer -f ${barcode_length} -v -i ${x}_clipped.fa -o ${x}_clipped_barcode.fa  
             mv ${x}_clipped_barcode.fa ${x}_clipped.fa
         fi
             
     ### Create a reverese complement of the sequences:
-        echo "making reverse complement of the clipped sequences of ${x}"
+        echo "making a reverse complement of the clipped sequences of ${x}"
         fastx_reverse_complement -i ${x}_clipped.fa -o ${x}_RC.fa 
         echo
 
-        echo "aligning reads from ${x} to the $organism genome with bowtie2"
+        echo "aligning the reverse complement of ${x} to the $organism genome using bowtie2"
         bowtie2 --end-to-end -p 7 -x ${bowtie} --un ${x}_hgRemovedTemp.fa -f -U ${x}_RC.fa | awk '$2 != 4 {print}' | sed '/XS:/d' | samtools view -S -b '-' > ${x}.bam
         bowtie2 --end-to-end -p 7 -x ${bowtie} --un ${x}_hgRemovedTemp.fa -f -U ${x}_RC.fa | awk '$2 != 4 {print}' | samtools view -S -b '-' > ${x}_allMap.bam
         ## aligns reads to hg using bowtie2. --end-to-end required the whole read to align. I.e. no soft clipping allowed, maintains the nucleotide-resolution of PRO-seq. -p 7 uses 7 cores, -x ${bowtie} provides the bowtie2 indexed genome, and -f -U ${x}_clipped_RC.fa provides the input file.
@@ -538,19 +541,16 @@ convert () {
 
     ### the bam file is converted to bed and piped to be sorted by chromosome and then start position.
         echo "converting bam to bed file and sorting it"
-        bamToBed -i ${x}.bam > ${x}.bed 
-        sort -k1,1V -k2,2n ${x}.bed -o ${x}.bed
-        bamToBed -i ${x}_allMap.bam > ${x}_allMap.bed
-        sort -k1,1V -k2,2n ${x}_allMap.bed -o ${x}_allMap.bed
+        bamToBed -i ${x}.bam > ${x}_temp.bed 
+        sort -k1,1V -k2,2n ${x}_temp.bed -o ${x}.bed
+        bamToBed -i ${x}_allMap.bam > ${x}_allMap_temp.bed
+        sort -k1,1V -k2,2n ${x}_allMap_temp.bed -o ${x}_allMap.bed
+
+        rm ${x}_temp.bed ${x}_allMap_temp.bed
     
         if [ "$spikeIn_org" != false ]; then 
             bamToBed -i ${x}_${spikeIn_org}_spikeIn.bam > ${x}_${spikeIn_org}_spikeIn.bed
             sort -k1,1V -k2,2n ${x}_${spikeIn_org}_spikeIn.bed -o ${x}_${spikeIn_org}_spikeIn.bed; fi
-
-        cSample=$(grep -c ^ ${x}_allMap.bed)
-
-        echo "total count from .bed file of ${x} is:"
-        echo $cSample
 
         if [ "$spikeIn_org" != false ]; then
             nSpikeIn=$(grep -c ^ ${x}_${spikeIn_org}_spikeIn.bed)
@@ -558,30 +558,36 @@ convert () {
             echo; echo "Number of reads mapping to spikeIn dm6 genome is: $nSpikeIn"; fi
             # prints the number of reads that uniquely map to spike-in genome
 
-        grep -v "_" ${x}.bed > ${x}_temp.bed 
-        grep -v "chrM" ${x}_temp.bed  > ${x}.bed
-        grep -v "_" ${x}_allMap.bed > ${x}_allMap_temp.bed 
-        grep -v "chrM" ${x}_allMap_temp.bed  > ${x}_allMap.bed
+        #grep -v "_" ${x}.bed > ${x}_temp.bed 
+        #grep -v "chrM" ${x}_temp.bed  > ${x}.bed
+        #grep -v "_" ${x}_allMap.bed > ${x}_allMap_temp.bed 
+        #grep -v "chrM" ${x}_allMap_temp.bed  > ${x}_allMap.bed
 
-        rm ${x}_temp.bed ${x}_allMap_temp.bed
+        cSample=$(grep -c ^ ${x}_allMap.bed)
+
+        echo "total count from .bed file of ${x} is:" $cSample
+
+        #rm ${x}_temp.bed ${x}_allMap_temp.bed
 
     # ---------------[PART 3]-----------------------------
    
         echo; echo "generating non-normalized bedgraph files of ${x}. Retains only the three_prime_nt of each read"
-        awk '$6 == "+"' ${x}.bed | genomeCoverageBed -i stdin -3 -bg -g ${chromSizes} > ${x}_unnorm_pl.bedgraph
-        awk '$6 == "-"' ${x}.bed | genomeCoverageBed -i stdin -3 -bg -g ${chromSizes} > ${x}_unnorm_m.bedgraph
+        genomeCoverageBed -i ${x}.bed -strand + -3 -bg -g ${chromSizes} > ${x}_unnorm_pl.bedgraph
+        genomeCoverageBed -i ${x}.bed -strand - -3 -bg -g ${chromSizes} > ${x}_unnorm_m.bedgraph
         awk '{$4=$4*-1; print}' ${x}_unnorm_m.bedgraph > ${x}_unnorm_mn.bedgraph    # turn the number 1 to -1
+        rm ${x}_unnorm_m.bedgraph
         
-        awk -F'\t' '!/_/ && $1 != "chrM" {print}' ${x}_allMap.bed > ${x}_allMap_temp.bed
-        mv ${x}_allMap_temp.bed ${x}_allMap.bed
+        #awk -F'\t' '!/_/ && $1 != "chrM" {print}' ${x}_allMap.bed > ${x}_allMap_temp.bed
+        #mv ${x}_allMap_temp.bed ${x}_allMap.bed
 
         echo; echo "generating non-normalized bedgraph files of allMapping reads of ${x}. Retains only the three_prime_nt of each read"
-        awk '$6 == "+"' ${x}_allMap.bed | genomeCoverageBed -i stdin -3 -bg -g ${chromSizes} > ${x}_allMap_unnorm_pl.temp
-        awk '$6 == "-"' ${x}_allMap.bed | genomeCoverageBed -i stdin -3 -bg -g ${chromSizes} > ${x}_allMap_unnorm_m.temp
-        awk '{$4=$4*-1; print}' ${x}_allMap_unnorm_m.temp > ${x}_allMap_unnorm_mn.temp    # turn the number 1 to -1
+        genomeCoverageBed -i ${x}_allMap.bed -strand + -3 -bg -g ${chromSizes} > ${x}_allMap_unnorm_pl.bedgraph
+        genomeCoverageBed -i ${x}_allMap.bed -strand - -3 -bg -g ${chromSizes} > ${x}_allMap_unnorm_m.bedgraph
+        awk '{$4=$4*-1; print}' ${x}_allMap_unnorm_m.bedgraph > ${x}_allMap_unnorm_mn.bedgraph    # turn the number 1 to -1
+        rm ${x}_allMap_unnorm_m.bedgraph
 
-        awk -F'\t' '!/_/{print}' ${x}_allMap_unnorm_pl.temp > ${x}_allMap_unnorm_pl.bedgraph
-        awk -F'\t' '!/_/{print}' ${x}_allMap_unnorm_mn.temp > ${x}_allMap_unnorm_mn.bedgraph
+        #awk -F'\t' '!/_/{print}' ${x}_allMap_unnorm_pl.temp > ${x}_allMap_unnorm_pl.bedgraph
+        #awk -F'\t' '!/_/{print}' ${x}_allMap_unnorm_mn.temp > ${x}_allMap_unnorm_mn.bedgraph
 
         echo; echo "making bigwig from non-normalized bedgraph files of ${x}"
         bedGraphToBigWig ${x}_unnorm_pl.bedgraph ${chromSizes} ${x}_unnorm_pl.bigWig
@@ -593,7 +599,8 @@ convert () {
         bedGraphToBigWig ${x}_allMap_unnorm_mn.bedgraph ${chromSizes} ${x}_allMap_unnorm_mn.bigWig
         ## makes bigwig file from the bedgraph files
 
-        rm *.temp
+        rm *.temp *.fa 
+
 
     done
 
@@ -1127,24 +1134,30 @@ download_and_convert () {
     y|Y ) UMI_status=true;;
     * ) UMI_status=false;; esac
 
-    read -p "Does your sample contain a barcode (y/n)?: " barcode_status
+    read -p "Does your sample contain a barcode that should be trimmed (y/n)?: " barcode_status
     case ${barcode_status:0:1} in
     y|Y ) barcode_status=true
           read -p "How long is the barcode (how many bp)?: " barcode_length;;
     * ) barcode_status=false;; esac
     
-    options=("Homo Sapiens (T2T-CHM13v2/hs1)" "Homo Sapiens (hg38)" "Mus Musculus (GRCm39)" "Drosophila Melanogaster (DM6)" "Canis Lupus Familiaris (canFam6)" "No spike in")
-    PS3="Select the genome you'd like to use as 'spike in': "
-    IFS=$'\n'
-    select opt in "${options[@]}" "Quit"; do 
-        case "$REPLY" in
-        1) spikeIn_org="hs1";; 2) spikeIn_org="hg38";; 3) spikeIn_org="mm39";;
-        4) spikeIn_org="dm6";; 5) spikeIn_org="canFam6";; 6) spikeIn_org=false;;
-        $((${#options[@]}+1))) echo "Goodbye!"; exit 0; ;;
-        *) echo "Invalid option. Try another one.";continue;;
-        esac
-        break
-    done
+    read -p "Did you use a spike in organism (y/n)?: " spikeIn_status
+    case ${spikeIn_status:0:1} in
+    y|Y )   options=("Homo Sapiens (T2T-CHM13v2/hs1)" "Homo Sapiens (hg38)" "Mus Musculus (GRCm39)" "Drosophila Melanogaster (DM6)" "Canis Lupus Familiaris (canFam6)" "No spike in")
+            PS3="Select the genome you'd like to use as 'spike in': "
+            IFS=$'\n'
+            select opt in "${options[@]}" "Quit"; do 
+                case "$REPLY" in
+                1) spikeIn_org="hs1";; 
+                2) spikeIn_org="hg38";; 
+                3) spikeIn_org="mm39";;
+                4) spikeIn_org="dm6";; 
+                5) spikeIn_org="canFam6";; 
+                $((${#options[@]}))) echo "Goodbye!"; exit 0; ;;
+                *) echo "Invalid option. Try another one.";continue;;
+                esac
+                break
+            done ;;
+    * ) spikeIn_org=false;; esac
     echo
 
     #-------------------------------------------
@@ -1218,18 +1231,7 @@ download_and_convert () {
         case ${answer:0:1} in
             y|Y )
             case ${answer2:0:1} in
-            y|Y )   cat *.fastq | fastx_barcode_splitter.pl --bcfile barcodes.txt --bol --mismatches 2 --partial 2 --prefix ../samples/ --suffix ".fastq" --quiet
-
-                    cd ~-/${organism}/samples
-
-                    loop1=0; loop2=1; loop3=0;
-                    while [ $loop2 -le $cvar2 ] ; do
-                        cat *sample_${loop1}*.fastq *sample_${(loop1+1)}*.fastq > ${sample_names[$loop3]}.fastq
-                        loop1=$((loop1+2))
-                        loop2=$((loop2+1))
-                        loop3=$((loop3+1))
-                    done
-                    cd ../../ ;;
+            y|Y )   cat *.fastq | fastx_barcode_splitter.pl --bcfile barcodes.txt --bol --mismatches 2 --partial 2 --prefix "" --suffix ".fastq" ;;
             * );; 
             esac
 
@@ -1424,12 +1426,12 @@ download_and_convert () {
             echo; echo "Number of reads mapping to spikeIn dm6 genome is: $nSpikeIn"; fi
             # prints the number of reads that uniquely map to spike-in genome
 
-        grep -v "_" ${x}.bed > ${x}_temp.bed 
-        grep -v "chrM" ${x}_temp.bed  > ${x}.bed
-        grep -v "_" ${x}_allMap.bed > ${x}_allMap_temp.bed 
-        grep -v "chrM" ${x}_allMap_temp.bed  > ${x}_allMap.bed
+        #grep -v "_" ${x}.bed > ${x}_temp.bed 
+        #grep -v "chrM" ${x}_temp.bed  > ${x}.bed
+        #grep -v "_" ${x}_allMap.bed > ${x}_allMap_temp.bed 
+        #grep -v "chrM" ${x}_allMap_temp.bed  > ${x}_allMap.bed
 
-        rm ${x}_temp.bed ${x}_allMap_temp.bed
+        #rm ${x}_temp.bed ${x}_allMap_temp.bed
 
     # ---------------[PART 3]-----------------------------
    
@@ -1572,16 +1574,16 @@ download_and_convert () {
     #Make a list of your samples, without the .fastq extension
 
     cd ${organism}/samples
-    declare -a sample_list
+    declare -a sample_list_frg
     for file in *.fastq; do
-        sample_list=("${sample_list[@]}" "$file")
+        sample_list_frg=("${sample_list_frg[@]}" "$file")
     done
-    sample_list=("${sample_list[@]%.*}")
+    sample_list_frg=("${sample_list_frg[@]%.*}")
     cd ../../
 
     #---------------------------------------------------
 
-    for sample in ${sample_list[@]}; do 
+    for sample in ${sample_list_frg[@]}; do 
 
         echo "Creating functional genomics .bed-file for sample $sample"
 
