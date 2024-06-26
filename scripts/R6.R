@@ -5,7 +5,7 @@ args <- commandArgs()
 organism <- args[6]
 sample <- args[7]
 
-path_to_bedgraphs <- paste0(organism, "/bigWig")
+path_to_bedgraphs <- paste0(organism, "/bigWig/")
 
 #============================================================
 
