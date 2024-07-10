@@ -28,7 +28,7 @@ package.check <- lapply(
 
 #-----------------------------------------
 
-col_names <- c("chr", "start", "end", "score", "gene", "strand", "start_2", "end_2", "colour")
+col_names <- c("chr", "start", "end", "gene", "score", "strand", "start_2", "end_2", "color")
 
 file <- paste0(organism, "/analysis/functionalGenomicRegions_", sample, ".bed")
 
@@ -36,7 +36,7 @@ file <- paste0(organism, "/analysis/functionalGenomicRegions_", sample, ".bed")
 df <- read.delim2(file, col.names=col_names, sep="\t", header = FALSE, skip = 1)
 
 # Remove columns "start_2", end_2", and "colour"
-df <- df[, !colnames(df) %in% c("start_2", "end_2", "colour")]
+df <- df[, !colnames(df) %in% c("start_2", "end_2", "color")]
 
 # Split the dataframe based on the "strand" column
 df_minus <- df[df$strand == "-", ]
