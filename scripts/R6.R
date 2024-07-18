@@ -6,7 +6,7 @@ organism <- args[6]
 sample <- args[7]
 nt_window <- args[8]
 
-print(args, organism, sample, nt_window)
+cat("organism:", organism, "nt_window:", nt_window, "sample:", sample, "\n")
 
 path_to_bedgraphs <- paste0(organism, "/bigWig/")
 
