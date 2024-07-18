@@ -70,7 +70,7 @@ negative_peaks <- find_peaks(negative_strand)
 if (organism
 
 # Function to find divergent transcription patterns within a predefined organism dependent nucleotide window
-find_divergent_transcription <- function(pos_peaks, neg_peaks, max_window = nt_window) {
+find_divergent_transcription <- function(pos_peaks, neg_peaks, max_window) {
   divergent_regions <- data.table(chromosome = character(), start = integer(), 
                                   end = integer(), total_signal = numeric())
   
@@ -105,7 +105,7 @@ find_divergent_transcription <- function(pos_peaks, neg_peaks, max_window = nt_w
 #-------------------------------------------------------------------
 
 # Find regions of divergent transcription
-divergent_transcription <- find_divergent_transcription(positive_peaks, negative_peaks)
+divergent_transcription <- find_divergent_transcription(positive_peaks, negative_peaks, nt_window)
 
 #-------------------------------------------------------------------
 
