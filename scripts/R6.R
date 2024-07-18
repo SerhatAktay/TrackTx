@@ -4,6 +4,7 @@
 args <- commandArgs()
 organism <- args[6]
 sample <- args[7]
+nt_window <- args[8]
 
 path_to_bedgraphs <- paste0(organism, "/bigWig/")
 
@@ -28,20 +29,6 @@ package.check <- lapply(
     }
   }
 )
-
-#-------------------------------------------------------------------
-
-# Set the divergent transcription nt_window to a default value
-nt_window <- 800
-
-# Ask the user if they want to change the window value
-cat("The default nt_window value is set to:", nt_window, "\n")
-change_nt_window <- readline(prompt = "Do you want to change the nucleotide distance? (y/n): ")
-
-# If the user wants to change the nt_window value, prompt them for a new value
-if (tolower(change_nt_window) == "y") {
-  nt_window <- as.numeric(readline(prompt = "Please enter the new value for nucleotide distance between the forward and reverse strand: "))
-}
 
 #-------------------------------------------------------------------
 
