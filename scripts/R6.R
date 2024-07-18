@@ -31,6 +31,20 @@ package.check <- lapply(
 
 #-------------------------------------------------------------------
 
+# Set the divergent transcription nt_window to a default value
+nt_window <- 800
+
+# Ask the user if they want to change the window value
+cat("The default nt_window value is set to:", nt_window, "\n")
+change_nt_window <- readline(prompt = "Do you want to change the nucleotide distance? (y/n): ")
+
+# If the user wants to change the nt_window value, prompt them for a new value
+if (tolower(change_nt_window) == "y") {
+  nt_window <- as.numeric(readline(prompt = "Please enter the new value for nucleotide distance between the forward and reverse strand: "))
+}
+
+#-------------------------------------------------------------------
+
 # Read the input files
 positive_strand.data <- read.table(paste0(path_to_bedgraphs, sample, "_allMap_unnorm_pl.bedgraph"), header = FALSE, col.names = c("chromosome", "start", "end", "polymerase_signal"))
 negative_strand.data <- read.table(paste0(path_to_bedgraphs, sample, "_allMap_unnorm_mn.bedgraph"), header = FALSE, col.names = c("chromosome", "start", "end", "polymerase_signal"))
@@ -64,8 +78,10 @@ negative_peaks <- find_peaks(negative_strand)
 
 #-------------------------------------------------------------------
 
-# Function to find divergent transcription patterns within a 1000-nucleotide window
-find_divergent_transcription <- function(pos_peaks, neg_peaks, max_window = 800) {
+if (organism
+
+# Function to find divergent transcription patterns within a predefined organism dependent nucleotide window
+find_divergent_transcription <- function(pos_peaks, neg_peaks, max_window = nt_window) {
   divergent_regions <- data.table(chromosome = character(), start = integer(), 
                                   end = integer(), total_signal = numeric())
   
@@ -82,7 +98,7 @@ find_divergent_transcription <- function(pos_peaks, neg_peaks, max_window = 800)
     
     joined <- foverlaps(neg_chr, pos_chr, by.x = c("chromosome", "start", "end"), by.y = c("chromosome", "start", "end"), nomatch = 0)
     
-    # Filter to ensure the peaks are within a 1000-nucleotide window
+    # Filter to ensure the peaks are within a predefined nucleotide window
     joined <- joined[abs(start - i.start) <= max_window]
     
     if (nrow(joined) > 0) {
