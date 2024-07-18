@@ -79,12 +79,12 @@ find_divergent_transcription <- function(pos_peaks, neg_peaks, max_window) {
     setkey(neg_chr, chromosome, start, end)
     
     # Ensure the columns are in the correct order for foverlaps
-    neg_chr[, end := start + max_window]
+    neg_chr[, end := start + as.numeric(max_window)]
     
     joined <- foverlaps(neg_chr, pos_chr, by.x = c("chromosome", "start", "end"), by.y = c("chromosome", "start", "end"), nomatch = 0)
     
     # Filter to ensure the peaks are within a predefined nucleotide window
-    joined <- joined[abs(start - i.start) <= max_window]
+    joined <- joined[abs(start - i.start) <= as.numeric(max_window)]
     
     if (nrow(joined) > 0) {
       joined[, `:=`(region_start = pmin(i.start, start),
@@ -101,7 +101,7 @@ find_divergent_transcription <- function(pos_peaks, neg_peaks, max_window) {
 #-------------------------------------------------------------------
 
 # Find regions of divergent transcription
-divergent_transcription <- find_divergent_transcription(positive_peaks, negative_peaks, as.numeric(nt_window))
+divergent_transcription <- find_divergent_transcription(positive_peaks, negative_peaks, nt_window)
 
 #-------------------------------------------------------------------
 
