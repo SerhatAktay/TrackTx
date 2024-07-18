@@ -4,7 +4,7 @@
 args <- commandArgs()
 organism <- args[6]
 sample <- args[7]
-nt_window <- as.integer(args[8])
+nt_window <- args[8]
 
 path_to_bedgraphs <- paste0(organism, "/bigWig/")
 
@@ -64,8 +64,6 @@ positive_peaks <- find_peaks(positive_strand)
 negative_peaks <- find_peaks(negative_strand)
 
 #-------------------------------------------------------------------
-
-if (organism
 
 # Function to find divergent transcription patterns within a predefined organism dependent nucleotide window
 find_divergent_transcription <- function(pos_peaks, neg_peaks, max_window) {
