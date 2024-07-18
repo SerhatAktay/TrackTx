@@ -4,7 +4,7 @@
 args <- commandArgs()
 organism <- args[6]
 sample <- args[7]
-nt_window <- args[8]
+nt_window <- as.integer(args[8])
 
 path_to_bedgraphs <- paste0(organism, "/bigWig/")
 
