@@ -101,7 +101,7 @@ find_divergent_transcription <- function(pos_peaks, neg_peaks, max_window) {
 #-------------------------------------------------------------------
 
 # Find regions of divergent transcription
-divergent_transcription <- find_divergent_transcription(positive_peaks, negative_peaks, nt_window)
+divergent_transcription <- find_divergent_transcription(positive_peaks, negative_peaks, as.numeric(nt_window))
 
 #-------------------------------------------------------------------
 
