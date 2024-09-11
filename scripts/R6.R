@@ -13,11 +13,11 @@ path_to_bedgraphs <- paste0(organism, "/bigWig/")
 ## Required packages
 packages = c("data.table", "dplyr", "progress")
 
-suppressPackageStartupMessages({
-  for (pkg in packages) {
-    library(pkg, character.only = TRUE)
-  }
-})
+#suppressPackageStartupMessages({
+#  for (pkg in packages) {
+#    library(pkg, character.only = TRUE)
+#  }
+#})
 
 ## Load or install & load all
 package.check <- lapply(
