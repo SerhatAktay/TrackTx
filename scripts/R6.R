@@ -49,7 +49,7 @@ setorder(negative_strand, chromosome, start)
 #-------------------------------------------------------------------
 
 # Function to identify peaks in polymerase engagement
-find_peaks <- function(data, threshold = 2) {
+find_peaks <- function(data, threshold = 1) {
   data[, abs_signal := abs(polymerase_signal)]
   peaks <- data[abs_signal >= threshold]
   setorder(peaks, -abs_signal)
@@ -104,64 +104,6 @@ find_divergent_transcription <- function(pos_peaks, neg_peaks, max_window) {
 divergent_transcription <- find_divergent_transcription(positive_peaks, negative_peaks, nt_window)
 
 #-------------------------------------------------------------------
-
-merge_exact_regions <- function(regions) {
-  # Ensure the regions are ordered by chromosome, start, and end positions
-  setorder(regions, chromosome, start, end)
-  
-  # Initialize variables to store merged regions
-  merged_regions <- list()
-  current_index <- 1
-  
-  # Initialize progress bar
-  pb <- progress_bar$new(total = nrow(regions), format = "  Merging regions [:bar] :percent eta: :eta", clear = FALSE)
-  
-  # Iterate through regions
-  while (current_index <= nrow(regions)) {
-    # Initialize the current region
-    current_chromosome <- regions$chromosome[current_index]
-    current_start <- regions$start[current_index]
-    current_end <- regions$end[current_index]
-    current_total_signal <- regions$total_signal[current_index]
-    
-    # Initialize count of merged regions
-    merged_count <- 1
-    
-    # Find other regions with the exact same coordinates
-    next_index <- current_index + 1
-    while (next_index <= nrow(regions) &&
-           regions$chromosome[next_index] == current_chromosome &&
-           regions$start[next_index] == current_start &&
-           regions$end[next_index] == current_end) {
-      current_total_signal <- current_total_signal + regions$total_signal[next_index]
-      next_index <- next_index + 1
-      merged_count <- merged_count + 1
-    }
-    
-    # Save the merged region
-    merged_regions[[length(merged_regions) + 1]] <- list(
-      chromosome = current_chromosome,
-      start = current_start,
-      end = current_end,
-      total_signal = current_total_signal
-    )
-    
-    # Update the progress bar
-    pb$tick(next_index - current_index)
-    
-    # Move to the next set of regions
-    current_index <- next_index
-  }
-  
-  # Convert to data.table
-  if (length(merged_regions) > 0) {
-    merged_regions <- rbindlist(merged_regions)
-  } else {
-    merged_regions <- data.table(chromosome = character(), start = integer(), end = integer(), total_signal = numeric())
-  }
-  
-  return(merged_regions)
-}
 
 merge_overlapping_regions <- function(regions) {
   # Ensure the regions are ordered by chromosome and start position
@@ -226,7 +168,6 @@ merge_overlapping_regions <- function(regions) {
 #-------------------------------------------------------------------
 
 # Merge overlapping regions
-#merged_divergent_transcription <- merge_overlapping_regions(divergent_transcription)
 merged_divergent_transcription <- merge_overlapping_regions(divergent_transcription)
 
 #-------------------------------------------------------------------
