@@ -176,8 +176,7 @@ merged_divergent_transcription <- merge_overlapping_regions(divergent_transcript
 output_folder = paste0(organism, "/analysis/functionalGenomics_", sample)
 
 # Write the data to file without headers
-#write.table(merged_divergent_transcription, file = paste0(output_folder, "/divergent_transcription.bed"), quote = FALSE, col.names = FALSE, row.names = FALSE, sep = "\t")
-write.table(divergent_transcription, file = paste0(output_folder, "/divergent_transcription.bed"), quote = FALSE, col.names = FALSE, row.names = FALSE, sep = "\t")
+write.table(merged_divergent_transcription, file = paste0(output_folder, "/divergent_transcription.bed"), quote = FALSE, col.names = FALSE, row.names = FALSE, sep = "\t")
 
 save.image()
 q()
