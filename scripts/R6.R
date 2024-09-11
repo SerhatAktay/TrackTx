@@ -138,8 +138,8 @@ merge_overlapping_regions <- function(regions) {
       merged_count <- merged_count + 1
     }
     
-    # Save the merged region only if at least 3 regions are merged
-    if (merged_count >= 3) {
+    # Save the merged region only if at least X regions are merged
+    if (merged_count >= 2) {
       merged_regions[[length(merged_regions) + 1]] <- list(
         chromosome = current_chromosome,
         start = current_start,
