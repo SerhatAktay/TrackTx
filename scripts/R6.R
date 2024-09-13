@@ -49,7 +49,7 @@ setorder(negative_strand, chromosome, start)
 #-------------------------------------------------------------------
 
 # Function to identify peaks in polymerase engagement
-find_peaks <- function(data, threshold = 1) {
+find_peaks <- function(data, threshold = 2) {
   data[, abs_signal := abs(polymerase_signal)]
   peaks <- data[abs_signal >= threshold]
   setorder(peaks, -abs_signal)
@@ -139,7 +139,7 @@ merge_overlapping_regions <- function(regions) {
     }
     
     # Save the merged region only if at least X regions are merged
-    if (merged_count >= 1) {
+    if (merged_count >= 2) {
       merged_regions[[length(merged_regions) + 1]] <- list(
         chromosome = current_chromosome,
         start = current_start,
