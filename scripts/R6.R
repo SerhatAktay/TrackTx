@@ -11,7 +11,7 @@ path_to_bedgraphs <- paste0(organism, "/bigWig/")
 #============================================================
 
 ## Required packages
-packages = c("data.table", "dplyr", "progress")
+packages = c("data.table", "dplyr")
 
 suppressPackageStartupMessages({
   for (pkg in packages) {
@@ -39,133 +39,116 @@ negative_strand.data <- read.table(paste0(path_to_bedgraphs, sample, "_allMap_un
 #-------------------------------------------------------------------
 
 # Convert the data to data.table format
-positive_strand <- setDT(positive_strand.data)
-negative_strand <- setDT(negative_strand.data)
-
-# Sort the data by chromosome and start coordinate
-setorder(positive_strand, chromosome, start)
-setorder(negative_strand, chromosome, start)
+positive_strand <- setorder(setDT(positive_strand.data))
+negative_strand <- setorder(setDT(negative_strand.data))
 
 #-------------------------------------------------------------------
 
 # Function to identify peaks in polymerase engagement
-find_peaks <- function(data, threshold = 2) {
+find_peaks <- function(data, threshold, signal_sum_threshold) {
+  
+  # Step 1: Preprocessing - Calculate absolute value of polymerase_signal
   data[, abs_signal := abs(polymerase_signal)]
+  
+  # Step 2: Identify peaks above the threshold
   peaks <- data[abs_signal >= threshold]
-  setorder(peaks, -abs_signal)
-  peaks[, abs_signal := NULL]  # Remove the temporary column
+  setorder(peaks, chromosome, start)  # Order by chromosome and start
+  
+  # Step 3: Create a group for peaks within the window based on the genomic distance using vectorized operation to group based on proximity within the window
+  peaks[, group := cumsum((start > shift(end, type = "lag", fill = first(end)) + 100) | (chromosome != shift(chromosome, type = "lag", fill = first(chromosome))))]
+  
+  # Step 4: Summing peaks and signals within each group
+  peaks <- peaks[, .(
+    start = min(start),
+    end = max(end),
+    signal_sum = sum(abs(polymerase_signal)),
+    peak_count = .N
+  ), by = .(chromosome, group)]
+  
+  # Step 5: Filter out peaks where the signal sum is below the threshold
+  peaks <- peaks[peak_count > 1 & signal_sum >= signal_sum_threshold]
+  
+  # Step 6: Clean up and return results
+  peaks[, group := NULL]  # Remove temporary grouping column
+  
   return(peaks)
 }
 
-#-------------------------------------------------------------------
+#-----------
 
 # Identify peaks in both strands
-positive_peaks <- find_peaks(positive_strand)
-negative_peaks <- find_peaks(negative_strand)
+positive_peaks <- find_peaks(positive_strand, threshold = 1, signal_sum_threshold = 5)
+negative_peaks <- find_peaks(negative_strand, threshold = 1, signal_sum_threshold = 5)
 
 #-------------------------------------------------------------------
 
 # Function to find divergent transcription patterns within a predefined organism dependent nucleotide window
 find_divergent_transcription <- function(pos_peaks, neg_peaks, max_window) {
-  divergent_regions <- data.table(chromosome = character(), start = integer(), 
-                                  end = integer(), total_signal = numeric())
+  # Step 1: Preprocessing
+  neg_peaks[, end := start + as.numeric(max_window)]  # Adjust negative peaks to set window size
   
-  # Iterate through chromosomes
-  for (chr in unique(pos_peaks$chromosome)) {
-    pos_chr <- pos_peaks[chromosome == chr]
-    neg_chr <- neg_peaks[chromosome == chr]
+  # Step 2: Set keys on full datasets (once, not in the loop)
+  setkey(pos_peaks, chromosome, start, end)
+  setkey(neg_peaks, chromosome, start, end)
+  
+  # Step 3: Apply foverlaps for all chromosomes at once (no loop)
+  joined <- foverlaps(neg_peaks, pos_peaks, by.x = c("chromosome", "start", "end"), 
+                      by.y = c("chromosome", "start", "end"), nomatch = 0)
+  
+  # Step 4: Filter peaks to ensure they are within the window
+  joined <- joined[abs(start - i.start) <= as.numeric(max_window)]
+  
+  # Step 5: Summing and processing peaks
+  if (nrow(joined) > 0) {
+    # Step 5a: Calculate region boundaries
+    joined[, `:=`(region_start = pmin(i.start, start), region_end = pmax(i.end, end))]
     
-    setkey(pos_chr, chromosome, start, end)
-    setkey(neg_chr, chromosome, start, end)
+    # Step 5b: Calculate total signal
+    joined[, total_signal := abs(signal_sum) + abs(i.signal_sum)]
     
-    # Ensure the columns are in the correct order for foverlaps
-    neg_chr[, end := start + as.numeric(max_window)]
+    # Step 6: Reduce to necessary columns and return results
+    divergent_regions <- joined[, .(chromosome, start = region_start, end = region_end, total_signal)]
     
-    joined <- foverlaps(neg_chr, pos_chr, by.x = c("chromosome", "start", "end"), by.y = c("chromosome", "start", "end"), nomatch = 0)
-    
-    # Filter to ensure the peaks are within a predefined nucleotide window
-    joined <- joined[abs(start - i.start) <= as.numeric(max_window)]
-    
-    if (nrow(joined) > 0) {
-      joined[, `:=`(region_start = pmin(i.start, start),
-                    region_end = pmax(i.end, end))]
-      joined[, total_signal := sum(abs(polymerase_signal)) + sum(abs(i.polymerase_signal)), by = .(region_start, region_end)]
-      divergent_regions <- rbind(divergent_regions, joined[, .(chromosome, start = region_start, end = region_end, total_signal)])
-    }
+    setorder(divergent_regions, chromosome, start)
+    return(divergent_regions)
+  } else {
+    return(data.table(chromosome = character(), start = integer(), end = integer(), total_signal = numeric()))
   }
-  
-  setorder(divergent_regions, chromosome, start)
-  return(divergent_regions)
 }
 
-#-------------------------------------------------------------------
+#-----------
 
 # Find regions of divergent transcription
 divergent_transcription <- find_divergent_transcription(positive_peaks, negative_peaks, nt_window)
 
 #-------------------------------------------------------------------
 
+# Function to merge overlapping regions
 merge_overlapping_regions <- function(regions) {
-  # Ensure the regions are ordered by chromosome and start position
+  # Step 1: Ensure regions are ordered by chromosome and start position
   setorder(regions, chromosome, start)
   
-  # Initialize variables to store merged regions
-  merged_regions <- list()
-  current_index <- 1
+  # Step 2: Create a vector to track whether regions are overlapping
+  # Overlap occurs if the next region starts before or at the current region's end
+  regions[, overlap := (shift(end, type = "lag", fill = first(end)) >= start & shift(chromosome, type = "lag", fill = first(chromosome)) == chromosome)]
   
-  # Initialize progress bar
-  pb <- progress_bar$new(total = nrow(regions), format = "  Merging regions [:bar] :percent eta: :eta", clear = FALSE)
+  # Step 3: Use cumulative sum of non-overlap events to create unique group IDs for overlapping regions
+  regions[, overlap_group := cumsum(!overlap)]
   
-  # Iterate through regions
-  while (current_index <= nrow(regions)) {
-    # Initialize the current region
-    current_chromosome <- regions$chromosome[current_index]
-    current_start <- regions$start[current_index]
-    current_end <- regions$end[current_index]
-    current_total_signal <- regions$total_signal[current_index]
-    
-    # Initialize count of merged regions
-    merged_count <- 1
-    
-    # Find the end of the merged region
-    next_index <- current_index + 1
-    while (next_index <= nrow(regions) &&
-           regions$chromosome[next_index] == current_chromosome &&
-           regions$start[next_index] <= current_end + 1) {
-      current_end <- max(current_end, regions$end[next_index])
-      current_total_signal <- current_total_signal + regions$total_signal[next_index]
-      next_index <- next_index + 1
-      merged_count <- merged_count + 1
-    }
-    
-    # Save the merged region only if at least X regions are merged
-    if (merged_count >= 2) {
-      merged_regions[[length(merged_regions) + 1]] <- list(
-        chromosome = current_chromosome,
-        start = current_start,
-        end = current_end,
-        total_signal = current_total_signal
-      )
-    }
-    
-    # Update the progress bar
-    pb$tick(next_index - current_index)
-    
-    # Move to the next non-overlapping region
-    current_index <- next_index
-  }
+  # Step 4: Merge overlapping regions within the same group
+  merged_regions <- regions[, .(
+    start = min(start),
+    end = max(end),
+    total_signal = sum(total_signal)
+  ), by = .(chromosome, overlap_group)]
   
-  # Convert to data.table
-  if (length(merged_regions) > 0) {
-    merged_regions <- rbindlist(merged_regions)
-  } else {
-    merged_regions <- data.table(chromosome = character(), start = integer(), end = integer(), total_signal = numeric())
-  }
+  # Step 5: Remove the temporary grouping column
+  merged_regions[, overlap_group := NULL]
   
   return(merged_regions)
 }
 
-#-------------------------------------------------------------------
+#-----------
 
 # Merge overlapping regions
 merged_divergent_transcription <- merge_overlapping_regions(divergent_transcription)
