@@ -1,75 +1,79 @@
-#====================
+# Optimized R1.R script
 
-args <- commandArgs()
-organism <- args[6]
-sample <- args[7]
+args <- commandArgs(trailingOnly = TRUE)
+organism <- args[1]
+sample <- args[2]
 
 path_to_genes <- paste0(organism, "/genome/genes.txt")
 
-refGene = read.table(path_to_genes, header=T, sep="\t", quote="")
+# Check if genes file exists
+if (!file.exists(path_to_genes)) {
+    stop(paste("Error: File", path_to_genes, "does not exist."))
+}
 
-names(refGene) =c("chr", "txStart", "txEnd", "strand", "geneName")
+# Read the reference gene data
+refGene <- read.table(path_to_genes, header = TRUE, sep = "\t", quote = "")
+names(refGene) <- c("chr", "txStart", "txEnd", "strand", "geneName")
 
-refGene = subset(refGene, txEnd>=10499 & txStart>=10499)
+# Filter out unwanted genes based on txStart and txEnd
+refGene <- subset(refGene, txEnd >= 10499 & txStart >= 10499)
 
-refGene_pl = subset(refGene, strand=="+")
-refGene_mn = subset(refGene, strand=="-")
+# Split into plus and minus strands
+refGene_pl <- subset(refGene, strand == "+")
+refGene_mn <- subset(refGene, strand == "-")
 
-### Genes on the plus strand:
+# Function to calculate regions based on strand
+calculate_regions <- function(df, strand_type) {
+    if (strand_type == "+") {
+        df$TSS <- df$txStart
+        df$CPS <- df$txEnd
+        df$DIVs <- df$txStart - 750
+        df$DIVe <- df$txStart - 251
+        df$PPs <- df$TSS - 250
+        df$PPe <- df$TSS + 249
+        df$GBs <- df$TSS + 250
+        df$GBe <- df$CPS - 501
+        df$CPSs <- df$CPS - 500
+        df$CPSe <- df$CPS + 499
+        df$TWs <- df$CPS + 500
+        df$TWe <- df$CPS + 10499
+    } else if (strand_type == "-") {
+        df$TSS <- df$txEnd
+        df$CPS <- df$txStart
+        df$DIVs <- df$txEnd + 251
+        df$DIVe <- df$txEnd + 750
+        df$PPs <- df$TSS - 249
+        df$PPe <- df$TSS + 250
+        df$GBs <- df$CPS + 501
+        df$GBe <- df$TSS - 250
+        df$CPSs <- df$CPS - 499
+        df$CPSe <- df$CPS + 500
+        df$TWs <- df$CPS - 10499
+        df$TWe <- df$CPS - 500
+    }
+    return(df)
+}
 
-refGene_pl$TSS = refGene_pl$txStart       # TSS
-refGene_pl$CPS = refGene_pl$txEnd         # CPS
+# Apply region calculations to both strands
+refGene_pl <- calculate_regions(refGene_pl, "+")
+refGene_mn <- calculate_regions(refGene_mn, "-")
 
-refGene_pl$DIVs = refGene_pl$txStart-750  # region of divergent transcription
-refGene_pl$DIVe = refGene_pl$txStart-251
+# Combine the data for both strands
+refGene <- rbind(refGene_pl, refGene_mn)
 
-refGene_pl$PPs = refGene_pl$TSS-250       # promoter-proximal region
-refGene_pl$PPe = refGene_pl$TSS+249
+# Add promoter coordinates
+refGene$promC1 <- refGene$TSS - 500
+refGene$promC2 <- refGene$TSS + 500
 
-refGene_pl$GBs = refGene_pl$TSS+250       # genebody
-refGene_pl$GBe = refGene_pl$CPS-501
+# Define output folder and ensure it exists
+output_folder <- paste0(organism, "/analysis/functionalGenomics_", sample)
+if (!dir.exists(output_folder)) {
+    dir.create(output_folder, recursive = TRUE)
+}
 
-refGene_pl$CPSs = refGene_pl$CPS-500      # CPS region
-refGene_pl$CPSe = refGene_pl$CPS+499
+# Save the outputs
+write.table(refGene, file = paste0(output_folder, "/refGene_allTranscripts.txt"), col.names = FALSE, row.names = FALSE, quote = FALSE, sep = "\t")
+write.table(refGene, file = paste0(output_folder, "/refGene_allTranscripts_withHeader.txt"), col.names = TRUE, row.names = FALSE, quote = FALSE, sep = "\t")
+write.table(refGene[, c("chr", "promC1", "promC2", "geneName")], file = paste0(output_folder, "/refGenes_TSSpm500.txt"), col.names = FALSE, row.names = FALSE, quote = FALSE, sep = "\t")
 
-refGene_pl$TWs = refGene_pl$CPS+500       # termination window
-refGene_pl$TWe = refGene_pl$CPS+10499
-
-#### Genes on the minus strand:
-
-refGene_mn$TSS = refGene_mn$txEnd         # TSS
-refGene_mn$CPS = refGene_mn$txStart       # CPS
-
-refGene_mn$DIVs = refGene_mn$txEnd+251    # divergent transcription region
-refGene_mn$DIVe = refGene_mn$txEnd+750
-
-refGene_mn$PPs = refGene_mn$TSS-249       # promoter-proximal region
-refGene_mn$PPe = refGene_mn$TSS+250
-
-refGene_mn$GBs = refGene_mn$CPS+501       # genebody
-refGene_mn$GBe = refGene_mn$TSS-250
-
-refGene_mn$CPSs = refGene_mn$CPS-499      # CPS region
-refGene_mn$CPSe = refGene_mn$CPS+500
-
-refGene_mn$TWs = refGene_mn$CPS-10499     # termination window
-refGene_mn$TWe = refGene_mn$CPS-500
-
-#### combine the data of plus and minus stands:
-
-refGene = rbind(refGene_pl, refGene_mn)
-
-refGene$promC1 = refGene$TSS-500
-refGene$promC2 = refGene$TSS+500
-
-#### generate data files:
-
-output_folder = paste0(organism, "/analysis/functionalGenomics_", sample)
-
-write.table(refGene, file=paste0(output_folder, "/refGene_allTranscripts.txt"), col.names=F, row.names=F, quote=F, sep="\t")
-write.table(refGene, file=paste0(output_folder, "/refGene_allTranscripts_withHeader.txt"), col.names=T, row.names=F, quote=F, sep="\t")
-write.table(refGene[,c("chr","promC1","promC2","geneName")], file=paste0(output_folder, "/refGenes_TSSpm500.txt"), col.names=F, row.names=F, quote=F, sep="\t")
-
-save.image()
-q()
-y
+q("no")
