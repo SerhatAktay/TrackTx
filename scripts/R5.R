@@ -11,25 +11,35 @@ sample_conditions <- args[conditions_to_extract]
 
 #-----------------------------------------
 
-## Required packages
-packages = c("DESeq2", "dplyr", "ggrepel", "ggplot2")
+# Set the CRAN mirror to avoid the "no mirror" error
+options(repos = c(CRAN = "https://cloud.r-project.org"))
 
-suppressPackageStartupMessages({
-  for (pkg in packages) {
-    library(pkg, character.only = TRUE)
-  }
-})
+# Ensure a personal library path is set (if it doesn't exist)
+if (Sys.getenv("R_LIBS_USER") == "") {
+  Sys.setenv(R_LIBS_USER = "~/R/x86_64-pc-linux-gnu-library/4.0")  # Set your personal library path
+}
 
-## Load or install & load all
-package.check <- lapply(
-  packages,
-  FUN = function(x) {
-    if (!require(x, character.only = TRUE)) {
-      install.packages(x, dependencies = TRUE)
-      library(x, character.only = TRUE)
+# Create the personal library directory if it doesn't exist
+if (!dir.exists(Sys.getenv("R_LIBS_USER"))) {
+  dir.create(Sys.getenv("R_LIBS_USER"), recursive = TRUE)
+}
+
+required_packages <- c("DESeq2", "dplyr", "ggrepel", "ggplot2")
+
+# Helper function to install and load packages silently
+install_and_load <- function(pkg) {
+  # Capture output and suppress warnings/messages, but not errors
+  suppressMessages(suppressWarnings(capture.output({
+    if (!require(pkg, character.only = TRUE)) {
+      install.packages(pkg, dependencies = TRUE, lib = Sys.getenv("R_LIBS_USER"), ask = FALSE)
+      library(pkg, character.only = TRUE, lib.loc = Sys.getenv("R_LIBS_USER"))
     }
-  }
-)
+  })))
+}
+
+# Check and install packages if not available
+lapply(required_packages, install_and_load)
+
 
 #-----------------------------------------
 
