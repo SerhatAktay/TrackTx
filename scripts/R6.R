@@ -24,14 +24,34 @@ if (!file.exists(neg_file)) {
     stop(paste("Error: File", neg_file, "does not exist."))
 }
 
-# Load the required packages
+# Set the CRAN mirror to avoid the "no mirror" error
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+# Ensure a personal library path is set (if it doesn't exist)
+if (Sys.getenv("R_LIBS_USER") == "") {
+  Sys.setenv(R_LIBS_USER = "~/R/x86_64-pc-linux-gnu-library/4.0")  # Set your personal library path
+}
+
+# Create the personal library directory if it doesn't exist
+if (!dir.exists(Sys.getenv("R_LIBS_USER"))) {
+  dir.create(Sys.getenv("R_LIBS_USER"), recursive = TRUE)
+}
+
 required_packages <- c("data.table", "dplyr")
-package.check <- lapply(required_packages, FUN = function(pkg) {
+
+# Helper function to install and load packages silently
+install_and_load <- function(pkg) {
+  # Capture output and suppress warnings/messages, but not errors
+  suppressMessages(suppressWarnings(capture.output({
     if (!require(pkg, character.only = TRUE)) {
-        install.packages(pkg, dependencies = TRUE)
-        library(pkg, character.only = TRUE)
+      install.packages(pkg, dependencies = TRUE, lib = Sys.getenv("R_LIBS_USER"), ask = FALSE)
+      library(pkg, character.only = TRUE, lib.loc = Sys.getenv("R_LIBS_USER"))
     }
-})
+  })))
+}
+
+# Check and install packages if not available
+lapply(required_packages, install_and_load)
 
 # Read the input files
 positive_strand.data <- read.table(pos_file, header = FALSE, col.names = c("chromosome", "start", "end", "polymerase_signal"))
