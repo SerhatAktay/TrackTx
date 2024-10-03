@@ -4,7 +4,7 @@ args <- commandArgs(trailingOnly = TRUE)
 organism <- args[1]
 sample <- args[2]
 
-path_to_genes <- paste0(organism, "/genome/genes.txt")
+path_to_genes <- paste0("genes/genes_", organism, ".txt")
 
 # Check if genes file exists
 if (!file.exists(path_to_genes)) {
