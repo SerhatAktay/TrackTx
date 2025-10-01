@@ -94,3 +94,10 @@ notes/
 .Rprofile
 .Renviron
 .Rproj.user/
+
+# Local-only internal notes
+BUGFIX_SUMMARY.md
+CHANGES_APPLIED.md
+GITHUB_SETUP.md
+RERUN_INSTRUCTIONS.md
+COMPLETE_GITHUB_INSTRUCTIONS.txt
