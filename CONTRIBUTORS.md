@@ -4,9 +4,9 @@ TrackTx-NF is developed and maintained by the following contributors:
 
 ## Core Maintainers
 
-- **[Your Name]** - Lead Developer
-  - Email: your.email@example.com
-  - GitHub: [@yourusername](https://github.com/yourusername)
+- **Serhat Aktay** - Lead Developer
+  - Email: aktay@kth.se
+  - GitHub: [@serhataktay](https://github.com/serhataktay)
   - Contributions: Pipeline architecture, functional regions, QC module
 
 ## Contributors
