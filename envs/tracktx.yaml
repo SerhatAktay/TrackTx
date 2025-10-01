@@ -1,0 +1,100 @@
+# envs/tracktx.yaml
+# Unified software stack for TrackTx tasks (NOT for running Nextflow).
+# Keep this single source of truth to avoid drift between Docker and Conda.
+#
+# ── Container usage ─────────────────────────────────────────────────────────
+# Recommended: use the prebuilt image
+#   docker pull ghcr.io/serhataktay/tracktx:latest
+#   nextflow run . -entry TrackTx -profile docker
+#
+# Podman (rootless):
+#   podman pull ghcr.io/serhataktay/tracktx:latest
+#   nextflow run . -entry TrackTx -profile podman
+#
+# HPC without Docker? Apptainer/Singularity:
+#   nextflow run . -entry TrackTx -profile singularity
+#
+# Build locally (optional, from repo root):
+#   docker build -t ghcr.io/serhataktay/tracktx:latest -f envs/Dockerfile .
+#   # multi-arch:
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     -t ghcr.io/serhataktay/tracktx:latest -f docker/Dockerfile . --push
+# ────────────────────────────────────────────────────────────────────────────
+
+name: tracktx
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+# channel_priority: strict  # Deprecated in newer conda versions
+
+dependencies:
+  # ── Base runtime ────────────────────────────────────────────────────────
+  - python=3.11         # Newer stable ABI; works with pandas/numpy
+  - pip                 # For optional pip-only extras
+  - tzdata              # Avoids timezone warnings in headless plotting
+
+  # ── Core CLI utilities ─────────────────────────────────────────────────
+  - coreutils           # Consistent GNU tooling (sort, stat, etc.)
+  - gawk                # We use awk heavily in modules
+  - sed
+  - grep
+  - bc                  # Simple arithmetic in shell steps
+  - curl                # Downloads in several modules (UCSC, custom URLs)
+  - rsync               # Preferred UCSC fetch path when available
+  - pigz                # Faster gzip; used when bgzip is unavailable
+  - wget                # Alternative downloader used in some environments
+  - tar                 # Archive extraction (essential for many steps)
+  - gzip                # Compression utilities (essential for pipeline)
+  - unzip               # ZIP file extraction (config files, downloads)
+  - openjdk             # Java runtime (for tools and Nextflow)
+  - perl                # Used by some bioinformatics tools
+  - which               # Command location utility (used in validation)
+
+  # ── I/O & QC ───────────────────────────────────────────────────────────
+  - fastqc              # Per-sample QC
+  - fastp               # Fast, all-in-one QC with HTML/JSON reports
+  - multiqc             # Aggregated QC reporting
+  - seqkit              # Fast FASTQ/FASTA utilities
+  - sra-tools           # fasterq-dump / prefetch (download_srr module)
+
+  # ── Alignment & BAM ops ────────────────────────────────────────────────
+  - bowtie2             # Aligner + bowtie2-build (index build step)
+  - samtools>=1.18      # faidx, BAM/SAM/CRAM ops
+  - htslib>=1.18        # bgzip/tabix (optional compression in modules)
+
+  # ── Feature/interval tooling ───────────────────────────────────────────
+  - bedtools            # genomecov + general interval ops
+  - ucsc-bedgraphtobigwig  # BedGraph → BigWig (Linux-only on Conda, x86_64)
+  - ucsc-bedclip           # Optional clipping before BigWig
+
+  # ── Python bio/IO libs ─────────────────────────────────────────────────
+  - pysam               # BAM/SAM access in Python (qc & metrics)
+  - pybigwig            # Read/write BigWig
+  - pybedtools          # BEDTools bindings (optional convenience)
+  - biopython           # General bio parsing
+  - jinja2              # HTML templating in combine_reports.py
+
+  # ── Data science stack ─────────────────────────────────────────────────
+  - numpy>=1.26
+  - pandas>=2.2
+  - pytables>=3.9       # HDF5 backend for pandas
+  - h5py
+  - scipy
+
+  # ── Plotting (used in reports/QC) ──────────────────────────────────────
+  - matplotlib
+  - seaborn
+  - plotly
+
+  # ── UMI / trimming ─────────────────────────────────────────────────────
+  - cutadapt
+  # umi_tools installed via pip (below) to avoid conda shebang issues on Linux
+
+  # ── Pip-only packages (correct shebangs, latest versions) ─────────────
+  - pip:
+    - umi_tools>=1.1.5  # Python-based; pip handles shebangs better than conda
+
+  # ── Optional (uncomment if you want local testing of docs rendering) ───
+  # - jupyter
+  # - ipykernel

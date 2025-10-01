@@ -1,0 +1,62 @@
+# Nextflow work directories
+work/
+.nextflow/
+.nextflow.log*
+.nf-test/
+nf-test/
+
+# Pipeline outputs
+results/
+.cache/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*~
+.#*
+
+# Test data (if any)
+test_data/
+*.fastq
+*.fq
+*.bam
+*.sam
+
+# Conda environments
+.conda/
+conda-meta/
+
+# Large reference files (optional - users should download separately)
+# assets/*.fa
+# assets/*.gtf
+# assets/*.bt2
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Backup files
+*.bak
+*.backup
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Environment files
+.env
+.env.local
+
+# Docker volumes (if using local Docker volumes)
+docker-volumes/

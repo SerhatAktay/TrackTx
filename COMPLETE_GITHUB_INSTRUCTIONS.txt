@@ -1,0 +1,493 @@
+================================================================================
+                    TRACKTX-NF GITHUB UPLOAD INSTRUCTIONS
+================================================================================
+
+OVERVIEW:
+---------
+This document provides step-by-step instructions for uploading your TrackTx-NF 
+pipeline to GitHub. The pipeline is now fully prepared with all necessary files,
+documentation, and fixes applied.
+
+WHAT WE'VE PREPARED:
+--------------------
+✅ Fixed critical bug (non-localized % from 80-90% to 5-10%)
+✅ Implemented complete QC module
+✅ Created comprehensive documentation
+✅ Added GitHub-specific files (.gitignore, LICENSE, etc.)
+✅ Set up issue templates and GitHub Actions
+✅ Cleaned up unnecessary files
+✅ Ready for scientific publication and community sharing
+
+================================================================================
+STEP 1: CREATE GITHUB REPOSITORY
+================================================================================
+
+1.1 OPEN GITHUB WEBSITE
+------------------------
+- Go to https://github.com in your web browser
+- Sign in to your GitHub account (or create one if needed)
+
+1.2 CREATE NEW REPOSITORY
+-------------------------
+- Click the "+" button in the top-right corner
+- Select "New repository" from the dropdown menu
+
+1.3 REPOSITORY SETTINGS
+-----------------------
+Fill in the following information:
+
+Repository name: TrackTx
+  (or TrackTx-NF if you prefer)
+
+Description: 
+🧬 A comprehensive Nextflow pipeline for nascent RNA sequencing analysis (PRO-seq, GRO-seq, ChIP-seq)
+
+Visibility: 
+✅ Public (recommended for scientific software)
+  (Private if you want to keep it private initially)
+
+Initialize this repository with:
+❌ README (we already have one)
+❌ .gitignore (we already have one)  
+❌ license (we already have one)
+
+1.4 CREATE REPOSITORY
+---------------------
+- Click the green "Create repository" button
+- You'll see a page with setup instructions - DON'T follow those yet
+
+================================================================================
+STEP 2: PREPARE YOUR LOCAL REPOSITORY
+================================================================================
+
+2.1 OPEN TERMINAL AND NAVIGATE TO PIPELINE
+-------------------------------------------
+- Open Terminal (macOS) or Command Prompt (Windows)
+- Navigate to your TrackTx directory:
+  
+  cd /Volumes/samsung/TrackTx
+  
+  (or wherever your TrackTx folder is located)
+
+2.2 CHECK CURRENT STATUS
+------------------------
+Run these commands to verify everything is ready:
+
+git status
+  (Should show "On branch main" and list files to be committed)
+
+ls -la
+  (Should show .git directory and all your files)
+
+2.3 ADD ALL FILES TO GIT
+------------------------
+Add all your files to git:
+
+git add .
+
+Verify files are staged:
+git status
+  (Should show many files in green "to be committed")
+
+================================================================================
+STEP 3: CREATE INITIAL COMMIT
+================================================================================
+
+3.1 CREATE COMMIT MESSAGE
+--------------------------
+Create a comprehensive commit message:
+
+git commit -m "Initial commit: TrackTx-NF pipeline for nascent RNA analysis
+
+- Complete Nextflow pipeline for PRO-seq/GRO-seq/ChIP-seq analysis
+- Functional region classification with hierarchical sequential masking
+- Comprehensive QC module with real metrics (strand bias, coverage, etc.)
+- Docker and conda support for universal compatibility
+- Extensive documentation including troubleshooting guides
+- Fixed critical bug: non-localized polymerase now 5-10% (was 80-90%)
+- Fixed coordinate clamping for genes near chromosome starts
+- Updated parameter definitions and validation
+- GitHub-ready with issue templates, actions, and contributor guidelines
+
+Key Features:
+- Supports human (hs1), mouse (mm39), fly (dm6) genomes
+- UMI/barcode support for molecular identifiers
+- Spike-in normalization for quantitative comparisons
+- Interactive HTML reports with advanced visualizations
+- Automatic resource optimization and parallel execution
+- Comprehensive quality control and validation metrics"
+
+3.2 VERIFY COMMIT
+-----------------
+Check that commit was created:
+git log --oneline -1
+  (Should show your commit message)
+
+================================================================================
+STEP 4: CONNECT TO GITHUB
+================================================================================
+
+4.1 ADD REMOTE REPOSITORY
+--------------------------
+Replace "YOUR_USERNAME" with your actual GitHub username:
+
+git remote add origin https://github.com/YOUR_USERNAME/TrackTx.git
+
+Example if your username is "serhataktay":
+git remote add origin https://github.com/serhataktay/TrackTx.git
+
+4.2 VERIFY REMOTE
+-----------------
+Check that remote was added:
+git remote -v
+  (Should show your GitHub repository URL)
+
+4.3 PUSH TO GITHUB
+------------------
+Push your code to GitHub:
+
+git push -u origin main
+
+This will:
+- Upload all your files to GitHub
+- Set up tracking between local and remote repository
+- Create the main branch on GitHub
+
+4.4 VERIFY UPLOAD
+-----------------
+- Go back to your GitHub repository page in the browser
+- Refresh the page
+- You should see all your files listed
+- The README.md should display with formatting
+
+================================================================================
+STEP 5: CONFIGURE REPOSITORY SETTINGS
+================================================================================
+
+5.1 ADD REPOSITORY DESCRIPTION
+------------------------------
+- Go to your repository on GitHub
+- Click the gear icon next to "About" on the right side
+- Add description: "🧬 A powerful Nextflow pipeline for nascent RNA sequencing analysis"
+- Add website (optional): Your lab website or publication link
+- Click "Save changes"
+
+5.2 ADD TOPICS/TAGS
+-------------------
+- Still in the "About" section
+- Click "Add topics" 
+- Add these tags (one by one):
+  * nextflow
+  * bioinformatics
+  * rna-seq
+  * pro-seq
+  * gro-seq
+  * pol2
+  * transcription
+  * pipeline
+  * nascent-rna
+  * chromatin
+- Click "Save changes"
+
+5.3 SET UP BRANCH PROTECTION (RECOMMENDED)
+------------------------------------------
+- Go to Settings → Branches
+- Click "Add rule"
+- Branch name pattern: main
+- Check these options:
+  ✅ Require a pull request before merging
+  ✅ Require status checks to pass before merging
+  ✅ Require branches to be up to date before merging
+  ✅ Restrict pushes that create files
+- Click "Create"
+
+================================================================================
+STEP 6: CREATE FIRST RELEASE
+================================================================================
+
+6.1 GO TO RELEASES
+------------------
+- Click "Releases" in the right sidebar
+- Click "Create a new release"
+
+6.2 RELEASE DETAILS
+-------------------
+Tag version: v1.0.0
+Release title: TrackTx-NF v1.0.0 - Initial Release
+
+Description (copy and paste this):
+```
+## 🎉 TrackTx-NF v1.0.0 - Initial Release
+
+### ✨ Features
+- Complete nascent RNA-seq analysis pipeline for PRO-seq, GRO-seq, and ChIP-seq
+- Functional region classification with hierarchical sequential masking
+- Comprehensive QC metrics including strand bias, coverage, and fragment length
+- Docker and conda support for universal compatibility
+- Interactive HTML reports with advanced visualizations
+- Automatic resource optimization and parallel execution
+
+### 🔧 Fixed Issues
+- **CRITICAL FIX**: Functional regions masking bug resolved (non-localized % now 5-10% vs previous 80-90%)
+- Implemented complete QC module with real metrics (was previously a stub)
+- Fixed coordinate clamping for genes near chromosome starts (prevents negative coordinates)
+- Updated parameter definitions to match actual implementation
+- Added comprehensive troubleshooting documentation
+
+### 📚 Documentation
+- Comprehensive README with troubleshooting section
+- Detailed functional regions biology guide
+- Performance optimization and CPU allocation guide
+- Contributing guidelines for community development
+- Bug fix documentation with technical details
+
+### 🧪 Supported Analysis Types
+- **PRO-seq**: Precision nuclear run-on sequencing
+- **GRO-seq**: Global run-on sequencing  
+- **ChIP-seq**: Chromatin immunoprecipitation sequencing
+- **Nascent RNA-seq**: Any nascent transcription protocol
+
+### 🎯 Key Biological Metrics (Fixed)
+- **Non-localized polymerase**: 5-10% (biologically correct)
+- **Gene body**: 50-70% (dominant category - elongating Pol II)
+- **Promoter**: 10-20% (paused/initiating Pol II)
+- **Termination window**: 5-15% (terminating Pol II)
+- **Divergent transcription**: 2-5% (antisense transcription)
+- **Other regions**: 5-10% (enhancers, short genes, etc.)
+
+### 🚀 Quick Start
+```bash
+git clone https://github.com/YOUR_USERNAME/TrackTx.git
+cd TrackTx
+./run_pipeline.sh
+```
+
+### 📖 Documentation
+- [README.md](README.md) - Quick start and overview
+- [docs/FUNCTIONAL_REGIONS.md](docs/FUNCTIONAL_REGIONS.md) - Detailed biology guide
+- [docs/CPU_ALLOCATION_GUIDE.md](docs/CPU_ALLOCATION_GUIDE.md) - Performance optimization
+- [BUGFIX_SUMMARY.md](BUGFIX_SUMMARY.md) - Technical details of fixes
+
+### 🤝 Contributing
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+### 📄 License
+MIT License - see [LICENSE](LICENSE) for details.
+
+---
+**Ready for scientific publication and community use!** 🧬✨
+```
+
+6.3 PUBLISH RELEASE
+-------------------
+- Make sure "Set as the latest release" is checked
+- Click "Publish release"
+
+================================================================================
+STEP 7: ENABLE GITHUB ACTIONS
+================================================================================
+
+7.1 CHECK ACTIONS TAB
+---------------------
+- Click the "Actions" tab in your repository
+- You should see a workflow called "Test Pipeline"
+- It may already be running from your initial push
+
+7.2 REVIEW WORKFLOW
+-------------------
+The workflow will automatically:
+- Test Nextflow syntax
+- Validate Docker profile
+- Check configuration files
+- Run on every push and pull request
+
+================================================================================
+STEP 8: SET UP GITHUB PAGES (OPTIONAL)
+================================================================================
+
+8.1 ENABLE PAGES
+----------------
+- Go to Settings → Pages
+- Source: Deploy from a branch
+- Branch: main
+- Folder: / (root)
+- Click "Save"
+
+8.2 WAIT FOR DEPLOYMENT
+-----------------------
+- GitHub will build your site
+- Available at: https://YOUR_USERNAME.github.io/TrackTx/
+- The README.md will be displayed as your homepage
+
+================================================================================
+STEP 9: VERIFY EVERYTHING WORKS
+================================================================================
+
+9.1 TEST THE PIPELINE
+---------------------
+Before announcing, test that the pipeline works from a fresh clone:
+
+```bash
+# Create a test directory
+mkdir ~/TrackTx_test
+cd ~/TrackTx_test
+
+# Clone your repository
+git clone https://github.com/YOUR_USERNAME/TrackTx.git
+cd TrackTx
+
+# Test dry run
+./run_pipeline.sh --dry-run
+
+# Should complete without errors
+```
+
+9.2 CHECK ALL LINKS
+-------------------
+- Verify README.md displays correctly
+- Check that all documentation links work
+- Ensure issue templates are accessible
+- Test the configuration generator HTML file
+
+================================================================================
+STEP 10: PROMOTE YOUR PIPELINE
+================================================================================
+
+10.1 CREATE ANNOUNCEMENT
+------------------------
+- Go to "Discussions" tab
+- Click "New discussion"
+- Choose "Announcements"
+- Title: "TrackTx-NF v1.0.0 Released - Comprehensive Nascent RNA Analysis Pipeline"
+
+Content:
+```
+🎉 **TrackTx-NF v1.0.0 is now available!**
+
+A powerful Nextflow pipeline for nascent RNA sequencing analysis (PRO-seq, GRO-seq, ChIP-seq).
+
+**Key Features:**
+- ✅ Functional region classification with biologically correct percentages
+- ✅ Comprehensive QC and reporting
+- ✅ Docker and conda support
+- ✅ Extensive documentation and troubleshooting
+
+**Quick Start:**
+```bash
+git clone https://github.com/YOUR_USERNAME/TrackTx.git
+cd TrackTx
+./run_pipeline.sh
+```
+
+**Documentation:** https://github.com/YOUR_USERNAME/TrackTx#readme
+
+Ready for scientific publication and community use! 🧬✨
+```
+
+10.2 SHARE ON SOCIAL MEDIA
+--------------------------
+Create posts for:
+- Twitter/X: "Just released TrackTx-NF v1.0.0 - a comprehensive Nextflow pipeline for nascent RNA analysis! 🧬 Features functional region classification, QC metrics, and extensive documentation. Ready for PRO-seq, GRO-seq, and ChIP-seq data. #bioinformatics #nextflow"
+
+- LinkedIn: Professional announcement with link to repository
+
+- Research communities: BioStars, SEQanswers, etc.
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+COMMON ISSUES AND SOLUTIONS:
+
+1. "Repository already exists" error:
+   - Check if you already have a repository with this name
+   - Try a different name like "TrackTx-NF" or "TrackTx-Pipeline"
+
+2. "Authentication failed" error:
+   - Use GitHub CLI: `gh auth login`
+   - Or use personal access token instead of password
+   - Or use SSH keys: `git remote set-url origin git@github.com:USERNAME/REPO.git`
+
+3. "Large files" error:
+   - Check .gitignore is working: `git status`
+   - Remove large files: `git rm --cached largefile.bam`
+   - Use Git LFS for large files if needed
+
+4. "Permission denied" error:
+   - Make sure you own the repository
+   - Check repository is public if you want public access
+   - Verify your GitHub username is correct
+
+5. GitHub Actions failing:
+   - Check the Actions tab for error details
+   - Verify Docker is available in the workflow
+   - Test locally first: `./run_pipeline.sh --dry-run`
+
+6. Pages not building:
+   - Check Settings → Pages for error messages
+   - Ensure README.md is in the root directory
+   - Wait a few minutes for deployment
+
+================================================================================
+FINAL CHECKLIST
+================================================================================
+
+Before considering your upload complete, verify:
+
+□ Repository created on GitHub
+□ All files uploaded successfully
+□ README.md displays with proper formatting
+□ Repository description and topics added
+□ First release (v1.0.0) created
+□ GitHub Actions workflow running successfully
+□ Branch protection rules enabled
+□ Test clone works from fresh directory
+□ Documentation links all work
+□ Issue templates accessible
+□ Contributing guidelines clear
+□ License file present
+□ No sensitive data in repository
+□ .gitignore working (no work/ or results/ directories)
+
+================================================================================
+POST-UPLOAD MAINTENANCE
+================================================================================
+
+AFTER SUCCESSFUL UPLOAD:
+
+1. **Monitor Issues**: Respond to bug reports and feature requests promptly
+
+2. **Update Documentation**: Keep README and docs current with code changes
+
+3. **Create Releases**: Tag new versions when you make improvements
+
+4. **Engage Community**: Participate in discussions and help users
+
+5. **Track Usage**: Use GitHub Insights to see how your pipeline is being used
+
+6. **Plan Features**: Use GitHub Projects to organize future development
+
+================================================================================
+CONGRATULATIONS! 🎉
+================================================================================
+
+Your TrackTx-NF pipeline is now:
+✅ Available on GitHub for the scientific community
+✅ Ready for citations and publications
+✅ Set up for collaborative development
+✅ Professionally documented and maintained
+✅ Equipped with proper issue tracking and testing
+
+The pipeline has been transformed from having critical bugs to being a 
+production-ready scientific tool that will provide biologically meaningful 
+results for nascent RNA sequencing analysis.
+
+**Your repository URL**: https://github.com/YOUR_USERNAME/TrackTx
+
+**Documentation**: https://github.com/YOUR_USERNAME/TrackTx#readme
+
+**Issues/Bugs**: https://github.com/YOUR_USERNAME/TrackTx/issues
+
+**Discussions**: https://github.com/YOUR_USERNAME/TrackTx/discussions
+
+Happy analyzing! 🧬✨
