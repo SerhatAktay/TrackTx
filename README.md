@@ -31,19 +31,19 @@ Get up and running in **under 5 minutes**:
 
 ### 2. **Clone & Prepare** (1 minute)
 ```bash
-git clone https://github.com/your-username/TrackTx.git
+git clone https://github.com/SerhatAktay/TrackTx.git
 cd TrackTx
-
-# Create a simple sample sheet
-echo "sample_id,condition,timepoint,replicate,file" > samplesheet.csv
-echo "ctrl_rep1,control,0,1,data/ctrl_rep1.fastq" >> samplesheet.csv
-echo "treat_rep1,treatment,30,1,data/treat_rep1.fastq" >> samplesheet.csv
+# Generate config & sample sheet using the built-in generator
+# 1) Open the generator in your browser
+open TrackTx_config_generator.html   # macOS (or double-click the file)
+# 2) Fill in your study details
+# 3) Click Export to save: params.yaml and samplesheet.csv
 ```
 
 ### 3. **Run Pipeline** (30 seconds to start)
 ```bash
-./run_pipeline.sh
-# 🎉 That's it! Pipeline handles everything automatically
+./run_pipeline.sh --params-file params.yaml --samplesheet samplesheet.csv
+# 🎉 That's it! The pipeline uses your generated inputs and handles the rest
 ```
 
 ### 4. **View Results**
@@ -126,9 +126,10 @@ graph LR
 # https://docs.docker.com/get-docker/
 
 # 2. Clone and run
-git clone https://github.com/your-username/TrackTx.git
+git clone https://github.com/SerhatAktay/TrackTx.git
 cd TrackTx
-./run_pipeline.sh  # Everything included!
+# Generate params.yaml & samplesheet.csv via TrackTx_config_generator.html, then:
+./run_pipeline.sh --params-file params.yaml --samplesheet samplesheet.csv
 ```
 
 ### **Option 2: Conda**
@@ -137,9 +138,10 @@ cd TrackTx
 # https://docs.conda.io/en/latest/miniconda.html
 
 # 2. Clone and run
-git clone https://github.com/your-username/TrackTx.git
+git clone https://github.com/SerhatAktay/TrackTx.git
 cd TrackTx
-./run_pipeline.sh  # Automatic environment setup
+# Generate params.yaml & samplesheet.csv via TrackTx_config_generator.html, then:
+./run_pipeline.sh --params-file params.yaml --samplesheet samplesheet.csv
 ```
 
 ### **Option 3: Manual Installation**
@@ -149,7 +151,7 @@ cd TrackTx
 # - bowtie2, samtools, bedtools, bedGraphToBigWig
 # - python3, umi_tools, cutadapt, fastqc
 
-git clone https://github.com/your-username/TrackTx.git
+git clone https://github.com/SerhatAktay/TrackTx.git
 cd TrackTx
 ./run_pipeline.sh -profile local
 ```
@@ -161,7 +163,8 @@ cd TrackTx
 ### **Basic Usage**
 ```bash
 # Default analysis (auto-detects environment)
-./run_pipeline.sh
+# Recommended: explicitly provide your generated files
+./run_pipeline.sh --params-file params.yaml --samplesheet samplesheet.csv
 
 # With custom sample sheet
 ./run_pipeline.sh --samplesheet my_samples.csv
@@ -213,7 +216,7 @@ Fastp vs FastQC (at-a-glance):
 - fastp: per-base quality/content, GC, duplication, adapter content (detect/detect_adapter_for_pe), length dist, overrepresented sequences, N content, polyX tails; multithreaded; HTML + JSON.
 - FastQC: per-base/per-sequence quality and GC, length dist, duplication, overrepresented sequences, adapter content, k-mer content, per-tile quality; HTML + data zip; slower.
 
-#### **Parameters** (`params.yaml`) - Optional
+#### **Parameters** (`params.yaml`) - Typically generated
 ```yaml
 # Basic settings
 reference_genome: "hs1"      # Human (hs1), Mouse (mm39), Fly (dm6)
@@ -487,8 +490,8 @@ conda clean --all --yes
 1. 📊 **Check execution report**: `results/execution_report.html`
 2. 📋 **Review pipeline logs**: `.nextflow.log`
 3. 🔍 **Examine work directories**: `work/*/`
-4. 💬 **GitHub Discussions**: [Discussions](https://github.com/your-username/TrackTx/discussions)
-5. 🐛 **Report bugs**: [Issues](https://github.com/your-username/TrackTx/issues)
+4. 💬 **GitHub Discussions**: [Discussions](https://github.com/SerhatAktay/TrackTx/discussions)
+5. 🐛 **Report bugs**: [Issues](https://github.com/SerhatAktay/TrackTx/issues)
 
 ---
 
@@ -552,9 +555,9 @@ conda clean --all --yes
 ```bibtex
 @software{tracktx_nf,
   title = {TrackTx-NF: A comprehensive Nextflow pipeline for nascent RNA sequencing analysis},
-  author = {Your Name and Contributors},
+  author = {Serhat Aktay and Contributors},
   year = {2025},
-  url = {https://github.com/your-username/TrackTx},
+  url = {https://github.com/SerhatAktay/TrackTx},
   doi = {10.5281/zenodo.XXXXXX}  # Will be assigned upon publication
 }
 ```
@@ -624,9 +627,9 @@ TrackTx-NF is released under the [MIT License](LICENSE).
 
 ⭐ **Star this repo** if TrackTx-NF is useful for your research!
 
-[**Documentation**](https://github.com/your-username/TrackTx/wiki) •
-[**Discussions**](https://github.com/your-username/TrackTx/discussions) •
-[**Issues**](https://github.com/your-username/TrackTx/issues) •
-[**Releases**](https://github.com/your-username/TrackTx/releases)
+[**Documentation**](https://github.com/SerhatAktay/TrackTx/wiki) •
+[**Discussions**](https://github.com/SerhatAktay/TrackTx/discussions) •
+[**Issues**](https://github.com/SerhatAktay/TrackTx/issues) •
+[**Releases**](https://github.com/SerhatAktay/TrackTx/releases)
 
 </div>
