@@ -1,5 +1,0 @@
-sample,treatment,timepoint,replicate,file1,file2
-Control,,0,1,K562_hs1/samples/ctrl_rep1.fastq,
-Control,,0,2,K562_hs1/samples/ctrl_rep2.fastq,
-Heat,heat,30,1,K562_hs1/samples/hs30_rep1.fastq,
-Heat,heat,30,2,K562_hs1/samples/hs30_rep2.fastq,
