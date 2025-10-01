@@ -60,3 +60,37 @@ __pycache__/
 
 # Docker volumes (if using local Docker volumes)
 docker-volumes/
+
+# Local cohort/sample data and user-specific config
+K562_hs1/
+samplesheet.csv
+params.yaml
+
+# Reference and annotation assets (downloaded/generated locally)
+assets/annotation/
+assets/references/
+# Catch common large asset extensions if added elsewhere
+*.fa
+*.fai
+*.gtf
+*.gff
+*.bed
+*.bedgraph
+*.bt2
+*.bwt
+*.dict
+
+# Local-only notes/docs that normal users don't need
+docs/local/
+notes/
+*.local.md
+*.private.md
+*.draft.md
+
+# R / RStudio files
+.Rhistory
+.RData
+.Ruserdata
+.Rprofile
+.Renviron
+.Rproj.user/
