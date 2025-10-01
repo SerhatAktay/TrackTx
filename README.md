@@ -29,6 +29,43 @@ Get up and running in **under 5 minutes**:
 # Or use your system package manager
 ```
 
+### 📡 Live Monitoring (nf-monitor)
+
+TrackTx ships with a terminal UI monitor for live, per-task insight during runs.
+
+```bash
+# In the pipeline working directory (where .nextflow.log is produced)
+python3 nfmon.py \
+  --log .nextflow.log \
+  --trace results/trace/trace.txt \
+  --refresh 0.8
+
+# Minimal mode if you only have the trace file
+python3 nfmon.py --trace results/trace/trace.txt --from-start
+
+# One-shot summary (prints a snapshot and exits)
+python3 nfmon.py --trace results/trace/trace.txt --oneshot
+
+# Export JSON snapshot to a file (updates atomically)
+python3 nfmon.py --trace results/trace/trace.txt --oneshot --json nfmon.json
+```
+
+What you get:
+- Live list of running tasks with PID, CPU%, memory (RSS), age, and stage hints
+- Total pipeline progress, cumulative completed/failed/cached counts
+- Live log tail for the focused task (or all running tasks with `--all-logs`)
+- System stats (CPU/MEM/LOAD), approximate cores-in-use
+
+Useful flags:
+- `--filter "<regex>"`: show only processes matching a name pattern
+- `--all-logs`: stack live logs of all running tasks in the UI
+- `--log-rows N`: preferred height for the live log panel in the Rich UI
+- `--retain-sec N`: keep finished tasks visible for N seconds (0 = clear immediately)
+- `--from-start`: ingest full history instead of tailing current run only
+
+Keyboard hints (Rich/curses UI):
+- j/k: move focus • f: filter by process • s: sort • +/- and ]/[ : log/tail size • a: toggle all-logs • q: quit
+
 ### 2. **Clone & Prepare** (1 minute)
 ```bash
 git clone https://github.com/SerhatAktay/TrackTx.git
