@@ -42,9 +42,18 @@ conda-meta/
 *.swp
 *.swo
 
-# Backup files
+# Backup files and development artifacts
 *.bak
 *.backup
+*.orig
+*.save
+*_old*
+*_new*
+*_backup*
+*_test*
+Old_script_inspo/
+bin/*_old_*.py
+bin/*_new*.py
 
 # Python cache
 __pycache__/
@@ -95,7 +104,7 @@ notes/
 .Renviron
 .Rproj.user/
 
-# Local-only internal notes
+# Local-only internal notes (removed duplicates)
 BUGFIX_SUMMARY.md
 CHANGES_APPLIED.md
 GITHUB_SETUP.md
