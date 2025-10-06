@@ -39,6 +39,7 @@ process qc_pol2_tracktx {
   input:
     tuple val(sample_id),
           path(aligned_bam),
+          path(dedup_stats),
           val(condition), val(timepoint), val(replicate)
 
   // Declared outputs
@@ -115,6 +116,24 @@ process qc_pol2_tracktx {
   mapq_percent=\$(awk -v m=\$mapq_reads -v t=\$total_reads 'BEGIN{print (t>0 ? 100.0*m/t : 0)}')
   plus_frac=\$(awk -v p=\$plus_reads -v t=\$((\$plus_reads + \$minus_reads)) 'BEGIN{print (t>0 ? 1.0*p/t : 0.5)}')
   
+  # ── Parse UMI deduplication stats if available ──────────────────────────────
+  umi_enabled=false
+  umi_input_reads=0
+  umi_output_reads=0
+  umi_duplicates_removed=0
+  umi_dedup_percent=0
+  
+  if [[ -s "${dedup_stats}" ]]; then
+    # Check if this is a real UMI dedup run (not just a placeholder)
+    if grep -q "Input Reads:" "${dedup_stats}" 2>/dev/null; then
+      umi_enabled=true
+      umi_input_reads=\$(grep "Input Reads:" "${dedup_stats}" | awk '{print \$NF}' || echo 0)
+      umi_output_reads=\$(grep "Number of reads out:" "${dedup_stats}" | awk '{print \$NF}' || echo 0)
+      umi_duplicates_removed=\$((umi_input_reads - umi_output_reads))
+      umi_dedup_percent=\$(awk -v d=\$umi_duplicates_removed -v t=\$umi_input_reads 'BEGIN{print (t>0 ? 100.0*d/t : 0)}')
+    fi
+  fi
+  
   # Write JSON
   cat > qc_pol2.json <<JSON
 {
@@ -133,7 +152,12 @@ process qc_pol2_tracktx {
   "strand_plus_fraction": \$plus_frac,
   "mean_coverage_depth": \$mean_depth,
   "mapq_threshold": ${mapq_thr},
-  "deduplication_enabled": ${params.qc?.dedup ?: true}
+  "deduplication_enabled": ${params.qc?.dedup ?: true},
+  "umi_deduplication_enabled": \$umi_enabled,
+  "umi_input_reads": \$umi_input_reads,
+  "umi_output_reads": \$umi_output_reads,
+  "umi_duplicates_removed": \$umi_duplicates_removed,
+  "umi_deduplication_percent": \$umi_dedup_percent
 }
 JSON
 

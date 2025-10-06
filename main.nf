@@ -110,8 +110,9 @@ workflow TrackTx {
     .map { row ->
       if (!row.sample || !row.file1)
         error "Samplesheet row missing 'sample' or 'file1': ${row}"
-      if (params.paired_end && !row.file2)
-        error "paired_end=true but 'file2' empty for sample ${row.sample}"
+      // Only validate file2 for local FASTQ mode, not for SRR mode
+      if (params.sample_source != 'srr' && params.paired_end && !row.file2)
+        error "paired_end=true but 'file2' empty for sample ${row.sample} (local FASTQ mode requires both file1 and file2)"
 
       def sid   = "${row.sample}_r${row.replicate ?: 1}"
       def reads =
@@ -123,16 +124,20 @@ workflow TrackTx {
     }
 
   // ───────── 3.3 SRR fetch (opt) ────
-  def prepared_input_ch =
-    (params.sample_source == 'srr')
-      ? download_srr(
-          samples_ch.map { sid, reads, c, t, r ->
-            tuple(sid, reads[0], c, t, r, params.paired_end)
-          }
-        ).map { sid, fq1, fq2, c, t, r ->
-          tuple(sid, [ file(fq1), file(fq2) ].findAll(), c, t, r)
-        }
-      : samples_ch
+  def prepared_input_ch
+  if (params.sample_source == 'srr') {
+    download_srr(
+      samples_ch.map { sid, reads, c, t, r ->
+        tuple(sid, reads[0], c, t, r, params.paired_end)
+      }
+    )
+    // Access first output channel (uncompressed FASTQs)
+    prepared_input_ch = download_srr.out[0].map { sid, fq1, fq2, c, t, r ->
+      tuple(sid, [ file(fq1), file(fq2) ].findAll(), c, t, r)
+    }
+  } else {
+    prepared_input_ch = samples_ch
+  }
 
   // ───────── 3.4 Pre-process ────────
   def (clean_fastq_ch, fastqc_ch) =
@@ -239,8 +244,11 @@ workflow TrackTx {
 
   def norm_left_main =
     tracks_ch.map { sid, _bam, _spk, p3, n3, p5, n5, c, t, r ->
-      def p5x = (p5 && file(p5).exists() && file(p5).size()>0) ? file(p5) : file(noBGPath)
-      def n5x = (n5 && file(n5).exists() && file(n5).size()>0) ? file(n5) : file(noBGPath)
+      // For optional 5' files: use them if they exist and have content, otherwise use empty placeholder
+      def p5_file = p5 ? file(p5) : null
+      def n5_file = n5 ? file(n5) : null
+      def p5x = (p5_file && p5_file.exists() && p5_file.size()>0) ? p5_file : file(noBGPath)
+      def n5x = (n5_file && n5_file.exists() && n5_file.size()>0) ? n5_file : file(noBGPath)
       tuple(sid, p3, n3, p5x, n5x, c, t, r)
     }
 
@@ -413,9 +421,13 @@ workflow TrackTx {
   summarize_pol2_metrics( samples_tsv )
 
   // ───────── 3.13 QC ─────────────────
-  qc_pol2_tracktx(
-    aligned_ch.map { sid, bam, _all, _spike, c, t, r -> tuple(sid, bam, c, t, r) }
-  )
+  // Join aligned_ch with dedup_stats_ch to pass UMI dedup metrics to QC
+  def qc_input_ch = aligned_ch
+    .map { sid, bam, _all, _spike, c, t, r -> tuple(sid, [bam, c, t, r]) }
+    .join(dedup_stats_ch.map { sid, dedup_stats, _c, _t, _r -> tuple(sid, dedup_stats) })
+    .map { sid, meta, dedup_stats -> tuple(sid, meta[0], dedup_stats, meta[1], meta[2], meta[3]) }
+  
+  qc_pol2_tracktx(qc_input_ch)
   def qc_json_meta_ch = qc_pol2_tracktx.out.json_meta
 
   // ───────── 3.14 REPORT BUNDLE (deterministic per-SID joins) ────────────

@@ -19,9 +19,60 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; }
 # Check if command exists
 has_command() { command -v "$1" >/dev/null 2>&1; }
 
-# Check if Docker is running
+# Check if Docker is running (with optional auto-start prompt)
 docker_works() {
-    has_command docker && docker info >/dev/null 2>&1
+    # If Docker command doesn't exist, return false
+    if ! has_command docker; then
+        return 1
+    fi
+    
+    # If Docker daemon is already running, return success
+    if docker info >/dev/null 2>&1; then
+        return 0
+    fi
+    
+    # Docker installed but not running - prompt user to start it
+    echo ""
+    warning "Docker is installed but not currently running"
+    
+    # Check if we're on macOS with Docker Desktop
+    if [[ "$OSTYPE" == "darwin"* ]] && [[ -d "/Applications/Docker.app" ]]; then
+        echo -n "Would you like to start Docker Desktop? [Y/n]: "
+        read -r ANSWER || ANSWER="y"
+        case "${ANSWER:-y}" in
+            [Yy]|[Yy][Ee][Ss])
+                info "Starting Docker Desktop..."
+                open -a Docker
+                
+                # Wait for Docker daemon to start (max 60 seconds)
+                info "Waiting for Docker daemon to start (this may take up to 60 seconds)..."
+                for i in {1..30}; do
+                    sleep 2
+                    if docker info >/dev/null 2>&1; then
+                        success "Docker started successfully!"
+                        return 0
+                    fi
+                    echo -ne "Waiting... ${i}/30\r"
+                done
+                echo ""
+                error "Docker failed to start within 60 seconds"
+                info "Please start Docker Desktop manually and try again"
+                return 1
+                ;;
+            *)
+                info "Please start Docker Desktop manually and try again"
+                return 1
+                ;;
+        esac
+    else
+        # Linux or other OS - provide instructions
+        info "Please start the Docker daemon:"
+        if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+            info "  sudo systemctl start docker"
+        fi
+        info "Then run this script again"
+        return 1
+    fi
 }
 
 # Detect best execution profile

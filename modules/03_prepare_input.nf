@@ -260,10 +260,10 @@ process prepare_input {
   else
     echo "INFO  UMI extraction: OFF → pass-through preumi_* to final_*"
     if [[ "${MODE}" == "PE" ]]; then
-      mv -f preumi_R1.fastq final_R1.fastq
-      mv -f preumi_R2.fastq final_R2.fastq
+      cp -f preumi_R1.fastq final_R1.fastq
+      cp -f preumi_R2.fastq final_R2.fastq
     else
-      mv -f preumi_R1.fastq final_R1.fastq
+      cp -f preumi_R1.fastq final_R1.fastq
       : > final_R2.fastq   # SE stub
     fi
   fi
