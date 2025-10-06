@@ -157,6 +157,9 @@ graph LR
 
 ## 🏗️ Installation
 
+> **💡 No Sudo/Admin Access?** This pipeline works perfectly without root privileges!  
+> Just needs: Nextflow + Conda (both installable to your home directory, no admin required).
+
 ### **Option 1: Docker** (Recommended)
 ```bash
 # 1. Install Docker Desktop
@@ -169,9 +172,9 @@ cd TrackTx
 ./run_pipeline.sh --params-file params.yaml --samplesheet samplesheet.csv
 ```
 
-### **Option 2: Conda**
+### **Option 2: Conda** (No sudo required)
 ```bash
-# 1. Install Miniconda
+# 1. Install Miniconda (to your home directory - no sudo needed)
 # https://docs.conda.io/en/latest/miniconda.html
 
 # 2. Clone and run
@@ -180,6 +183,8 @@ cd TrackTx
 # Generate params.yaml & samplesheet.csv via TrackTx_config_generator.html, then:
 ./run_pipeline.sh --params-file params.yaml --samplesheet samplesheet.csv
 ```
+
+**Note:** The conda profile also works with mamba/micromamba if you have them installed (faster solving).
 
 ### **Option 3: Manual Installation**
 ```bash
@@ -375,13 +380,13 @@ The pipeline automatically detects your environment, but you can specify profile
 | Profile | Description | When to Use |
 |---------|-------------|-------------|
 | **`docker`** 🐳 | Everything included, fastest | **Recommended** - Most reliable |
-| **`conda`** 🐍 | Automatic environment setup | When Docker unavailable |
-| **`local`** 🖥️ | Use system-installed tools | Manual tool management |
+| **`conda`** 🐍 | Auto environment setup | When Docker unavailable (works with conda/mamba/micromamba) |
+| **`local`** 🖥️ | System-installed tools | Manual tool management |
 
 ```bash
-./run_pipeline.sh -profile docker     # Force Docker
-./run_pipeline.sh -profile conda      # Force Conda
-./run_pipeline.sh -profile local      # Use local tools
+./run_pipeline.sh                 # Auto-detect environment
+./run_pipeline.sh -profile docker # Force Docker
+./run_pipeline.sh -profile conda  # Force Conda
 ```
 
 ---

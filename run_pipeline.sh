@@ -79,7 +79,8 @@ docker_works() {
 detect_profile() {
     if docker_works; then
         echo "docker"
-    elif has_command conda || has_command mamba; then
+    # Use conda profile (works with conda/mamba/micromamba)
+    elif has_command conda || has_command mamba || has_command micromamba; then
         echo "conda"
     else
         echo "local"
@@ -113,7 +114,7 @@ OPTIONS:
     
 PROFILES:
     docker     🐳 Everything included, fastest (recommended)
-    conda      🐍 Automatic environment setup
+    conda      🐍 Automatic environment setup (works with conda/mamba/micromamba)
     local      🖥️  Use system-installed tools
 
 For more help: https://github.com/your-repo/TrackTx/
@@ -234,8 +235,8 @@ main() {
             success "Docker profile validated"
                 ;;
             conda)
-            if ! has_command conda && ! has_command mamba; then
-                error "Conda profile requested but conda/mamba not available"
+            if ! has_command conda && ! has_command mamba && ! has_command micromamba; then
+                error "Conda profile requested but conda/mamba/micromamba not available"
                 info "Install Miniconda: https://docs.conda.io/en/latest/miniconda.html"
                     exit 1
                 fi
