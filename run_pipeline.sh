@@ -113,9 +113,11 @@ OPTIONS:
     --dry-run                      Show what would be executed
     
 PROFILES:
-    docker     🐳 Everything included, fastest (recommended)
-    conda      🐍 Automatic environment setup (works with conda/mamba/micromamba)
-    local      🖥️  Use system-installed tools
+    docker       🐳 Everything included, fastest (recommended)
+    conda        🐍 Automatic environment setup (works with conda/mamba/micromamba)
+    conda_server 🐍 Conda with network-storage-safe settings (for HPC/servers)
+    singularity  📦 Container via Singularity/Apptainer (HPC)
+    local        🖥️  Use system-installed tools
 
 For more help: https://github.com/your-repo/TrackTx/
 EOF
@@ -234,19 +236,31 @@ main() {
                 fi
             success "Docker profile validated"
                 ;;
-            conda)
+            conda|conda_server)
             if ! has_command conda && ! has_command mamba && ! has_command micromamba; then
                 error "Conda profile requested but conda/mamba/micromamba not available"
                 info "Install Miniconda: https://docs.conda.io/en/latest/miniconda.html"
                     exit 1
                 fi
-            success "Conda profile validated"
+            if [[ "$PROFILE" == "conda_server" ]]; then
+                success "Conda server profile validated (network-storage-safe)"
+            else
+                success "Conda profile validated"
+            fi
+                ;;
+            singularity|apptainer)
+            if ! has_command singularity && ! has_command apptainer; then
+                error "Singularity/Apptainer profile requested but not available"
+                info "Install Apptainer: https://apptainer.org/docs/user/latest/quick_start.html"
+                    exit 1
+                fi
+            success "Singularity/Apptainer profile validated"
                 ;;
             local)
             warning "Local profile - ensure all tools are installed manually"
                 ;;
             *)
-            error "Invalid profile: $PROFILE (use: docker, conda, or local)"
+            error "Invalid profile: $PROFILE (use: docker, conda, conda_server, singularity, or local)"
                 exit 1
                 ;;
         esac
