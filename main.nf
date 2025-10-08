@@ -300,22 +300,25 @@ workflow TrackTx {
   def divergent_tx_ch = detect_divergent_tx.out[0]
 
   // ───────── 3.11 Functional regions ─────────────────────────────────────
+  // CRITICAL: Use RAW 3' bedgraphs (not normalized) to match old bash script logic
   def div_kv_fgr =
     divergent_tx_ch.map { sid, div_bed, c, t, r -> tuple(sid, tuple(div_bed, c, t, r)) }
 
-  def tracks_3p_norm_kv_fgr =
-    norm_tracks_ch.map { sid, pos3_cpm_bg, neg3_cpm_bg, _factors, c, t, r ->
-      def pos3_sicpm_bg = file(pos3_cpm_bg.toString().replace('_pos3_cpm.bedgraph', '_pos3_sicpm.bedgraph'))
-      def neg3_sicpm_bg = file(neg3_cpm_bg.toString().replace('_neg3_cpm.bedgraph', '_neg3_sicpm.bedgraph'))
-      tuple(sid, tuple(pos3_cpm_bg, neg3_cpm_bg, pos3_sicpm_bg, neg3_sicpm_bg, c, t, r))
+  def tracks_3p_raw_kv_fgr =
+    tracks_ch.map { sid, _bam, _spk, pos3_raw, neg3_raw, _p5, _n5, c, t, r ->
+      // Use RAW bedgraphs, not normalized
+      // Create unique empty placeholders to avoid file name collision
+      def empty_pos = file("${projectDir}/assets/EMPTY_pos.bedgraph")
+      def empty_neg = file("${projectDir}/assets/EMPTY_neg.bedgraph")
+      tuple(sid, tuple(pos3_raw, neg3_raw, empty_pos, empty_neg, c, t, r))
     }
 
   def func_input_ch =
-    div_kv_fgr.join(tracks_3p_norm_kv_fgr)
+    div_kv_fgr.join(tracks_3p_raw_kv_fgr)
       .map { sid, L, R ->
         def (div_bed, c1, t1, r1) = L
-        def (pos3_cpm, neg3_cpm, pos3_sicpm, neg3_sicpm, _c2, _t2, _r2) = R
-        tuple(sid, div_bed, pos3_cpm, neg3_cpm, pos3_sicpm, neg3_sicpm, c1, t1, r1)
+        def (pos3_raw, neg3_raw, pos3_sicpm, neg3_sicpm, _c2, _t2, _r2) = R
+        tuple(sid, div_bed, pos3_raw, neg3_raw, pos3_sicpm, neg3_sicpm, c1, t1, r1)
       }
 
   call_functional_regions(

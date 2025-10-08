@@ -2,7 +2,7 @@
 // call_functional_regions.nf — assign 3′ signal to functional classes
 // ----------------------------------------------------------------------------
 // Overview
-//   • Uses siCPM 3′ bedGraphs if present; else CPM.
+//   • Uses RAW (unnormalized) 3′ bedGraphs to match old bash script logic.
 //   • Active genes only: promoter ∩ divergentTx from input DT BED.
 //   • Signal-based counting (bedtools map -o sum) with sequential masking.
 //   • Each signal is assigned to exactly ONE functional category hierarchically:
@@ -13,8 +13,8 @@
 // Inputs
 //   tuple( sample_id,
 //          divergent.bed,
-//          pos3_cpm.bg, neg3_cpm.bg,
-//          pos3_sicpm.bg, neg3_sicpm.bg,
+//          pos3_raw.bg, neg3_raw.bg,
+//          pos3_sicpm.bg, neg3_sicpm.bg,  (EMPTY placeholders with raw data)
 //          condition, timepoint, replicate )
 //   path gtf_file (unused; interface stability)
 //   path functional_regions.py
@@ -104,8 +104,8 @@ process call_functional_regions {
   SID="!{sample_id}"
   DIV_BED="!{divergent_bed}"
 
-  POS_CPM="!{pos3_cpm_bg}"; NEG_CPM="!{neg3_cpm_bg}"
-  POS_SI="!{pos3_sicpm_bg}"; NEG_SI="!{neg3_sicpm_bg}"
+  # Using RAW (unnormalized) bedgraphs to match old bash script logic
+  POS_BG="!{pos3_cpm_bg}"; NEG_BG="!{neg3_cpm_bg}"
 
   GENES_TSV="!{genes_tsv}"
   TSS_BED="!{tss_bed}"
@@ -114,14 +114,8 @@ process call_functional_regions {
 
   THREADS=!{task.cpus}
 
-  # Choose 3′ sources (prefer siCPM if non-empty)
-  choose_bg(){ local si="$1" cpm="$2"
-    [[ -s "$si" ]] && echo "$si" || echo "$cpm"; }
-  POS_BG="$(choose_bg "$POS_SI" "$POS_CPM")"
-  NEG_BG="$(choose_bg "$NEG_SI" "$NEG_CPM")"
-
   echo "INFO  [FGR] ▶ sample=\${SID}  cpus=\${THREADS} ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  echo "INFO  POS=$(basename "$POS_BG")  NEG=$(basename "$NEG_BG")  count_mode=!{ (params.functional_regions?.count_mode ?: 'signal').toString() }"
+  echo "INFO  Using RAW bedgraphs: POS=$(basename "$POS_BG")  NEG=$(basename "$NEG_BG")  count_mode=!{ (params.functional_regions?.count_mode ?: 'signal').toString() }"
 
   # ── Call Python driver (signal mode default; active genes only) ──────────
   python3 "${FGR_PY}" \
