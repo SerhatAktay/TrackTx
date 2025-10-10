@@ -153,19 +153,39 @@ def finalize_rows(genes: Dict[str, Dict[str, object]],
     """
     Build final per-gene rows:
       (gene_id, gene_name, chr, strand, start, end, tss, tes, biotype)
+    
+    Logic:
+      1. If explicit 'gene' features exist, only use those (strict mode)
+      2. If no explicit 'gene' features exist, fall back to transcript-based inference
     """
     out = []
-    all_ids = set(genes.keys()) | set(tx_min.keys()) | set(tx_max.keys())
-    for gid in sorted(all_ids):
-        if gid in genes:
+    
+    # Check if we have any explicit gene features
+    has_explicit_genes = len(genes) > 0
+    
+    if has_explicit_genes:
+        # Strict mode: only use genes with explicit 'gene' features
+        all_ids = set(genes.keys())
+        for gid in sorted(all_ids):
             g = genes[gid]
             chrom = str(g.get("chr") or chrom_hint.get(gid) or "")
             strand = str(g.get("strand") or strand_hint.get(gid) or "+")
+            # Use transcript bounds if available to extend gene coordinates
             gstart = int(g.get("start") or tx_min.get(gid, 1))
             gend   = int(g.get("end")   or tx_max.get(gid, gstart))
             gname  = str(g.get("gene_name") or name_hint.get(gid) or gid)
             gtype  = str(g.get("biotype") or bio_hint.get(gid) or "")
-        else:
+
+            if gend <= gstart:
+                continue
+
+            tss = gstart if strand == "+" else gend
+            tes = gend   if strand == "+" else gstart
+            out.append((gid, gname, chrom, strand, gstart, gend, tss, tes, gtype))
+    else:
+        # Fallback mode: infer genes from transcripts when no explicit gene features exist
+        all_ids = set(tx_min.keys()) | set(tx_max.keys())
+        for gid in sorted(all_ids):
             chrom = chrom_hint.get(gid, "")
             if not chrom:
                 # No chromosome info at all — skip
@@ -178,12 +198,10 @@ def finalize_rows(genes: Dict[str, Dict[str, object]],
             gname = name_hint.get(gid, gid)
             gtype = bio_hint.get(gid, "")
 
-        if gend <= gstart:
-            continue
-
-        tss = gstart if strand == "+" else gend
-        tes = gend   if strand == "+" else gstart
-        out.append((gid, gname, chrom, strand, gstart, gend, tss, tes, gtype))
+            tss = gstart if strand == "+" else gend
+            tes = gend   if strand == "+" else gstart
+            out.append((gid, gname, chrom, strand, gstart, gend, tss, tes, gtype))
+    
     return out
 
 # ── Writers ────────────────────────────────────────────────────────────────

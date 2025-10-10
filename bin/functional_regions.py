@@ -92,9 +92,19 @@ BT = bt()
 def run(cmd: list[str], out_path: str | None = None, check=True):
     if out_path:
         with open(out_path, "w") as o:
-            subprocess.run(cmd, check=check, text=True, stdout=o, stderr=subprocess.PIPE)
+            result = subprocess.run(cmd, check=False, text=True, stdout=o, stderr=subprocess.PIPE)
+            if result.returncode != 0 and check:
+                log(f"ERROR: Command failed with exit code {result.returncode}")
+                log(f"Command: {' '.join(cmd)}")
+                log(f"Stderr: {result.stderr}")
+                raise subprocess.CalledProcessError(result.returncode, cmd, stderr=result.stderr)
     else:
-        subprocess.run(cmd, check=check, text=True, stderr=subprocess.PIPE)
+        result = subprocess.run(cmd, check=False, text=True, stderr=subprocess.PIPE)
+        if result.returncode != 0 and check:
+            log(f"ERROR: Command failed with exit code {result.returncode}")
+            log(f"Command: {' '.join(cmd)}")
+            log(f"Stderr: {result.stderr}")
+            raise subprocess.CalledProcessError(result.returncode, cmd, stderr=result.stderr)
 
 def sort_bed(src: str):
     run(["bash","-lc", f"LC_ALL=C sort -k1,1 -k2,2n -k3,3n '{src}' -o '{src}'"], None)
@@ -111,10 +121,13 @@ def wc_effective_lines(p: str) -> int:
     return n
 
 def clamp(a: int, b: int) -> tuple[int,int]:
-    """Ensure valid BED coordinates: a <= b and both >= 0"""
+    """Ensure valid BED coordinates: a <= b and both >= 0, with minimum 1bp length"""
     a, b = (a, b) if a <= b else (b, a)
     a = max(0, a)  # Clamp to chromosome start
     b = max(0, b)
+    # Ensure valid interval: end must be > start (minimum 1bp)
+    if b <= a:
+        b = a + 1
     return (a, b)
 
 def read_sites(bed6: str | None) -> dict[str, tuple[str,int,str]]:
