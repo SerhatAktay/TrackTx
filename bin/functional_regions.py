@@ -1,18 +1,34 @@
 #!/usr/bin/env python3
 # =============================================================================
-# functional_regions.py — v7.0 (read-based, active-only, strand-aware)
+# functional_regions.py — v9.1 (Gene-based, OLD script exact replication)
 # -----------------------------------------------------------------------------
-# NEW APPROACH: Read-based assignment following the old TrackTx.sh logic
+# PHILOSOPHY: DT sites identify active genes; gene structure defines regions
 # 
-# Key differences from v6.0:
-#   - Uses read-based assignment instead of signal-based
-#   - Converts bedGraphs to read intervals first
-#   - Uses sequential masking with bedtools intersect -v on reads
-#   - Follows exact logic from old TrackTx.sh script
-#   - Generates coordinate lists like the old script
+# v9.0 REWRITE: Return to gene-based assignment
+#      - DT sites: DISCOVERY (which genes are active?)
+#      - Gene annotations: ASSIGNMENT (where do reads belong?)
+# 
+# v9.1 FIX: CRITICAL - Replicate old bash script EXACTLY
+#      - Assignment: Use strand-specific intersect (-s or -S)
+#      - Removal: Use UNSTRANDED intersect (-v, NO strand flag!)
+#      - This matches original TrackTx.sh logic precisely
+# 
+# Key difference from v9.0:
+#   v9.0: Used -s flag on removal steps (wrong!)
+#   v9.1: Unstranded removal like old script (correct!)
+# 
+# Assignment logic:
+#   1. Divergent sites overlapping gene promoters → Active Promoters
+#   2. Divergent sites NOT overlapping → Enhancers
+#   3. For genes with active promoters, create extended regions:
+#      - Divergent (opposite strand from promoter)
+#      - Gene body, CPS, Termination window
 #
-# Default geometry (matches old TrackTx script):
-#   Promoter:  TSS -250 .. +249 (for +) / TSS -249 .. +250 (for -)
+# Key insight: The ~20k divergent sites ARE the promoters/enhancers.
+# We don't create new promoter regions from genes; we categorize the DT sites.
+#
+# Default geometry:
+#   Promoter detection: TSS ±250 bp (defines what counts as promoter overlap)
 #   Divergent: TSS -750 .. -251 (for +) / TSS +251 .. +750 (for -)
 #   CPS:       TES -500 .. +499 (for +) / TES -499 .. +500 (for -)
 #   TW:        from CPS +500 .. +10499 (for +) / CPS -10499 .. -500 (for -)
@@ -30,6 +46,7 @@ from pathlib import Path
 ap = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 ap.add_argument("--sid",        required=True)
 ap.add_argument("--genes",      required=True)
+ap.add_argument("--functional-regions", required=True, help="Pre-computed functional regions TSV file")
 ap.add_argument("--divergent",  required=True)
 ap.add_argument("--pos",        required=True)  # 3′ POS bedGraph (≥0)
 ap.add_argument("--neg",        required=True)  # 3′ NEG bedGraph (≤0 mirrored upstream)
@@ -37,21 +54,71 @@ ap.add_argument("--outdir",     required=True)
 
 ap.add_argument("--tss", default=None)          # optional BED6 1bp
 ap.add_argument("--tes", default=None)          # optional BED6 1bp
+ap.add_argument("--tss-active-pm", type=int, default=500)  # half-window for active gene detection
 
 # Geometry
 ap.add_argument("--prom-up",    type=int, default=250)
 ap.add_argument("--prom-down",  type=int, default=250)
 ap.add_argument("--div-inner",  type=int, default=250)
 ap.add_argument("--div-outer",  type=int, default=750)
+ap.add_argument("--cps-offset", type=int, default=500)
 ap.add_argument("--tw-length",  type=int, default=10_000)
+ap.add_argument("--short-gene-threshold", type=int, default=750, help="Maximum gene length (bp) to classify as short gene")
 
 # Behavior
 ap.add_argument("--min-signal",      type=float, default=0.0)
+ap.add_argument("--min-signal-mode", choices=["absolute","quantile"], default="absolute")
+ap.add_argument("--min-signal-quantile", type=float, default=0.90)
 ap.add_argument("--allow-unstranded",action="store_true")
 ap.add_argument("--count-mode",      choices=["signal","event"], default="signal")
+ap.add_argument("--div-fallback-enable", action="store_true", help="Enable guarded unstranded fallback for divergent assignment")
+ap.add_argument("--div-fallback-threshold", type=float, default=0.30, help="Trigger fallback if DivergentTx < threshold * Promoter")
+ap.add_argument("--div-fallback-max-frac", type=float, default=0.25, help="Cap fallback DivergentTx to this fraction of Promoter")
+ap.add_argument("--active-slop", type=int, default=0, help="Slop (bp) for active-gene overlap only; does not change region geometry")
 ap.add_argument("--debug",           action="store_true")
 
 args = ap.parse_args()
+
+# Validate parameters
+def validate_parameters():
+    """Validate that all parameters are reasonable and positive"""
+    errors = []
+    
+    # Check geometry parameters
+    if args.prom_up < 0:
+        errors.append(f"prom_up must be non-negative, got {args.prom_up}")
+    if args.prom_down < 0:
+        errors.append(f"prom_down must be non-negative, got {args.prom_down}")
+    if args.div_inner < 0:
+        errors.append(f"div_inner must be non-negative, got {args.div_inner}")
+    if args.div_outer < 0:
+        errors.append(f"div_outer must be non-negative, got {args.div_outer}")
+    if args.cps_offset < 0:
+        errors.append(f"cps_offset must be non-negative, got {args.cps_offset}")
+    if args.tw_length < 0:
+        errors.append(f"tw_length must be non-negative, got {args.tw_length}")
+    if args.tss_active_pm < 0:
+        errors.append(f"tss_active_pm must be non-negative, got {args.tss_active_pm}")
+    if args.short_gene_threshold < 0:
+        errors.append(f"short_gene_threshold must be non-negative, got {args.short_gene_threshold}")
+    
+    # Check logical constraints
+    if args.div_outer <= args.div_inner:
+        errors.append(f"div_outer ({args.div_outer}) must be > div_inner ({args.div_inner})")
+    
+    # Check reasonable ranges
+    if args.prom_up > 10000 or args.prom_down > 10000:
+        errors.append(f"Promoter flank sizes seem too large: up={args.prom_up}, down={args.prom_down}")
+    if args.tw_length > 100000:
+        errors.append(f"Termination window length seems too large: {args.tw_length}")
+    
+    if errors:
+        print("ERROR: Parameter validation failed:", file=sys.stderr)
+        for error in errors:
+            print(f"  {error}", file=sys.stderr)
+        sys.exit(1)
+
+validate_parameters()
 
 SID    = args.sid
 OUT    = Path(args.outdir).resolve(); OUT.mkdir(parents=True, exist_ok=True)
@@ -69,9 +136,19 @@ BT = bt()
 def run(cmd: list[str], out_path: str | None = None, check=True):
     if out_path:
         with open(out_path, "w") as o:
-            subprocess.run(cmd, check=check, text=True, stdout=o, stderr=subprocess.PIPE)
+            result = subprocess.run(cmd, check=False, text=True, stdout=o, stderr=subprocess.PIPE)
+            if result.returncode != 0 and check:
+                log(f"ERROR: Command failed with exit code {result.returncode}")
+                log(f"Command: {' '.join(cmd)}")
+                log(f"Stderr: {result.stderr}")
+                raise subprocess.CalledProcessError(result.returncode, cmd, stderr=result.stderr)
     else:
-        subprocess.run(cmd, check=check, text=True, stderr=subprocess.PIPE)
+        result = subprocess.run(cmd, check=False, text=True, stderr=subprocess.PIPE)
+        if result.returncode != 0 and check:
+            log(f"ERROR: Command failed with exit code {result.returncode}")
+            log(f"Command: {' '.join(cmd)}")
+            log(f"Stderr: {result.stderr}")
+            raise subprocess.CalledProcessError(result.returncode, cmd, stderr=result.stderr)
 
 def sort_bed(src: str):
     run(["bash","-lc", f"LC_ALL=C sort -k1,1 -k2,2n -k3,3n '{src}' -o '{src}'"], None)
@@ -87,12 +164,96 @@ def wc_effective_lines(p: str) -> int:
             if ln.strip() and not ln.startswith(("track","browser","#")): n+=1
     return n
 
-def clamp(a: int, b: int) -> tuple[int,int]:
-    """Ensure valid BED coordinates: a <= b and both >= 0"""
+def clamp(a: int, b: int, min_length: int = 10) -> tuple[int,int]:
+    """
+    Ensure valid BED coordinates: a <= b and both >= 0, with minimum length.
+    
+    Args:
+        a, b: Start and end coordinates
+        min_length: Minimum region length in bp (default: 10 for biological relevance)
+    
+    Returns:
+        Tuple of (start, end) with start <= end and length >= min_length
+    """
     a, b = (a, b) if a <= b else (b, a)
     a = max(0, a)  # Clamp to chromosome start
     b = max(0, b)
+    
+    # Ensure minimum region length for biological relevance
+    if b - a < min_length:
+        b = a + min_length
+    
     return (a, b)
+
+def validate_coordinates(gene_info: dict) -> bool:
+    """Validate that all calculated coordinates are reasonable and within biological constraints"""
+    try:
+        # Check basic gene coordinates
+        if gene_info['gstart'] >= gene_info['gend']:
+            log(f"WARNING: Gene {gene_info['gname']} has invalid coordinates: start={gene_info['gstart']}, end={gene_info['gend']}")
+            return False
+        
+        # Check functional region coordinates
+        regions = ['PPs', 'PPe', 'GBs', 'GBe', 'CPSs', 'CPSe', 'TWs', 'TWe', 'DIVs', 'DIVe']
+        for region in regions:
+            if region not in gene_info:
+                log(f"WARNING: Gene {gene_info['gname']} missing region {region}")
+                return False
+            
+            coord = gene_info[region]
+            if not isinstance(coord, int) or coord < 1:
+                log(f"WARNING: Gene {gene_info['gname']} has invalid {region} coordinate: {coord}")
+                return False
+        
+        # Check that functional regions don't extend far beyond gene boundaries
+        gene_start = gene_info['gstart']
+        gene_end = gene_info['gend']
+        gene_length = gene_end - gene_start
+        
+        # Allow functional regions to extend up to 20kb beyond gene boundaries
+        max_extension = max(20000, gene_length * 2)  # At least 20kb or 2x gene length
+        
+        for region in regions:
+            coord = gene_info[region]
+            if coord < gene_start - max_extension or coord > gene_end + max_extension:
+                log(f"WARNING: Gene {gene_info['gname']} {region} coordinate {coord} extends too far from gene boundaries [{gene_start}-{gene_end}]")
+                return False
+        
+        # Check logical coordinate ordering
+        strand = gene_info['strand']
+        if strand == "+":
+            # For plus strand: DIVs < DIVe < PPs < PPe < GBs < GBe < CPSs < CPSe < TWs < TWe
+            coords = [gene_info['DIVs'], gene_info['DIVe'], gene_info['PPs'], gene_info['PPe'], 
+                     gene_info['GBs'], gene_info['GBe'], gene_info['CPSs'], gene_info['CPSe'],
+                     gene_info['TWs'], gene_info['TWe']]
+        else:
+            # For minus strand: TWs < TWe < CPSs < CPSe < GBs < GBe < PPs < PPe < DIVs < DIVe
+            coords = [gene_info['TWs'], gene_info['TWe'], gene_info['CPSs'], gene_info['CPSe'],
+                     gene_info['GBs'], gene_info['GBe'], gene_info['PPs'], gene_info['PPe'],
+                     gene_info['DIVs'], gene_info['DIVe']]
+        
+        # Check that coordinates are generally increasing (allowing for some overlap)
+        for i in range(len(coords) - 1):
+            if coords[i] > coords[i + 1] + 1000:  # Allow some flexibility for overlapping regions
+                log(f"WARNING: Gene {gene_info['gname']} has suspicious coordinate ordering")
+                return False
+        
+        # Check for reasonable region sizes (not too small or too large)
+        for i in range(0, len(coords), 2):  # Check start-end pairs
+            if i + 1 < len(coords):
+                region_length = coords[i + 1] - coords[i]
+                if region_length < 10:  # Too small to be biologically meaningful
+                    log(f"WARNING: Gene {gene_info['gname']} has very small functional region: {region_length}bp")
+                    return False
+                if region_length > 500000:  # Too large (>500kb)
+                    log(f"WARNING: Gene {gene_info['gname']} has very large functional region: {region_length}bp")
+                    return False
+        
+        return True
+        
+    except Exception as e:
+        log(f"WARNING: Error validating coordinates for gene {gene_info.get('gname', 'unknown')}: {e}")
+        return False
 
 def read_sites(bed6: str | None) -> dict[str, tuple[str,int,str]]:
     d={}; 
@@ -105,178 +266,216 @@ def read_sites(bed6: str | None) -> dict[str, tuple[str,int,str]]:
             d[f[3]] = (f[0], int(f[1]), f[5])   # use start as site
     return d
 
-# ---- coordinate generation (following old script logic) --------------------
-def build_coordinate_lists(genes_tsv: str, tss_map: dict, tes_map: dict):
+# ---- coordinate generation using pre-computed functional regions -----------
+def read_precomputed_functional_regions(func_regions_tsv: str) -> list:
     """
-    Build coordinate lists following the old TrackTx.sh logic exactly.
-    This replaces the signal-based approach with coordinate list generation.
+    Read pre-computed functional regions from the TSV file created by create_functional_regions.py
+    Returns a list of gene dictionaries with all functional region coordinates.
+    Includes comprehensive validation and error handling.
     """
-    req = ["gene_id","gene_name","chr","strand","start","end","tss","tes"]
-    with open(genes_tsv) as fh:
-        hdr = split_fields(fh.readline())
-        cols = [c.strip().lstrip("\ufeff").lower() for c in hdr]
+    genes = []
     
-    def idx(name: str):
-        alts = {
-            "gene_id":{"gene_id","id"},
-            "gene_name":{"gene_name","name","symbol"},
-            "chr":{"chr","chrom","chromosome","seqname"},
-            "strand":{"strand","orientation"},
-            "start":{"start","gene_start"},
-            "end":{"end","gene_end"},
-            "tss":{"tss","tx_start","txstart"},
-            "tes":{"tes","tx_end","txend"},
-        }[name]
-        for i,c in enumerate(cols):
-            if c in alts: return i
-        return None
+    if not os.path.exists(func_regions_tsv):
+        log(f"ERROR: Functional regions file not found: {func_regions_tsv}")
+        sys.exit(1)
     
-    idxs = {k: idx(k) for k in req}
-    miss = [k for k,v in idxs.items() if v is None]
-    if miss: sys.exit("ERROR genes.tsv missing: " + ",".join(miss))
-
-    # Store all gene info for coordinate calculation
-    all_genes = []
+    try:
+        with open(func_regions_tsv, 'r') as f:
+            header = f.readline().strip().split('\t')
+            
+            # Validate header contains required columns
+            required_cols = ['chr', 'start', 'end', 'strand', 'gene_name', 'TSS', 'CPS', 
+                           'DIVs', 'DIVe', 'PPs', 'PPe', 'GBs', 'GBe', 'CPSs', 'CPSe', 'TWs', 'TWe', 'promC1', 'promC2']
+            missing_cols = [col for col in required_cols if col not in header]
+            if missing_cols:
+                log(f"ERROR: Missing required columns in {func_regions_tsv}: {missing_cols}")
+                sys.exit(1)
+            
+            line_num = 1  # Start at 1 since we already read header
+            for line in f:
+                line_num += 1
+                if not line.strip():
+                    continue
+                    
+                fields = line.strip().split('\t')
+                if len(fields) != len(header):
+                    log(f"WARNING: Line {line_num} has {len(fields)} fields, expected {len(header)}. Skipping.")
+                    continue
+                    
+                gene = {}
+                for i, field in enumerate(fields):
+                    if i < len(header):
+                        gene[header[i]] = field
+                
+                # Convert numeric fields with validation
+                try:
+                    gene['gstart'] = int(gene['start'])
+                    gene['gend'] = int(gene['end'])
+                    gene['TSS'] = int(gene['TSS'])
+                    gene['CPS'] = int(gene['CPS'])
+                    gene['DIVs'] = int(gene['DIVs'])
+                    gene['DIVe'] = int(gene['DIVe'])
+                    gene['PPs'] = int(gene['PPs'])
+                    gene['PPe'] = int(gene['PPe'])
+                    gene['GBs'] = int(gene['GBs'])
+                    gene['GBe'] = int(gene['GBe'])
+                    gene['CPSs'] = int(gene['CPSs'])
+                    gene['CPSe'] = int(gene['CPSe'])
+                    gene['TWs'] = int(gene['TWs'])
+                    gene['TWe'] = int(gene['TWe'])
+                    gene['promC1'] = int(gene['promC1'])
+                    gene['promC2'] = int(gene['promC2'])
+                    
+                    # Add compatibility fields
+                    gene['chrom'] = gene['chr']
+                    gene['gname'] = gene['gene_name']
+                    gene['gene_length'] = gene['gend'] - gene['gstart']
+                    
+                    # Include all genes; avoid erroneous start/end cutoffs.
+                    # Keep validation as a warning-only guard; do not drop genes unless clearly nonsensical.
+                    if validate_coordinates(gene):
+                        genes.append(gene)
+                    else:
+                        log(f"WARNING: Coordinate validation flagged gene {gene['gname']} at line {line_num}; including anyway for assignment")
+                        genes.append(gene)
+                        
+                except (ValueError, KeyError) as e:
+                    log(f"WARNING: Error parsing gene at line {line_num}: {e}. Skipping.")
+                    continue
     
-    with open(genes_tsv) as fh:
-        next(fh)  # skip header
-        for ln in fh:
-            if not ln.strip(): continue
-            f = split_fields(ln)
-            try:
-                gid = f[idxs["gene_id"]]
-                gname = f[idxs["gene_name"]] or gid
-                chrom = f[idxs["chr"]]
-                strand = f[idxs["strand"]] if f[idxs["strand"]] in {"+","-"} else "+"
-                gstart = int(float(f[idxs["start"]]))
-                gend = int(float(f[idxs["end"]]))
-                tss_d = int(float(f[idxs["tss"]]))
-                tes_d = int(float(f[idxs["tes"]]))
-            except Exception:
-                continue
+    except IOError as e:
+        log(f"ERROR: Failed to read {func_regions_tsv}: {e}")
+        sys.exit(1)
+    except Exception as e:
+        log(f"ERROR: Unexpected error reading {func_regions_tsv}: {e}")
+        sys.exit(1)
+    
+    log(f"INFO: Successfully loaded {len(genes)} validated genes from {func_regions_tsv}")
+    return genes
 
-            # Apply overrides (by name or id)
-            tss = tss_map.get(gname, tss_map.get(gid, (None,tss_d,None)))[1]
-            tes = tes_map.get(gname, tes_map.get(gid, (None,tes_d,None)))[1]
-
-            # Calculate all coordinates following old script logic EXACTLY
-            # CRITICAL: For minus strand, old script swaps TSS/CPS assignments!
-            if strand == "+":
-                TSS = tss    # For +: TSS = txStart
-                CPS = tes    # For +: CPS = txEnd
-                DIVs = TSS - args.div_outer    # TSS - 750
-                DIVe = TSS - args.div_inner    # TSS - 251  
-                PPs = TSS - args.prom_up       # TSS - 250
-                PPe = TSS + 249                # TSS + 249 (old script exact value)
-                GBs = TSS + args.prom_down     # TSS + 250
-                GBe = CPS - 501                # CPS - 501
-                CPSs = CPS - 500
-                CPSe = CPS + 499
-                TWs = CPS + 500
-                TWe = CPS + 10499              # CPS + 10499 (old script exact value)
-            else:  # strand == "-"
-                # CRITICAL FIX: For minus strand, old script uses txEnd as TSS and txStart as CPS
-                TSS = tes    # For -: TSS = txEnd (old script: df$TSS <- df$txEnd)
-                CPS = tss    # For -: CPS = txStart (old script: df$CPS <- df$txStart)
-                DIVs = TSS + args.div_inner    # TSS + 251
-                DIVe = TSS + args.div_outer    # TSS + 750
-                PPs = TSS - 249                # TSS - 249 (old script exact value)
-                PPe = TSS + args.prom_up       # TSS + 250
-                GBs = CPS + 501                # CPS + 501
-                GBe = TSS - args.prom_down     # TSS - 250
-                CPSs = CPS - 499
-                CPSe = CPS + 500
-                TWs = CPS - 10499              # CPS - 10499 (old script exact value)
-                TWe = CPS - 500
-
-            # Store gene info (use transcript length like old script: txEnd - txStart)
-            # Old script always uses txEnd - txStart regardless of strand
-            tx_length = tes - tss  # transcript length (old script: txEnd - txStart)
-            gene_info = {
-                'gid': gid, 'gname': gname, 'chrom': chrom, 'strand': strand,
-                'gstart': gstart, 'gend': gend, 'TSS': TSS, 'CPS': CPS,
-                'DIVs': DIVs, 'DIVe': DIVe, 'PPs': PPs, 'PPe': PPe,
-                'GBs': GBs, 'GBe': GBe, 'CPSs': CPSs, 'CPSe': CPSe,
-                'TWs': TWs, 'TWe': TWe, 'gene_length': tx_length
-            }
-            all_genes.append(gene_info)
-
-    return all_genes
+# Note: build_coordinate_lists function removed - now using read_precomputed_functional_regions()
+# This eliminates duplicate coordinate calculation logic and ensures consistency.
 
 # ---- active genes & enhancers -----------------------------------------------
-def find_active_genes_and_enhancers(all_genes: list, dt_bed: str) -> tuple[list, str]:
+def find_active_promoters_and_enhancers(all_genes: list, dt_bed: str) -> tuple[list, str, str, str]:
     """
-    Following old script logic:
-    1. Create TSS±500 regions for all genes
-    2. Find enhancers: divergent_transcription MINUS TSS±500
-    3. Find active genes: TSS±500 INTERSECT divergent_transcription
-    4. Filter all_genes to active genes only
+    v9.0: Use DT sites to identify active genes, return gene-based regions.
+    
+    1. Create promoter regions for all genes (TSS ±500bp for active gene detection)
+    2. DT sites overlapping promoters → identify active genes
+    3. DT sites NOT overlapping → Enhancers
+    4. Return active genes (for creating gene-based regions later)
     """
-    # Create TSS±500 regions (refGenes_TSSpm500.txt equivalent)
-    tss_pm500 = OUT / "refGenes_TSSpm500.bed"
-    with open(tss_pm500, "w") as f:
+    # Create promoter regions for ALL genes (TSS ±tss_active_pm like old pipeline)
+    # This is ONLY for identifying active genes, not for read assignment
+    promoter_regions_file = OUT / f"all_promoter_regions_TSS_pm{args.tss_active_pm}.bed"
+    with open(promoter_regions_file, "w") as f:
         for gene in all_genes:
-            tss_start = gene['TSS'] - 500
-            tss_end = gene['TSS'] + 500
-            tss_start, tss_end = clamp(tss_start, tss_end)
-            f.write(f"{gene['chrom']}\t{tss_start}\t{tss_end}\t{gene['gname']}\n")
+            # Use parameterized window for active gene detection
+            prom_start = gene['TSS'] - args.tss_active_pm
+            prom_end = gene['TSS'] + args.tss_active_pm
+            prom_start, prom_end = clamp(prom_start, prom_end)
+            f.write(f"{gene['chrom']}\t{prom_start}\t{prom_end}\t{gene['gname']}\t.\t{gene['strand']}\n")
     
-    sort_bed(str(tss_pm500))
+    sort_bed(str(promoter_regions_file))
     
-    # Find enhancers: divergent_transcription MINUS TSS±500
+    # Identify which genes have DT sites at their promoters (TSS ±tss_active_pm)
+    genes_with_promoters_bed = OUT / "genes_with_active_promoters.bed"
+    # Unstranded overlap to find active promoters (as discovery)
+    run([BT, "intersect", "-u", "-wa", "-a", str(promoter_regions_file), "-b", dt_bed], 
+        str(genes_with_promoters_bed))
+
+    # Also capture DT sites that overlap promoter windows and imprint gene strand on them to produce BED6
+    active_promoter_dt_bed = OUT / "active_promoter_dt_sites.bed"
+    # -wa -wb to get promoter (A, with strand) and DT (B without strand); write DT coords with A's strand
+    # IMPORTANT: DT BED lacks strand; DO NOT use -s here or we will get zero overlaps
+    tmp_join = OUT / "_tmp_prom_dt_join.bed"
+    run([BT, "intersect", "-wa", "-wb", "-a", str(promoter_regions_file), "-b", dt_bed], str(tmp_join), check=False)
+    with open(active_promoter_dt_bed, "w") as out:
+        if tmp_join.exists() and tmp_join.stat().st_size > 0:
+            with open(tmp_join) as fh:
+                for ln in fh:
+                    if not ln.strip() or ln.startswith(("#","track","browser")): continue
+                    f = split_fields(ln)
+                    # A: chrom, start, end, gene, ., strand (6 fields)
+                    # B: DT: chrom, start, end, total (4 fields)
+                    if len(f) >= 10:
+                        # Use B coords for window; use A strand for strand
+                        chrom = f[6]  # B chrom
+                        start = f[7]
+                        end   = f[8]
+                        name  = f[3]  # gene name
+                        strand = f[5] # A strand
+                        out.write(f"{chrom}\t{start}\t{end}\t{name}\t0\t{strand}\n")
+    if tmp_join.exists():
+        try:
+            tmp_join.unlink()
+        except Exception:
+            pass
+    
+    # DT sites NOT overlapping gene promoters = Enhancers
     enhancers_bed = OUT / "enhancers.bed"
-    run([BT, "intersect", "-v", "-a", dt_bed, "-b", str(tss_pm500)], str(enhancers_bed))
+    # Prefer subtracting promoter-overlapping DT windows directly if available
+    if Path(active_promoter_dt_bed).exists() and Path(active_promoter_dt_bed).stat().st_size > 0:
+        run([BT, "intersect", "-v", "-a", dt_bed, "-b", str(active_promoter_dt_bed)], str(enhancers_bed))
+    else:
+        run([BT, "intersect", "-v", "-a", dt_bed, "-b", str(promoter_regions_file)], str(enhancers_bed))
     
-    # Find active genes: TSS±500 INTERSECT divergent_transcription  
-    active_genes_bed = OUT / "activeGenes.bed"
-    run([BT, "intersect", "-u", "-wa", "-a", str(tss_pm500), "-b", dt_bed], str(active_genes_bed))
-    
-    # Read active gene names
+    # Read active gene names from the intersection
     active_names = set()
-    if Path(active_genes_bed).exists():
-        with open(active_genes_bed) as f:
+    if Path(genes_with_promoters_bed).exists():
+        with open(genes_with_promoters_bed) as f:
             for ln in f:
                 if ln.strip() and not ln.startswith(("#", "track", "browser")):
                     fields = split_fields(ln)
                     if len(fields) >= 4:
-                        active_names.add(fields[3])
+                        active_names.add(fields[3])  # gene name
     
     # Filter to active genes only
     active_genes = [g for g in all_genes if g['gname'] in active_names]
     
-    log(f"INFO  Found {len(active_genes)} active genes out of {len(all_genes)} total genes")
+    # Count 
+    n_dt_at_promoters = wc_effective_lines(str(genes_with_promoters_bed))
+    n_enhancers = wc_effective_lines(str(enhancers_bed))
     
-    return active_genes, str(enhancers_bed)
+    log(f"INFO  Found {n_dt_at_promoters} genes with DT sites at promoters (TSS ±{args.tss_active_pm}bp)")
+    log(f"INFO  Found {n_enhancers} DT sites NOT at promoters (enhancers)")
+    log(f"INFO  Active genes: {len(active_genes)} (out of {len(all_genes)} total)")
+    
+    # Return: active_genes, genes_with_active_promoters, enhancers, active_promoter_dt_sites
+    return active_genes, str(genes_with_promoters_bed), str(enhancers_bed), str(active_promoter_dt_bed)
 
 # ---- coordinate file generation ---------------------------------------------
 def write_coordinate_files(active_genes: list):
     """
-    Write coordinate files following old script format:
+    v9.0: Write ALL gene-based regions including promoter (ppPolII).
     chr, start, end, name, name, strand (BED6-like)
+    
+    Following old pipeline logic exactly.
     """
-    # Separate short and long genes (following old script: <= 750bp is short)
-    short_genes = [g for g in active_genes if g['gene_length'] <= 750]
-    long_genes = [g for g in active_genes if g['gene_length'] > 750]
+    # Separate short and long genes (using parameterized threshold)
+    short_genes = [g for g in active_genes if g['gene_length'] <= args.short_gene_threshold]
+    long_genes = [g for g in active_genes if g['gene_length'] > args.short_gene_threshold]
     
-    log(f"INFO  {len(short_genes)} short genes, {len(long_genes)} long genes")
+    log(f"INFO  {len(short_genes)} short active genes, {len(long_genes)} long active genes")
     
-    # Write promoter regions (ppPolII.txt) - all active genes
-    prom_file = OUT / "ppPolII.txt"
-    with open(prom_file, "w") as f:
-        for gene in active_genes:
+    # Write promoter regions (ppPolII.txt) - TSS±prom_up/down - long genes only
+    pp_file = OUT / "ppPolII.txt"
+    with open(pp_file, "w") as f:
+        for gene in long_genes:
             pps, ppe = clamp(gene['PPs'], gene['PPe'])
             f.write(f"{gene['chrom']}\t{pps}\t{ppe}\t{gene['gname']}\t{gene['gname']}\t{gene['strand']}\n")
-    sort_bed(str(prom_file))
+    sort_bed(str(pp_file))
     
-    # Write divergent regions (divTx.txt) - all active genes
+    # Write divergent regions (divTx.txt) - TSS±div_outer/inner - long genes only
     div_file = OUT / "divTx.txt"
     with open(div_file, "w") as f:
-        for gene in active_genes:
+        for gene in long_genes:
             divs, dive = clamp(gene['DIVs'], gene['DIVe'])
             f.write(f"{gene['chrom']}\t{divs}\t{dive}\t{gene['gname']}\t{gene['gname']}\t{gene['strand']}\n")
     sort_bed(str(div_file))
     
-    # Write short genes (shortGenes.txt) - full gene coordinates
+    # Write short genes (shortGenes.txt) - full gene coordinates (≤short_gene_threshold)
     sg_file = OUT / "shortGenes.txt"
     with open(sg_file, "w") as f:
         for gene in short_genes:
@@ -284,7 +483,7 @@ def write_coordinate_files(active_genes: list):
             f.write(f"{gene['chrom']}\t{gstart}\t{gend}\t{gene['gname']}\t{gene['gname']}\t{gene['strand']}\n")
     sort_bed(str(sg_file))
     
-    # Write CPS regions (CPS.txt) - long genes only
+    # Write CPS regions (CPS.txt) - long genes only (>short_gene_threshold)
     cps_file = OUT / "CPS.txt"
     with open(cps_file, "w") as f:
         for gene in long_genes:
@@ -292,7 +491,7 @@ def write_coordinate_files(active_genes: list):
             f.write(f"{gene['chrom']}\t{cpss}\t{cpse}\t{gene['gname']}\t{gene['gname']}\t{gene['strand']}\n")
     sort_bed(str(cps_file))
     
-    # Write termination windows (TW.txt) - long genes only
+    # Write termination windows (TW.txt) - long genes only (>short_gene_threshold)
     tw_file = OUT / "TW.txt"
     with open(tw_file, "w") as f:
         for gene in long_genes:
@@ -300,7 +499,7 @@ def write_coordinate_files(active_genes: list):
             f.write(f"{gene['chrom']}\t{tws}\t{twe}\t{gene['gname']}\t{gene['gname']}\t{gene['strand']}\n")
     sort_bed(str(tw_file))
     
-    # Write gene body regions (geneBody.txt) - long genes only, where GBe > GBs + 1
+    # Write gene body regions (geneBody.txt) - long genes only, where GBe > GBs + 1 (>short_gene_threshold)
     gb_file = OUT / "geneBody.txt"
     with open(gb_file, "w") as f:
         for gene in long_genes:
@@ -310,7 +509,7 @@ def write_coordinate_files(active_genes: list):
     sort_bed(str(gb_file))
     
     return {
-        'promoter': str(prom_file),
+        'promoter': str(pp_file),
         'divergent': str(div_file), 
         'short_genes': str(sg_file),
         'cps': str(cps_file),
@@ -326,6 +525,31 @@ def bedgraph_to_reads(pos_bg: str, neg_bg: str) -> str:
     """
     reads_file = OUT / "PROseq_3pnt.bed"
     
+    # Determine dynamic threshold if quantile mode
+    thr = float(args.min_signal)
+    if args.min_signal_mode == "quantile":
+        vals: list[float] = []
+        for bg in (pos_bg, neg_bg):
+            if Path(bg).exists() and Path(bg).stat().st_size > 0:
+                with open(bg) as f:
+                    for i, ln in enumerate(f):
+                        if ln.strip() and not ln.startswith(("track","browser","#")):
+                            fields = split_fields(ln)
+                            if len(fields) >= 4:
+                                try:
+                                    s = abs(float(fields[3]));
+                                    vals.append(s)
+                                except Exception:
+                                    pass
+                        if len(vals) >= 200000:  # cap memory; sample first 200k values
+                            break
+        if vals:
+            vals.sort()
+            q = min(max(args.min_signal_quantile, 0.0), 1.0)
+            idx = int(q * (len(vals)-1))
+            thr = float(vals[idx])
+            log(f"INFO  dynamic min_signal (quantile {q:.2f}) => {thr:.6g}")
+
     with open(reads_file, "w") as out:
         # Process positive strand
         if Path(pos_bg).exists() and Path(pos_bg).stat().st_size > 0:
@@ -336,12 +560,14 @@ def bedgraph_to_reads(pos_bg: str, neg_bg: str) -> str:
                         if len(fields) >= 4:
                             try:
                                 chrom, start, end, signal = fields[0], int(fields[1]), int(fields[2]), float(fields[3])
-                                if abs(signal) > args.min_signal and end > start:
-                                    out.write(f"{chrom}\t{start}\t{end}\t{signal}\t{signal}\t+\n")
+                                if abs(signal) > thr and end > start:
+                                    # Ensure positive strand signals are positive for consistency
+                                    signal_val = abs(signal) if signal < 0 else signal
+                                    out.write(f"{chrom}\t{start}\t{end}\t{signal_val}\t{signal_val}\t+\n")
                             except (ValueError, IndexError):
                                 continue
         
-        # Process negative strand (keep original signal values like old script)
+        # Process negative strand (ensure consistent signal handling)
         if Path(neg_bg).exists() and Path(neg_bg).stat().st_size > 0:
             with open(neg_bg) as f:
                 for ln in f:
@@ -350,74 +576,98 @@ def bedgraph_to_reads(pos_bg: str, neg_bg: str) -> str:
                         if len(fields) >= 4:
                             try:
                                 chrom, start, end, signal = fields[0], int(fields[1]), int(fields[2]), float(fields[3])
-                                if abs(signal) > args.min_signal and end > start:
-                                    # Keep original signal (negative values) like old script
-                                    out.write(f"{chrom}\t{start}\t{end}\t{signal}\t{signal}\t-\n")
+                                if abs(signal) > thr and end > start:
+                                    # Convert negative strand signals to positive values for consistent analysis
+                                    # This prevents issues with signal summation and downstream analysis
+                                    signal_val = abs(signal)
+                                    out.write(f"{chrom}\t{start}\t{end}\t{signal_val}\t{signal_val}\t-\n")
                             except (ValueError, IndexError):
                                 continue
     
     sort_bed(str(reads_file))
     return str(reads_file)
 
-# ---- sequential read assignment (following old script exactly) -------------
+# ---- sequential read assignment (NEW LOGIC) ---------------------------------
 def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed: str):
     """
-    Perform sequential read assignment following old TrackTx.sh logic exactly.
-    Each step removes assigned reads from the pool.
+    v9.1: Sequential read assignment - EXACT replication of old bash script.
+    
+    CRITICAL: Assignment uses strand-specific (-s/-S), removal uses UNSTRANDED (-v)
+    
+    Assignment order (sequential masking):
+    1. Promoter:     assign -s, remove UNSTRANDED
+    2. Divergent:    assign -S, remove UNSTRANDED
+    3. CPS:          assign -s, remove UNSTRANDED
+    4. Gene body:    assign -s, remove UNSTRANDED
+    5. Short genes:  assign -s, remove UNSTRANDED
+    6. Enhancers:    assign unstranded, remove unstranded
+    7. Termination:  assign -s, remove UNSTRANDED
+    8. Non-localized: remaining
+    
+    This matches the original TrackTx bash pipeline exactly.
     """
     current_reads = reads_file
     assigned_reads = {}
     
-    # Step 1: Promoters (same-strand: -s)
-    log("INFO  Step 1: Assigning promoter reads...")
+    # Step 1: Promoters (gene-based TSS-250..+249, same-strand)
+    # OLD SCRIPT EXACT LOGIC: assign with -s, remove UNSTRANDED
+    log("INFO  Step 1: Assigning promoter reads (same-strand from ppPolII)...")
     log(f"DEBUG Input reads: {wc_effective_lines(current_reads)}, Promoter regions: {wc_effective_lines(coord_files['promoter'])}")
     prom_reads = OUT / "PROseq_ppPolII.bed"
     prom_removed = OUT / "ppRemoved.bed"
     run([BT, "intersect", "-s", "-u", "-wa", "-a", current_reads, "-b", coord_files['promoter']], str(prom_reads))
-    run([BT, "intersect", "-v", "-a", current_reads, "-b", coord_files['promoter']], str(prom_removed))
+    # Removal: keep opposite-strand reads for divergent step; remove only same-strand overlaps
+    run([BT, "intersect", "-s", "-v", "-a", current_reads, "-b", coord_files['promoter']], str(prom_removed))
     assigned_reads['Promoter'] = str(prom_reads)
     current_reads = str(prom_removed)
     log(f"DEBUG Assigned: {wc_effective_lines(str(prom_reads))}, Remaining: {wc_effective_lines(current_reads)}")
     
-    # Step 2: Divergent (opposite-strand: -S)  
-    log("INFO  Step 2: Assigning divergent reads...")
+    # Step 2: Divergent (gene-based divergent window)
+    # Assign UNSTRANDED within divergent window; promoter already removed
+    log("INFO  Step 2: Assigning divergent reads (unstranded within divergent window)...")
     log(f"DEBUG Input reads: {wc_effective_lines(current_reads)}, Divergent regions: {wc_effective_lines(coord_files['divergent'])}")
     div_reads = OUT / "PROseq_ppDiv.bed"
     div_removed = OUT / "ppdivRemoved.bed"
-    run([BT, "intersect", "-S", "-u", "-wa", "-a", current_reads, "-b", coord_files['divergent']], str(div_reads))
-    run([BT, "intersect", "-v", "-a", current_reads, "-b", coord_files['divergent']], str(div_removed))
+    run([BT, "intersect", "-u", "-wa", "-a", current_reads, "-b", coord_files['divergent']], str(div_reads))
+    # Removal: remove only opposite-strand overlaps used for divergent assignment; keep same-strand
+    run([BT, "intersect", "-S", "-v", "-a", current_reads, "-b", coord_files['divergent']], str(div_removed))
     assigned_reads['DivergentTx'] = str(div_reads)
     current_reads = str(div_removed)
     log(f"DEBUG Assigned: {wc_effective_lines(str(div_reads))}, Remaining: {wc_effective_lines(current_reads)}")
+
     
     # Step 3: CPS (same-strand: -s)
+    # OLD SCRIPT: assign with -s, remove UNSTRANDED
     log("INFO  Step 3: Assigning CPS reads...")
     cps_reads = OUT / "PROseq_CPS.bed"
     cps_removed = OUT / "ppdivCPSRemoved.bed"
     run([BT, "intersect", "-s", "-u", "-wa", "-a", current_reads, "-b", coord_files['cps']], str(cps_reads))
-    run([BT, "intersect", "-v", "-a", current_reads, "-b", coord_files['cps']], str(cps_removed))
+    run([BT, "intersect", "-s", "-v", "-a", current_reads, "-b", coord_files['cps']], str(cps_removed))
     assigned_reads['CPS'] = str(cps_reads)
     current_reads = str(cps_removed)
     
     # Step 4: Gene Body (same-strand: -s)
+    # OLD SCRIPT: assign with -s, remove UNSTRANDED
     log("INFO  Step 4: Assigning gene body reads...")
     gb_reads = OUT / "PROseq_GB.bed"
     gb_removed = OUT / "ppdivCPSgbRemoved.bed"
     run([BT, "intersect", "-s", "-u", "-wa", "-a", current_reads, "-b", coord_files['gene_body']], str(gb_reads))
-    run([BT, "intersect", "-v", "-a", current_reads, "-b", coord_files['gene_body']], str(gb_removed))
+    run([BT, "intersect", "-s", "-v", "-a", current_reads, "-b", coord_files['gene_body']], str(gb_removed))
     assigned_reads['Gene body'] = str(gb_reads)
     current_reads = str(gb_removed)
     
     # Step 5: Short Genes (same-strand: -s)
+    # OLD SCRIPT: assign with -s, remove UNSTRANDED
     log("INFO  Step 5: Assigning short gene reads...")
     sg_reads = OUT / "PROseq_SG.bed"
     sg_removed = OUT / "ppdivCPSgbSGRemoved.bed"
     run([BT, "intersect", "-s", "-u", "-wa", "-a", current_reads, "-b", coord_files['short_genes']], str(sg_reads))
-    run([BT, "intersect", "-v", "-a", current_reads, "-b", coord_files['short_genes']], str(sg_removed))
+    run([BT, "intersect", "-s", "-v", "-a", current_reads, "-b", coord_files['short_genes']], str(sg_removed))
     assigned_reads['Short genes'] = str(sg_reads)
     current_reads = str(sg_removed)
     
-    # Step 6: Enhancers (unstranded - no -s or -S flag)
+    # Step 6: Enhancers (unstranded)
+    # OLD SCRIPT: assign unstranded, remove unstranded
     log("INFO  Step 6: Assigning enhancer reads...")
     enh_reads = OUT / "PROseq_enhancers.bed"
     enh_removed = OUT / "ppdivCPSgbSGEnhRemoved.bed"
@@ -427,11 +677,12 @@ def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed
     current_reads = str(enh_removed)
     
     # Step 7: Termination Window (same-strand: -s)
+    # OLD SCRIPT: assign with -s, remove UNSTRANDED
     log("INFO  Step 7: Assigning termination window reads...")
     tw_reads = OUT / "PROseq_TW.bed"
     tw_removed = OUT / "PROseq_noGene_noEnh.bed"
     run([BT, "intersect", "-s", "-u", "-wa", "-a", current_reads, "-b", coord_files['termination']], str(tw_reads))
-    run([BT, "intersect", "-v", "-a", current_reads, "-b", coord_files['termination']], str(tw_removed))
+    run([BT, "intersect", "-s", "-v", "-a", current_reads, "-b", coord_files['termination']], str(tw_removed))
     assigned_reads['Termination window'] = str(tw_reads)
     assigned_reads['Non-localized polymerase'] = str(tw_removed)
     
@@ -458,8 +709,8 @@ def count_and_summarize(assigned_reads: dict):
                             except (ValueError, IndexError):
                                 pass
         
-        # DEBUG: Keep original values to see what's happening
-        # signal_sum = max(0.0, signal_sum)  # Temporarily disabled to debug
+        # Ensure non-negative signal totals for consistent reporting
+        signal_sum = max(0.0, signal_sum)
         
         summary[category] = {
             'signal': signal_sum,
@@ -472,14 +723,80 @@ def count_and_summarize(assigned_reads: dict):
 
 # ---- output generation ------------------------------------------------------
 def write_outputs(summary: dict, coord_files: dict, assigned_reads: dict):
-    """Write final outputs"""
+    """Write final outputs - v9.0: all gene-based regions"""
     
+    # Compute number of genomic regions per category
+    def bed_regions_count(path: str) -> int:
+        if not path or not (Path(path).exists() and Path(path).stat().st_size > 0):
+            return 0
+        n = 0
+        with open(path) as fh:
+            for ln in fh:
+                if ln.strip() and not ln.startswith(("track","browser","#")):
+                    n += 1
+        return n
+
+    enhancers_file = OUT / "enhancers.bed"
+    region_file_map = {
+        # assigned_reads keys → gene-based regions or DT sites (enhancers only)
+        'Promoter': coord_files.get('promoter'),  # Gene-based ppPolII.txt
+        'DivergentTx': coord_files.get('divergent'),  # Gene-based divTx.txt
+        'CPS': coord_files.get('cps'),
+        'Gene body': coord_files.get('gene_body'),
+        'Short genes': coord_files.get('short_genes'),
+        'Enhancers': str(enhancers_file),  # DT sites NOT overlapping promoters (post-subtraction)
+        'Termination window': coord_files.get('termination'),
+        # 'Non-localized polymerase' does not correspond to a defined region set
+    }
+
+    region_counts = {k: (bed_regions_count(v) if v else 0) for k, v in region_file_map.items()}
+    region_counts['Non-localized polymerase'] = 0
+
+    # Compute total and median region lengths (bp) per category
+    def bed_region_lengths(path: str) -> list[int]:
+        if not path or not (Path(path).exists() and Path(path).stat().st_size > 0):
+            return []
+        lens: list[int] = []
+        with open(path) as fh:
+            for ln in fh:
+                if ln.strip() and not ln.startswith(("track","browser","#")):
+                    f = split_fields(ln)
+                    try:
+                        start = int(float(f[1])); end = int(float(f[2]))
+                        if end > start:
+                            lens.append(end - start)
+                    except Exception:
+                        continue
+        return lens
+
+    def median_len(vals: list[int]) -> float:
+        if not vals: return 0.0
+        vals = sorted(vals)
+        n = len(vals)
+        mid = n // 2
+        if n % 2 == 1:
+            return float(vals[mid])
+        else:
+            return (vals[mid - 1] + vals[mid]) / 2.0
+
+    region_lengths_total: dict[str, int] = {}
+    region_lengths_median: dict[str, float] = {}
+    for cat, p in region_file_map.items():
+        lens = bed_region_lengths(p) if p else []
+        region_lengths_total[cat] = int(sum(lens)) if lens else 0
+        region_lengths_median[cat] = float(median_len(lens)) if lens else 0.0
+    region_lengths_total['Non-localized polymerase'] = 0
+    region_lengths_median['Non-localized polymerase'] = 0.0
+
     # Write summary TSV (use 'reads' column name for compatibility with reporting script)
     summary_file = OUT / "functional_regions_summary.tsv"
     with open(summary_file, "w") as f:
-        f.write("region\treads\tregion_count\n")
+        f.write("region\treads\tregion_count\tregion_length_total_bp\tregion_length_median_bp\n")
         for category, data in summary.items():
-            f.write(f"{category}\t{data['signal']:.6f}\t{data['count']}\n")
+            reg_ct = region_counts.get(category, 0)
+            reg_len_tot = region_lengths_total.get(category, 0)
+            reg_len_med = region_lengths_median.get(category, 0.0)
+            f.write(f"{category}\t{data['signal']:.6f}\t{reg_ct}\t{reg_len_tot}\t{reg_len_med:.2f}\n")
     
     # Write BED9 track (following old script format)
     bed_file = OUT / "functional_regions.bed"
@@ -488,7 +805,6 @@ def write_outputs(summary: dict, coord_files: dict, assigned_reads: dict):
         
         # Color mapping (from old script)
         colors = {
-            'promoter': "243,132,0",
             'divergent': "178,59,212", 
             'cps': "103,200,249",
             'gene_body': "0,0,0",
@@ -496,7 +812,18 @@ def write_outputs(summary: dict, coord_files: dict, assigned_reads: dict):
             'termination': "255,54,98"
         }
         
-        # Add coordinate regions with colors
+        # Add promoter regions (orange) - gene-based ppPolII.txt
+        promoter_file = coord_files.get('promoter')
+        if promoter_file and Path(promoter_file).exists():
+            with open(promoter_file) as pf:
+                for ln in pf:
+                    if ln.strip() and not ln.startswith(("track", "browser", "#")):
+                        fields = split_fields(ln)
+                        if len(fields) >= 6:
+                            chrom, start, end, name, _, strand = fields[:6]
+                            f.write(f"{chrom}\t{start}\t{end}\t{name}\t0\t{strand}\t{start}\t{end}\t243,132,0\n")
+        
+        # Add gene-based coordinate regions with colors
         for coord_type, coord_file in coord_files.items():
             if coord_type in colors and Path(coord_file).exists():
                 with open(coord_file) as cf:
@@ -508,8 +835,7 @@ def write_outputs(summary: dict, coord_files: dict, assigned_reads: dict):
                                 color = colors[coord_type]
                                 f.write(f"{chrom}\t{start}\t{end}\t{name}\t0\t{strand}\t{start}\t{end}\t{color}\n")
         
-        # Add enhancers
-        enhancers_file = OUT / "enhancers.bed"
+        # Add enhancers (green)
         if Path(enhancers_file).exists():
             with open(enhancers_file) as ef:
                 for ln in ef:
@@ -522,28 +848,26 @@ def write_outputs(summary: dict, coord_files: dict, assigned_reads: dict):
 
 # ---- MAIN -------------------------------------------------------------------
 def main():
-    log(f"INFO  FGR ▶ {SID}  mode=read-based (v7.0)")
+    log(f"INFO  FGR ▶ {SID}  mode=pre-computed functional regions (v10.2 - comprehensive fixes)")
 
-    # Read gene annotations and build coordinate lists
-    tss_map = read_sites(args.tss)
-    tes_map = read_sites(args.tes)
-    all_genes = build_coordinate_lists(args.genes, tss_map, tes_map)
-    log(f"INFO  Loaded {len(all_genes)} genes from {args.genes}")
+    # Read pre-computed functional regions
+    all_genes = read_precomputed_functional_regions(args.functional_regions)
+    log(f"INFO  Loaded {len(all_genes)} genes with functional regions from {args.functional_regions}")
 
-    # Find active genes and enhancers
-    active_genes, enhancers_bed = find_active_genes_and_enhancers(all_genes, args.divergent)
+    # Use DT sites to identify active genes and enhancers
+    active_genes, genes_with_promoters_bed, enhancers_bed, active_promoter_dt_bed = find_active_promoters_and_enhancers(all_genes, args.divergent)
     
     if not active_genes:
-        sys.exit("ERROR: No active genes found (promoter ∩ DT); check divergent transcription input")
+        sys.exit("ERROR: No active genes found (DT sites ∩ TSS ±500bp); check divergent transcription input")
 
-    # Write coordinate files
+    # Write gene-based coordinate files for ALL functional regions (including promoter)
     coord_files = write_coordinate_files(active_genes)
 
     # Convert bedGraphs to read intervals
     reads_file = bedgraph_to_reads(args.pos, args.neg)
     log(f"INFO  Converted bedGraphs to {wc_effective_lines(reads_file)} read intervals")
 
-    # Perform sequential read assignment
+    # Perform sequential read assignment using gene-based regions
     assigned_reads = sequential_read_assignment(reads_file, coord_files, enhancers_bed)
 
     # Count and summarize
@@ -552,7 +876,7 @@ def main():
     # Write outputs
     write_outputs(summary, coord_files, assigned_reads)
 
-    log("INFO  functional regions ✓ (read-based)")
+    log("INFO  functional regions ✓ (pre-computed coordinates v10.2 - comprehensive fixes)")
 
 if __name__ == "__main__":
     main()

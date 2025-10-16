@@ -19,16 +19,91 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; }
 # Check if command exists
 has_command() { command -v "$1" >/dev/null 2>&1; }
 
-# Check if Docker is running
+# Check if Docker daemon is running (silent check for detection)
+docker_daemon_running() {
+    # If Docker command doesn't exist, return false
+    if ! has_command docker; then
+        return 1
+    fi
+    
+    # Test Docker daemon with timeout to avoid hanging
+    timeout 10s docker info >/dev/null 2>&1
+}
+
+# Handle Docker startup with user interaction
 docker_works() {
-    has_command docker && docker info >/dev/null 2>&1
+    # First check if Docker is already running
+    if docker_daemon_running; then
+        return 0
+    fi
+    
+    # Docker installed but not running - handle based on environment
+    echo ""
+    warning "Docker is installed but not currently running"
+    
+    # Check if we're in an interactive terminal or Docker prompt is disabled
+    if [[ ! -t 0 ]] || [[ $NO_DOCKER_PROMPT -eq 1 ]]; then
+        info "Non-interactive mode detected. Please start Docker manually:"
+        if [[ "$OSTYPE" == "darwin"* ]] && [[ -d "/Applications/Docker.app" ]]; then
+            info "  open -a Docker"
+        elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+            info "  sudo systemctl start docker"
+        fi
+        return 1
+    fi
+    
+    # Check if we're on macOS with Docker Desktop
+    if [[ "$OSTYPE" == "darwin"* ]] && [[ -d "/Applications/Docker.app" ]]; then
+        # Use a longer timeout for the prompt (60 seconds)
+        echo -n "Would you like to start Docker Desktop? [Y/n]: "
+        if ! timeout 60s read -r ANSWER; then
+            echo ""
+            info "Prompt timeout - assuming 'no'"
+            ANSWER="n"
+        fi
+        
+        case "${ANSWER:-y}" in
+            [Yy]|[Yy][Ee][Ss])
+                info "Starting Docker Desktop..."
+                open -a Docker
+                
+                # Wait for Docker daemon to start (max 60 seconds)
+                info "Waiting for Docker daemon to start (this may take up to 60 seconds)..."
+                for i in {1..30}; do
+                    sleep 2
+                    if timeout 5s docker info >/dev/null 2>&1; then
+                        success "Docker started successfully!"
+                        return 0
+                    fi
+                    echo -ne "Waiting... ${i}/30\r"
+                done
+                echo ""
+                error "Docker failed to start within 60 seconds"
+                info "Please start Docker Desktop manually and try again"
+                return 1
+                ;;
+            *)
+                info "Please start Docker Desktop manually and try again"
+                return 1
+                ;;
+        esac
+    else
+        # Linux or other OS - provide instructions
+        info "Please start the Docker daemon:"
+        if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+            info "  sudo systemctl start docker"
+        fi
+        info "Then run this script again"
+        return 1
+    fi
 }
 
 # Detect best execution profile
 detect_profile() {
-    if docker_works; then
+    if docker_daemon_running; then
         echo "docker"
-    elif has_command conda || has_command mamba; then
+    # Use conda profile (works with conda/mamba/micromamba)
+    elif has_command conda || has_command mamba || has_command micromamba; then
         echo "conda"
     else
         echo "local"
@@ -58,14 +133,17 @@ OPTIONS:
     --no-auto-resume               Disable auto-detection of resume
     --no-clear                     Do not clear the terminal before starting
     --clear-delay SEC              Seconds to wait before clearing (default: 6)
+    --no-docker-prompt             Skip Docker auto-start prompt (for automated environments)
     --dry-run                      Show what would be executed
     
 PROFILES:
-    docker     🐳 Everything included, fastest (recommended)
-    conda      🐍 Automatic environment setup
-    local      🖥️  Use system-installed tools
+    docker       🐳 Everything included, fastest (recommended)
+    conda        🐍 Automatic environment setup (works with conda/mamba/micromamba)
+    conda_server 🐍 Conda with network-storage-safe settings (for HPC/servers)
+    singularity  📦 Container via Singularity/Apptainer (HPC)
+    local        🖥️  Use system-installed tools
 
-For more help: https://github.com/your-repo/TrackTx/
+For more help: https://github.com/SerhatAktay/TrackTx/
 EOF
 }
 
@@ -78,6 +156,7 @@ DRY_RUN=""
 NO_AUTO_RESUME=0
 NO_CLEAR=0
 CLEAR_DELAY=6
+NO_DOCKER_PROMPT=0
 EXTRA_ARGS=()
 WANT_PROMPT_RESUME=1
     
@@ -128,6 +207,10 @@ WANT_PROMPT_RESUME=1
         --clear-delay)
             CLEAR_DELAY="$2"
             shift 2
+            ;;
+        --no-docker-prompt)
+            NO_DOCKER_PROMPT=1
+            shift
             ;;
         *)
             EXTRA_ARGS+=("$1")
@@ -182,19 +265,31 @@ main() {
                 fi
             success "Docker profile validated"
                 ;;
-            conda)
-            if ! has_command conda && ! has_command mamba; then
-                error "Conda profile requested but conda/mamba not available"
+            conda|conda_server)
+            if ! has_command conda && ! has_command mamba && ! has_command micromamba; then
+                error "Conda profile requested but conda/mamba/micromamba not available"
                 info "Install Miniconda: https://docs.conda.io/en/latest/miniconda.html"
                     exit 1
                 fi
-            success "Conda profile validated"
+            if [[ "$PROFILE" == "conda_server" ]]; then
+                success "Conda server profile validated (network-storage-safe)"
+            else
+                success "Conda profile validated"
+            fi
+                ;;
+            singularity|apptainer)
+            if ! has_command singularity && ! has_command apptainer; then
+                error "Singularity/Apptainer profile requested but not available"
+                info "Install Apptainer: https://apptainer.org/docs/user/latest/quick_start.html"
+                    exit 1
+                fi
+            success "Singularity/Apptainer profile validated"
                 ;;
             local)
             warning "Local profile - ensure all tools are installed manually"
                 ;;
             *)
-            error "Invalid profile: $PROFILE (use: docker, conda, or local)"
+            error "Invalid profile: $PROFILE (use: docker, conda, conda_server, singularity, or local)"
                 exit 1
                 ;;
         esac

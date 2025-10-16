@@ -4,7 +4,7 @@
 
 **🧬 A powerful, user-friendly Nextflow pipeline for analyzing nascent RNA sequencing data**
 
-[![Nextflow](https://img.shields.io/badge/nextflow%20DSL2-%E2%89%A525.04.0-23aa62.svg)](https://www.nextflow.io/)
+[![Nextflow](https://img.shields.io/badge/nextflow%20DSL2-%E2%89%A524.04.0-23aa62.svg)](https://www.nextflow.io/)
 [![Docker](https://img.shields.io/badge/docker-supported-0db7ed.svg)](https://www.docker.com/)
 [![Conda](https://img.shields.io/badge/conda-supported-green.svg)](https://conda.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -85,11 +85,15 @@ open TrackTx_config_generator.html   # macOS (or double-click the file)
 
 ### 4. **View Results**
 ```bash
-# Open the interactive report
-open results/reports/tracktx_combined_report.html
+# Open the cohort summary
+open results/global_summary.html
 
-# Load tracks in genome browser
-ls results/03_genome_tracks/*.bw
+# Browse per-sample reports
+open results/11_reports/cohort/global_summary.html
+open results/reports/<SAMPLE_ID>.html   # per-sample shortcut links
+
+# Load tracks in genome browser (BigWigs)
+ls results/05_normalized_tracks/*/*/cpm/*.bw
 ```
 
 ---
@@ -157,6 +161,9 @@ graph LR
 
 ## 🏗️ Installation
 
+> **💡 No Sudo/Admin Access?** This pipeline works perfectly without root privileges!  
+> Just needs: Nextflow + Conda (both installable to your home directory, no admin required).
+
 ### **Option 1: Docker** (Recommended)
 ```bash
 # 1. Install Docker Desktop
@@ -169,9 +176,9 @@ cd TrackTx
 ./run_pipeline.sh --params-file params.yaml --samplesheet samplesheet.csv
 ```
 
-### **Option 2: Conda**
+### **Option 2: Conda** (No sudo required)
 ```bash
-# 1. Install Miniconda
+# 1. Install Miniconda (to your home directory - no sudo needed)
 # https://docs.conda.io/en/latest/miniconda.html
 
 # 2. Clone and run
@@ -180,6 +187,8 @@ cd TrackTx
 # Generate params.yaml & samplesheet.csv via TrackTx_config_generator.html, then:
 ./run_pipeline.sh --params-file params.yaml --samplesheet samplesheet.csv
 ```
+
+**Note:** The conda profile also works with mamba/micromamba if you have them installed (faster solving).
 
 ### **Option 3: Manual Installation**
 ```bash
@@ -331,17 +340,15 @@ EOF
 ### **Directory Structure**
 ```
 results/
-├── 📊 reports/
-│   ├── tracktx_combined_report.html    # 🎯 Main interactive dashboard
-│   ├── execution_report.html           # Pipeline performance metrics
-│   └── sample_reports/                 # Individual sample QC reports
-├── 📈 03_genome_tracks/                # Coverage tracks for genome browsers
-│   ├── sample1.3p.pos.bw              # 3' positive strand BigWig
-│   ├── sample1.3p.neg.bw              # 3' negative strand BigWig
-│   └── ...
+├── 📄 index.html                       # Landing page with quick links
+├── 📊 global_summary.html              # Cohort dashboard (copy of 11_reports/cohort)
+├── 📈 03_genome_tracks/                # RAW coverage bedGraphs (and BigWigs if enabled)
+│   └── <sample_id>/...
 ├── ⚖️ 05_normalized_tracks/            # Quantitative comparison tracks
-│   ├── cpm/                           # Counts per million normalization
-│   └── sicpm/                         # Spike-in normalized tracks
+│   └── <sample_id>/
+│       └── 3p/
+│           ├── main/cpm/{pos,neg}.bw
+│           └── allMap/cpm/{pos,neg}.bw
 ├── 🔄 06_divergent_tx/                 # Divergent transcription analysis
 │   ├── sample1_divergent_regions.bed  # Detected divergent regions
 │   └── divergent_summary.tsv          # Summary statistics
@@ -353,18 +360,22 @@ results/
 │   ├── qc_strand_bias.tsv            # Strand distribution
 │   ├── qc_pol2.json                  # Comprehensive QC metrics
 │   └── qc_coverage.tsv               # Coverage statistics
-└── 📋 04_counts/                      # Read count summaries
+├── 📋 04_counts/                      # Read count summaries
+└── 🗂️ 11_reports/
+    ├── cohort/{global_summary.html, .tsv, .json}
+    └── samples/<sample_id>/{<sample_id>.report.html, .tsv, .json}
 ```
 
 ### **Key Output Files**
 
 | File | Description |
 |------|-------------|
-| **`tracktx_combined_report.html`** | 🎯 Interactive analysis dashboard with plots and tables |
-| **`03_genome_tracks/*.bw`** | 📈 Load directly in IGV, UCSC Genome Browser, or WashU |
+| **`global_summary.html`** | 🎯 Cohort dashboard with per-sample drilldowns |
+| **`11_reports/samples/<sid>/*.report.html`** | 📊 Individual sample reports |
+| **`05_normalized_tracks/*/*/cpm/*.bw`** | 📈 Load directly in IGV, UCSC Genome Browser, or WashU |
 | **`05_normalized_tracks/`** | ⚖️ Quantitative tracks for cross-sample comparisons |
 | **`06_divergent_tx/*.bed`** | 🔄 Divergent transcription regions and summit coordinates |
-| **`execution_report.html`** | 📊 Pipeline performance and resource usage analysis |
+| **`trace/report.html` (under `results/trace/`)** | 📊 Nextflow performance report |
 
 ---
 
@@ -375,13 +386,13 @@ The pipeline automatically detects your environment, but you can specify profile
 | Profile | Description | When to Use |
 |---------|-------------|-------------|
 | **`docker`** 🐳 | Everything included, fastest | **Recommended** - Most reliable |
-| **`conda`** 🐍 | Automatic environment setup | When Docker unavailable |
-| **`local`** 🖥️ | Use system-installed tools | Manual tool management |
+| **`conda`** 🐍 | Auto environment setup | When Docker unavailable (works with conda/mamba/micromamba) |
+| **`local`** 🖥️ | System-installed tools | Manual tool management |
 
 ```bash
-./run_pipeline.sh -profile docker     # Force Docker
-./run_pipeline.sh -profile conda      # Force Conda
-./run_pipeline.sh -profile local      # Use local tools
+./run_pipeline.sh                 # Auto-detect environment
+./run_pipeline.sh -profile docker # Force Docker
+./run_pipeline.sh -profile conda  # Force Conda
 ```
 
 ---
@@ -573,10 +584,7 @@ conda clean --all --yes
   - Throughput vs latency tradeoffs
   - System-specific recommendations
 
-- **[BUGFIX_SUMMARY.md](BUGFIX_SUMMARY.md)** - Recent fixes and improvements
-  - Critical bug fixes (functional regions, QC module)
-  - Expected changes in results
-  - How to apply updates
+<!-- Removed stale reference to BUGFIX_SUMMARY.md; see GitHub Releases for change logs. -->
 
 ### **Interactive Tools**
 - **[TrackTx_config_generator.html](TrackTx_config_generator.html)** - Web-based configuration generator
@@ -618,15 +626,15 @@ conda clean --all --yes
 We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md).
 
 ### **Ways to Contribute**
-- 🐛 **Report bugs** via [GitHub Issues](https://github.com/your-username/TrackTx/issues)
-- ✨ **Request features** via [GitHub Discussions](https://github.com/your-username/TrackTx/discussions)
+- 🐛 **Report bugs** via [GitHub Issues](https://github.com/SerhatAktay/TrackTx/issues)
+- ✨ **Request features** via [GitHub Discussions](https://github.com/SerhatAktay/TrackTx/discussions)
 - 📖 **Improve documentation** with pull requests
 - 🧪 **Add test datasets** and validation cases
 - 🔧 **Contribute code** via pull requests
 
 ### **Development Setup**
 ```bash
-git clone https://github.com/your-username/TrackTx.git
+git clone https://github.com/SerhatAktay/TrackTx.git
 cd TrackTx
 
 # Run tests

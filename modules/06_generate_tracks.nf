@@ -3,14 +3,16 @@
 // ----------------------------------------------------------------------------
 // Overview
 //   • (Opt) UMI dedup → BAM (+ .bai) used for coverage
+//   • BAM → BED → bedGraph pipeline with genome bounds validation (-g flag)
 //   • Main BAM: 3′ POS/NEG (NEG mirrored); PE also 5′ POS/NEG
 //   • allMap BAM: same (3′ always; 5′ if PE)
 //   • BigWigs via UCSC bedGraphToBigWig
-//   • Parallel per-strand/end; unified step log; README
+//   • Unified step log; README
 //
-// Why it’s faster
-//   • Runs strand/end computations in parallel to use available CPUs
-//   • Avoids redundant sorts before BigWig unless forced by a param
+// Why it's cleaner
+//   • bamToBed | bedtools genomecov -g ensures valid coordinates upfront
+//   • No post-hoc clipping needed (genome.sizes prevents out-of-bounds)
+//   • Streams through pipes (no large intermediate files written to disk)
 //
 // Inputs
 //   tuple( sample_id, filtered_bam, spikein_bam, condition, timepoint, replicate )
@@ -146,22 +148,22 @@ process generate_tracks {
   samtools index -@ ${THREADS} aligned.bam
   INPUT_BAM=aligned.bam
 
-  if [[ "$UMI_ENABLED" == "true" && ${UMI_LEN} -gt 0 ]]; then
-    if command -v umi_tools >/dev/null 2>&1; then
-      echo "INFO  … running umi_tools dedup (len=${UMI_LEN})"
-      if [[ "${IS_PE}" == "true" ]]; then
-        umi_tools dedup --paired -I aligned.bam -S deduplicated.bam --log=${PFX}.dedup_stats.txt
+    if [[ "$UMI_ENABLED" == "true" && ${UMI_LEN} -gt 0 ]]; then
+      if command -v umi_tools >/dev/null 2>&1; then
+        echo "INFO  … running umi_tools dedup (len=${UMI_LEN})"
+        if [[ "${IS_PE}" == "true" ]]; then
+          umi_tools dedup --paired -I aligned.bam -S deduplicated.bam --log=${PFX}.dedup_stats.txt
+        else
+          umi_tools dedup -I aligned.bam -S deduplicated.bam --log=${PFX}.dedup_stats.txt
+        fi
+        INPUT_BAM=deduplicated.bam
+        samtools index -@ ${THREADS} "$INPUT_BAM"
       else
-        umi_tools dedup         -I aligned.bam -S deduplicated.bam --log=${PFX}.dedup_stats.txt
+        echo "WARN  umi_tools not found — skipping UMI dedup" | tee ${PFX}.dedup_stats.txt
       fi
-      INPUT_BAM=deduplicated.bam
-      samtools index -@ ${THREADS} "$INPUT_BAM"
     else
-      echo "WARN  umi_tools not found — skipping UMI dedup" | tee ${PFX}.dedup_stats.txt
+      echo "UMI disabled" > ${PFX}.dedup_stats.txt
     fi
-  else
-    echo "UMI disabled" > ${PFX}.dedup_stats.txt
-  fi
 
   # ─────────────────────────────────────────────────────────────────────────
   # 1.5) Disk space check before intensive operations
@@ -187,25 +189,7 @@ process generate_tracks {
   # ─────────────────────────────────────────────────────────────────────────
   # 3) Helpers
   # ─────────────────────────────────────────────────────────────────────────
-  # Clip bedGraph rows to genome bounds and drop unknown contigs
-  clip_bg_inplace() {
-    local IN_BG="$1" TMP="${1}.cliptmp"
-    # Count data rows (non-header) before
-    local BEFORE=$(awk 'BEGIN{n=0} $0!~/^(track|browser|#)/{n++} END{print n}' "$IN_BG" 2>/dev/null || echo 0)
-    awk -v OFS='\t' 'FNR==NR{L[$1]=$2; next}
-         (NF>=3)&&($0!~/^(track|browser|#)/){
-           chr=$1; s=$2+0; e=$3+0; if(!(chr in L)) next; if(s<0)s=0; m=L[chr]+0; if(m==0) next;
-           if(e>m)e=m; if(s<e){ if(NF>=4) print $1,s,e,$4; else print $1,s,e; }
-         }' genome.sizes "$IN_BG" > "$TMP" && mv -f "$TMP" "$IN_BG"
-    local AFTER=$(awk 'BEGIN{n=0} $0!~/^(track|browser|#)/{n++} END{print n}' "$IN_BG" 2>/dev/null || echo 0)
-    if [[ "$BEFORE" != "$AFTER" ]]; then
-      echo "INFO  [tracks] clip: ${IN_BG} kept=${AFTER} dropped=$(( BEFORE>AFTER ? BEFORE-AFTER : 0 ))"
-    else
-      echo "INFO  [tracks] clip: ${IN_BG} kept=${AFTER} dropped=0"
-    fi
-  }
-
-  make_bw () {   # bedGraph → BigWig (clip + optional sort)
+  make_bw () {   # bedGraph → BigWig (optional sort)
     local bg="$1" bw="$2"
     [[ -s "$bg" ]] || return 0
     
@@ -237,26 +221,26 @@ process generate_tracks {
       return 1
     fi
     
-    # POS - run with timeout to prevent hanging
-    echo "INFO  [tracks] Computing + strand coverage for ${endflag}' end"
-    if ! timeout 1800 bedtools genomecov -bg -strand + -"${endflag}" -ibam "$bam" > "${prefix}.pos.bedgraph"; then
-      echo "ERROR  [tracks] Failed to compute + strand coverage (timeout or error)" >&2
+    # POS strand: BAM → BED → bedGraph (with genome bounds validation)
+    echo "INFO  [tracks] Computing + strand coverage for ${endflag}' end (via BED intermediate)"
+    bamToBed -i "$bam" | bedtools genomecov -bg -i stdin -g genome.sizes -${endflag} -strand + > "${prefix}.pos.bedgraph"
+    if [ $? -ne 0 ]; then
+      echo "ERROR  [tracks] Failed to compute + strand coverage" >&2
       return 1
     fi
     
-    # NEG (mirror) - run with timeout
-    echo "INFO  [tracks] Computing - strand coverage for ${endflag}' end"
-    if ! timeout 1800 bedtools genomecov -bg -strand - -"${endflag}" -ibam "$bam" | awk 'BEGIN{OFS="\\t"}{$4=-$4; print}' > "${prefix}.neg.bedgraph"; then
-      echo "ERROR  [tracks] Failed to compute - strand coverage (timeout or error)" >&2
+    # NEG strand (mirrored): BAM → BED → bedGraph (with genome bounds validation)
+    echo "INFO  [tracks] Computing - strand coverage for ${endflag}' end (via BED intermediate, mirrored)"
+    bamToBed -i "$bam" | bedtools genomecov -bg -i stdin -g genome.sizes -${endflag} -strand - | awk 'BEGIN{OFS="\\t"}{\$4=-\$4; print}' > "${prefix}.neg.bedgraph"
+    if [ $? -ne 0 ]; then
+      echo "ERROR  [tracks] Failed to compute - strand coverage" >&2
       return 1
     fi
     
-    # Clip bedGraph files before BigWig conversion
-    echo "INFO  [tracks] Clipping bedGraph files before BigWig conversion"
-    clip_bg_inplace "${prefix}.pos.bedgraph"
-    clip_bg_inplace "${prefix}.neg.bedgraph"
+    # No clipping needed - bedtools genomecov with -g flag handles bounds automatically!
+    echo "INFO  [tracks] bedGraph files validated via -g genome.sizes (no clipping needed)"
     
-    # Convert to BigWig - run sequentially to avoid wait issues
+    # Convert to BigWig
     echo "INFO  [tracks] Converting to BigWig format"
     make_bw "${prefix}.pos.bedgraph" "${prefix}.pos.bw"
     make_bw "${prefix}.neg.bedgraph" "${prefix}.neg.bw"
@@ -329,11 +313,18 @@ allMap (from sample_allMap.bam):
   3′: 3p/${PFX}.allMap.3p.pos/neg.(bedgraph|bw)
   5′: 5p/${PFX}.allMap.5p.pos/neg.(bedgraph|bw)  (PE only)
 
+Processing pipeline
+  1. BAM → BED conversion (bamToBed)
+  2. BED → bedGraph with genome bounds validation (bedtools genomecov -g)
+  3. bedGraph → BigWig (bedGraphToBigWig)
+
 Notes
-  - bedtools genomecov with -3 / -5 provides end-specific coverage.
-  - Negative-strand tracks are mirrored (score *= -1) for UCSC-style viewing.
+  - bamToBed streams into bedtools genomecov for efficient processing
+  - -g genome.sizes flag ensures all coordinates are valid (no clipping needed)
+  - -3 / -5 flags extract end-specific coverage (single-nucleotide resolution)
+  - Negative-strand tracks are mirrored (score *= -1) for UCSC-style viewing
   - BigWigs built with bedGraphToBigWig; set params.force_sort_bedgraph=true
-    if UCSC sorting complaints appear on your system.
+    if UCSC sorting complaints appear on your system
 TXT
 
   echo "INFO  [tracks] ✔ done for ${PFX} ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"

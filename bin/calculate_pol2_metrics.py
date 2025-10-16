@@ -31,6 +31,8 @@ ap.add_argument("--threads", type=int, default=1)
 ap.add_argument("--fail-if-empty", default="false")
 args = ap.parse_args()
 print(f"[pol2_calc] start ts={datetime.datetime.utcnow().isoformat()}Z", file=sys.stderr)
+print(f"[pol2_calc] Processing BAM: {args.bam}", flush=True)
+print(f"[pol2_calc] GTF: {args.gtf}", flush=True)
 
 # ---- helpers ---------------------------------------------------------------
 def parse_attrs(attr: str) -> dict:
@@ -139,6 +141,7 @@ for gid, data in gene_data.items():
                  tss_lo, tss_hi, body_lo, body_hi, body_len))
 
 if not genes:
+    print("[pol2_calc] No genes parsed from GTF", flush=True)
     if args.fail_if_empty.lower() in ("true","1","yes"):
         raise SystemExit("ERROR: No acceptable loci parsed from GTF.")
     # still emit empty outputs + qc
@@ -147,7 +150,10 @@ if not genes:
     Path(args.out_qc).write_text(json.dumps(dict(total_mapped=0, genes_seen=0), indent=2))
     raise SystemExit(0)
 
+print(f"[pol2_calc] Parsed {len(genes)} genes from GTF", flush=True)
+
 # write BED6 windows
+print("[pol2_calc] Writing TSS and gene body BED files...", flush=True)
 with open(tss_bed, "w") as o1, open(body_bed, "w") as o2:
     for (gid,gname,chrom,strand, tss_lo,tss_hi, body_lo,body_hi,body_len) in genes:
         o1.write(f"{chrom}\t{tss_lo}\t{tss_hi}\t{gid}\t0\t{strand}\n")
@@ -177,34 +183,74 @@ def sort_bed_with_genome_order(p: Path, genome: Path):
         run(["bash","-lc", f"LC_ALL=C sort -k1,1 -k2,2n -k3,3n '{p}' -o '{p}'"])
 
 # Build genome file in BAM order then sort BEDs accordingly
+print("[pol2_calc] Extracting genome info from BAM...", flush=True)
 write_genome_file_from_bam(args.bam, genome_file)
+print("[pol2_calc] Sorting BED files...", flush=True)
 sort_bed_with_genome_order(tss_bed, genome_file)
 sort_bed_with_genome_order(body_bed, genome_file)
 
-# coverage counts
-def coverage_counts(bed: Path, bam: str, genome: Path) -> dict[str,int]:
+# coverage counts using pysam (memory-efficient)
+def coverage_counts_pysam(bed: Path, bam: str) -> dict[str,int]:
+    """Count reads in BED regions using pysam (memory efficient)"""
     if not bed.exists() or bed.stat().st_size == 0:
         return {}
-    # Use -sorted with a genome file for consistent contig order
-    p = subprocess.run(["bedtools","coverage","-counts","-sorted","-g",str(genome),"-a",str(bed),"-b",bam],
-                       text=True, check=True, stdout=subprocess.PIPE)
-    out={}
-    for ln in p.stdout.splitlines():
-        if not ln.strip() or ln.startswith(("track","browser","#")): continue
-        f = ln.split("\t")
-        if len(f) < 7: continue
-        gid = f[3]; cnt = int(f[-1])
-        out[gid] = out.get(gid, 0) + cnt
+    
+    try:
+        import pysam
+    except ImportError:
+        print("[pol2_calc] WARNING: pysam not available, falling back to bedtools intersect", flush=True)
+        # Fallback: use bedtools intersect -c which is more memory efficient
+        p = subprocess.run(["bedtools","intersect","-c","-a",str(bed),"-b",bam],
+                           text=True, check=True, stdout=subprocess.PIPE)
+        out={}
+        for ln in p.stdout.splitlines():
+            if not ln.strip() or ln.startswith(("track","browser","#")): continue
+            f = ln.split("\t")
+            if len(f) < 7: continue
+            gid = f[3]; cnt = int(f[-1])
+            out[gid] = out.get(gid, 0) + cnt
+        return out
+    
+    print(f"[pol2_calc] Counting reads in {bed.name} using pysam...", flush=True)
+    bamfile = pysam.AlignmentFile(bam, "rb")
+    out = {}
+    
+    with open(bed) as f:
+        for i, ln in enumerate(f, 1):
+            if not ln.strip() or ln.startswith(("track","browser","#")): continue
+            fields = ln.split("\t")
+            if len(fields) < 4: continue
+            
+            chrom, start, end, gid = fields[0], int(fields[1]), int(fields[2]), fields[3]
+            
+            # Progress indicator every 5000 regions
+            if i % 5000 == 0:
+                print(f"[pol2_calc] ...processed {i} regions", flush=True)
+            
+            try:
+                cnt = bamfile.count(contig=chrom, start=start, stop=end)
+                out[gid] = out.get(gid, 0) + cnt
+            except Exception:
+                # Chromosome not in BAM, skip
+                continue
+    
+    bamfile.close()
+    print(f"[pol2_calc] Finished counting {bed.name}", flush=True)
     return out
 
-tss_counts  = coverage_counts(tss_bed,  args.bam, genome_file)
-body_counts = coverage_counts(body_bed, args.bam, genome_file)
+print("[pol2_calc] Counting TSS reads...", flush=True)
+tss_counts  = coverage_counts_pysam(tss_bed,  args.bam)
+print("[pol2_calc] Counting gene body reads...", flush=True)
+body_counts = coverage_counts_pysam(body_bed, args.bam)
 
 # totals for CPM
+print("[pol2_calc] Calculating CPM normalization...", flush=True)
 mapped = mapped_reads(args.bam)
 denom  = (mapped/1_000_000.0) if mapped>0 else 1e-9
+print(f"[pol2_calc] Total mapped reads: {mapped:,}", flush=True)
 
 # write outputs
+print("[pol2_calc] Writing output files...", flush=True)
 with open(args.out_pausing, "w") as p_out, open(args.out_genes, "w") as g_out:
     pw = csv.writer(p_out, delimiter="\t", lineterminator="\n")
     gw = csv.writer(g_out, delimiter="\t", lineterminator="\n")
@@ -243,6 +289,7 @@ qc = dict(
     body_offset_frac=float(body_fr),
 )
 Path(args.out_qc).write_text(json.dumps(qc, indent=2))
+print(f"[pol2_calc] ✓ Successfully generated metrics for {qc['genes_seen']} genes", flush=True)
 print(f"[pol2_calc] done ts={datetime.datetime.utcnow().isoformat()}Z", file=sys.stderr)
 
 # cleanup tmp

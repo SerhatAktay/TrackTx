@@ -132,7 +132,7 @@ process calculate_pol2_metrics {
       | LC_ALL=C sort -k1,1 -k2,2n -k3,3n > "$CLEAN_FUNC"
     echo -e "chr\tstart\tend\tname\tsignal\tnorm_method" > pol2_density.tsv
     bedtools map -a "$CLEAN_FUNC" -b combined.norm.bg -c 4 -o sum -null 0 \
-      | awk -v OFS='\t' -v M="$NORM_METHOD" '{print $1,$2,$3,($4? $4:"."),($5? $5:0),M}' >> pol2_density.tsv
+      | awk -v OFS='\t' -v M="$NORM_METHOD" '{print $1,$2,$3,($4? $4:"."),($NF? $NF:0),M}' >> pol2_density.tsv
   else
     echo -e "chr\tstart\tend\tname\tsignal\tnorm_method" > pol2_density.tsv
     echo "[pol2] INFO: functional BED absent → emitting density header only."

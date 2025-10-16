@@ -7,9 +7,9 @@
 //   • Writes a compact, navigable folder structure + a manifest TSV
 //   • Emits legacy 3′ CPM symlinks to avoid breaking downstream wiring
 //
-// Why it’s faster
+// Why it's faster
 //   • Single-pass scaling per input bedGraph → writes CPM and siCPM together
-//   • Parallelizes per-track work to utilize available CPUs
+//   • No clipping needed (upstream module validates coordinates via -g flag)
 //   • Optional sort before BigWig (skip unless forced)
 //
 // Inputs
@@ -218,25 +218,12 @@ PY
   # ─────────────────────────────────────────────────────────────────────────
   # 3) Helpers
   # ─────────────────────────────────────────────────────────────────────────
-  clip_bg_inplace() {
-    local IN_BG="$1"; local tmp="${1}.cliptmp"
-    awk -v OFS='\t' 'FNR==NR{L[$1]=$2; next}
-         (NF>=3)&&($0!~/^(track|browser|#)/){
-           s=$2+0; e=$3+0; if(s<0)s=0; m=L[$1]+0; if(m==0) next;
-           if(e>m)e=m; if(s<e){ if(NF>=4) print $1,s,e,$4; else print $1,s,e; }
-         }' genome.sizes "$IN_BG" > "$tmp" && mv -f "$tmp" "$IN_BG"
-  }
-
   make_bw () {
     local IN_BG="$1" BW="$2"
     [[ -s "$IN_BG" ]] || { : > "$BW"; return 0; }
     echo "INFO  [normalize] make_bw: preparing $(basename \"$IN_BG\") → $(basename \"$BW\")"
-    if [[ ${EMIT_BW} -eq 1 && ${CLIP_BG} -eq 1 ]]; then
-      echo "INFO  [normalize] make_bw: clipping to genome bounds"
-      clip_bg_inplace "$IN_BG"
-    else
-      echo "INFO  [normalize] make_bw: skipping clip (emit_bw=${EMIT_BW} clip_bg=${CLIP_BG})"
-    fi
+    
+    # No clipping needed - input bedGraphs already validated by generate_tracks module
     if [[ ${FORCE_SORT} -eq 1 ]]; then
       echo "INFO  [normalize] make_bw: sorting bedGraph prior to BigWig"
       LC_ALL=C sort -k1,1 -k2,2n -o "$IN_BG" "$IN_BG"
@@ -361,11 +348,13 @@ Control selection for siCPM
   Fallback : first row in counts_master.tsv with spike_reads > 0
 
 Notes
-  • NEG tracks are already mirrored upstream; scaling preserves sign.
-  • 3′ is always produced; 5′ only if inputs present (or emit_5p=true).
-  • BigWigs built via bedGraphToBigWig after bounds clipping; set
-    params.force_sort_bedgraph=true if your system complains about sort order.
-  • Manifest "tracks_manifest.tsv" lists every produced bedGraph (and scale).
+  • Input bedGraphs are pre-validated (generate_tracks uses -g genome.sizes)
+  • NEG tracks are already mirrored upstream; scaling preserves sign
+  • 3′ is always produced; 5′ only if inputs present (or emit_5p=true)
+  • No clipping needed - coordinates guaranteed valid by upstream module
+  • BigWigs built via bedGraphToBigWig; set params.force_sort_bedgraph=true
+    if your system complains about sort order
+  • Manifest "tracks_manifest.tsv" lists every produced bedGraph (and scale)
 TXT
 
   echo "INFO  [normalize] ✔ ${SID} ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"

@@ -56,26 +56,16 @@ process download_srr {
           val(paired_end)
 
   // ── Declared outputs ────────────────────────────────────────────────────
-  // Note: declare both plain and gz variants as optional to support fastq_gzip=true
+  // Use glob patterns to capture either .fastq or .fastq.gz depending on params.fastq_gzip
   output:
     tuple val(sample_id),
-          path("${sra_id}_R1.fastq",    optional: true),
-          path("${sra_id}_R2.fastq",    optional: true),
-          val(condition), val(timepoint), val(replicate)
-    tuple val(sample_id),
-          path("${sra_id}_R1.fastq.gz", optional: true),
-          path("${sra_id}_R2.fastq.gz", optional: true),
+          path("${sra_id}_R1.fastq{,.gz}"),
+          path("${sra_id}_R2.fastq{,.gz}", optional: true),
           val(condition), val(timepoint), val(replicate)
 
     // Checksums (either md5 or sha256), optional
-    path "${sra_id}_R1.fastq.md5",     optional: true, emit: md5_r1
-    path "${sra_id}_R2.fastq.md5",     optional: true, emit: md5_r2
-    path "${sra_id}_R1.fastq.gz.md5",  optional: true, emit: md5_r1_gz
-    path "${sra_id}_R2.fastq.gz.md5",  optional: true, emit: md5_r2_gz
-    path "${sra_id}_R1.fastq.sha256",  optional: true, emit: sha_r1
-    path "${sra_id}_R2.fastq.sha256",  optional: true, emit: sha_r2
-    path "${sra_id}_R1.fastq.gz.sha256", optional: true, emit: sha_r1_gz
-    path "${sra_id}_R2.fastq.gz.sha256", optional: true, emit: sha_r2_gz
+    path "${sra_id}*.md5",     optional: true, emit: checksums_md5
+    path "${sra_id}*.sha256",  optional: true, emit: checksums_sha
 
     // Per-sample README (file-only)
     path "README_fastq.txt", emit: readme
@@ -152,7 +142,7 @@ process download_srr {
     # Prefetch (best-effort)
     if [[ "${HAVE_PREFETCH}" -eq 1 ]]; then
       echo "INFO  [srr] prefetch ${SRR} (max-size=${SRA_MAXSZ})"
-      prefetch -O . --verify yes --progress --max-size "${SRA_MAXSZ}" "${SRR}" \
+      ( prefetch -O . --verify yes --max-size "${SRA_MAXSZ}" "${SRR}" 2>&1 | grep -v "^|" | grep -v "^2025" ) \
         || echo "WARN  [srr] prefetch failed; continuing with fasterq-dump"
     else
       echo "WARN  [srr] prefetch not available; fasterq-dump will stream"
@@ -169,7 +159,7 @@ process download_srr {
     fi
 
     echo "INFO  [srr] fasterq-dump --split-files -e ${THREADS}"
-    fasterq-dump --split-files -e "${THREADS}" -p "${TMP_ARG[@]}" -O . "${SRR}"
+    fasterq-dump --split-files -e "${THREADS}" "${TMP_ARG[@]}" -O . "${SRR}" 2>&1 | grep -E "spots read|reads read|reads written" || true
 
     # Normalize names (handle both *_1.fastq / *_2.fastq and single-end)
     [[ -f "${SRR}_1.fastq" ]] && mv -f "${SRR}_1.fastq" "${SRR}_R1.fastq"

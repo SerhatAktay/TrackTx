@@ -107,7 +107,8 @@
       "properties": {
         "mapq":          { "type": "integer", "default": 10 },
         "dedup":         { "type": "boolean", "default": true },
-        "depth_max_cov": { "type": "integer", "default": 0 }
+        "depth_max_cov": { "type": "integer", "default": 0 },
+        "run":           { "type": "boolean", "default": true, "description": "Enable QC module execution" }
       },
       "additionalProperties": true
     },
@@ -137,6 +138,7 @@
         "index_mem":   { "type": "string",  "default": "4 GB" },
         "index_time":  { "type": "string",  "default": "24h" },
 
+        "divergent_preset":     { "type": "string", "enum": ["default", "human", "drosophila", "plant", "gene_finding", "enhancer_finding", "custom"], "default": "default", "description": "Preset configuration for divergent transcription detection. 'default' captures majority of divergent sites, organism-specific presets optimize for genome characteristics, analysis presets optimize for specific research goals." },
         "divergent_threshold":  { "type": ["number","string"], "default": 1.0 },
         "divergent_balance":    { "type": ["number","string"], "default": 0.0 },
         "divergent_valley_thr": { "type": ["number","string"], "default": "Inf" },
@@ -159,16 +161,27 @@
       "type": "object",
       "description": "Genomic functional region discovery parameters (promoters, gene bodies, CPS, TW).",
       "properties": {
-        "prom_up":         { "type": ["integer","string"], "default": 500,  "description": "Promoter upstream flank (bp)." },
-        "prom_down":       { "type": ["integer","string"], "default": 250,  "description": "Promoter downstream flank (bp)." },
-        "gb_start_offset": { "type": ["integer","string"], "default": 2000, "description": "Gene body start offset from TSS (bp)." },
-        "cps_offset":      { "type": ["integer","string"], "default": 50,   "description": "CPS (cleavage/polyA site) offset (bp)." },
-        "tw_length":       { "type": ["integer","string"], "default": 5000, "description": "Transcribed window length (bp)." },
-        "merge_gap":       { "type": ["integer","string"], "default": 50,   "description": "Merge adjacent intervals within this gap (bp)." },
-        "qc":              { "type": "boolean",            "default": false, "description": "Emit QC for functional region calls." },
-        "debug":           { "type": "boolean",            "default": false, "description": "Enable extra debug outputs." },
-        "keep_tmp":        { "type": "boolean",            "default": false, "description": "Keep temporary/intermediate files." },
-        "debug_head":      { "type": ["integer","string"], "default": 0,    "description": "Limit number of debug rows (0 = all)." }
+        "prom_up":               { "type": ["integer","string"], "default": 250,   "description": "Promoter upstream flank (bp)." },
+        "prom_down":             { "type": ["integer","string"], "default": 250,   "description": "Promoter downstream flank (bp)." },
+        "div_inner":             { "type": ["integer","string"], "default": 250,   "description": "Divergent transcription inner boundary (bp)." },
+        "div_outer":             { "type": ["integer","string"], "default": 750,   "description": "Divergent transcription outer boundary (bp)." },
+        "cps_offset":            { "type": ["integer","string"], "default": 500,   "description": "CPS (cleavage/polyA site) offset (bp)." },
+        "tw_length":             { "type": ["integer","string"], "default": 10000, "description": "Termination window length (bp)." },
+        "short_gene_threshold":  { "type": ["integer","string"], "default": 750,   "description": "Maximum gene length (bp) to classify as short gene." },
+        "tss_active_pm":         { "type": ["integer","string"], "default": 500,   "description": "Half-window for active gene detection (TSS ± bp)." },
+        "min_signal":            { "type": ["number","string"],  "default": 0.0,   "description": "Minimum signal threshold for read assignment." },
+        "min_signal_mode":       { "type": "string",            "default": "absolute", "enum": ["absolute", "quantile"], "description": "Signal threshold mode." },
+        "min_signal_quantile":   { "type": ["number","string"], "default": 0.90,  "description": "Quantile for dynamic signal threshold (0.0-1.0)." },
+        "count_mode":            { "type": "string",            "default": "signal", "enum": ["signal", "event"], "description": "Counting mode: signal-based or event-based." },
+        "allow_unstranded":      { "type": "boolean",           "default": true,   "description": "Allow unstranded read assignment." },
+        "div_fallback_enable":   { "type": "boolean",           "default": false,  "description": "Enable guarded unstranded fallback for divergent assignment." },
+        "div_fallback_threshold": { "type": ["number","string"], "default": 0.30,  "description": "Trigger fallback if DivergentTx < threshold * Promoter." },
+        "div_fallback_max_frac": { "type": ["number","string"], "default": 0.25,   "description": "Cap fallback DivergentTx to this fraction of Promoter." },
+        "active_slop":           { "type": ["integer","string"], "default": 0,     "description": "Slop (bp) for active-gene overlap only." },
+        "qc":                    { "type": "boolean",           "default": false,  "description": "Emit QC for functional region calls." },
+        "debug":                 { "type": "boolean",           "default": false,  "description": "Enable extra debug outputs." },
+        "keep_tmp":              { "type": "boolean",           "default": false,  "description": "Keep temporary/intermediate files." },
+        "debug_head":            { "type": ["integer","string"], "default": 0,     "description": "Limit number of debug rows (0 = all)." }
       },
       "additionalProperties": true
     },

@@ -2,7 +2,7 @@
 // call_functional_regions.nf — assign 3′ signal to functional classes
 // ----------------------------------------------------------------------------
 // Overview
-//   • Uses siCPM 3′ bedGraphs if present; else CPM.
+//   • Uses RAW (unnormalized) 3′ bedGraphs to match old bash script logic.
 //   • Active genes only: promoter ∩ divergentTx from input DT BED.
 //   • Signal-based counting (bedtools map -o sum) with sequential masking.
 //   • Each signal is assigned to exactly ONE functional category hierarchically:
@@ -13,8 +13,8 @@
 // Inputs
 //   tuple( sample_id,
 //          divergent.bed,
-//          pos3_cpm.bg, neg3_cpm.bg,
-//          pos3_sicpm.bg, neg3_sicpm.bg,
+//          pos3_raw.bg, neg3_raw.bg,
+//          pos3_sicpm.bg, neg3_sicpm.bg,  (EMPTY placeholders with raw data)
 //          condition, timepoint, replicate )
 //   path gtf_file (unused; interface stability)
 //   path functional_regions.py
@@ -66,6 +66,7 @@ process call_functional_regions {
     path genes_tsv
     path tss_bed
     path tes_bed
+    path functional_regions_tsv
 
   // ── Declared outputs ────────────────────────────────────────────────────
   output:
@@ -104,40 +105,43 @@ process call_functional_regions {
   SID="!{sample_id}"
   DIV_BED="!{divergent_bed}"
 
-  POS_CPM="!{pos3_cpm_bg}"; NEG_CPM="!{neg3_cpm_bg}"
-  POS_SI="!{pos3_sicpm_bg}"; NEG_SI="!{neg3_sicpm_bg}"
+  # Using RAW (unnormalized) bedgraphs to match old bash script logic
+  POS_BG="!{pos3_cpm_bg}"; NEG_BG="!{neg3_cpm_bg}"
 
   GENES_TSV="!{genes_tsv}"
   TSS_BED="!{tss_bed}"
   TES_BED="!{tes_bed}"
   FGR_PY="!{functional_regions_py}"
+  FUNC_REGIONS_TSV="!{functional_regions_tsv}"
 
   THREADS=!{task.cpus}
 
-  # Choose 3′ sources (prefer siCPM if non-empty)
-  choose_bg(){ local si="$1" cpm="$2"
-    [[ -s "$si" ]] && echo "$si" || echo "$cpm"; }
-  POS_BG="$(choose_bg "$POS_SI" "$POS_CPM")"
-  NEG_BG="$(choose_bg "$NEG_SI" "$NEG_CPM")"
-
   echo "INFO  [FGR] ▶ sample=\${SID}  cpus=\${THREADS} ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  echo "INFO  POS=$(basename "$POS_BG")  NEG=$(basename "$NEG_BG")  count_mode=!{ (params.functional_regions?.count_mode ?: 'signal').toString() }"
+  echo "INFO  Using RAW bedgraphs: POS=$(basename "$POS_BG")  NEG=$(basename "$NEG_BG")  count_mode=!{ (params.functional_regions?.count_mode ?: 'signal').toString() }"
 
   # ── Call Python driver (signal mode default; active genes only) ──────────
   python3 "${FGR_PY}" \
     --sid "${SID}" \
     --genes "${GENES_TSV}" \
+    --functional-regions "${FUNC_REGIONS_TSV}" \
     --divergent "${DIV_BED}" \
     --pos "${POS_BG}" \
     --neg "${NEG_BG}" \
     --tss "${TSS_BED}" \
     --tes "${TES_BED}" \
-    --prom-up "!{ (params.functional_regions?.prom_up    ?: 250) as int }" \
+    --prom-up "!{ (params.functional_regions?.prom_up    ?: 300) as int }" \
     --prom-down "!{ (params.functional_regions?.prom_down  ?: 250) as int }" \
-    --div-inner "!{ (params.functional_regions?.div_inner  ?: 250) as int }" \
-    --div-outer "!{ (params.functional_regions?.div_outer  ?: 750) as int }" \
+    --div-inner "!{ (params.functional_regions?.div_inner  ?: 350) as int }" \
+    --div-outer "!{ (params.functional_regions?.div_outer  ?: 1000) as int }" \
+    --tss-active-pm "!{ (params.functional_regions?.tss_active_pm ?: 600) as int }" \
     --tw-length "!{ (params.functional_regions?.tw_length  ?: 10_000) as int }" \
     --min-signal "!{ (params.functional_regions?.min_signal ?: 0.0) as float }" \
+    --min-signal-mode "!{ (params.functional_regions?.min_signal_mode ?: 'absolute').toString() }" \
+    --min-signal-quantile "!{ (params.functional_regions?.min_signal_quantile ?: 0.90) as float }" \
+    $([[ "!{ (params.functional_regions?.div_fallback_enable in [true,'true']) ? true : false }" == "true" ]] && echo "--div-fallback-enable" || true) \
+    --div-fallback-threshold "!{ (params.functional_regions?.div_fallback_threshold ?: 0.30) as float }" \
+    --div-fallback-max-frac "!{ (params.functional_regions?.div_fallback_max_frac ?: 0.25) as float }" \
+    --active-slop "!{ (params.functional_regions?.active_slop ?: 0) as int }" \
     --count-mode "!{ (params.functional_regions?.count_mode ?: 'signal').toString() }" \
     $([[ "!{ (params.functional_regions?.allow_unstranded in [null,true,'true']) ? true : false }" == "true" ]] && echo "--allow-unstranded" || true) \
     --outdir "." 2>&1 | tee -a functional_regions.log
