@@ -1,11 +1,12 @@
 // ============================================================================
-// download_gtf.nf — GTF fetch + gene catalog (genes.tsv / TSS / TES)
+// download_gtf.nf — GTF fetch + gene catalog + functional regions
 // ----------------------------------------------------------------------------
 // Overview
 //   • Uses params.* to obtain a reference GTF (custom path/URL or UCSC)
 //   • Caches artifacts (GTF + derived tables) under params.genome_cache
+//   • Creates gene catalog and functional region coordinate files
 //   • Persists deterministic outputs via storeDir; publishes links under results/
-//   • Derived BED6 (TSS/TES) are sorted (chr, start asc)
+//   • Derived BED6 files are sorted (chr, start asc)
 //
 // Inputs
 //   (none — driven by params)
@@ -19,9 +20,10 @@
 // Outputs (publishDir):
 //   ${params.output_dir}/00_references/${params.reference_genome}/
 //     ├── ${reference_genome}.gtf
-//     ├── ${reference_genome}.genes.tsv
-//     ├── ${reference_genome}.tss.bed
-//     └── ${reference_genome}.tes.bed
+//     ├── ${reference_genome}.genes.tsv  (gene_id, gene_name, chr, strand, start, end, tss, tes, biotype)
+//     ├── ${reference_genome}.tss.bed    (BED6; 1bp TSS per gene)
+//     ├── ${reference_genome}.tes.bed    (BED6; 1bp TES per gene)
+//     └── ${reference_genome}.functional_regions.tsv  (all functional region coordinates)
 // ============================================================================
 
 nextflow.enable.dsl = 2
@@ -51,6 +53,7 @@ process download_gtf {
     path("${params.reference_genome}.genes.tsv"), emit: genes
     path("${params.reference_genome}.tss.bed"),  emit: tss
     path("${params.reference_genome}.tes.bed"),  emit: tes
+    path("${params.reference_genome}.functional_regions.tsv"), emit: functional_regions
 
   // ── Script ──────────────────────────────────────────────────────────────
   shell:
@@ -73,11 +76,13 @@ process download_gtf {
   OUT_GENES="${ASM}.genes.tsv"
   OUT_TSS="${ASM}.tss.bed"
   OUT_TES="${ASM}.tes.bed"
+  OUT_FUNC_REGIONS="${ASM}.functional_regions.tsv"
 
   CACHE_GTF="${CACHE_DIR}/${ASM}.gtf"
   CACHE_GENES="${CACHE_DIR}/${ASM}.genes.tsv"
   CACHE_TSS="${CACHE_DIR}/${ASM}.tss.bed"
   CACHE_TES="${CACHE_DIR}/${ASM}.tes.bed"
+  CACHE_FUNC_REGIONS="${CACHE_DIR}/${ASM}.functional_regions.tsv"
 
   CUSTOM_PATH='!{params.gtf_path ?: ""}'
   CUSTOM_URL='!{params.gtf_url  ?: ""}'
@@ -106,12 +111,13 @@ process download_gtf {
   # ─────────────────────────────────────────────────────────────────────────
   # 1) Fast path: reuse complete cache
   # ─────────────────────────────────────────────────────────────────────────
-  if [[ -s "${CACHE_GTF}" && -s "${CACHE_GENES}" && -s "${CACHE_TSS}" && -s "${CACHE_TES}" ]]; then
-    echo "INFO  [gtf] using cached GTF + derived catalogs"
+  if [[ -s "${CACHE_GTF}" && -s "${CACHE_GENES}" && -s "${CACHE_TSS}" && -s "${CACHE_TES}" && -s "${CACHE_FUNC_REGIONS}" ]]; then
+    echo "INFO  [gtf] using cached GTF + derived catalogs + functional regions"
     cp -f "${CACHE_GTF}"   "${OUT_GTF}"
     cp -f "${CACHE_GENES}" "${OUT_GENES}"
     cp -f "${CACHE_TSS}"   "${OUT_TSS}"
     cp -f "${CACHE_TES}"   "${OUT_TES}"
+    cp -f "${CACHE_FUNC_REGIONS}" "${OUT_FUNC_REGIONS}"
     exit 0
   fi
 
@@ -170,6 +176,9 @@ process download_gtf {
 
   # ─────────────────────────────────────────────────────────────────────────
   # 3) Build catalogs (deterministic; BEDs sorted)
+  #    - Includes ALL gene types (maintains scientific completeness)
+  #    - Calculates single TSS/TES coordinates from transcript boundaries
+  #    - Improved GTF parsing with better biotype handling
   # ─────────────────────────────────────────────────────────────────────────
   tmpw="$(mktemp -d "${CACHE_DIR}/.build_${ASM}.XXXXXX")"; trap 'rm -rf "${tmpw}"' EXIT
 
@@ -187,17 +196,47 @@ process download_gtf {
   mv -f "${tmpw}/tss.bed"   "${CACHE_TSS}"
   mv -f "${tmpw}/tes.bed"   "${CACHE_TES}"
 
+  # ─────────────────────────────────────────────────────────────────────────
+  # 4) Create functional regions based on user parameters
+  # ─────────────────────────────────────────────────────────────────────────
+  echo "INFO  [gtf] Creating functional regions based on parameters"
+  
+  # Use container-safe path to Python script
+  FUNC_REGIONS_SCRIPT="!{projectDir}/bin/create_functional_regions.py"
+  if [[ ! -f "$FUNC_REGIONS_SCRIPT" ]]; then
+    FUNC_REGIONS_SCRIPT="create_functional_regions.py"  # Fall back to PATH
+  fi
+  
+  # Get functional region parameters (with defaults matching old R script)
+  PROM_UP="!{ (params.functional_regions?.prom_up ?: 250) as int }"
+  PROM_DOWN="!{ (params.functional_regions?.prom_down ?: 250) as int }"
+  DIV_INNER="!{ (params.functional_regions?.div_inner ?: 251) as int }"
+  DIV_OUTER="!{ (params.functional_regions?.div_outer ?: 750) as int }"
+  CPS_OFFSET="!{ (params.functional_regions?.cps_offset ?: 500) as int }"
+  TW_LENGTH="!{ (params.functional_regions?.tw_length ?: 10000) as int }"
+  
+  python3 "$FUNC_REGIONS_SCRIPT" \
+    --genes "${CACHE_GENES}" \
+    --prom-up "$PROM_UP" \
+    --prom-down "$PROM_DOWN" \
+    --div-inner "$DIV_INNER" \
+    --div-outer "$DIV_OUTER" \
+    --cps-offset "$CPS_OFFSET" \
+    --tw-length "$TW_LENGTH" \
+    --output "${CACHE_FUNC_REGIONS}"
+
   cp -f "${CACHE_GTF}"   "${OUT_GTF}"
   cp -f "${CACHE_GENES}" "${OUT_GENES}"
   cp -f "${CACHE_TSS}"   "${OUT_TSS}"
   cp -f "${CACHE_TES}"   "${OUT_TES}"
+  cp -f "${CACHE_FUNC_REGIONS}" "${OUT_FUNC_REGIONS}"
 
   # ─────────────────────────────────────────────────────────────────────────
-  # 4) Guards
+  # 5) Guards
   # ─────────────────────────────────────────────────────────────────────────
-  [[ -s "${OUT_GTF}" && -s "${OUT_GENES}" && -s "${OUT_TSS}" && -s "${OUT_TES}" ]] \
+  [[ -s "${OUT_GTF}" && -s "${OUT_GENES}" && -s "${OUT_TSS}" && -s "${OUT_TES}" && -s "${OUT_FUNC_REGIONS}" ]] \
     || { echo "ERROR [gtf] expected outputs missing" >&2; exit 3; }
 
-  echo "INFO  [gtf] ✔ made: ${CACHE_GTF}, ${CACHE_GENES}, ${CACHE_TSS}, ${CACHE_TES} ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  echo "INFO  [gtf] ✔ made: ${CACHE_GTF}, ${CACHE_GENES}, ${CACHE_TSS}, ${CACHE_TES}, ${CACHE_FUNC_REGIONS} ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   '''
 }

@@ -66,6 +66,7 @@ process call_functional_regions {
     path genes_tsv
     path tss_bed
     path tes_bed
+    path functional_regions_tsv
 
   // ── Declared outputs ────────────────────────────────────────────────────
   output:
@@ -111,6 +112,7 @@ process call_functional_regions {
   TSS_BED="!{tss_bed}"
   TES_BED="!{tes_bed}"
   FGR_PY="!{functional_regions_py}"
+  FUNC_REGIONS_TSV="!{functional_regions_tsv}"
 
   THREADS=!{task.cpus}
 
@@ -121,6 +123,7 @@ process call_functional_regions {
   python3 "${FGR_PY}" \
     --sid "${SID}" \
     --genes "${GENES_TSV}" \
+    --functional-regions "${FUNC_REGIONS_TSV}" \
     --divergent "${DIV_BED}" \
     --pos "${POS_BG}" \
     --neg "${NEG_BG}" \

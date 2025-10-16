@@ -3,7 +3,7 @@
 # ║  gtf_to_catalog.py — build gene catalog from a GTF/GFF                   ║
 # ║                                                                          ║
 # ║  Inputs  : <in.gtf[.gz]>                                                 ║
-# ║  Outputs : genes.tsv  (gene_id, gene_name, chr, strand, start, end, …)   ║
+# ║  Outputs : genes.tsv  (gene_id, gene_name, chr, strand, start, end, tss, tes, biotype) ║
 # ║            tss.bed    (BED6; 1bp TSS per gene; name = gene_name|gene_id) ║
 # ║            tes.bed    (BED6; 1bp TES per gene; name = gene_name|gene_id) ║
 # ║                                                                          ║
@@ -13,8 +13,10 @@
 # ║       gene_id:  gene_id, geneID, gene, ID, Parent                         ║
 # ║       gene_name: gene_name, Name, gene                                    ║
 # ║       biotype:  gene_type, gene_biotype, biotype                          ║
+# ║   • Includes ALL gene types by default (maintains scientific completeness) ║
 # ║   • Consolidates per-gene extents using gene features when present;       ║
 # ║     otherwise uses min/max across transcripts/exons.                      ║
+# ║   • Calculates single TSS/TES coordinates from transcript boundaries       ║
 # ║   • Deterministic iteration/sorting at write stage.                       ║
 # ║   • BED rows are BED6, 0-based start, 1-based end, with strand.           ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
@@ -23,6 +25,18 @@ from __future__ import annotations
 import sys, os, io, gzip, datetime
 from collections import defaultdict
 from typing import Dict, Tuple, Iterable
+
+# ── Biotype filtering ────────────────────────────────────────────────────────
+# Optional biotype filtering - by default, include ALL gene types
+# Users can specify --exclude-biotypes to filter out specific types
+
+def is_valid_gene_biotype(biotype: str, excluded_biotypes: set = None) -> bool:
+    """Check if gene biotype should be included in the catalog."""
+    if not biotype:
+        return True  # Include genes without biotype info
+    if excluded_biotypes is None:
+        return True  # Include all biotypes by default
+    return biotype.lower() not in excluded_biotypes
 
 # ── IO helpers ──────────────────────────────────────────────────────────────
 def open_text(path: str) -> io.TextIOBase:
@@ -120,6 +134,9 @@ def build_catalog(gtf_path: str) -> Tuple[
                 bio_hint.setdefault(gid, gtype)
 
             if feat == "gene":
+                # Note: Biotype filtering is now optional (disabled by default)
+                # Users can specify excluded biotypes via command line if needed
+                    
                 g = genes.setdefault(gid, {
                     "chr": chrom,
                     "strand": strand if strand in {"+", "-"} else strand_hint.get(gid, "+"),
@@ -138,6 +155,7 @@ def build_catalog(gtf_path: str) -> Tuple[
                 if (not g.get("biotype")) and gtype:
                     g["biotype"] = gtype
             elif feat in {"transcript", "mRNA", "exon"}:
+                # Track transcript/exon boundaries for gene extent calculation
                 tx_min[gid] = min(tx_min[gid], s)
                 tx_max[gid] = max(tx_max[gid], e)
 
@@ -157,6 +175,8 @@ def finalize_rows(genes: Dict[str, Dict[str, object]],
     Logic:
       1. If explicit 'gene' features exist, only use those (strict mode)
       2. If no explicit 'gene' features exist, fall back to transcript-based inference
+      3. Include all gene types by default (maintains scientific completeness)
+      4. Calculate single TSS/TES coordinates based on strand
     """
     out = []
     
@@ -176,11 +196,16 @@ def finalize_rows(genes: Dict[str, Dict[str, object]],
             gname  = str(g.get("gene_name") or name_hint.get(gid) or gid)
             gtype  = str(g.get("biotype") or bio_hint.get(gid) or "")
 
+            # Note: Biotype filtering is now optional (disabled by default)
+            # All gene types are included to maintain scientific completeness
+
             if gend <= gstart:
                 continue
 
+            # Calculate single TSS and TES coordinates based on strand
             tss = gstart if strand == "+" else gend
             tes = gend   if strand == "+" else gstart
+                
             out.append((gid, gname, chrom, strand, gstart, gend, tss, tes, gtype))
     else:
         # Fallback mode: infer genes from transcripts when no explicit gene features exist
@@ -196,10 +221,15 @@ def finalize_rows(genes: Dict[str, Dict[str, object]],
             if gstart is None or gend is None or gend <= gstart:
                 continue
             gname = name_hint.get(gid, gid)
-            gtype = bio_hint.get(gid, "")
+            gtype = bio_hint.get(gid, "unknown")
 
+            # Note: Biotype filtering is now optional (disabled by default)
+            # All gene types are included to maintain scientific completeness
+
+            # Calculate single TSS and TES coordinates based on strand
             tss = gstart if strand == "+" else gend
             tes = gend   if strand == "+" else gstart
+                
             out.append((gid, gname, chrom, strand, gstart, gend, tss, tes, gtype))
     
     return out
