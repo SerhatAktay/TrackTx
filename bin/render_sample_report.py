@@ -47,6 +47,12 @@ ap.add_argument("--allmap3p-neg-raw", default=None)
 ap.add_argument("--allmap3p-pos-cpm-bw", default=None)
 ap.add_argument("--allmap3p-neg-cpm-bw", default=None)
 
+# Run metadata flags
+ap.add_argument("--paired-end", default=None)
+ap.add_argument("--umi-enabled", default=None)
+ap.add_argument("--qc-run", default=None)
+ap.add_argument("--reference-genome", default=None)
+
 args = ap.parse_args()
 print(f"[render_py] start ts={datetime.datetime.utcnow().isoformat()}Z", file=sys.stderr)
 
@@ -646,6 +652,7 @@ hr{{border:none;border-top:1px solid var(--line);margin:16px 0}}
     <h1>{SID}</h1>
     <div>{status_strip()}</div>
     <div class="muted">Condition: <b>{COND}</b> • Timepoint: <b>{TP}</b> • Replicate: <b>{REP}</b></div>
+    <div class="muted">Mode: <b>{'PE' if str(args.paired_end).lower()=='true' else 'SE'}</b> • UMI: <b>{'on' if str(args.umi_enabled).lower()=='true' else 'off'}</b> • QC: <b>{'on' if str(args.qc_run).lower()=='true' else 'off'}</b> • Reference: <b>{args.reference_genome or 'NA'}</b></div>
   </div>
 
   <h2>At-a-glance</h2>

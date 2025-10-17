@@ -66,6 +66,7 @@ process call_functional_regions {
     path genes_tsv
     path tss_bed
     path tes_bed
+    path functional_regions_tsv
 
   // ── Declared outputs ────────────────────────────────────────────────────
   output:
@@ -80,14 +81,14 @@ process call_functional_regions {
 
   // ── Script ──────────────────────────────────────────────────────────────
   shell:
-  // Inline all functional_regions defaults directly in the script below to avoid missing-variable issues
-  def PROM_UP      = (params.functional_regions?.prom_up      ?: 250)  as int
-  def PROM_DOWN    = (params.functional_regions?.prom_down    ?: 250)  as int
-  def DIV_INNER    = (params.functional_regions?.div_inner    ?: 250)  as int
-  def DIV_OUTER    = (params.functional_regions?.div_outer    ?: 750)  as int
-  def TW_LEN       = (params.functional_regions?.tw_length    ?: 10_000) as int
-  def MIN_SIGNAL   = (params.functional_regions?.min_signal   ?: 0.0)  as float
-  def ALLOW_UNSTR  = (params.functional_regions?.allow_unstranded in [null,true,'true']) ? true : false
+  // Use centralized defaults from nextflow.config
+  def PROM_UP      = params.functional_regions.prom_up      as int
+  def PROM_DOWN    = params.functional_regions.prom_down    as int
+  def DIV_INNER    = params.functional_regions.div_inner    as int
+  def DIV_OUTER    = params.functional_regions.div_outer    as int
+  def TW_LEN       = params.functional_regions.tw_length    as int
+  def MIN_SIGNAL   = params.functional_regions.min_signal   as float
+  def ALLOW_UNSTR  = params.functional_regions.allow_unstranded
   // inline count_mode in script interpolation to avoid scope issues
 
   '''
@@ -111,6 +112,7 @@ process call_functional_regions {
   TSS_BED="!{tss_bed}"
   TES_BED="!{tes_bed}"
   FGR_PY="!{functional_regions_py}"
+  FUNC_REGIONS_TSV="!{functional_regions_tsv}"
 
   THREADS=!{task.cpus}
 
@@ -121,26 +123,27 @@ process call_functional_regions {
   python3 "${FGR_PY}" \
     --sid "${SID}" \
     --genes "${GENES_TSV}" \
+    --functional-regions "${FUNC_REGIONS_TSV}" \
     --divergent "${DIV_BED}" \
     --pos "${POS_BG}" \
     --neg "${NEG_BG}" \
     --tss "${TSS_BED}" \
     --tes "${TES_BED}" \
-    --prom-up "!{ (params.functional_regions?.prom_up    ?: 300) as int }" \
-    --prom-down "!{ (params.functional_regions?.prom_down  ?: 250) as int }" \
-    --div-inner "!{ (params.functional_regions?.div_inner  ?: 350) as int }" \
-    --div-outer "!{ (params.functional_regions?.div_outer  ?: 1000) as int }" \
-    --tss-active-pm "!{ (params.functional_regions?.tss_active_pm ?: 600) as int }" \
-    --tw-length "!{ (params.functional_regions?.tw_length  ?: 10_000) as int }" \
-    --min-signal "!{ (params.functional_regions?.min_signal ?: 0.0) as float }" \
-    --min-signal-mode "!{ (params.functional_regions?.min_signal_mode ?: 'absolute').toString() }" \
-    --min-signal-quantile "!{ (params.functional_regions?.min_signal_quantile ?: 0.90) as float }" \
-    $([[ "!{ (params.functional_regions?.div_fallback_enable in [true,'true']) ? true : false }" == "true" ]] && echo "--div-fallback-enable" || true) \
-    --div-fallback-threshold "!{ (params.functional_regions?.div_fallback_threshold ?: 0.30) as float }" \
-    --div-fallback-max-frac "!{ (params.functional_regions?.div_fallback_max_frac ?: 0.25) as float }" \
-    --active-slop "!{ (params.functional_regions?.active_slop ?: 0) as int }" \
-    --count-mode "!{ (params.functional_regions?.count_mode ?: 'signal').toString() }" \
-    $([[ "!{ (params.functional_regions?.allow_unstranded in [null,true,'true']) ? true : false }" == "true" ]] && echo "--allow-unstranded" || true) \
+    --prom-up "${PROM_UP}" \
+    --prom-down "${PROM_DOWN}" \
+    --div-inner "${DIV_INNER}" \
+    --div-outer "${DIV_OUTER}" \
+    --tss-active-pm "${params.functional_regions.tss_active_pm}" \
+    --tw-length "${TW_LEN}" \
+    --min-signal "${MIN_SIGNAL}" \
+    --min-signal-mode "${params.functional_regions.min_signal_mode}" \
+    --min-signal-quantile "${params.functional_regions.min_signal_quantile}" \
+    $([[ "${params.functional_regions.div_fallback_enable}" == "true" ]] && echo "--div-fallback-enable" || true) \
+    --div-fallback-threshold "${params.functional_regions.div_fallback_threshold}" \
+    --div-fallback-max-frac "${params.functional_regions.div_fallback_max_frac}" \
+    --active-slop "${params.functional_regions.active_slop}" \
+    --count-mode "${params.functional_regions.count_mode}" \
+    $([[ "${ALLOW_UNSTR}" == "true" ]] && echo "--allow-unstranded" || true) \
     --outdir "." 2>&1 | tee -a functional_regions.log
 
   # Normalize filenames (driver already writes the canonical names)
@@ -157,10 +160,10 @@ Inputs
   - genes.tsv (+ optional TSS/TES overrides)
 
 Geometry (defaults; user-editable via params.functional_regions.*)
-  - Promoter:  TSS -!{ (params.functional_regions?.prom_up    ?: 250) as int } .. +!{ (params.functional_regions?.prom_down ?: 250) as int }
-  - Divergent: TSS -!{ (params.functional_regions?.div_outer  ?: 750) as int } .. -!{ (params.functional_regions?.div_inner ?: 250) as int }  (opposite strand)
+  - Promoter:  TSS -${PROM_UP} .. +${PROM_DOWN}
+  - Divergent: TSS -${DIV_OUTER} .. -${DIV_INNER}  (opposite strand)
   - CPS:       TES -500 .. +500  (fixed)
-  - TW:        CPS end +!{ (params.functional_regions?.tw_length ?: 10_000) as int }
+  - TW:        CPS end +${TW_LEN}
   - Gene body: contiguous between Promoter and CPS
 
 Files

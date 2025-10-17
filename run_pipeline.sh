@@ -19,26 +19,49 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; }
 # Check if command exists
 has_command() { command -v "$1" >/dev/null 2>&1; }
 
-# Check if Docker is running (with optional auto-start prompt)
-docker_works() {
+# Check if Docker daemon is running (silent check for detection)
+docker_daemon_running() {
     # If Docker command doesn't exist, return false
     if ! has_command docker; then
         return 1
     fi
     
-    # If Docker daemon is already running, return success
-    if docker info >/dev/null 2>&1; then
+    # Test Docker daemon with timeout to avoid hanging
+    timeout 10s docker info >/dev/null 2>&1
+}
+
+# Handle Docker startup with user interaction
+docker_works() {
+    # First check if Docker is already running
+    if docker_daemon_running; then
         return 0
     fi
     
-    # Docker installed but not running - prompt user to start it
+    # Docker installed but not running - handle based on environment
     echo ""
     warning "Docker is installed but not currently running"
     
+    # Check if we're in an interactive terminal or Docker prompt is disabled
+    if [[ ! -t 0 ]] || [[ $NO_DOCKER_PROMPT -eq 1 ]]; then
+        info "Non-interactive mode detected. Please start Docker manually:"
+        if [[ "$OSTYPE" == "darwin"* ]] && [[ -d "/Applications/Docker.app" ]]; then
+            info "  open -a Docker"
+        elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+            info "  sudo systemctl start docker"
+        fi
+        return 1
+    fi
+    
     # Check if we're on macOS with Docker Desktop
     if [[ "$OSTYPE" == "darwin"* ]] && [[ -d "/Applications/Docker.app" ]]; then
+        # Use a longer timeout for the prompt (60 seconds)
         echo -n "Would you like to start Docker Desktop? [Y/n]: "
-        read -r ANSWER || ANSWER="y"
+        if ! timeout 60s read -r ANSWER; then
+            echo ""
+            info "Prompt timeout - assuming 'no'"
+            ANSWER="n"
+        fi
+        
         case "${ANSWER:-y}" in
             [Yy]|[Yy][Ee][Ss])
                 info "Starting Docker Desktop..."
@@ -48,7 +71,7 @@ docker_works() {
                 info "Waiting for Docker daemon to start (this may take up to 60 seconds)..."
                 for i in {1..30}; do
                     sleep 2
-                    if docker info >/dev/null 2>&1; then
+                    if timeout 5s docker info >/dev/null 2>&1; then
                         success "Docker started successfully!"
                         return 0
                     fi
@@ -77,7 +100,7 @@ docker_works() {
 
 # Detect best execution profile
 detect_profile() {
-    if docker_works; then
+    if docker_daemon_running; then
         echo "docker"
     # Use conda profile (works with conda/mamba/micromamba)
     elif has_command conda || has_command mamba || has_command micromamba; then
@@ -110,6 +133,7 @@ OPTIONS:
     --no-auto-resume               Disable auto-detection of resume
     --no-clear                     Do not clear the terminal before starting
     --clear-delay SEC              Seconds to wait before clearing (default: 6)
+    --no-docker-prompt             Skip Docker auto-start prompt (for automated environments)
     --dry-run                      Show what would be executed
     
 PROFILES:
@@ -119,7 +143,7 @@ PROFILES:
     singularity  📦 Container via Singularity/Apptainer (HPC)
     local        🖥️  Use system-installed tools
 
-For more help: https://github.com/your-repo/TrackTx/
+For more help: https://github.com/SerhatAktay/TrackTx/
 EOF
 }
 
@@ -132,6 +156,7 @@ DRY_RUN=""
 NO_AUTO_RESUME=0
 NO_CLEAR=0
 CLEAR_DELAY=6
+NO_DOCKER_PROMPT=0
 EXTRA_ARGS=()
 WANT_PROMPT_RESUME=1
     
@@ -182,6 +207,10 @@ WANT_PROMPT_RESUME=1
         --clear-delay)
             CLEAR_DELAY="$2"
             shift 2
+            ;;
+        --no-docker-prompt)
+            NO_DOCKER_PROMPT=1
+            shift
             ;;
         *)
             EXTRA_ARGS+=("$1")
@@ -277,6 +306,39 @@ main() {
         EXTRA_ARGS=("${FILTERED_ARGS[@]}")
     fi
 
+    # Conda activation hardening (for conda/conda_server profiles)
+    if [[ "$PROFILE" == "conda" || "$PROFILE" == "conda_server" ]]; then
+        # Prefer user-provided prebuilt env if available
+        if [[ -n "${NXF_CONDA_ENV_PATH:-}" && -d "${NXF_CONDA_ENV_PATH}/bin" ]]; then
+            export PATH="${NXF_CONDA_ENV_PATH}/bin:${PATH}"
+            export CONDA_PREFIX="${NXF_CONDA_ENV_PATH}"
+        fi
+        # Help Nextflow find conda frontend
+        if [[ -z "${CONDA_EXE:-}" ]] && has_command conda; then
+            export CONDA_EXE="$(command -v conda)"
+        fi
+        # Derive a reliable activate path
+        if [[ -z "${NXF_CONDA_ACTIVATE:-}" ]]; then
+            if [[ -n "${CONDA_EXE:-}" ]]; then
+                _conda_bin_dir="$(dirname "${CONDA_EXE}")"
+                if [[ -f "${_conda_bin_dir}/activate" ]]; then
+                    export NXF_CONDA_ACTIVATE="${_conda_bin_dir}/activate"
+                fi
+            fi
+            for a in \
+                "${HOME}/miniconda3/bin/activate" \
+                "${HOME}/anaconda3/bin/activate" \
+                "/opt/conda/bin/activate" \
+                "/usr/local/miniconda3/bin/activate" \
+                "/usr/local/anaconda3/bin/activate"; do
+                if [[ -z "${NXF_CONDA_ACTIVATE:-}" && -f "$a" ]]; then
+                    export NXF_CONDA_ACTIVATE="$a"
+                fi
+            done
+        fi
+        export NXF_CONDA_SHELL=bash
+    fi
+
     # Auto-detect resume (unless disabled or explicitly provided)
     if [[ $NO_AUTO_RESUME -eq 0 && -z "$RESUME" ]]; then
         if [[ -d .nextflow || -f .nextflow.log || -f results/trace/trace.txt ]]; then
@@ -301,7 +363,6 @@ main() {
         -entry TrackTx
         -profile "$PROFILE"
         --samplesheet "$SAMPLESHEET"
-        --output_dir "./results"
         -with-report       "results/nf_report.html"
         -with-timeline     "results/nf_timeline.html"
         -with-dag          "results/nf_dag.png"

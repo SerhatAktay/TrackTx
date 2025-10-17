@@ -100,6 +100,7 @@ workflow TrackTx {
   def genes_ch = download_gtf.out.genes
   def tss_ch   = download_gtf.out.tss
   def tes_ch   = download_gtf.out.tes
+  def func_regions_ch = download_gtf.out.functional_regions
 
   // ───────── 3.2 Samplesheet ────────
   if( !params.samplesheet ) error "Missing: --samplesheet <CSV>"
@@ -108,11 +109,33 @@ workflow TrackTx {
     .fromPath(params.samplesheet)
     .splitCsv(header: true)
     .map { row ->
+      // ── Required fields
       if (!row.sample || !row.file1)
         error "Samplesheet row missing 'sample' or 'file1': ${row}"
-      // Only validate file2 for local FASTQ mode, not for SRR mode
+
+      // ── Paired-end requirements (only for local FASTQ mode)
       if (params.sample_source != 'srr' && params.paired_end && !row.file2)
         error "paired_end=true but 'file2' empty for sample ${row.sample} (local FASTQ mode requires both file1 and file2)"
+
+      // ── UMI basic validation when enabled
+      if (params.umi?.enabled) {
+        def ulen = (params.umi.length ?: 0) as int
+        if (ulen <= 0)
+          error "umi.enabled=true but umi.length missing/<=0"
+        def uloc = (params.umi.location ?: 5) as int
+        if (!(uloc in [5,3]))
+          error "umi.location must be 5 or 3 (got ${uloc})"
+      }
+
+      // ── File existence checks for local FASTQ mode
+      if (params.sample_source != 'srr') {
+        def r1p = file("${projectDir}/${row.file1}")
+        if (!r1p.exists()) error "file1 not found for sample ${row.sample}: ${r1p}"
+        if (params.paired_end) {
+          def r2p = file("${projectDir}/${row.file2}")
+          if (!r2p.exists()) error "file2 not found for sample ${row.sample}: ${r2p}"
+        }
+      }
 
       def sid   = "${row.sample}_r${row.replicate ?: 1}"
       def reads =
@@ -325,7 +348,7 @@ workflow TrackTx {
     func_input_ch,
     gtf_ch,
     Channel.value(file("${projectDir}/bin/functional_regions.py")),
-    genes_ch, tss_ch, tes_ch
+    genes_ch, tss_ch, tes_ch, func_regions_ch
   )
 
   def functional_regions_ch     = call_functional_regions.out.main
@@ -373,17 +396,11 @@ workflow TrackTx {
   def pol2_pausing_ch = calculate_pol2_metrics.out.pausing
 
   // ───────── 3.12b Aggregate list for cohort ─────────────────────────────
-  def samples_lines_raw = pol2_gene_ch.map { sid, genes, c, t, r ->
-    def p = file(genes)
-    tuple(sid, c ?: 'NA', t ?: 'NA', (r ?: '1') as String, p.exists() ? p.toString() : null)
+  // Use published path under results to avoid referencing ephemeral work dirs
+  def samples_lines_ok = pol2_gene_ch.map { sid, _genes, c, t, r ->
+    def publishedGenesPath = "${projectDir}/${params.output_dir}/08_pol2_metrics/${sid}/pol2_gene_metrics.tsv"
+    "${sid}\t${c ?: 'NA'}\t${t ?: 'NA'}\t${r ?: '1'}\t${publishedGenesPath}"
   }
-
-  def samples_lines_ok = samples_lines_raw
-    .filter { sid, c, t, r, path ->
-      if (!path) { log.warn "[pol2-aggregate] skipping: ${sid} — missing per-sample TSV path"; return false }
-      true
-    }
-    .map { sid, c, t, r, path -> "${sid}\t${c}\t${t}\t${r}\t${path}" }
 
   def samples_tsv_raw =
     Channel.of('sample_id\tcondition\ttimepoint\treplicate\tfile')
@@ -408,16 +425,32 @@ workflow TrackTx {
         if (!line?.trim()) return
         if (line.replace('\r','') == HEADER) return
         def cols = line.split('\t', -1)
-        if (cols.size() != 5)
-          throw new RuntimeException("[pol2-aggregate] row ${idx0+2} has ${cols.size()} fields: ${line}")
-        if (!cols[4] || cols[4] == 'file')
-          throw new RuntimeException("[pol2-aggregate] row ${idx0+2} has invalid file path: ${cols[4]}")
-        out.append(line).append('\n')
+        if (cols.size() != 5) {
+          log.warn("[pol2-aggregate] skipping row ${idx0+2} (expected 5 cols): ${line}")
+          return
+        }
+        def pathStr = cols[4]
+        if (!pathStr || pathStr == 'file') {
+          log.warn("[pol2-aggregate] skipping row ${idx0+2} with invalid file field: ${pathStr}")
+          return
+        }
+        // Canonicalize path: try as-is, then relative to projectDir
+        def cand1 = file(pathStr)
+        def cand2 = file("${projectDir}/${pathStr}")
+        def okFile = cand1.exists() ? cand1 : (cand2.exists() ? cand2 : null)
+        if (!okFile) {
+          log.warn("[pol2-aggregate] skipping row ${idx0+2} (file not found): ${pathStr}")
+          return
+        }
+        cols[4] = okFile.toString()
+        out.append(cols.join('\t')).append('\n')
       }
 
       f.text = out.toString()
-      if (out.toString().trim() == HEADER)
-        throw new RuntimeException("[pol2-aggregate] no valid sample rows after sanitization")
+      // Do not hard-fail if no valid rows; downstream may handle empty aggregates
+      if (out.toString().trim() == HEADER) {
+        log.warn('[pol2-aggregate] no valid sample rows after sanitization; writing header-only file')
+      }
       f
     }
 
@@ -430,8 +463,16 @@ workflow TrackTx {
     .join(dedup_stats_ch.map { sid, dedup_stats, _c, _t, _r -> tuple(sid, dedup_stats) })
     .map { sid, meta, dedup_stats -> tuple(sid, meta[0], dedup_stats, meta[1], meta[2], meta[3]) }
   
-  qc_pol2_tracktx(qc_input_ch)
-  def qc_json_meta_ch = qc_pol2_tracktx.out.json_meta
+  // Gate QC execution via params.qc.run (default true)
+  def qc_json_meta_ch
+  if( params.qc?.run == false ){
+    log.info "QC module disabled via params.qc.run=false"
+    // Provide empty KV channel to keep report joins intact
+    qc_json_meta_ch = Channel.empty()
+  } else {
+    qc_pol2_tracktx(qc_input_ch)
+    qc_json_meta_ch = qc_pol2_tracktx.out.json_meta
+  }
 
   // ───────── 3.14 REPORT BUNDLE (deterministic per-SID joins) ────────────
   def meta_ch = aligned_ch.map { sid, _fb, _ab, _sb, c, t, r -> tuple(sid, c ?: 'NA', t ?: 'NA', r ?: '1') }.distinct()

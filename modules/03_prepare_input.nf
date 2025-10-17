@@ -140,6 +140,17 @@ process prepare_input {
   echo "INFO  QC      : tool=${QC_TOOL} raw=${DO_FQ_RAW} final=$([[ \"${QC_TOOL}\" == \"none\" ]] && echo 0 || echo 1)"
 
   # ─────────────────────────────────────────────────────────────────────────
+  # Temp directory handling: avoid container /tmp exhaustion
+  # Use task-local writable directory for all tool temp files
+  # ─────────────────────────────────────────────────────────────────────────
+  TMP_BASE=".tmp"
+  mkdir -p "${TMP_BASE}"
+  export TMPDIR="${PWD}/${TMP_BASE}"
+  export TMP="${TMPDIR}"
+  export TEMP="${TMPDIR}"
+  echo "INFO  TempDir : ${TMPDIR}"
+
+  # ─────────────────────────────────────────────────────────────────────────
   # 0) Validate inputs
   # ─────────────────────────────────────────────────────────────────────────
   if [[ "${MODE}" != "SE" && "${MODE}" != "PE" ]]; then
@@ -215,6 +226,9 @@ process prepare_input {
 
   # Enforce pre-UMI minlen to guarantee post-UMI FINAL_MINLEN
   CAD+=(-m "${PRE_UMI_MIN}")
+
+  # Ensure cutadapt uses the task-local temp directory
+  CAD+=(--temp-dir "${TMPDIR}")
 
   # Adapters
   if [[ "${TRIM_ON}" -eq 1 ]]; then

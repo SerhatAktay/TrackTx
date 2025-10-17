@@ -86,7 +86,7 @@ process download_srr {
   REP="!{replicate}"
   PE="!{paired_end}"
   THREADS=!{task.cpus}
-  OUTPUB="!{params.output_dir}/fastq"
+  OUTPUB="!{params.output_dir}/01_trimmed_fastq"
   FQ_GZIP="!{ (params.fastq_gzip == null) ? 'false' : (params.fastq_gzip as boolean ? 'true' : 'false') }"
   SRA_TMP="!{ params.sra_tmp ?: '' }"
   SRA_MAXSZ="!{ params.sra_max_size ?: '200G' }"
@@ -216,9 +216,9 @@ process download_srr {
       fi
     fi
   else
-    # If SE run yet stray zero-byte R2 exists, drop it
-    if [[ -f "${SRR}_R2.fastq" && ! -s "${SRR}_R2.fastq" ]]; then rm -f "${SRR}_R2.fastq"; fi
-    if [[ -f "${SRR}_R2.fastq.gz" && ! -s "${SRR}_R2.fastq.gz" ]]; then rm -f "${SRR}_R2.fastq.gz"; fi
+    # SE mode: ensure an empty R2 file exists to satisfy Nextflow tuple output
+    # Always provide an uncompressed stub; tuple pattern matches .fastq{,.gz}
+    : > "${SRR}_R2.fastq"
   fi
 
   # ── 5) Checksums ─────────────────────────────────────────────────────────

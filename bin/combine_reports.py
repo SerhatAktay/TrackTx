@@ -1441,7 +1441,7 @@ function exportFilteredCSV() {
     .filter(row => row.style.display !== 'none');
   
   if (rows.length === 0) {
-    alert('No data to export. Please adjust your filters.');
+    console.warn('No data to export. Please adjust your filters.');
     return;
   }
   

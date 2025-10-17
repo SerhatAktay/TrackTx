@@ -9,6 +9,8 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
   <!-- JSZip for creating the ZIP with YAML+CSV -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" crossorigin="anonymous"></script>
+  <!-- js-yaml for parsing uploaded params.yaml -->
+  <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js" crossorigin="anonymous"></script>
 
   <style>
     /* Small utility classes to keep layout tidy and consistent */
@@ -24,6 +26,18 @@
     
     /* Ensure consistent box width */
     .box {
+      max-width: 100%;
+      overflow: hidden;
+      width: 100%;
+    }
+    
+    /* Ensure all columns respect container width */
+    .columns {
+      width: 100%;
+      max-width: 100%;
+    }
+    
+    .column {
       max-width: 100%;
       overflow: hidden;
     }
@@ -87,6 +101,10 @@
       Build <span class="mono">params.yaml</span> and <span class="mono">samplesheet.csv</span> for the TrackTx nascent RNA pipeline (<span class="mono">main.nf</span>).
       This page explains the options in plain English and creates a ZIP you can run immediately.
     </p>
+    <div class="mb-3">
+      <label class="button is-info is-light" for="yamlUploadInput">Upload params.yaml to fill</label>
+      <span class="is-size-7 is-dim">Load a previous config to tweak only a few settings.</span>
+    </div>
 
     <!-- INTRO / HOW TO RUN -->
     <article class="message is-info">
@@ -460,144 +478,289 @@
       </div>
     </div>
 
-    <!-- STEP 6: ANALYSIS PARAMETERS -->
+    <!-- STEP 6: DIVERGENT TRANSCRIPTION -->
     <div class="box">
-      <h2 class="subtitle is-5"><span class="step">6</span> Analysis parameters (sensible defaults)</h2>
+      <h2 class="subtitle is-5"><span class="step">6</span> Divergent transcription</h2>
       <p class="is-size-7 is-dim">
-        These parameters control the computational analysis of your data. Default values are optimized for most nascent RNA-seq experiments.
-        <br><strong>Divergent Transcription:</strong> Detects bidirectional transcription from promoters (important for understanding regulatory mechanisms).
-        <br><strong>Pol II Metrics:</strong> Calculates polymerase density and pausing indices (key metrics for transcription dynamics).
-        <br><em>You typically don't need to change these unless you have specific experimental requirements.</em>
+        Detects opposite-strand signal near promoters. Choose a preset for your organism/analysis type, or customize manually.
+        <br><strong>Presets:</strong> Organism-specific and analysis-type-specific configurations optimized for different genomes and research goals.
+        <br><strong>Parameters:</strong> Control detection sensitivity, signal thresholds, and quality filtering.
+        <br><em>Default values work well for most organisms, but presets can optimize for specific research needs.</em>
       </p>
+      
+      <!-- Preset Selection -->
       <div class="columns">
         <div class="column">
-          <h3 class="subtitle is-6">Divergent transcription</h3>
-          <p class="help is-dim">
-            Detects opposite-strand signal near promoters. If results look too sparse, lower thresholds a bit; if too noisy, increase them.
-          </p>
-          <div class="columns">
-            <div class="column">
-              <label class="label">Window size (bp)</label>
-              <input class="input small-input" id="div_win" type="number" min="1" value="800">
-              <p class="help is-dim">Genomic span examined around candidate regions.</p>
-            </div>
-            <div class="column">
-              <label class="label">Per-bin |signal|</label>
-              <input class="input small-input" id="div_thr" type="number" step="0.1" value="1">
-              <p class="help is-dim">Minimum absolute track height for a bin to count.</p>
-            </div>
-            <div class="column">
-              <label class="label">Block sum</label>
-              <input class="input small-input" id="div_sum" type="number" step="0.1" value="5">
-              <p class="help is-dim">Minimum area/sum across a divergent block.</p>
-            </div>
-            <div class="column">
-              <label class="label">Balance</label>
-              <input class="input small-input" id="div_bal" type="number" step="0.05" value="0">
-              <p class="help is-dim">How similar pos/neg peaks must be (0 = no requirement).</p>
-            </div>
+          <label class="label">Preset Configuration</label>
+          <div class="select small-input">
+            <select id="div_preset" onchange="updateDivergentPreset()">
+              <option value="default">Default (majority of divergent sites)</option>
+              <option value="human">Human (large genome, complex regulation)</option>
+              <option value="drosophila">Drosophila (compact genome, gene-dense)</option>
+              <option value="plant">Plant (moderate genome, different regulation)</option>
+              <option value="gene_finding">Gene Finding (promoter-proximal focus)</option>
+              <option value="enhancer_finding">Enhancer Finding (distal focus)</option>
+              <option value="custom">Custom (manual configuration)</option>
+            </select>
           </div>
-          <div class="columns">
-            <div class="column">
-              <label class="label">Valley gap (bp)</label>
-              <input class="input small-input" id="div_gap" type="number" value="0">
-            </div>
-            <div class="column">
-              <label class="label">Valley max |signal|</label>
-              <input class="input small-input" id="div_valthr" type="number" step="0.1" placeholder="∞">
-            </div>
-            <div class="column">
-              <label class="label">Smoothing SD (bp)</label>
-              <input class="input small-input" id="div_sd" type="number" value="0">
-            </div>
-            <div class="column">
-              <label class="label">QC PDF</label><br>
-              <label class="checkbox"><input type="checkbox" id="div_qc"> Save QC plot</label>
-            </div>
+          <p class="help is-dim">Choose preset to auto-fill parameters below, or customize manually.</p>
+        </div>
+        <div class="column">
+          <label class="label">Preset Description</label>
+          <p class="help" id="div_preset_desc">
+            <strong>Default:</strong> Balanced parameters capturing majority of divergent sites in most organisms.
+          </p>
+        </div>
+      </div>
+      
+      <!-- Manual Parameters (always visible, updated by presets) -->
+      <div id="div_manual_params">
+        <p class="help is-dim mb-3">
+          <strong>Parameter Values:</strong> Choose a preset above to auto-fill these values, or adjust manually as needed.
+        </p>
+        <div class="columns">
+          <div class="column">
+            <label class="label">Window size (bp)</label>
+            <input class="input small-input" id="div_win" type="number" min="1" value="800">
+            <p class="help is-dim">Genomic span examined around candidate regions.</p>
+          </div>
+          <div class="column">
+            <label class="label">Per-bin |signal|</label>
+            <input class="input small-input" id="div_thr" type="number" step="0.1" value="1">
+            <p class="help is-dim">Minimum absolute track height for a bin to count.</p>
+          </div>
+          <div class="column">
+            <label class="label">Block sum</label>
+            <input class="input small-input" id="div_sum" type="number" step="0.1" value="5">
+            <p class="help is-dim">Minimum area/sum across a divergent block.</p>
+          </div>
+          <div class="column">
+            <label class="label">Balance</label>
+            <input class="input small-input" id="div_bal" type="number" step="0.05" value="0">
+            <p class="help is-dim">How similar pos/neg peaks must be (0 = no requirement).</p>
           </div>
         </div>
-
-        <div class="column">
-          <h3 class="subtitle is-6">Functional regions</h3>
-          <p class="help is-dim">
-            Defines promoter windows, gene-body onset, and termination windows used downstream for metrics and calls.
-          </p>
-          <div class="columns">
-            <div class="column">
-              <label class="label">Promoter upstream</label>
-              <input class="input small-input" id="prom_up" type="number" value="500">
-            </div>
-            <div class="column">
-              <label class="label">Promoter downstream</label>
-              <input class="input small-input" id="prom_down" type="number" value="250">
-            </div>
-            <div class="column">
-              <label class="label">Gene-body start offset</label>
-              <input class="input small-input" id="gb_start_offset" type="number" value="2000">
-            </div>
+        <div class="columns">
+          <div class="column">
+            <label class="label">Valley gap (bp)</label>
+            <input class="input small-input" id="div_gap" type="number" value="0">
           </div>
-          <div class="columns">
-            <div class="column">
-              <label class="label">Cleavage site offset</label>
-              <input class="input small-input" id="cps_offset" type="number" value="50">
-            </div>
-            <div class="column">
-              <label class="label">Termination window length</label>
-              <input class="input small-input" id="tw_length" type="number" value="5000">
-            </div>
-            <div class="column">
-              <label class="label">Merge gap</label>
-              <input class="input small-input" id="merge_gap" type="number" value="50">
-            </div>
-            <div class="column">
-              <label class="label">QC</label><br>
-              <label class="checkbox"><input type="checkbox" id="fgr_qc"> Enable QC summary</label>
-            </div>
+          <div class="column">
+            <label class="label">Valley max |signal|</label>
+            <input class="input small-input" id="div_valthr" type="number" step="0.1" placeholder="∞">
+          </div>
+          <div class="column">
+            <label class="label">Smoothing SD (bp)</label>
+            <input class="input small-input" id="div_sd" type="number" value="0">
+          </div>
+          <div class="column">
+            <label class="label">QC PDF</label><br>
+            <label class="checkbox"><input type="checkbox" id="div_qc"> Save QC plot</label>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- STEP 7: OUTPUT SWITCHES -->
+    <!-- STEP 7: FUNCTIONAL REGIONS -->
     <div class="box">
-      <h2 class="subtitle is-5"><span class="step">7</span> Output preferences</h2>
+      <h2 class="subtitle is-5"><span class="step">7</span> Functional regions</h2>
       <p class="is-size-7 is-dim">
-        Control what outputs the pipeline generates and in which formats.
-        <br><strong>Normalized Tracks:</strong> Generate CPM (counts per million) and siCPM (spike-in normalized) versions of your tracks.
-        <br><strong>Output Formats:</strong> Choose between bedGraph (detailed) and BigWig (compressed) formats for genome browser visualization.
-        <br><strong>siCPM Normalization:</strong> Requires proper spike-in controls and baseline samples for quantitative comparisons.
-        <br><em>BigWig files are recommended for genome browsers due to their smaller size and faster loading.</em>
+        Defines functional region boundaries for promoter, gene-body, CPS, and termination window analysis.
+        <br><strong>Region Types:</strong> Promoter, divergent, gene body, cleavage/polyA site, and termination window regions.
+        <br><strong>Signal Assignment:</strong> Hierarchical assignment of sequencing reads to functional categories.
+        <br><em>These parameters control how reads are categorized and counted for downstream analysis.</em>
       </p>
+          
+      <!-- Basic Region Parameters -->
       <div class="columns">
         <div class="column">
-          <label class="checkbox"><input type="checkbox" id="outputCPM" checked> Save CPM-normalized tracks</label><br>
-          <label class="checkbox"><input type="checkbox" id="outputSiCPM" checked> Save spike-in scaled tracks (siCPM)</label><br>
-          <label class="checkbox"><input type="checkbox" id="outputRawTracks"> Also keep raw (unnormalized) tracks</label>
+          <label class="label">Promoter upstream (bp)</label>
+          <input class="input small-input" id="prom_up" type="number" value="250" title="Upstream flank from TSS">
         </div>
         <div class="column">
-          <label class="checkbox"><input type="checkbox" id="trackBigWig" checked> BigWig (.bw)</label><br>
-          <label class="checkbox"><input type="checkbox" id="trackBedGraph"> BedGraph (.bedGraph)</label>
+          <label class="label">Promoter downstream (bp)</label>
+          <input class="input small-input" id="prom_down" type="number" value="250" title="Downstream flank from TSS">
+        </div>
+        <div class="column">
+          <label class="label">Divergent inner (bp)</label>
+          <input class="input small-input" id="div_inner" type="number" value="250" title="Inner boundary for divergent transcription">
+        </div>
+        <div class="column">
+          <label class="label">Divergent outer (bp)</label>
+          <input class="input small-input" id="div_outer" type="number" value="750" title="Outer boundary for divergent transcription">
         </div>
       </div>
+          
+      <!-- Extended Region Parameters -->
       <div class="columns">
         <div class="column">
-          <h3 class="subtitle is-6">Normalization module options</h3>
-          <label class="checkbox"><input type="checkbox" id="normEmitBW" checked> Emit BigWig</label><br>
-          <label class="checkbox"><input type="checkbox" id="normEmitSiCPM" checked> Emit siCPM (if factors available)</label><br>
-          <label class="checkbox"><input type="checkbox" id="normEmitAllMap" checked> Emit allMap tracks</label><br>
-          <label class="checkbox"><input type="checkbox" id="normForce5p"> Force 5′ outputs (otherwise auto)</label>
+          <label class="label">CPS offset (bp)</label>
+          <input class="input small-input" id="cps_offset" type="number" value="500" title="Cleavage/polyA site region offset">
         </div>
         <div class="column">
-          <h3 class="subtitle is-6">BigWig building</h3>
-          <label class="checkbox"><input type="checkbox" id="forceSortBg"> Force sort bedGraph before BigWig</label>
-          <p class="help is-dim">Enable if UCSC tools complain about sort order.</p>
+          <label class="label">Termination window (bp)</label>
+          <input class="input small-input" id="tw_length" type="number" value="10000" title="Termination window length">
+        </div>
+        <div class="column">
+          <label class="label">Short gene threshold (bp)</label>
+          <input class="input small-input" id="short_gene_threshold" type="number" value="750" title="Maximum length to classify as short gene">
+        </div>
+        <div class="column">
+          <label class="label">Active gene window (bp)</label>
+          <input class="input small-input" id="tss_active_pm" type="number" value="500" title="TSS ± window for active gene detection">
+        </div>
+      </div>
+          
+      <!-- Signal Processing Parameters -->
+      <div class="columns">
+        <div class="column">
+          <label class="label">Min signal threshold</label>
+          <input class="input small-input" id="min_signal" type="number" value="0.0" step="0.1" title="Minimum signal for read assignment">
+        </div>
+        <div class="column">
+          <label class="label">Signal threshold mode</label>
+          <div class="select small-input">
+            <select id="min_signal_mode">
+              <option value="absolute">Absolute</option>
+              <option value="quantile">Quantile</option>
+            </select>
+          </div>
+        </div>
+        <div class="column">
+          <label class="label">Signal quantile</label>
+          <input class="input small-input" id="min_signal_quantile" type="number" value="0.90" min="0.0" max="1.0" step="0.01" title="Quantile for dynamic threshold">
+        </div>
+        <div class="column">
+          <label class="label">Count mode</label>
+          <div class="select small-input">
+            <select id="count_mode">
+              <option value="signal">Signal</option>
+              <option value="event">Event</option>
+            </select>
+          </div>
+        </div>
+      </div>
+          
+      <!-- Advanced Options -->
+      <div class="columns">
+        <div class="column">
+          <label class="label">Advanced options</label><br>
+          <label class="checkbox"><input type="checkbox" id="allow_unstranded" checked> Allow unstranded</label><br>
+          <label class="checkbox"><input type="checkbox" id="div_fallback_enable"> Divergent fallback</label><br>
+          <label class="checkbox"><input type="checkbox" id="fgr_qc"> Enable QC</label>
+        </div>
+        <div class="column">
+          <label class="label">Fallback threshold</label>
+          <input class="input small-input" id="div_fallback_threshold" type="number" value="0.30" min="0.0" max="1.0" step="0.01" title="Divergent fallback trigger threshold">
+        </div>
+        <div class="column">
+          <label class="label">Fallback max fraction</label>
+          <input class="input small-input" id="div_fallback_max_frac" type="number" value="0.25" min="0.0" max="1.0" step="0.01" title="Maximum fallback fraction">
+        </div>
+        <div class="column">
+          <label class="label">Active gene slop (bp)</label>
+          <input class="input small-input" id="active_slop" type="number" value="0" title="Additional slop for active gene overlap">
         </div>
       </div>
     </div>
 
-    <!-- STEP 8: BUILD / PREVIEW / DOWNLOAD -->
+    <!-- STEP 8: OUTPUT PREFERENCES -->
     <div class="box">
-      <h2 class="subtitle is-5"><span class="step">8</span> Build & download your config</h2>
+      <h2 class="subtitle is-5"><span class="step">8</span> Output preferences</h2>
+      <p class="is-size-7 is-dim">
+        Control what outputs the pipeline generates and in which formats. Choose the options that best fit your analysis needs.
+        <br><strong>Track Normalization:</strong> Generate normalized versions for quantitative comparisons.
+        <br><strong>File Formats:</strong> Choose between detailed (bedGraph) and compressed (BigWig) formats.
+        <br><em>BigWig files are recommended for genome browsers due to smaller size and faster loading.</em>
+      </p>
+
+      <!-- Track Normalization Options -->
+      <div class="mb-4">
+        <h3 class="subtitle is-6">Track Normalization</h3>
+        <p class="help is-dim mb-3">Generate normalized versions of your tracks for quantitative analysis and comparisons.</p>
+        <div class="columns">
+          <div class="column">
+            <label class="checkbox">
+              <input type="checkbox" id="outputCPM" checked>
+              <strong>CPM (Counts Per Million)</strong> - Standard normalization for library size differences
+            </label><br>
+            <label class="checkbox">
+              <input type="checkbox" id="outputSiCPM" checked>
+              <strong>siCPM (Spike-in CPM)</strong> - Spike-in normalized for absolute quantification
+            </label>
+            <p class="help is-dim">Requires proper spike-in controls and baseline samples</p>
+          </div>
+          <div class="column">
+            <label class="checkbox">
+              <input type="checkbox" id="outputRawTracks">
+              <strong>Raw Tracks</strong> - Keep unnormalized tracks (larger files)
+            </label>
+            <p class="help is-dim">Useful for debugging or custom normalization</p><br>
+            <label class="checkbox">
+              <input type="checkbox" id="normEmitAllMap" checked>
+              <strong>All Mapping Tracks</strong> - Include all mapping statistics
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- File Format Options -->
+      <div class="mb-4">
+        <h3 class="subtitle is-6">File Formats</h3>
+        <p class="help is-dim mb-3">Choose output formats based on your visualization and analysis needs.</p>
+        <div class="columns">
+          <div class="column">
+            <label class="checkbox">
+              <input type="checkbox" id="trackBigWig" checked>
+              <strong>BigWig (.bw)</strong> - Compressed format for genome browsers
+            </label>
+            <p class="help is-dim">Recommended for IGV, UCSC Genome Browser, etc.</p><br>
+            <label class="checkbox">
+              <input type="checkbox" id="normEmitBW" checked>
+              <strong>Force BigWig Output</strong> - Ensure BigWig generation
+            </label>
+          </div>
+          <div class="column">
+            <label class="checkbox">
+              <input type="checkbox" id="trackBedGraph">
+              <strong>BedGraph (.bedGraph)</strong> - Detailed text format
+            </label>
+            <p class="help is-dim">Larger files but human-readable and portable</p><br>
+            <label class="checkbox">
+              <input type="checkbox" id="forceSortBg">
+              <strong>Force Sort BedGraph</strong> - Sort before BigWig conversion
+            </label>
+            <p class="help is-dim">Enable if UCSC tools complain about sort order</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Advanced Options -->
+      <div>
+        <h3 class="subtitle is-6">Advanced Options</h3>
+        <p class="help is-dim mb-3">Specialized options for specific analysis requirements.</p>
+        <div class="columns">
+          <div class="column">
+            <label class="checkbox">
+              <input type="checkbox" id="normForce5p">
+              <strong>Force 5′ End Outputs</strong> - Generate 5′ tracks even if not needed
+            </label>
+            <p class="help is-dim">Override automatic 5′ detection</p>
+          </div>
+          <div class="column">
+            <label class="checkbox">
+              <input type="checkbox" id="normEmitSiCPM" checked>
+              <strong>Auto-emit siCPM</strong> - Generate siCPM when factors available
+            </label>
+            <p class="help is-dim">Automatic spike-in normalization when possible</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 9: BUILD / PREVIEW / DOWNLOAD -->
+    <div class="box">
+      <h2 class="subtitle is-5"><span class="step">9</span> Build & download your config</h2>
       <p class="is-size-7 is-dim">
         Generate and download your configuration files to start the TrackTx pipeline.
         <br><strong>Preview:</strong> Review the generated YAML configuration before downloading.
@@ -609,6 +772,8 @@
         <button class="button is-primary" onclick="downloadZip()">Download ZIP (YAML + CSV)</button>
         <button class="button is-light" onclick="fillPreview()">Preview YAML</button>
         <button class="button is-light" onclick="copyYAML()">Copy YAML</button>
+        <label class="button is-info is-light" for="yamlUploadInput">Upload params.yaml to fill</label>
+        <input id="yamlUploadInput" type="file" accept=".yml,.yaml" style="display:none" />
       </div>
       <h3 class="subtitle is-6">params.yaml preview</h3>
       <pre class="preview mono" id="yamlPreview">(click “Preview YAML” to see it here)</pre>
@@ -769,6 +934,81 @@ function toggleSraOptions(){
   toggleBlock('sraOptions', show);
 }
 
+/* ====================== Divergent Preset Handler ====================== */
+function updateDivergentPreset(){
+  const preset = $('#div_preset').value;
+  const descEl = document.getElementById('div_preset_desc');
+  const manualParamsEl = document.getElementById('div_manual_params');
+  
+  // Preset configurations based on biological knowledge
+  const presets = {
+    default: {
+      desc: "<strong>Default:</strong> Balanced parameters capturing majority of divergent sites in most organisms.",
+      params: { win: 800, thr: 1.0, sum: 5.0, bal: 0.0, gap: 0, valthr: "", sd: 0 }
+    },
+    human: {
+      desc: "<strong>Human:</strong> Optimized for large genome (3.2 Gb) with complex regulatory landscapes and gene-dense regions.",
+      params: { win: 1000, thr: 1.5, sum: 7.0, bal: 0.1, gap: 50, valthr: "2.0", sd: 10 }
+    },
+    drosophila: {
+      desc: "<strong>Drosophila:</strong> Optimized for compact genome (140 Mb) with highly gene-dense regions and shorter intergenic spaces.",
+      params: { win: 600, thr: 0.8, sum: 3.5, bal: 0.0, gap: 0, valthr: "", sd: 5 }
+    },
+    plant: {
+      desc: "<strong>Plant:</strong> Optimized for plant genomes with different regulatory mechanisms and moderate gene density.",
+      params: { win: 900, thr: 1.2, sum: 6.0, bal: 0.05, gap: 25, valthr: "1.5", sd: 8 }
+    },
+    gene_finding: {
+      desc: "<strong>Gene Finding:</strong> Focus on promoter-proximal divergent transcription for active gene identification.",
+      params: { win: 500, thr: 0.5, sum: 2.0, bal: 0.0, gap: 0, valthr: "", sd: 0 }
+    },
+    enhancer_finding: {
+      desc: "<strong>Enhancer Finding:</strong> Focus on distal divergent transcription sites for enhancer identification.",
+      params: { win: 1200, thr: 2.0, sum: 10.0, bal: 0.2, gap: 100, valthr: "3.0", sd: 15 }
+    },
+    custom: {
+      desc: "<strong>Custom:</strong> Manual configuration - adjust parameters below to your specific requirements.",
+      params: null
+    }
+  };
+  
+  // Update description
+  if (descEl && presets[preset]) {
+    descEl.innerHTML = presets[preset].desc;
+  }
+  
+  // Always show manual parameters so users can see and adjust values
+  if (manualParamsEl) {
+    manualParamsEl.style.display = 'block';
+  }
+  
+  // Update parameter values if not custom
+  if (preset !== 'custom' && presets[preset].params) {
+    const params = presets[preset].params;
+    
+    // Add visual feedback that parameters are being updated
+    const inputs = ['#div_win', '#div_thr', '#div_sum', '#div_bal', '#div_gap', '#div_valthr', '#div_sd'];
+    inputs.forEach(selector => {
+      const el = document.querySelector(selector);
+      if (el) {
+        el.style.backgroundColor = '#fff3cd'; // Light yellow background
+        setTimeout(() => {
+          el.style.backgroundColor = ''; // Reset after 1 second
+        }, 1000);
+      }
+    });
+    
+    // Update the actual values
+    $('#div_win').value = params.win;
+    $('#div_thr').value = params.thr;
+    $('#div_sum').value = params.sum;
+    $('#div_bal').value = params.bal;
+    $('#div_gap').value = params.gap;
+    $('#div_valthr').value = params.valthr;
+    $('#div_sd').value = params.sd;
+  }
+}
+
 /* ====================== YAML builder ====================== */
 function buildYAML(){
   const pairedEnd   = isPE();
@@ -821,6 +1061,7 @@ function buildYAML(){
 
   // Divergent
   const div = {
+    preset:     $('#div_preset').value||'default',
     nt_window:  parseInt($('#div_win').value||'800',10),
     threshold:  parseFloat($('#div_thr').value||'1'),
     signal_sum: parseFloat($('#div_sum').value||'5'),
@@ -833,13 +1074,24 @@ function buildYAML(){
 
   // Functional regions
   const fgr = {
-    prom_up:         parseInt($('#prom_up').value||'500',10),
-    prom_down:       parseInt($('#prom_down').value||'250',10),
-    gb_start_offset: parseInt($('#gb_start_offset').value||'2000',10),
-    cps_offset:      parseInt($('#cps_offset').value||'50',10),
-    tw_length:       parseInt($('#tw_length').value||'5000',10),
-    merge_gap:       parseInt($('#merge_gap').value||'50',10),
-    qc:              !!$('#fgr_qc').checked
+    prom_up:               parseInt($('#prom_up').value||'250',10),
+    prom_down:             parseInt($('#prom_down').value||'250',10),
+    div_inner:             parseInt($('#div_inner').value||'250',10),
+    div_outer:             parseInt($('#div_outer').value||'750',10),
+    cps_offset:            parseInt($('#cps_offset').value||'500',10),
+    tw_length:             parseInt($('#tw_length').value||'10000',10),
+    short_gene_threshold:  parseInt($('#short_gene_threshold').value||'750',10),
+    tss_active_pm:         parseInt($('#tss_active_pm').value||'500',10),
+    min_signal:            parseFloat($('#min_signal').value||'0.0'),
+    min_signal_mode:       $('#min_signal_mode').value||'absolute',
+    min_signal_quantile:   parseFloat($('#min_signal_quantile').value||'0.90'),
+    count_mode:            $('#count_mode').value||'signal',
+    allow_unstranded:      !!$('#allow_unstranded').checked,
+    div_fallback_enable:   !!$('#div_fallback_enable').checked,
+    div_fallback_threshold: parseFloat($('#div_fallback_threshold').value||'0.30'),
+    div_fallback_max_frac: parseFloat($('#div_fallback_max_frac').value||'0.25'),
+    active_slop:           parseInt($('#active_slop').value||'0',10),
+    qc:                    !!$('#fgr_qc').checked
   };
 
   // Output switches
@@ -953,6 +1205,7 @@ function buildYAML(){
   y += `  cutadapt_extra: ${mono(cutadaptExtra)}\n`;
   y += `  bowtie2_extra: ${mono(bowtie2Extra)}\n`;
   y += `  divergent_nt_window: ${div.nt_window}\n`;
+  y += `  divergent_preset: ${div.preset}\n`;
   y += `  divergent_threshold: ${div.threshold}\n`;
   y += `  divergent_signal_sum: ${div.signal_sum}\n`;
   y += `  divergent_balance: ${div.balance}\n`;
@@ -1044,8 +1297,184 @@ function init(){
   
   // Set default adapter preset
   setAdapterPreset();
+
+  // YAML upload handler
+  const up = document.getElementById('yamlUploadInput');
+  if(up){
+    up.addEventListener('change', async (ev)=>{
+      const file = ev.target.files && ev.target.files[0];
+      if(!file) return;
+      try{
+        const text = await file.text();
+        const params = jsyaml.load(text) || {};
+        populateFromParams(params);
+        fillPreview();
+        // Tiny success toast
+        const n = document.createElement('div');
+        n.className = 'notification is-success is-light';
+        n.textContent = 'Loaded params.yaml and filled the form';
+        document.body.appendChild(n); setTimeout(()=>n.remove(),1500);
+      }catch(err){
+        const n = document.createElement('div');
+        n.className = 'notification is-danger is-light';
+        n.textContent = 'Failed to parse YAML: ' + (err && err.message ? err.message : String(err));
+        document.body.appendChild(n); setTimeout(()=>n.remove(),3000);
+      }finally{
+        ev.target.value = '';
+      }
+    });
+  }
 }
 init();
+
+// Map YAML params to form controls
+function populateFromParams(p){
+  if(!p || typeof p !== 'object') return;
+
+  // Basic
+  if(p.experiment_name!=null) $('#project_name').value = String(p.experiment_name);
+  if(p.output_dir!=null) $('#output_dir').value = String(p.output_dir);
+  if(p.control_label!=null) $('#control_label').value = String(p.control_label);
+  if(p.assets_dir!=null) $('#assets_dir').value = String(p.assets_dir);
+  if(p.genome_cache!=null) $('#genome_cache').value = String(p.genome_cache);
+  if(p.samplesheet!=null) $('#samplesheet_name').value = String(p.samplesheet);
+
+  // Sample source
+  if(p.sample_source){
+    const src = String(p.sample_source);
+    const srcEl = document.querySelector(`input[name="sample_source"][value="${src}"]`);
+    if(srcEl){ srcEl.checked = true; }
+  }
+
+  // Paired-end
+  if(typeof p.paired_end === 'boolean'){
+    const val = p.paired_end ? 'PE' : 'SE';
+    const rt = document.querySelector(`input[name="read_type"][value="${val}"]`);
+    if(rt){ rt.checked = true; }
+  }
+
+  // References
+  if(p.reference_genome){
+    $('#ref_genome').value = String(p.reference_genome);
+  }
+  toggleOtherGenomeUpload('ref');
+  if(p.reference_genome === 'other'){
+    if(p.genome_fasta!=null) $('#ref_genome_path').value = String(p.genome_fasta);
+    if(p.gtf_path!=null) $('#gtf_path').value = String(p.gtf_path);
+    if(p.gtf_url!=null)  $('#gtf_url').value  = String(p.gtf_url);
+  }
+  if(p.spikein_genome){
+    $('#spike_genome').value = String(p.spikein_genome);
+  }
+  toggleOtherGenomeUpload('spike');
+  if(p.spikein_genome === 'other' && p.spikein_fasta!=null){
+    $('#spikein_genome_path').value = String(p.spikein_fasta);
+  }
+
+  // SRA options
+  if(typeof p.fastq_gzip === 'boolean') $('#fastq_gzip').checked = p.fastq_gzip;
+  if(p.sra_tmp!==undefined && p.sra_tmp!==null) $('#sra_tmp').value = String(p.sra_tmp);
+  if(p.sra_max_size!=null) $('#sra_max_size').value = String(p.sra_max_size);
+
+  // Adapter trimming
+  if(p.adapter_trimming && typeof p.adapter_trimming === 'object'){
+    const at = p.adapter_trimming;
+    if(typeof at.enabled === 'boolean') $('#enableAdapters').checked = at.enabled;
+    toggleAdapterFields();
+    if(at.preset) $('#adapterPreset').value = String(at.preset);
+    setAdapterPreset();
+    if(at.adapter1!=null) $('#adapter1').value = String(at.adapter1);
+    if(at.adapter2!=null) $('#adapter2').value = String(at.adapter2);
+  }
+
+  // QC
+  if(p.qc && typeof p.qc === 'object'){
+    const qcTool = p.qc.tool || p.qc.run; // tolerate alt structure
+    if(qcTool && typeof qcTool === 'string') $('#qc_tool').value = qcTool;
+  }
+  if(typeof p.fastqc_raw === 'boolean') $('#qc_raw').checked = p.fastqc_raw;
+
+  // UMI
+  if(p.umi && typeof p.umi === 'object'){
+    $('#enableUMI').checked = !!p.umi.enabled;
+    toggleBlock('umiOptions', $('#enableUMI').checked);
+    if(p.umi.length!=null) $('#umi_length').value = String(p.umi.length);
+    if(p.umi.location!=null){
+      const loc = String(p.umi.location);
+      const el = document.querySelector(`input[name="umi_end"][value="${loc}"]`);
+      if(el) el.checked = true;
+    }
+  }
+
+  // Barcode
+  if(p.barcode && typeof p.barcode === 'object'){
+    $('#enableBarcode').checked = !!p.barcode.enabled;
+    toggleBlock('barcodeOptions', $('#enableBarcode').checked);
+    if(p.barcode.length!=null) $('#barcode_length').value = String(p.barcode.length);
+    if(p.barcode.location!=null){
+      const loc = String(p.barcode.location);
+      const el = document.querySelector(`input[name="barcode_end"][value="${loc}"]`);
+      if(el) el.checked = true;
+    }
+  }
+
+  // Divergent (advanced + convenience fields)
+  if(p.advanced && typeof p.advanced === 'object'){
+    if(p.advanced.divergent_preset) $('#div_preset').value = String(p.advanced.divergent_preset);
+    if(p.advanced.divergent_nt_window!=null) $('#div_win').value = Number(p.advanced.divergent_nt_window);
+    if(p.advanced.divergent_threshold!=null) $('#div_thr').value = Number(p.advanced.divergent_threshold);
+    if(p.advanced.divergent_signal_sum!=null) $('#div_sum').value = Number(p.advanced.divergent_signal_sum);
+    if(p.advanced.divergent_balance!=null) $('#div_bal').value = Number(p.advanced.divergent_balance);
+    if(p.advanced.divergent_valley_gap!=null) $('#div_gap').value = Number(p.advanced.divergent_valley_gap);
+    if(p.advanced.divergent_valley_thr!=null && p.advanced.divergent_valley_thr !== 'Inf') $('#div_valthr').value = String(p.advanced.divergent_valley_thr);
+    if(p.advanced.divergent_smooth_sd!=null) $('#div_sd').value = Number(p.advanced.divergent_smooth_sd);
+    if(typeof p.advanced.divergent_qc === 'boolean') $('#div_qc').checked = p.advanced.divergent_qc;
+  }
+
+  // Functional regions
+  if(p.functional_regions && typeof p.functional_regions === 'object'){
+    const f = p.functional_regions;
+    const setNum = (id,val)=>{ if(val!=null) document.getElementById(id).value = Number(val); };
+    const setStr = (id,val)=>{ if(val!=null) document.getElementById(id).value = String(val); };
+    setNum('prom_up', f.prom_up);
+    setNum('prom_down', f.prom_down);
+    setNum('div_inner', f.div_inner);
+    setNum('div_outer', f.div_outer);
+    setNum('cps_offset', f.cps_offset);
+    setNum('tw_length', f.tw_length);
+    setNum('short_gene_threshold', f.short_gene_threshold);
+    setNum('tss_active_pm', f.tss_active_pm);
+    setNum('min_signal', f.min_signal);
+    setStr('min_signal_mode', f.min_signal_mode);
+    setNum('min_signal_quantile', f.min_signal_quantile);
+    setStr('count_mode', f.count_mode);
+    if(typeof f.allow_unstranded === 'boolean') $('#allow_unstranded').checked = f.allow_unstranded;
+    if(typeof f.div_fallback_enable === 'boolean') $('#div_fallback_enable').checked = f.div_fallback_enable;
+    setNum('div_fallback_threshold', f.div_fallback_threshold);
+    setNum('div_fallback_max_frac', f.div_fallback_max_frac);
+    setNum('active_slop', f.active_slop);
+    if(typeof f.qc === 'boolean') $('#fgr_qc').checked = f.qc;
+  }
+
+  // Output (deprecated) + norm
+  if(p.output && typeof p.output === 'object'){
+    if(typeof p.output.cpm === 'boolean') $('#outputCPM').checked = p.output.cpm;
+    if(typeof p.output.crpmsi === 'boolean') $('#outputSiCPM').checked = p.output.crpmsi;
+    if(typeof p.output.raw_tracks === 'boolean') $('#outputRawTracks').checked = p.output.raw_tracks;
+    if(typeof p.output.bigwig === 'boolean') $('#trackBigWig').checked = p.output.bigwig;
+    if(typeof p.output.bedgraph === 'boolean') $('#trackBedGraph').checked = p.output.bedgraph;
+  }
+  if(p.norm && typeof p.norm === 'object'){
+    if(typeof p.norm.emit_bw === 'boolean') $('#normEmitBW').checked = p.norm.emit_bw;
+    if(typeof p.norm.emit_sicpm === 'boolean') $('#normEmitSiCPM').checked = p.norm.emit_sicpm;
+    if(typeof p.norm.emit_allmap === 'boolean') $('#normEmitAllMap').checked = p.norm.emit_allmap;
+    if(typeof p.norm.emit_5p !== 'undefined') $('#normForce5p').checked = !!p.norm.emit_5p;
+  }
+  if(typeof p.force_sort_bedgraph === 'boolean') $('#forceSortBg').checked = p.force_sort_bedgraph;
+
+  // After radio/select changes, rebuild dependent UIs
+  rebuildAllReplicateUIs();
+}
 </script>
 </body>
 </html>

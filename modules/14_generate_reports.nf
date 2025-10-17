@@ -111,7 +111,7 @@ process generate_reports {
   BW_AP3="!{allmap3p_pos_cpm_bw}"
   BW_AN3="!{allmap3p_neg_cpm_bw}"
 
-  # Container-safe bin script location
+  # Python script path
   RENDER="!{projectDir}/bin/render_sample_report.py"
 
   PLOTS_FLAG=!{ (params.reports_plots == null) ? 0 : (params.reports_plots as int) }
@@ -147,6 +147,24 @@ process generate_reports {
     --out-json           "${OUT_JSON}"
     --out-plots-html     "${OUT_PLOTS}"
   )
+
+  # Add run metadata flags for usability in reports
+  if [[ "!{ params.paired_end ? 'true' : 'false' }" == "true" ]]; then
+    ARGS+=( --paired-end true )
+  else
+    ARGS+=( --paired-end false )
+  fi
+  if [[ "!{ params.umi?.enabled ? 'true' : 'false' }" == "true" ]]; then
+    ARGS+=( --umi-enabled true )
+  else
+    ARGS+=( --umi-enabled false )
+  fi
+  if [[ "!{ params.qc?.run == false ? 'false' : 'true' }" == "true" ]]; then
+    ARGS+=( --qc-run true )
+  else
+    ARGS+=( --qc-run false )
+  fi
+  ARGS+=( --reference-genome "!{ params.reference_genome ?: 'NA' }" )
 
   add_link () {
     local flag="$1"; local s="$2"

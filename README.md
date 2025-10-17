@@ -4,7 +4,7 @@
 
 **🧬 A powerful, user-friendly Nextflow pipeline for analyzing nascent RNA sequencing data**
 
-[![Nextflow](https://img.shields.io/badge/nextflow%20DSL2-%E2%89%A525.04.0-23aa62.svg)](https://www.nextflow.io/)
+[![Nextflow](https://img.shields.io/badge/nextflow%20DSL2-%E2%89%A524.04.0-23aa62.svg)](https://www.nextflow.io/)
 [![Docker](https://img.shields.io/badge/docker-supported-0db7ed.svg)](https://www.docker.com/)
 [![Conda](https://img.shields.io/badge/conda-supported-green.svg)](https://conda.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -85,11 +85,15 @@ open TrackTx_config_generator.html   # macOS (or double-click the file)
 
 ### 4. **View Results**
 ```bash
-# Open the interactive report
-open results/reports/tracktx_combined_report.html
+# Open the cohort summary
+open results/global_summary.html
 
-# Load tracks in genome browser
-ls results/03_genome_tracks/*.bw
+# Browse per-sample reports
+open results/11_reports/cohort/global_summary.html
+open results/reports/<SAMPLE_ID>.html   # per-sample shortcut links
+
+# Load tracks in genome browser (BigWigs)
+ls results/05_normalized_tracks/*/*/cpm/*.bw
 ```
 
 ---
@@ -336,17 +340,15 @@ EOF
 ### **Directory Structure**
 ```
 results/
-├── 📊 reports/
-│   ├── tracktx_combined_report.html    # 🎯 Main interactive dashboard
-│   ├── execution_report.html           # Pipeline performance metrics
-│   └── sample_reports/                 # Individual sample QC reports
-├── 📈 03_genome_tracks/                # Coverage tracks for genome browsers
-│   ├── sample1.3p.pos.bw              # 3' positive strand BigWig
-│   ├── sample1.3p.neg.bw              # 3' negative strand BigWig
-│   └── ...
+├── 📄 index.html                       # Landing page with quick links
+├── 📊 global_summary.html              # Cohort dashboard (copy of 11_reports/cohort)
+├── 📈 03_genome_tracks/                # RAW coverage bedGraphs (and BigWigs if enabled)
+│   └── <sample_id>/...
 ├── ⚖️ 05_normalized_tracks/            # Quantitative comparison tracks
-│   ├── cpm/                           # Counts per million normalization
-│   └── sicpm/                         # Spike-in normalized tracks
+│   └── <sample_id>/
+│       └── 3p/
+│           ├── main/cpm/{pos,neg}.bw
+│           └── allMap/cpm/{pos,neg}.bw
 ├── 🔄 06_divergent_tx/                 # Divergent transcription analysis
 │   ├── sample1_divergent_regions.bed  # Detected divergent regions
 │   └── divergent_summary.tsv          # Summary statistics
@@ -358,18 +360,22 @@ results/
 │   ├── qc_strand_bias.tsv            # Strand distribution
 │   ├── qc_pol2.json                  # Comprehensive QC metrics
 │   └── qc_coverage.tsv               # Coverage statistics
-└── 📋 04_counts/                      # Read count summaries
+├── 📋 04_counts/                      # Read count summaries
+└── 🗂️ 11_reports/
+    ├── cohort/{global_summary.html, .tsv, .json}
+    └── samples/<sample_id>/{<sample_id>.report.html, .tsv, .json}
 ```
 
 ### **Key Output Files**
 
 | File | Description |
 |------|-------------|
-| **`tracktx_combined_report.html`** | 🎯 Interactive analysis dashboard with plots and tables |
-| **`03_genome_tracks/*.bw`** | 📈 Load directly in IGV, UCSC Genome Browser, or WashU |
+| **`global_summary.html`** | 🎯 Cohort dashboard with per-sample drilldowns |
+| **`11_reports/samples/<sid>/*.report.html`** | 📊 Individual sample reports |
+| **`05_normalized_tracks/*/*/cpm/*.bw`** | 📈 Load directly in IGV, UCSC Genome Browser, or WashU |
 | **`05_normalized_tracks/`** | ⚖️ Quantitative tracks for cross-sample comparisons |
 | **`06_divergent_tx/*.bed`** | 🔄 Divergent transcription regions and summit coordinates |
-| **`execution_report.html`** | 📊 Pipeline performance and resource usage analysis |
+| **`trace/report.html` (under `results/trace/`)** | 📊 Nextflow performance report |
 
 ---
 
@@ -471,17 +477,44 @@ export NXF_HOST_CPUS=4  # Limit to 4 CPUs
 </details>
 
 <details>
-<summary><b>❌ "Conda environment creation failed"</b></summary>
+<summary><b>❌ "Conda environment creation failed" or "/usr/bin/activate not found"</b></summary>
 
-**Solution:**
+**⚠️ This is a Nextflow bug, not a user error!** Nextflow's conda integration is broken on many server environments.
+
+**Best Solution (Recommended):**
 ```bash
-# Use Docker instead (more reliable):
+# Use Docker - it's more reliable than conda for Nextflow pipelines
 ./run_pipeline.sh -profile docker
-
-# Or clean conda cache:
-conda clean --all --yes
-./run_pipeline.sh
 ```
+
+**Why Docker is Better:**
+- ✅ All dependencies pre-built and tested
+- ✅ No environment activation needed
+- ✅ Works consistently across all systems
+- ✅ No network storage issues
+- ✅ Faster startup (no conda environment creation)
+
+**If You Must Use Conda:**
+```bash
+# The pipeline now tries to auto-fix Nextflow's conda integration
+./run_pipeline.sh -profile conda
+
+# If that fails, try the manual workaround:
+conda env create -f envs/tracktx.yaml -p /tmp/$USER/tracktx-env
+export NXF_CONDA_ENV_PATH="/tmp/$USER/tracktx-env"
+./run_pipeline.sh -profile conda_server
+
+# Diagnose conda setup:
+bash scripts/diagnose_conda_server.sh
+```
+
+**Why This Happens (Nextflow Bug):**
+- Nextflow assumes `/usr/bin/activate` exists (it doesn't on most Linux systems)
+- Falls back to hardcoded paths that don't exist on different servers
+- Conda shell hooks don't propagate properly into subprocess environments
+- Network storage causes file locking/symlink issues
+
+**For more details, see the [Conda Troubleshooting Guide](#conda-troubleshooting) below.**
 </details>
 
 <details>
@@ -527,6 +560,123 @@ conda clean --all --yes
 
 **See [docs/FUNCTIONAL_REGIONS.md](docs/FUNCTIONAL_REGIONS.md) for detailed troubleshooting.**
 </details>
+
+### **Conda Troubleshooting Guide**
+
+If you're experiencing conda activation issues (especially `/usr/bin/activate not found` errors), follow this comprehensive guide:
+
+#### **Step 1: Diagnose Your Environment**
+
+```bash
+# Run the diagnostic script to understand your setup
+bash scripts/diagnose_conda_server.sh
+```
+
+This will check:
+- Conda installation and location
+- Available activation paths
+- Storage type (local vs network)
+- Write permissions
+- Environment variables
+
+#### **Step 2: Choose Your Solution**
+
+**Option A: Use Docker (Recommended - Most Reliable)**
+
+Docker is actually more reliable than conda for Nextflow pipelines:
+
+```bash
+# Docker handles all dependencies automatically
+./run_pipeline.sh -profile docker
+```
+
+**Why Docker is Better:**
+- ✅ All dependencies pre-built and tested
+- ✅ No environment activation needed  
+- ✅ Works consistently across all systems
+- ✅ No network storage issues
+- ✅ Faster startup (no conda environment creation)
+
+**Option B: Prebuilt Environment (Workaround for Conda)**
+
+This bypasses Nextflow's broken conda activation:
+
+```bash
+# 1. Create environment on local disk (avoid network storage)
+conda env create -f envs/tracktx.yaml -p /tmp/$USER/tracktx-env
+
+# 2. Verify environment was created
+ls -la /tmp/$USER/tracktx-env/bin/
+
+# 3. Set environment variable
+export NXF_CONDA_ENV_PATH="/tmp/$USER/tracktx-env"
+
+# 4. Run pipeline
+./run_pipeline.sh -profile conda_server
+```
+
+**Option C: Auto-Fix Conda (Pipeline Tries to Fix Nextflow)**
+
+The pipeline now attempts to automatically fix Nextflow's conda integration:
+
+```bash
+# Pipeline tries to detect and fix conda issues automatically
+./run_pipeline.sh -profile conda
+```
+
+**Option D: Fix Conda Activation (Advanced)**
+
+If you must use conda activation, ensure conda is properly initialized:
+
+```bash
+# Initialize conda in your shell
+conda init bash
+source ~/.bashrc
+
+# Verify conda is working
+conda info
+
+# Run pipeline
+./run_pipeline.sh -profile conda
+```
+
+#### **Step 3: Verify the Fix**
+
+Look for these success messages in the logs:
+
+```
+[conda_server] Using prebuilt environment via PATH: /tmp/username/tracktx-env
+[conda_server] Conda environment verified: /tmp/username/tracktx-env/bin/python
+```
+
+Or for the regular conda profile:
+
+```
+[conda] Using prebuilt environment: /path/to/env
+```
+
+#### **Common Error Messages and Solutions**
+
+| Error Message | Solution |
+|---------------|----------|
+| `/usr/bin/activate: No such file or directory` | Use prebuilt environment (Option A) |
+| `conda: command not found` | Install conda or use Docker |
+| `Permission denied` | Check write permissions on cache directory |
+| `Environment creation failed` | Try creating on local disk, not network storage |
+
+#### **Network Storage Considerations**
+
+If you're using SMB/NFS network storage:
+
+1. **Create conda environments on local disk** (`/tmp`, `/scratch`, `/var/tmp`)
+2. **Use the `conda_server` profile** which has network-storage-safe settings
+3. **Avoid conda cache on network storage** (use `--conda_cacheDir /tmp/conda`)
+
+#### **Still Having Issues?**
+
+1. **Check the diagnostic output** from `scripts/diagnose_conda_server.sh`
+2. **Try Docker** - it's the most reliable option
+3. **Contact support** with the diagnostic output
 
 ### **Getting Help**
 1. 📊 **Check execution report**: `results/execution_report.html`
@@ -578,10 +728,7 @@ conda clean --all --yes
   - Throughput vs latency tradeoffs
   - System-specific recommendations
 
-- **[BUGFIX_SUMMARY.md](BUGFIX_SUMMARY.md)** - Recent fixes and improvements
-  - Critical bug fixes (functional regions, QC module)
-  - Expected changes in results
-  - How to apply updates
+<!-- Removed stale reference to BUGFIX_SUMMARY.md; see GitHub Releases for change logs. -->
 
 ### **Interactive Tools**
 - **[TrackTx_config_generator.html](TrackTx_config_generator.html)** - Web-based configuration generator
@@ -623,15 +770,15 @@ conda clean --all --yes
 We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md).
 
 ### **Ways to Contribute**
-- 🐛 **Report bugs** via [GitHub Issues](https://github.com/your-username/TrackTx/issues)
-- ✨ **Request features** via [GitHub Discussions](https://github.com/your-username/TrackTx/discussions)
+- 🐛 **Report bugs** via [GitHub Issues](https://github.com/SerhatAktay/TrackTx/issues)
+- ✨ **Request features** via [GitHub Discussions](https://github.com/SerhatAktay/TrackTx/discussions)
 - 📖 **Improve documentation** with pull requests
 - 🧪 **Add test datasets** and validation cases
 - 🔧 **Contribute code** via pull requests
 
 ### **Development Setup**
 ```bash
-git clone https://github.com/your-username/TrackTx.git
+git clone https://github.com/SerhatAktay/TrackTx.git
 cd TrackTx
 
 # Run tests
