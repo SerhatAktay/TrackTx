@@ -228,7 +228,10 @@ process prepare_input {
   CAD+=(-m "${PRE_UMI_MIN}")
 
   # Ensure cutadapt uses the task-local temp directory
-  CAD+=(--temp-dir "${TMPDIR}")
+  # Only add if this cutadapt supports --temp-dir (removed in newer versions)
+  if cutadapt --help 2>/dev/null | grep -q -- '--temp-dir'; then
+    CAD+=(--temp-dir "${TMPDIR}")
+  fi
 
   # Adapters
   if [[ "${TRIM_ON}" -eq 1 ]]; then
