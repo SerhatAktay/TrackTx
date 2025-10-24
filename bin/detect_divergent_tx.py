@@ -153,7 +153,7 @@ def gaussian_smooth_inplace(df: pd.DataFrame, sd: int):
         df.loc[idx, "sig"] = smoother(v)
 
 # ───────── block calling (vectorized) ─────────
-def call_blocks(df: pd.DataFrame, thr: float, sum_thr: float, bin_gap: int) -> pd.DataFrame:
+def call_blocks(df: pd.DataFrame, thr: float, sum_thr: float, bin_gap: int, anchor_mode: str = "adjacent") -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["chr","start","end","height","signal"])
     v = np.abs(df["sig"].to_numpy())
@@ -164,8 +164,50 @@ def call_blocks(df: pd.DataFrame, thr: float, sum_thr: float, bin_gap: int) -> p
     s     = df["start"].to_numpy()[keep]
     e     = df["end"].to_numpy()[keep]
     v     = v[keep]
-    # group start on chrom change or gap > bin_gap
-    grp = np.concatenate([[True], (chr_a[1:] != chr_a[:-1]) | (s[1:] > e[:-1] + bin_gap)]).cumsum()
+
+    # Grouping strategies:
+    # - adjacent (legacy): compare to previous interval end
+    # - left:     left-anchored grouping by the first bin start within <= bin_gap of anchor
+    # - right:    right-anchored grouping by the first bin end (process in reverse)
+    if anchor_mode not in ("adjacent","left","right"):
+        anchor_mode = "adjacent"
+
+    if anchor_mode == "adjacent":
+        grp = np.concatenate([[True], (chr_a[1:] != chr_a[:-1]) | (s[1:] > e[:-1] + bin_gap)]).cumsum()
+    else:
+        grp = np.empty(len(s), dtype=np.int64)
+        gid = 0
+        i = 0
+        n = len(s)
+        # Process per chromosome
+        # Build indices per chromosome to avoid crossing boundaries
+        # chr_a is categorical/strings; iterate spans of equal chr
+        start_idx = 0
+        while start_idx < n:
+            cur_chr = chr_a[start_idx]
+            end_idx = start_idx
+            while end_idx < n and chr_a[end_idx] == cur_chr:
+                end_idx += 1
+            # Slice for this chromosome
+            idx_range = np.arange(start_idx, end_idx)
+            if anchor_mode == "left":
+                anchor = s[idx_range[0]]
+                for j in idx_range:
+                    if s[j] > anchor + bin_gap:
+                        gid += 1
+                        anchor = s[j]
+                    grp[j] = gid
+                gid += 1
+            else:  # right-anchored
+                anchor = e[idx_range[-1]]
+                for j in idx_range[::-1]:
+                    if e[j] < anchor - bin_gap:
+                        gid += 1
+                        anchor = e[j]
+                    grp[j] = gid
+                gid += 1
+            start_idx = end_idx
+
     s_ser = pd.Series(s); e_ser = pd.Series(e); v_ser = pd.Series(v); chr_ser = pd.Series(chr_a)
     out = pd.DataFrame({
         "chr":   chr_ser.groupby(grp).first(),
@@ -303,8 +345,8 @@ if SMOOTH_SD > 0:
     gaussian_smooth_inplace(minus, SMOOTH_SD)
 
 log("calling peaks…")
-pk_pos = call_blocks(plus,  THR, SUMTHR, BIN_GAP)
-pk_neg = call_blocks(minus, THR, SUMTHR, BIN_GAP)
+pk_pos = call_blocks(plus,  THR, SUMTHR, BIN_GAP, anchor_mode="left")
+pk_neg = call_blocks(minus, THR, SUMTHR, BIN_GAP, anchor_mode="right")
 log(f"peaks: +{len(pk_pos)}  -{len(pk_neg)}")
 
 chroms = sorted(set(map(str, pk_pos["chr"])) & set(map(str, pk_neg["chr"])))

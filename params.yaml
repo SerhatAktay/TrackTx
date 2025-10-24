@@ -1,0 +1,104 @@
+# ============================================================
+# TrackTx pipeline parameters
+# How to run:
+#   nextflow run main.nf -entry TrackTx -profile docker -params-file params.yaml
+# Notes:
+#   • On Apple Silicon set docker.runOptions = '--platform=linux/amd64' in nextflow.config
+#   • genome_cache caches fetched reference and GTF (faster re-runs)
+#   • sample_source is one of: "fastq" (local files) or "srr" (download by SRR)
+# ============================================================
+
+experiment_name: "TrackTx_Analysis"
+samplesheet: "samplesheet.csv"
+sample_source: "srr"
+paired_end: true
+output_dir: "./results"
+control_label: "Control"
+fastq_gzip: false
+sra_tmp: null
+sra_max_size: "200G"
+reference_genome: "hs1"
+genome_fasta: null
+spikein_genome: "dm6"
+spikein_fasta: null
+assets_dir: "./assets"
+genome_cache: "./.cache/genomes"
+force_rebuild: false
+gtf_path: ""
+gtf_url: ""
+adapter_trimming:
+  enabled: true
+  preset: "illumina"
+  adapter1: "TGGAATTCTCGGGTGCCAAGG"
+  adapter2: "GATCGTCGGACTGTAGAACTCTGAAC"
+  minlen: 12
+
+# QC options for prepare_input
+qc:
+  tool: fastp
+  run: true
+  mapq: 10
+  dedup: true
+  depth_max_cov: 0
+fastqc_raw: true
+umi:
+  enabled: false
+  length: 0
+  location: 5
+barcode:
+  enabled: true
+  length: 7
+  location: 3
+output:
+  cpm: true
+  crpmsi: true
+  raw_tracks: true
+  bigwig: true
+  bedgraph: true
+norm:
+  emit_bw: true
+  emit_sicpm: true
+  emit_allmap: true
+  emit_5p: true
+force_sort_bedgraph: false
+advanced:
+  cutadapt_extra: ""
+  bowtie2_extra: ""
+  divergent_nt_window: 800
+  divergent_threshold: 1
+  divergent_signal_sum: 5
+  divergent_balance: 0
+  divergent_valley_gap: 0
+  divergent_valley_thr: 1000000000
+  divergent_smooth_sd: 0
+  divergent_qc: false
+  divergent_bin_gap: 100
+  divergent_merge_gap: 50
+  divergent_overlap_bp: 0
+  divergent_max_width: 0
+  divergent_abs_neg: false
+  divergent_force_sort: false
+  divergent_gzip: false
+functional_regions:
+  prom_up: 250
+  prom_down: 250
+  div_inner: 250
+  div_outer: 750
+  cps_offset: 500
+  tw_length: 10000
+  short_gene_threshold: 750
+  tss_active_pm: 500
+  min_signal: 0.0
+  min_signal_mode: "absolute"
+  min_signal_quantile: 0.90
+  count_mode: "signal"
+  allow_unstranded: true
+  div_fallback_enable: false
+  div_fallback_threshold: 0.30
+  div_fallback_max_frac: 0.25
+  active_slop: 0
+  qc: false
+pol2:
+  top_n: 100
+  plots: true
+  contrasts: []

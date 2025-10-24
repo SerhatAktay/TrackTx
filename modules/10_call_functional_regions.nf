@@ -81,16 +81,6 @@ process call_functional_regions {
 
   // ── Script ──────────────────────────────────────────────────────────────
   shell:
-  // Use centralized defaults from nextflow.config
-  def PROM_UP      = params.functional_regions.prom_up      as int
-  def PROM_DOWN    = params.functional_regions.prom_down    as int
-  def DIV_INNER    = params.functional_regions.div_inner    as int
-  def DIV_OUTER    = params.functional_regions.div_outer    as int
-  def TW_LEN       = params.functional_regions.tw_length    as int
-  def MIN_SIGNAL   = params.functional_regions.min_signal   as float
-  def ALLOW_UNSTR  = params.functional_regions.allow_unstranded
-  // inline count_mode in script interpolation to avoid scope issues
-
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -129,21 +119,21 @@ process call_functional_regions {
     --neg "${NEG_BG}" \
     --tss "${TSS_BED}" \
     --tes "${TES_BED}" \
-    --prom-up "${PROM_UP}" \
-    --prom-down "${PROM_DOWN}" \
-    --div-inner "${DIV_INNER}" \
-    --div-outer "${DIV_OUTER}" \
-    --tss-active-pm "${params.functional_regions.tss_active_pm}" \
-    --tw-length "${TW_LEN}" \
-    --min-signal "${MIN_SIGNAL}" \
-    --min-signal-mode "${params.functional_regions.min_signal_mode}" \
-    --min-signal-quantile "${params.functional_regions.min_signal_quantile}" \
-    $([[ "${params.functional_regions.div_fallback_enable}" == "true" ]] && echo "--div-fallback-enable" || true) \
-    --div-fallback-threshold "${params.functional_regions.div_fallback_threshold}" \
-    --div-fallback-max-frac "${params.functional_regions.div_fallback_max_frac}" \
-    --active-slop "${params.functional_regions.active_slop}" \
-    --count-mode "${params.functional_regions.count_mode}" \
-    $([[ "${ALLOW_UNSTR}" == "true" ]] && echo "--allow-unstranded" || true) \
+    --prom-up "!{params.functional_regions.prom_up}" \
+    --prom-down "!{params.functional_regions.prom_down}" \
+    --div-inner "!{params.functional_regions.div_inner}" \
+    --div-outer "!{params.functional_regions.div_outer}" \
+    --tss-active-pm "!{params.functional_regions.tss_active_pm}" \
+    --tw-length "!{params.functional_regions.tw_length}" \
+    --min-signal "!{params.functional_regions.min_signal}" \
+    --min-signal-mode "!{params.functional_regions.min_signal_mode}" \
+    --min-signal-quantile "!{params.functional_regions.min_signal_quantile}" \
+    $([[ "!{params.functional_regions.div_fallback_enable}" == "true" ]] && echo "--div-fallback-enable" || true) \
+    --div-fallback-threshold "!{params.functional_regions.div_fallback_threshold}" \
+    --div-fallback-max-frac "!{params.functional_regions.div_fallback_max_frac}" \
+    --active-slop "!{params.functional_regions.active_slop}" \
+    --count-mode "!{params.functional_regions.count_mode}" \
+    $([[ "!{params.functional_regions.allow_unstranded}" == "true" ]] && echo "--allow-unstranded" || true) \
     --outdir "." 2>&1 | tee -a functional_regions.log
 
   # Normalize filenames (driver already writes the canonical names)
@@ -160,10 +150,10 @@ Inputs
   - genes.tsv (+ optional TSS/TES overrides)
 
 Geometry (defaults; user-editable via params.functional_regions.*)
-  - Promoter:  TSS -${PROM_UP} .. +${PROM_DOWN}
-  - Divergent: TSS -${DIV_OUTER} .. -${DIV_INNER}  (opposite strand)
+  - Promoter:  TSS -!{params.functional_regions.prom_up} .. +!{params.functional_regions.prom_down}
+  - Divergent: TSS -!{params.functional_regions.div_outer} .. -!{params.functional_regions.div_inner}  (opposite strand)
   - CPS:       TES -500 .. +500  (fixed)
-  - TW:        CPS end +${TW_LEN}
+  - TW:        CPS end +!{params.functional_regions.tw_length}
   - Gene body: contiguous between Promoter and CPS
 
 Files
@@ -172,6 +162,7 @@ Files
   • functional_regions.log (this step)
 TXT
 
-  echo "INFO  [FGR] ✔ done ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  echo "INFO  [FGR] ✔ doone ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
   '''
 }
