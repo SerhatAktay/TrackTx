@@ -126,7 +126,7 @@ EXAMPLES:
 
 OPTIONS:
     -h, --help                      Show this help
-    -profile PROFILE               Force profile: docker, conda, or local
+    -profile PROFILE               Force profile: docker, podman, conda, singularity, or local
     --samplesheet FILE             Sample sheet CSV (default: samplesheet.csv)
     --params-file FILE             Parameters YAML (default: params.yaml) 
     --resume                       Resume previous run
@@ -138,6 +138,7 @@ OPTIONS:
     
 PROFILES:
     docker       🐳 Everything included, fastest (recommended)
+    podman       📦 Podman container runtime (Docker alternative)
     conda        🐍 Automatic environment setup (works with conda/mamba/micromamba)
     conda_server 🐍 Conda with network-storage-safe settings (for HPC/servers)
     singularity  📦 Container via Singularity/Apptainer (HPC)
@@ -265,6 +266,14 @@ main() {
                 fi
             success "Docker profile validated"
                 ;;
+            podman)
+            if ! has_command podman; then
+                error "Podman profile requested but Podman not available"
+                info "Install Podman: https://podman.io/getting-started/installation"
+                    exit 1
+                fi
+            success "Podman profile validated"
+                ;;
             conda|conda_server)
             if ! has_command conda && ! has_command mamba && ! has_command micromamba; then
                 error "Conda profile requested but conda/mamba/micromamba not available"
@@ -289,7 +298,7 @@ main() {
             warning "Local profile - ensure all tools are installed manually"
                 ;;
             *)
-            error "Invalid profile: $PROFILE (use: docker, conda, conda_server, singularity, or local)"
+            error "Invalid profile: $PROFILE (use: docker, podman, conda, conda_server, singularity, or local)"
                 exit 1
                 ;;
         esac
