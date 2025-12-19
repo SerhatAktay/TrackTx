@@ -436,18 +436,7 @@ conda clean --all --yes
 
 ## 🧬 Citation
 
-If TrackTx is useful for your research, please cite:
-
-```bibtex
-@software{tracktx2025,
-  title = {TrackTx: Statistical Analysis Pipeline for Nascent RNA Sequencing},
-  author = {Aktay, Serhat},
-  year = {2025},
-  version = {1.5},
-  url = {https://github.com/SerhatAktay/TrackTx},
-  note = {Statistical divergent transcription detection with GMM and comprehensive reporting}
-}
-```
+If TrackTx is useful for your research, please cite this github page
 
 ### Key References
 - **PRO-seq**: [Kwak et al., 2013](https://doi.org/10.1126/science.1229386) - Precision run-on sequencing
