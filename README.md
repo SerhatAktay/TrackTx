@@ -14,6 +14,23 @@
 
 ---
 
+## 📚 Contents
+
+- [🎉 What's New in v1.5](#-whats-new-in-v15)
+- [⚡ Quick Start](#-quick-start)
+- [📊 What Does TrackTx Do?](#-what-does-tracktx-do)
+- [🔧 Installation](#-installation)
+- [📁 Input Files](#-input-files)
+- [📊 Outputs](#-outputs)
+- [🎯 Common Use Cases](#-common-use-cases)
+- [⚙️ Execution Profiles](#-execution-profiles)
+- [⚡ Performance Optimization](#-performance-optimization)
+- [🔧 Troubleshooting](#-troubleshooting)
+- [🧬 Citation](#-citation)
+- [📜 License](#-license)
+
+---
+
 ## 🎉 What's New in v1.5
 
 ### 🔬 Statistical Divergent Transcription Detection
@@ -56,13 +73,13 @@
 
 Get started in **3 simple steps**:
 
-### 1️⃣ Generate Configuration (Interactive)
+### 1️⃣ Generate Configuration (Interactive, Recommended)
 
-Open the **configuration generator** in your browser:
+Open the **TrackTx configuration generator** in your browser (this is the primary way to create `params.yaml` and `samplesheet.csv`):
 
 ```bash
 open TrackTx_config_generator.html  # macOS
-# Or double-click the file on any system
+# Or double-click `TrackTx_config_generator.html` on any system
 ```
 
 - Fill in your study details
@@ -200,7 +217,8 @@ sample1,control,0,1,SRR123456
 
 ### Parameters (`params.yaml`)
 
-**Generate this using `TrackTx_config_generator.html`** or create manually:
+**Recommended:** Generate this using the interactive generator [`TrackTx_config_generator.html`](TrackTx_config_generator.html), which exports a validated `params.yaml` for you.  
+You can also create it manually if you prefer:
 
 ```yaml
 # Basic Settings
