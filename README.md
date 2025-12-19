@@ -450,9 +450,9 @@ If TrackTx is useful for your research, please cite:
 ```
 
 ### Key References
-- **PRO-seq**: [Kwak et al., 2013](https://doi.org/10.1126/science.1229386){:target="_blank"} - Precision run-on sequencing
-- **Nascent RNA-seq**: [Core et al., 2008](https://doi.org/10.1126/science.1162228){:target="_blank"} - Global nascent transcription
-- **Nextflow**: [Di Tommaso et al., 2017](https://doi.org/10.1038/nbt.3820){:target="_blank"} - Scalable workflows
+- **PRO-seq**: [Kwak et al., 2013](https://doi.org/10.1126/science.1229386) - Precision run-on sequencing
+- **Nascent RNA-seq**: [Core et al., 2008](https://doi.org/10.1126/science.1162228) - Global nascent transcription
+- **Nextflow**: [Di Tommaso et al., 2017](https://doi.org/10.1038/nbt.3820) - Scalable workflows
 
 ---
 
