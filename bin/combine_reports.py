@@ -1,1973 +1,2402 @@
 #!/usr/bin/env python3
-# ╔══════════════════════════════════════════════════════════════════════════╗
-# ║  combine_reports.py — TrackTx Cohort SPA (polished, single-file, offline)║
-# ║                                                                          ║
-# ║  Inputs  : per-sample *.summary.json/*.report.json (also *.json.gz)      ║
-# ║            paths may be files or directories (expanded upstream & here)  ║
-# ║  Outputs : global_summary.{html,tsv,json} + optional region totals TSV   ║
-# ║  Design  : No external deps/CDNs; embedded CSS/JS; exportable charts     ║
-# ║  Science : Surfaces unlocalized fraction; PI & density medians; QC meds  ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
+# =============================================================================
+# combine_reports.py — TrackTx Cohort Report Aggregation
+# =============================================================================
+#
+# Purpose:
+#   Aggregates per-sample JSON reports into unified cohort-level summaries
+#   with interactive single-page application (SPA) HTML dashboard.
+#
+# Features:
+#   • Robust JSON intake (*.summary.json, *.report.json, *.json.gz)
+#   • Cohort-wide quality control assessment
+#   • Interactive visualizations (no external dependencies)
+#   • Functional region aggregation
+#   • Export capabilities (TSV, JSON, CSV)
+#   • Offline-capable HTML dashboard
+#
+# Inputs:
+#   Per-sample JSON reports (files or directories)
+#   Supported formats:
+#     - *.summary.json
+#     - *.report.json  
+#     - *.json
+#     - *.json.gz (gzipped)
+#
+# Outputs:
+#   • global_summary.html: Interactive SPA dashboard
+#   • global_summary.tsv: Cohort metrics table
+#   • global_summary.json: Structured cohort data
+#   • global_region_totals.tsv: Aggregated region counts (optional)
+#
+# Design:
+#   • Single-file HTML (embedded CSS/JS, no CDNs)
+#   • Works offline
+#   • Responsive design
+#   • Export functionality
+#
+# =============================================================================
 
 from __future__ import annotations
-import argparse, json, math, os, sys, gzip, io, re, datetime
+import argparse
+import datetime
+import gzip
+import io
+import json
+import math
+import os
+import re
+import shlex
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
 import pandas as pd
 
-# ─────────────────────────── CLI ───────────────────────────
-ap = argparse.ArgumentParser(description="Combine TrackTx per-sample summaries into a cohort report.")
-ap.add_argument("--inputs", nargs="+", required=True, help="Per-sample JSONs (files or directories). Supports *.json, *.json.gz.")
-ap.add_argument("--out-tsv", required=True)
-ap.add_argument("--out-json", required=True)
-ap.add_argument("--out-html", required=True)
-ap.add_argument("--out-regions", default=None, help="Optional TSV of summed functional-region totals.")
-ap.add_argument("--pipeline-version", default="unknown", help="Pipeline version for metadata.")
-ap.add_argument("--run-name", default="unnamed", help="Run name for metadata.")
-ap.add_argument("--duration", default="unknown", help="Run duration for metadata.")
-ap.add_argument("--profile", default="unknown", help="Execution profile for metadata.")
-args = ap.parse_args()
-print(f"[combine_py] start ts={datetime.datetime.utcnow().isoformat()}Z", file=sys.stderr)
+# =============================================================================
+# CONSTANTS
+# =============================================================================
 
-# ───────────────────────── Utilities ───────────────────────
-def _walk_inputs(paths: List[str]) -> List[str]:
-    out: List[str] = []
-    for p in paths:
-        if not p: continue
-        p = str(p)
-        if os.path.isdir(p):
-            for root, _, files in os.walk(p):
-                for fn in files:
-                    lf = fn.lower()
-                    if lf.endswith((".summary.json",".report.json",".json",".json.gz")):
-                        out.append(os.path.join(root, fn))
+VERSION = "2.0.0"
+LOG_PREFIX = "[COMBINE]"
+
+# Region name pattern for unlocalized reads
+UNLOCALIZED_PATTERN = re.compile(
+    r"non[-\s_]?localized|unlocalized|unlocalised",
+    re.IGNORECASE
+)
+
+# =============================================================================
+# LOGGING UTILITIES
+# =============================================================================
+
+def log(section: str, message: str):
+    """Consistent logging format"""
+    timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    print(f"{LOG_PREFIX} {section} | {message} | ts={timestamp}", flush=True)
+
+def log_info(message: str):
+    """Log informational message"""
+    print(f"{LOG_PREFIX} INFO | {message}", flush=True)
+
+def log_error(message: str):
+    """Log error message"""
+    print(f"{LOG_PREFIX} ERROR | {message}", file=sys.stderr, flush=True)
+
+def log_warning(message: str):
+    """Log warning message"""
+    print(f"{LOG_PREFIX} WARNING | {message}", flush=True)
+
+# =============================================================================
+# FILE DISCOVERY AND LOADING
+# =============================================================================
+
+def discover_json_files(input_paths: List[str]) -> List[str]:
+    """
+    Discover JSON files from input paths (files or directories)
+    
+    Args:
+        input_paths: List of file paths or directory paths
+        
+    Returns:
+        Sorted list of discovered JSON file paths
+    """
+    log("DISCOVER", f"Searching {len(input_paths)} input path(s)...")
+    
+    discovered = []
+    
+    for path_str in input_paths:
+        if not path_str:
+            continue
+        
+        path = Path(path_str)
+        
+        # Handle directories
+        if path.is_dir():
+            log_info(f"Scanning directory: {path}")
+            
+            for root, _, files in os.walk(path):
+                for filename in files:
+                    if is_json_file(filename):
+                        full_path = os.path.join(root, filename)
+                        discovered.append(full_path)
+                        
+        # Handle individual files
+        elif path.is_file():
+            if is_json_file(path.name):
+                discovered.append(str(path))
+            else:
+                log_warning(f"Skipping non-JSON file: {path}")
         else:
-            lf = p.lower()
-            if lf.endswith((".summary.json",".report.json",".json",".json.gz")):
-                out.append(p)
-    # stable order
-    return sorted(set(out))
+            log_warning(f"Path not found: {path}")
+    
+    # Remove duplicates and sort
+    unique_files = sorted(set(discovered))
+    
+    log("DISCOVER", f"Found {len(unique_files)} JSON files")
+    return unique_files
 
-def _read_json_any(path: str) -> Optional[Dict[str, Any]]:
+def is_json_file(filename: str) -> bool:
+    """
+    Check if filename matches JSON patterns
+    
+    Args:
+        filename: File name to check
+        
+    Returns:
+        True if matches JSON patterns
+    """
+    lowercase = filename.lower()
+    return lowercase.endswith((
+        ".summary.json",
+        ".report.json",
+        ".json",
+        ".json.gz"
+    ))
+
+def read_json_file(filepath: str) -> Optional[Dict[str, Any]]:
+    """
+    Read JSON file (handles gzip compression)
+    
+    Args:
+        filepath: Path to JSON file
+        
+    Returns:
+        Parsed JSON as dictionary, or None on failure
+    """
+    if not os.path.exists(filepath):
+        log_warning(f"File not found: {filepath}")
+        return None
+    
     try:
-        if not os.path.exists(path): return None
-        if path.lower().endswith(".gz"):
-            with gzip.open(path, "rb") as fh:
-                return json.loads(fh.read().decode("utf-8", "replace"))
-        with open(path, "r", encoding="utf-8") as fh:
-            return json.load(fh)
+        # Handle gzipped files
+        if filepath.lower().endswith(".gz"):
+            with gzip.open(filepath, "rb") as f:
+                content = f.read().decode("utf-8", errors="replace")
+                return json.loads(content)
+        
+        # Handle regular files
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            return json.load(f)
+            
+    except json.JSONDecodeError as e:
+        log_error(f"JSON parse error in {filepath}: {e}")
+        return None
     except Exception as e:
-        sys.stderr.write(f"WARN: failed to read {path}: {e}\n")
+        log_error(f"Failed to read {filepath}: {e}")
         return None
 
-def _is_num(x: Any) -> bool:
-    return isinstance(x, (int, float)) and not (isinstance(x, float) and (math.isnan(x) or math.isinf(x)))
+# =============================================================================
+# DATA VALIDATION AND SANITIZATION
+# =============================================================================
 
-def _to_float(x: Any) -> Optional[float]:
+def is_valid_number(value: Any) -> bool:
+    """
+    Check if value is a valid finite number
+    
+    Args:
+        value: Value to check
+        
+    Returns:
+        True if valid finite number
+    """
+    if not isinstance(value, (int, float)):
+        return False
+    
+    if isinstance(value, float):
+        return not (math.isnan(value) or math.isinf(value))
+    
+    return True
+
+def to_float(value: Any) -> Optional[float]:
+    """
+    Convert value to float, handling NaN/Inf
+    
+    Args:
+        value: Value to convert
+        
+    Returns:
+        Float value or None if invalid
+    """
     try:
-        v = float(x)
-        return None if math.isnan(v) or math.isinf(v) else v
-    except Exception:
+        num = float(value)
+        if math.isnan(num) or math.isinf(num):
+            return None
+        return num
+    except (ValueError, TypeError):
         return None
 
-def _sanitize(obj: Any) -> Any:
-    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)): return None
-    if isinstance(obj, dict):  return {k: _sanitize(v) for k, v in obj.items()}
-    if isinstance(obj, list):  return [_sanitize(v) for v in obj]
+def sanitize_data(obj: Any) -> Any:
+    """
+    Recursively sanitize data structure (remove NaN/Inf)
+    
+    Args:
+        obj: Object to sanitize
+        
+    Returns:
+        Sanitized object
+    """
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+    
+    if isinstance(obj, dict):
+        return {k: sanitize_data(v) for k, v in obj.items()}
+    
+    if isinstance(obj, list):
+        return [sanitize_data(v) for v in obj]
+    
     return obj
 
-# ───────────── Schema normalization & science helpers ─────────────
-_UNLOC_RE = re.compile(r"non[-\s_]?localized|unlocalized|unlocalised", re.I)
+# =============================================================================
+# SAMPLE DATA NORMALIZATION
+# =============================================================================
 
-def _normalize_sample(js: Dict[str, Any], fallback_name: str) -> Optional[Dict[str, Any]]:
-    # Accept both new/legacy keys; guard missing content
-    sample_id = str(js.get("sample") or js.get("sample_id") or fallback_name or "NA")
-    cond      = js.get("condition", "NA")
-    tp        = js.get("timepoint", "NA")
-    rep       = js.get("replicate", "NA")
-
-    # Regions list: [{"region": name, "reads": float, "region_count": int,
-    #                 "region_length_total_bp": float, "region_length_median_bp": float}, ...]
-    regions = js.get("regions") or []
-    func_totals: Dict[str, float] = {}
-    region_counts: Dict[str, int] = {}
-    region_len_totals: Dict[str, float] = {}
-    region_len_medians: Dict[str, float] = {}
-    for it in regions:
-        try:
-            k = str(it.get("region"))
-            v = float(it.get("reads", 0) or 0.0)
-            c = int(it.get("region_count", 0) or 0)
-            lt = float(it.get("region_length_total_bp", 0) or 0.0)
-            lm = float(it.get("region_length_median_bp", 0) or 0.0)
-            if k:
-                func_totals[k] = func_totals.get(k, 0.0) + v
-                region_counts[k] = region_counts.get(k, 0) + c
-                region_len_totals[k] = region_len_totals.get(k, 0.0) + lt
-                # For medians across multiple entries of the same label in one sample,
-                # take median of medians conservatively by averaging if multiple present
-                if k in region_len_medians and region_len_medians[k] != 0:
-                    region_len_medians[k] = (region_len_medians[k] + lm) / 2.0
-                else:
-                    region_len_medians[k] = lm
-        except Exception:
-            pass
-    # Separate true functional reads from non-localized polymerase
-    unlocalized_reads = sum(v for k, v in func_totals.items() if _UNLOC_RE.search(str(k) or ""))
-    localized_reads = sum(v for k, v in func_totals.items() if not _UNLOC_RE.search(str(k) or ""))
-    reads_total_functional = localized_reads  # Exclude non-localized from functional total
+def normalize_sample_data(
+    json_data: Dict[str, Any],
+    fallback_name: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Normalize per-sample JSON into consistent format
     
-    # Use explicit value from JSON if present, otherwise compute
-    # Unlocalized fraction = unlocalized / (localized + unlocalized)
-    unloc = js.get("unlocalized_fraction")
-    if unloc is None:
-        total_with_unloc = localized_reads + unlocalized_reads
-        unloc = unlocalized_reads / total_with_unloc if total_with_unloc > 0 else None
-    unloc = _to_float(unloc)
-
-    # Extract nested fields from metrics and qc objects
-    metrics = js.get("metrics") or {}
-    qc = js.get("qc") or {}
+    Handles multiple schema versions and missing fields
     
-    # Determine duplicate percentage - prefer UMI deduplication if available
-    dup_percent = None
-    if qc.get("umi_deduplication_enabled", False) and qc.get("umi_deduplication_percent") is not None:
-        dup_percent = qc.get("umi_deduplication_percent")
-    else:
-        # Accept multiple synonyms
-        dup_percent = (
-            qc.get("duplicate_percent")
-            or qc.get("duplicate_perc_of_total")
-            or js.get("duplicate_percent")
-            or js.get("duplicate_perc_of_total")
-        )
-    
-    rec = dict(
-        sample_id=sample_id,
-        condition=cond, timepoint=tp, replicate=rep,
-        divergent_regions=metrics.get("divergent_regions"),
-        total_regions=metrics.get("total_functional_regions") or metrics.get("total_regions"),
-        reads_total_functional=reads_total_functional,
-        median_pausing_index=metrics.get("median_pausing_index") or metrics.get("median_pi"),
-        median_density=metrics.get("median_functional_cpm") or metrics.get("median_density"),
-        cpm_factor=metrics.get("cpm_factor"),
-        crpmsi_factor=metrics.get("sicpm_factor") or metrics.get("crpmsi_factor"),
-        density_source=metrics.get("density_source"),
-        density_reason=metrics.get("density_reason"),
-        input_reads=qc.get("total_reads_raw") or js.get("input_reads"),
-        dedup_reads=qc.get("dedup_reads_mapq_ge") or js.get("dedup_reads"),
-        duplicate_percent=dup_percent,
-        umi_deduplication_enabled=qc.get("umi_deduplication_enabled", False),
-        umi_deduplication_percent=qc.get("umi_deduplication_percent"),
-        unlocalized_fraction=unloc,
-        func_totals=func_totals,
-        region_counts=region_counts,
-        region_length_totals=region_len_totals,
-        region_length_medians=region_len_medians,
-        regions=regions
+    Args:
+        json_data: Raw JSON data from sample report
+        fallback_name: Fallback sample name if not in JSON
+        
+    Returns:
+        Normalized sample dictionary or None on failure
+    """
+    # Extract sample identification
+    sample_id = str(
+        json_data.get("sample") or 
+        json_data.get("sample_id") or 
+        fallback_name or 
+        "NA"
     )
-    return rec
-
-def _collect_region_keys(samples: List[Dict[str, Any]]) -> List[str]:
-    keys = {k for s in samples for k in (s.get("func_totals") or {}).keys()}
-    return sorted(keys)
-
-def _sum_region_totals(samples: List[Dict[str, Any]]) -> Dict[str, float]:
-    agg: Dict[str, float] = {}
-    for s in samples:
-        for k, v in (s.get("func_totals") or {}).items():
-            try: agg[k] = agg.get(k, 0.0) + float(v or 0.0)
-            except Exception: pass
-    return agg
-
-# ─────────────────────── Load & normalize ───────────────────────
-in_paths = _walk_inputs(args.inputs)
-if not in_paths:
-    sys.stderr.write("ERROR: no usable input paths.\n")
-    sys.exit(2)
-
-samples: List[Dict[str, Any]] = []
-skipped: List[str] = []
-for p in in_paths:
-    js = _read_json_any(p)
-    if not js:
-        skipped.append(p); continue
-    rec = _normalize_sample(js, os.path.basename(p).split(".")[0])
-    if rec:
-        samples.append(rec)
-    else:
-        skipped.append(p)
-
-if not samples:
-    sys.stderr.write("ERROR: no valid sample JSONs loaded.\n")
-    sys.exit(3)
-
-region_keys = _collect_region_keys(samples)
-region_totals = _sum_region_totals(samples)
-
-# ─────────────────────── Build TSV rows ───────────────────────
-core_cols = [
-    "sample_id","condition","timepoint","replicate",
-    "input_reads","dedup_reads","duplicate_percent",
-    "divergent_regions","total_regions","reads_total_functional",
-    "median_pausing_index","median_density",
-    "cpm_factor","crpmsi_factor","unlocalized_fraction"
-]
-rows: List[Dict[str, Any]] = []
-for s in samples:
-    r = {k: s.get(k) for k in core_cols}
-    # Include optional fields for downstream diagnostics
-    r["density_source"] = s.get("density_source")
-    r["density_reason"] = s.get("density_reason")
-    for k in region_keys:
-        r[f"func_{k}"] = (s.get("func_totals") or {}).get(k, 0)
-        r[f"count_{k}"] = (s.get("region_counts") or {}).get(k, 0)
-        r[f"len_total_{k}"] = (s.get("region_length_totals") or {}).get(k, 0)
-        r[f"len_median_{k}"] = (s.get("region_length_medians") or {}).get(k, 0)
-    rows.append(r)
-
-df = pd.DataFrame(rows)
-df.to_csv(args.out_tsv, sep="\t", index=False)
-
-# ─────────────────────── Write cohort JSON ───────────────────────
-payload = _sanitize(dict(
-    n_samples=len(samples),
-    rows=rows,
-    samples=samples,
-    region_totals=region_totals,
-    region_keys=region_keys,
-    columns=core_cols
-            + [f"func_{k}" for k in region_keys]
-            + [f"count_{k}" for k in region_keys]
-            + [f"len_total_{k}" for k in region_keys]
-            + [f"len_median_{k}" for k in region_keys],
-    skipped_inputs=skipped
-))
-with open(args.out_json, "w", encoding="utf-8") as fh:
-    json.dump(payload, fh, indent=2)
-
-# Optional global region totals TSV
-if args.out_regions and region_totals:
-    with open(args.out_regions, "w", encoding="utf-8") as fh:
-        fh.write("region\treads\n")
-        for k in region_keys:
-            fh.write(f"{k}\t{region_totals.get(k,0)}\n")
-
-# ─────────────────────── HTML (single file) ───────────────────────
-DATA_JSON = json.dumps(payload, ensure_ascii=False)
-
-CSS = r"""
-<style>
-:root{
-  --bg:#f8f9fa; --fg:#1a1a1a; --muted:#666; --line:#ddd; --card:#fff;
-  --ok:#10b981; --warn:#f59e0b; --fail:#ef4444; --accent:#2563eb;
-}
-@media (prefers-color-scheme: dark){
-  :root{--bg:#0f1419; --fg:#e5e7eb; --muted:#999; --line:#2d333b; --card:#1a1f28;}
-}
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--fg);font-family:-apple-system,system-ui,sans-serif;line-height:1.6;padding:1rem}
-.container{max-width:1400px;margin:0 auto}
-h1{font-size:2rem;margin-bottom:1rem}
-h2{font-size:1.4rem;margin:2rem 0 1rem;border-bottom:2px solid var(--line);padding-bottom:0.5rem}
-h3{font-size:1.1rem;margin:1.5rem 0 0.75rem}
-.header{background:var(--card);border-radius:12px;padding:1.5rem;margin-bottom:1.5rem;border:1px solid var(--line)}
-.kpi-grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin:1rem 0}
-.kpi{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:1rem;text-align:center}
-.kpi-label{font-size:0.75rem;color:var(--muted);text-transform:uppercase;margin-bottom:0.25rem}
-.kpi-value{font-size:1.8rem;font-weight:700}
-.status{display:inline-flex;align-items:center;gap:0.5rem;padding:0.5rem 1rem;border-radius:6px;font-weight:600;background:var(--card);border:1px solid var(--line)}
-.status-dot{width:10px;height:10px;border-radius:50%}
-.chart{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:1.5rem;margin:1rem 0;min-height:350px;position:relative;overflow:visible}
-.chart-grid{display:grid;gap:1.5rem;grid-template-columns:repeat(auto-fit,minmax(500px,1fr))}
-.table-container{background:var(--card);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:1rem 0}
-table{width:100%;border-collapse:collapse;font-size:0.9rem}
-th,td{padding:0.75rem;text-align:left;border-bottom:1px solid var(--line)}
-th{background:var(--bg);font-weight:600;position:sticky;top:0;z-index:10}
-.sticky{position:sticky;left:0;background:var(--card);z-index:5}
-.filters{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:1rem;margin:1rem 0;display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
-.filters input,.filters select{padding:0.5rem;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--fg);width:100%}
-.btn{padding:0.5rem 1rem;border:1px solid var(--line);border-radius:4px;background:var(--card);color:var(--fg);cursor:pointer;font-size:0.9rem}
-.btn:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
-.btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
-.tabs{display:flex;gap:0.5rem;margin:1rem 0;flex-wrap:wrap}
-.tab{padding:0.5rem 1rem;border-radius:6px;cursor:pointer;background:var(--bg);border:1px solid var(--line)}
-.tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
-.section{display:none}
-.section.active{display:block}
-.muted{color:var(--muted);font-size:0.9rem}
-.tip{position:absolute;background:var(--card);border:2px solid var(--accent);padding:0.75rem;border-radius:6px;font-size:0.9rem;pointer-events:none;opacity:0;z-index:1000;box-shadow:0 6px 16px rgba(0,0,0,0.2);transition:opacity 0.15s ease;max-width:250px;line-height:1.4}
-@media (max-width:768px){
-  .chart-grid{grid-template-columns:1fr}
-  .kpi-grid{grid-template-columns:repeat(2,1fr)}
-  body{padding:0.5rem}
-}
-</style>
-"""
-
-JS = r"""
-<script>
-const DATA = JSON.parse(document.getElementById('payload').textContent || '{}');
-const $ = q => document.querySelector(q);
-const $$ = q => Array.from(document.querySelectorAll(q));
-const fmt = n => (n==null||isNaN(n))? 'n/a' : Number(n).toLocaleString();
-const pct = x => (x==null||isNaN(x))? 'n/a' : (100*Number(x)).toFixed(1)+'%';
-const median = arr => {const s=arr.sort((a,b)=>a-b); return s.length%2? s[Math.floor(s.length/2)]:(s[s.length/2-1]+s[s.length/2])/2;};
-const labelNA = v => (v==null||v===''||v==='NA')? 'n/a' : String(v);
-
-// ---------- Tab Navigation ----------
-function switchTab(tab) {
-  // Remove active from all tabs
-  $$('.tab').forEach(t => t.classList.remove('active'));
-  
-  // Add active to clicked tab
-  const clickedTab = Array.from($$('.tab')).find(t => t.textContent.toLowerCase().includes(tab.toLowerCase()));
-  if (clickedTab) clickedTab.classList.add('active');
-  
-  // Navigate based on tab
-  if (tab === 'overview') {
-    location.hash = '#overview';
-  } else if (tab === 'samples') {
-    location.hash = '#samples';
-  } else if (tab === 'regions') {
-    location.hash = '#regions';
-  } else if (tab === 'quality') {
-    location.hash = '#qc';
-  }
-}
-
-// ---------- Mobile sidebar toggle ----------
-function toggleSidebar() {
-  const sidebar = $('.sidebar');
-  const overlay = $('.sidebar-overlay');
-  if (sidebar) sidebar.classList.toggle('open');
-  if (overlay) overlay.classList.toggle('open');
-}
-
-function sampleColorMap(){
-  const ids = [...new Set(DATA.rows.map(r=>r.sample_id))].sort();
-  const m={}; for (let i=0;i<ids.length;i++){ m[ids[i]] = `hsl(${Math.round(360*(i/Math.max(1,ids.length)))},70%,50%)`; }
-  return sid => m[sid] || '#3b82f6';
-}
-const colorOfSample = sampleColorMap();
-
-// Canonical colors from functional_regions.py (RGB values)
-const REGION_COLORS = {
-  'promoter':'rgb(243,132,0)','activepromoter':'rgb(243,132,0)','pppolii':'rgb(243,132,0)','pppol':'rgb(243,132,0)',
-  'divergenttx':'rgb(178,59,212)','divtx':'rgb(178,59,212)','divergent':'rgb(178,59,212)','ppdiv':'rgb(178,59,212)',
-  'enhancers':'rgb(115,212,122)','enhancer':'rgb(115,212,122)','enh':'rgb(115,212,122)',
-  'genebody':'rgb(0,0,0)','gene body':'rgb(0,0,0)','body':'rgb(0,0,0)','gb':'rgb(0,0,0)',
-  'cps':'rgb(103,200,249)','cleavagepolyadenylation':'rgb(103,200,249)',
-  'shortgenes':'rgb(253,218,13)','short genes':'rgb(253,218,13)','sg':'rgb(253,218,13)',
-  'terminationwindow':'rgb(255,54,98)','termination window':'rgb(255,54,98)','termination':'rgb(255,54,98)','tw':'rgb(255,54,98)'
-};
-function regionColor(label){
-  const k=String(label||'').toLowerCase().replace(/\s+/g,'');
-  if (REGION_COLORS[k]) return REGION_COLORS[k];
-  if (k==='non-localized'||k==='nonlocalized') return 'rgb(160,170,180)';
-  // fallback hash
-  let h=0; for (let i=0;i<k.length;i++) h=(h*31+k.charCodeAt(i))|0;
-  const P=['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#84cc16','#ec4899','#22c55e','#f43f5e','#14b8a6','#a855f7'];
-  return P[Math.abs(h)%P.length];
-}
-
-// ---------- Charts (SVG, exportable) ----------
-function exportPNG(svg, name='chart.png'){
-  const s=new XMLSerializer().serializeToString(svg),
-        img=new Image(),
-        url=URL.createObjectURL(new Blob([s],{type:'image/svg+xml'}));
-  img.onload=()=>{ const r=svg.viewBox.baseVal, c=document.createElement('canvas');
-    c.width=r&&r.width? r.width: svg.clientWidth*2; c.height=r&&r.height? r.height: svg.clientHeight*2;
-    const ctx=c.getContext('2d'); ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--bg')||'#fff';
-    ctx.fillRect(0,0,c.width,c.height); ctx.drawImage(img,0,0,c.width,c.height);
-    c.toBlob(b=>{const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=name; a.click();});
-  }; img.src=url;
-}
-
-function barChart(el, labels, values, colors, ylab, onClick){
-  const containerWidth = el.parentElement.clientWidth || 600;
-  const W = Math.min(Math.max(containerWidth - 16, 320), 1200);
-  const H = 500;  // Increased height for better label space
-  const L = 70;   // Increased left margin for y-axis labels
-  const B = 150;  // Much larger bottom margin for long rotated labels
-  const T = 40;   // Increased top margin for title
-  const R = 20;   // Right margin
-  const gap = Math.max(2, W / 150);
-  const n = labels.length || 1;
-  const dataMax = Math.max(...values, 1);
-  const max = dataMax * 1.1;  // Extend 10% past max for better visibility
-  const bw = Math.max(8, Math.floor((W - L - R - (n - 1) * gap) / n));
-  
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  svg.style.width = '100%';
-  svg.style.height = 'auto';
-  
-  const tip = document.createElement('div');
-  tip.className = 'tip';
-  el.style.position = 'relative';
-  el.appendChild(tip);
-
-  // Title
-  const title = document.createElementNS(svg.namespaceURI,'text');
-  title.setAttribute('x', W/2); title.setAttribute('y', 20);
-  title.setAttribute('text-anchor', 'middle'); title.setAttribute('font-size', '16');
-  title.setAttribute('font-weight', 'bold'); title.setAttribute('fill', 'currentColor');
-  title.textContent = ylab;
-  svg.appendChild(title);
-
-  // grid + axis ticks
-  for(let i=0;i<=5;i++){ 
-    const y = T + (H-B-T)*i/5;
-    const ln = document.createElementNS(svg.namespaceURI,'line');
-    ln.setAttribute('x1', L); ln.setAttribute('x2', W-R); 
-    ln.setAttribute('y1', y); ln.setAttribute('y2', y);
-    ln.setAttribute('stroke', 'currentColor'); ln.setAttribute('opacity', '0.15'); 
-    ln.setAttribute('stroke-dasharray', '4,4');
-    svg.appendChild(ln);
     
-    const t = document.createElementNS(svg.namespaceURI,'text'); 
-    t.setAttribute('x', L-8); t.setAttribute('y', y+5); 
-    t.setAttribute('font-size', '13'); t.setAttribute('text-anchor', 'end');
-    t.setAttribute('fill', 'currentColor'); t.setAttribute('opacity', '0.7'); 
-    t.textContent = Math.round(max*(1-i/5)).toLocaleString(); 
-    svg.appendChild(t);
-  }
-
-  // Smart label display: show fewer labels if too many bars, but ensure readability
-  const showEvery = n > 30 ? Math.ceil(n/15) : n > 15 ? Math.ceil(n/10) : 1;
-  
-  labels.forEach((lab, i) => {
-    const v = values[i] || 0;
-    const h = Math.round((v/max) * (H-B-T));
-    const x = L + i*(bw+gap);
-    const y = (H-B) - h;
+    condition = json_data.get("condition", "NA")
+    timepoint = json_data.get("timepoint", "NA")
+    replicate = json_data.get("replicate", "NA")
     
-    const r = document.createElementNS(svg.namespaceURI, 'rect');
-    r.setAttribute('x', x); r.setAttribute('y', y);
-    r.setAttribute('width', bw); r.setAttribute('height', h); r.setAttribute('rx', '3');
-    r.setAttribute('fill', colors[i] || '#3b82f6');
-    r.setAttribute('opacity', '0.9');
-    r.setAttribute('stroke', 'rgba(255,255,255,0.3)');
-    r.setAttribute('stroke-width', '0.5');
-    if (onClick) r.style.cursor = 'pointer';
+    # Extract regions data
+    regions = json_data.get("regions") or []
     
-    r.addEventListener('mousemove', (e) => {
-      tip.style.left = (e.offsetX+12) + 'px';
-      tip.style.top = (e.offsetY-10) + 'px';
-      tip.textContent = `${lab}: ${v.toLocaleString()}`;
-      tip.style.opacity = '1';
-    });
-    r.addEventListener('mouseleave', () => tip.style.opacity = '0');
-    if (onClick) r.addEventListener('click', () => onClick(lab));
-    svg.appendChild(r);
+    # Parse functional regions
+    func_totals = {}
+    region_counts = {}
+    region_len_totals = {}
+    region_len_medians = {}
     
-    // Add labels with 90-degree rotation for maximum readability
-    if (i % showEvery === 0 || n <= 10) {
-      const t = document.createElementNS(svg.namespaceURI, 'text');
-      t.setAttribute('x', x + bw/2);
-      t.setAttribute('y', H - B + 12);
-      t.setAttribute('text-anchor', 'end');
-      t.setAttribute('font-size', '10');
-      t.setAttribute('fill', 'currentColor');
-      t.setAttribute('opacity', '0.8');
-      t.setAttribute('transform', `rotate(-90 ${x+bw/2} ${H-B+12})`);
-      // Truncate to fit in 140px (B margin minus some padding)
-      t.textContent = lab.length > 18 ? lab.substring(0, 16) + '..' : lab;
-      svg.appendChild(t);
-    }
-  });
-
-  el.innerHTML = '';
-  el.appendChild(svg);
-}
-
-function scatter(el, labels, xs, ys, colors, xl, yl, onClick){
-  const containerWidth = el.parentElement.clientWidth || 600;
-  const W = Math.min(Math.max(containerWidth - 16, 320), 1200);
-  const H = 420;
-  const L = 80;
-  const B = 70;
-  const T = 50;
-  const R = 20;
-  
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  svg.style.width = '100%';
-  svg.style.height = 'auto';
-  
-  const tip = document.createElement('div');
-  tip.className = 'tip';
-  el.style.position = 'relative';
-  el.appendChild(tip);
-  
-  const maxX = Math.max(...xs.filter(v => v != null && !isNaN(v)), 1);
-  const maxY = Math.max(...ys.filter(v => v != null && !isNaN(v)), 1);
-
-  // Title
-  const title = document.createElementNS(svg.namespaceURI, 'text');
-  title.setAttribute('x', W/2); title.setAttribute('y', 25);
-  title.setAttribute('text-anchor', 'middle'); title.setAttribute('font-size', '16');
-  title.setAttribute('font-weight', 'bold'); title.setAttribute('fill', 'currentColor');
-  title.textContent = `${yl} vs ${xl}`;
-  svg.appendChild(title);
-
-  // Grid lines
-  for(let i=0; i<=5; i++){
-    const y = T + (H-B-T)*i/5;
-    const ln = document.createElementNS(svg.namespaceURI, 'line');
-    ln.setAttribute('x1', L); ln.setAttribute('x2', W-R);
-    ln.setAttribute('y1', y); ln.setAttribute('y2', y);
-    ln.setAttribute('stroke', 'currentColor'); ln.setAttribute('opacity', '0.1');
-    ln.setAttribute('stroke-dasharray', '3,3');
-    svg.appendChild(ln);
+    for region_item in regions:
+        try:
+            region_name = str(region_item.get("region", ""))
+            reads = float(region_item.get("reads", 0) or 0.0)
+            count = int(region_item.get("region_count", 0) or 0)
+            len_total = float(region_item.get("region_length_total_bp", 0) or 0.0)
+            len_median = float(region_item.get("region_length_median_bp", 0) or 0.0)
+            
+            if region_name:
+                func_totals[region_name] = func_totals.get(region_name, 0.0) + reads
+                region_counts[region_name] = region_counts.get(region_name, 0) + count
+                region_len_totals[region_name] = region_len_totals.get(region_name, 0.0) + len_total
+                
+                # Handle multiple entries: average medians
+                if region_name in region_len_medians and region_len_medians[region_name] != 0:
+                    region_len_medians[region_name] = (region_len_medians[region_name] + len_median) / 2.0
+                else:
+                    region_len_medians[region_name] = len_median
+        except Exception:
+            continue
     
-    const t = document.createElementNS(svg.namespaceURI, 'text');
-    t.setAttribute('x', L-8); t.setAttribute('y', y+4);
-    t.setAttribute('font-size', '11'); t.setAttribute('text-anchor', 'end');
-    t.setAttribute('fill', 'currentColor'); t.setAttribute('opacity', '0.7');
-    t.textContent = (maxY * (1-i/5)).toFixed(1);
-    svg.appendChild(t);
-  }
-  
-  for(let i=0; i<=5; i++){
-    const x = L + (W-L-R)*i/5;
-    const ln = document.createElementNS(svg.namespaceURI, 'line');
-    ln.setAttribute('x1', x); ln.setAttribute('x2', x);
-    ln.setAttribute('y1', T); ln.setAttribute('y2', H-B);
-    ln.setAttribute('stroke', 'currentColor'); ln.setAttribute('opacity', '0.1');
-    ln.setAttribute('stroke-dasharray', '3,3');
-    svg.appendChild(ln);
+    # Separate localized from unlocalized reads
+    unlocalized_reads = sum(
+        reads for name, reads in func_totals.items()
+        if UNLOCALIZED_PATTERN.search(name or "")
+    )
     
-    const t = document.createElementNS(svg.namespaceURI, 'text');
-    t.setAttribute('x', x); t.setAttribute('y', H-B+18);
-    t.setAttribute('font-size', '11'); t.setAttribute('text-anchor', 'middle');
-    t.setAttribute('fill', 'currentColor'); t.setAttribute('opacity', '0.7');
-    t.textContent = (maxX * i/5).toFixed(1);
-    svg.appendChild(t);
-  }
-
-  // axes
-  const ax = document.createElementNS(svg.namespaceURI, 'line');
-  ax.setAttribute('x1', L); ax.setAttribute('x2', W-R);
-  ax.setAttribute('y1', H-B); ax.setAttribute('y2', H-B);
-  ax.setAttribute('stroke', 'currentColor'); ax.setAttribute('opacity', '0.3');
-  ax.setAttribute('stroke-width', '2');
-  svg.appendChild(ax);
-  
-  const ay = document.createElementNS(svg.namespaceURI, 'line');
-  ay.setAttribute('x1', L); ay.setAttribute('x2', L);
-  ay.setAttribute('y1', T); ay.setAttribute('y2', H-B);
-  ay.setAttribute('stroke', 'currentColor'); ay.setAttribute('opacity', '0.3');
-  ay.setAttribute('stroke-width', '2');
-  svg.appendChild(ay);
-
-  labels.forEach((lab, i) => {
-    const xVal = xs[i] ?? 0;
-    const yVal = ys[i] ?? 0;
-    if (isNaN(xVal) || isNaN(yVal)) return;
+    localized_reads = sum(
+        reads for name, reads in func_totals.items()
+        if not UNLOCALIZED_PATTERN.search(name or "")
+    )
     
-    const x = L + (xVal/maxX) * (W-L-R);
-    const y = H-B - (yVal/maxY) * (H-B-T);
+    reads_total_functional = localized_reads
     
-    const c = document.createElementNS(svg.namespaceURI, 'circle');
-    c.setAttribute('cx', x); c.setAttribute('cy', y); c.setAttribute('r', 6);
-    c.setAttribute('fill', colors[i] || '#3b82f6');
-    c.setAttribute('opacity', '0.7');
-    c.setAttribute('stroke', 'white');
-    c.setAttribute('stroke-width', '1.5');
-    c.style.cursor = 'pointer';
+    # Calculate unlocalized fraction
+    unloc_frac = json_data.get("unlocalized_fraction")
+    if unloc_frac is None:
+        total_with_unloc = localized_reads + unlocalized_reads
+        if total_with_unloc > 0:
+            unloc_frac = unlocalized_reads / total_with_unloc
     
-    c.addEventListener('mousemove', (e) => {
-      tip.style.left = (e.offsetX+12) + 'px';
-      tip.style.top = (e.offsetY-10) + 'px';
-      tip.innerHTML = `<strong>${lab}</strong><br>${xl}: ${xVal.toFixed(2)}<br>${yl}: ${yVal.toFixed(2)}`;
-      tip.style.opacity = '1';
-    });
-    c.addEventListener('mouseleave', () => tip.style.opacity = '0');
-    if (onClick) c.addEventListener('click', () => onClick(lab));
-    svg.appendChild(c);
-  });
-  
-  // Axis labels
-  const xt = document.createElementNS(svg.namespaceURI, 'text');
-  xt.setAttribute('x', W/2); xt.setAttribute('y', H-20);
-  xt.setAttribute('font-size', '14'); xt.setAttribute('text-anchor', 'middle');
-  xt.setAttribute('fill', 'currentColor'); xt.setAttribute('font-weight', 'bold');
-  xt.textContent = xl;
-  svg.appendChild(xt);
-  
-  const yt = document.createElementNS(svg.namespaceURI, 'text');
-  yt.setAttribute('x', 20); yt.setAttribute('y', H/2);
-  yt.setAttribute('font-size', '14'); yt.setAttribute('text-anchor', 'middle');
-  yt.setAttribute('transform', `rotate(-90 20,${H/2})`);
-  yt.setAttribute('fill', 'currentColor'); yt.setAttribute('font-weight', 'bold');
-  yt.textContent = yl;
-  svg.appendChild(yt);
-  
-  el.innerHTML = '';
-  el.appendChild(svg);
-}
-
-function histogram(el, values, xlabel, ylabel, bins){
-  if (!values || values.length === 0) {
-    el.innerHTML = '<div class="muted" style="padding:2rem;text-align:center;">No data available</div>';
-    return;
-  }
-  
-  const containerWidth = el.parentElement.clientWidth || 600;
-  const W = Math.min(Math.max(containerWidth - 16, 320), 1200);
-  const H = 400;
-  const L = 80;
-  const B = 70;
-  const T = 50;
-  const R = 20;
-  
-  // Calculate histogram bins
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const binWidth = (max - min) / bins || 1;
-  const binCounts = new Array(bins).fill(0);
-  const binEdges = [];
-  const binLabels = [];  // Store sample IDs per bin
-  
-  for (let i = 0; i <= bins; i++) {
-    binEdges.push(min + i * binWidth);
-  }
-  
-  // Track which samples fall in which bin
-  for (let i = 0; i < bins; i++) {
-    binLabels[i] = [];
-  }
-  
-  values.forEach((v, idx) => {
-    const binIdx = Math.min(Math.floor((v - min) / binWidth), bins - 1);
-    if (binIdx >= 0 && binIdx < bins) {
-      binCounts[binIdx]++;
-      // Store the index for potential sample name lookup
-    }
-  });
-  
-  const dataMax = Math.max(...binCounts, 1);
-  const maxCount = dataMax * 1.1;  // Extend 10% past max
-  
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  svg.style.width = '100%';
-  svg.style.height = 'auto';
-  
-  const tip = document.createElement('div');
-  tip.className = 'tip';
-  el.style.position = 'relative';
-  el.appendChild(tip);
-  
-  // Title
-  const title = document.createElementNS(svg.namespaceURI, 'text');
-  title.setAttribute('x', W/2); title.setAttribute('y', 25);
-  title.setAttribute('text-anchor', 'middle'); title.setAttribute('font-size', '16');
-  title.setAttribute('font-weight', 'bold'); title.setAttribute('fill', 'currentColor');
-  title.textContent = `${xlabel} Distribution`;
-  svg.appendChild(title);
-  
-  // Grid
-  for(let i=0; i<=5; i++){ 
-    const y = T + (H-B-T)*i/5;
-    const ln = document.createElementNS(svg.namespaceURI,'line');
-    ln.setAttribute('x1', L); ln.setAttribute('x2', W-R);
-    ln.setAttribute('y1', y); ln.setAttribute('y2', y);
-    ln.setAttribute('stroke', 'currentColor'); ln.setAttribute('opacity', '0.15');
-    ln.setAttribute('stroke-dasharray', '4,4');
-    svg.appendChild(ln);
+    unloc_frac = to_float(unloc_frac)
     
-    const t = document.createElementNS(svg.namespaceURI,'text');
-    t.setAttribute('x', L-8); t.setAttribute('y', y+4);
-    t.setAttribute('font-size', '11'); t.setAttribute('text-anchor', 'end');
-    t.setAttribute('fill', 'currentColor'); t.setAttribute('opacity', '0.7');
-    t.textContent = Math.round(maxCount*(1-i/5));
-    svg.appendChild(t);
-  }
-  
-  // Bars
-  const barWidth = (W - L - R) / bins - 2;
-  binCounts.forEach((count, i) => {
-    const x = L + i * ((W - L - R) / bins);
-    const h = (count / maxCount) * (H - B - T);
-    const y = H - B - h;
+    # Extract nested metrics and QC
+    metrics = json_data.get("metrics") or {}
+    qc = json_data.get("qc") or {}
     
-    const rect = document.createElementNS(svg.namespaceURI, 'rect');
-    rect.setAttribute('x', x);
-    rect.setAttribute('y', y);
-    rect.setAttribute('width', barWidth);
-    rect.setAttribute('height', h);
-    rect.setAttribute('fill', '#3b82f6');
-    rect.setAttribute('opacity', '0.8');
-    rect.setAttribute('rx', '2');
+    # Determine duplicate percentage (prefer UMI if available)
+    # Use explicit None checks to handle 0.0 values correctly
+    dup_percent = None
     
-    rect.addEventListener('mousemove', (e) => {
-      tip.style.left = (e.offsetX+12) + 'px';
-      tip.style.top = (e.offsetY-10) + 'px';
-      tip.innerHTML = `<strong>Range:</strong> ${binEdges[i].toFixed(1)} - ${binEdges[i+1].toFixed(1)}<br><strong>Count:</strong> ${count}`;
-      tip.style.opacity = '1';
-    });
-    rect.addEventListener('mouseleave', () => tip.style.opacity = '0');
+    # Priority 1: UMI deduplication if enabled
+    if qc.get("umi_deduplication_enabled", False):
+        dup_percent = qc.get("umi_deduplication_percent")
     
-    svg.appendChild(rect);
-  });
-  
-  // X-axis labels
-  for(let i=0; i<=5; i++){
-    const x = L + (W-L-R)*i/5;
-    const val = min + (max-min)*i/5;
-    const t = document.createElementNS(svg.namespaceURI,'text');
-    t.setAttribute('x', x); t.setAttribute('y', H-B+20);
-    t.setAttribute('font-size', '10'); t.setAttribute('text-anchor', 'middle');
-    t.setAttribute('fill', 'currentColor'); t.setAttribute('opacity', '0.7');
-    t.textContent = val.toFixed(1);
-    svg.appendChild(t);
-  }
-  
-  // Axis labels
-  const xl = document.createElementNS(svg.namespaceURI, 'text');
-  xl.setAttribute('x', W/2); xl.setAttribute('y', H-20);
-  xl.setAttribute('font-size', '13'); xl.setAttribute('text-anchor', 'middle');
-  xl.setAttribute('fill', 'currentColor'); xl.setAttribute('font-weight', 'bold');
-  xl.textContent = xlabel;
-  svg.appendChild(xl);
-  
-  const yl = document.createElementNS(svg.namespaceURI, 'text');
-  yl.setAttribute('x', 20); yl.setAttribute('y', H/2);
-  yl.setAttribute('font-size', '13'); yl.setAttribute('text-anchor', 'middle');
-  yl.setAttribute('transform', `rotate(-90 20,${H/2})`);
-  yl.setAttribute('fill', 'currentColor'); yl.setAttribute('font-weight', 'bold');
-  yl.textContent = ylabel;
-  svg.appendChild(yl);
-  
-  el.innerHTML = '';
-  el.appendChild(svg);
-}
-
-function donut(el, labels, values, colorFor){
-  const containerWidth = el.parentElement.clientWidth || 600;
-  const W = Math.min(Math.max(containerWidth - 40, 500), 700);
-  const chartH = 300;
-  const legendH = Math.max(80, Math.ceil(labels.length / 3) * 25);
-  const H = chartH + legendH + 40;
-  const R = Math.min(120, W / 4);
-  const cx = W / 2;
-  const cy = chartH / 2 + 30;
-  const rIn = R * 0.55;
-  
-  const total = values.reduce((a,b) => a + b, 0) || 1;
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  svg.style.width = '100%';
-  svg.style.height = 'auto';
-  
-  const tip = document.createElement('div');
-  tip.className = 'tip';
-  el.style.position = 'relative';
-  el.appendChild(tip);
-  
-  // Title
-  const title = document.createElementNS(svg.namespaceURI, 'text');
-  title.setAttribute('x', W/2); title.setAttribute('y', 20);
-  title.setAttribute('text-anchor', 'middle'); title.setAttribute('font-size', '16');
-  title.setAttribute('font-weight', 'bold'); title.setAttribute('fill', 'currentColor');
-  title.textContent = 'Region Composition';
-  svg.appendChild(title);
-  
-  let a0 = -Math.PI/2;
-  values.forEach((v, i) => {
-    const a1 = a0 + (v/total) * 2 * Math.PI;
-    const x0 = cx + R*Math.cos(a0), y0 = cy + R*Math.sin(a0);
-    const x1 = cx + R*Math.cos(a1), y1 = cy + R*Math.sin(a1);
-    const large = (a1-a0) > Math.PI ? 1 : 0;
-    const path = document.createElementNS(svg.namespaceURI, 'path');
-    path.setAttribute('d', `M ${cx+rIn*Math.cos(a0)} ${cy+rIn*Math.sin(a0)} L ${x0} ${y0} A ${R} ${R} 0 ${large} 1 ${x1} ${y1} L ${cx+rIn*Math.cos(a1)} ${cy+rIn*Math.sin(a1)} A ${rIn} ${rIn} 0 ${large} 0 ${cx+rIn*Math.cos(a0)} ${cy+rIn*Math.sin(a0)} Z`);
-    path.setAttribute('fill', colorFor(labels[i]));
-    path.setAttribute('opacity', '0.92');
-    path.setAttribute('stroke', 'white');
-    path.setAttribute('stroke-width', '2');
-    path.style.cursor = 'pointer';
+    # Priority 2: Try QC dict fields
+    if dup_percent is None:
+        for field in ["duplicate_percent", "duplicate_perc_of_total", "dup_percent"]:
+            if field in qc and qc[field] is not None:
+                dup_percent = qc[field]
+                break
     
-    path.addEventListener('mouseenter', function() {
-      this.setAttribute('opacity', '1');
-      this.setAttribute('transform', `translate(${5*Math.cos((a0+a1)/2)},${5*Math.sin((a0+a1)/2)})`);
-    });
-    path.addEventListener('mouseleave', function() {
-      this.setAttribute('opacity', '0.92');
-      this.setAttribute('transform', '');
-    });
+    # Priority 3: Try top-level JSON fields
+    if dup_percent is None:
+        for field in ["duplicate_percent", "duplicate_perc_of_total"]:
+            if field in json_data and json_data[field] is not None:
+                dup_percent = json_data[field]
+                break
     
-    path.addEventListener('mousemove', (e) => {
-      tip.style.left = (e.offsetX+12) + 'px';
-      tip.style.top = (e.offsetY-10) + 'px';
-      tip.innerHTML = `<strong>${labels[i]}</strong><br>${values[i].toLocaleString()} reads<br>${((values[i]/total)*100).toFixed(1)}%`;
-      tip.style.opacity = '1';
-    });
-    path.addEventListener('mouseleave', () => tip.style.opacity = '0');
-    
-    svg.appendChild(path);
-    a0 = a1;
-  });
-  
-  // Center label
-  const centerText = document.createElementNS(svg.namespaceURI, 'text');
-  centerText.setAttribute('x', cx); centerText.setAttribute('y', cy-5);
-  centerText.setAttribute('text-anchor', 'middle'); centerText.setAttribute('font-size', '13');
-  centerText.setAttribute('font-weight', 'bold'); centerText.setAttribute('fill', 'currentColor');
-  centerText.textContent = 'Total';
-  svg.appendChild(centerText);
-  
-  const centerVal = document.createElementNS(svg.namespaceURI, 'text');
-  centerVal.setAttribute('x', cx); centerVal.setAttribute('y', cy+12);
-  centerVal.setAttribute('text-anchor', 'middle'); centerVal.setAttribute('font-size', '15');
-  centerVal.setAttribute('font-weight', 'bold'); centerVal.setAttribute('fill', 'currentColor');
-  centerVal.textContent = total.toLocaleString();
-  svg.appendChild(centerVal);
-  
-  // Legend below
-  const legendY = chartH + 10;
-  const itemsPerRow = 3;
-  const itemWidth = W / itemsPerRow;
-  labels.forEach((lab, i) => {
-    const row = Math.floor(i / itemsPerRow);
-    const col = i % itemsPerRow;
-    const x = col * itemWidth + 15;
-    const y = legendY + row * 25;
-    
-    const rect = document.createElementNS(svg.namespaceURI, 'rect');
-    rect.setAttribute('x', x); rect.setAttribute('y', y);
-    rect.setAttribute('width', 14); rect.setAttribute('height', 14);
-    rect.setAttribute('rx', 2);
-    rect.setAttribute('fill', colorFor(lab));
-    svg.appendChild(rect);
-    
-    const text = document.createElementNS(svg.namespaceURI, 'text');
-    text.setAttribute('x', x+20); text.setAttribute('y', y+11);
-    text.setAttribute('font-size', '11'); text.setAttribute('fill', 'currentColor');
-    text.textContent = `${lab} (${((values[i]/total)*100).toFixed(1)}%)`;
-    svg.appendChild(text);
-  });
-  
-  el.innerHTML = '';
-  el.appendChild(svg);
-}
-
-function regionLegend(el, labels){
-  if (!el) return;
-  el.innerHTML = '<div style="background: var(--card); padding: 1rem; border-radius: 8px; border: 1px solid var(--line);"><h3 style="margin: 0 0 0.75rem; font-size: 1.1rem;">Region Color Legend</h3><div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.5rem;">' + 
-    labels.map(l=>`<span class="pill" style="display:flex; align-items:center; gap:8px; padding:6px 10px; background: rgba(0,0,0,0.02); border-radius:6px; border:1px solid var(--line);"><span style="display:inline-block;width:16px;height:16px;border-radius:3px;background:${regionColor(l)};flex-shrink:0;"></span><span style="font-size:0.9rem;font-weight:500;">${l}</span></span>`).join('') +
-    '</div></div>';
-}
-
-function toPercent(vals){
-  const total = vals.reduce((a,b)=>a+b,0) || 1;
-  return vals.map(v=> (100.0*v/total));
-}
-
-// Grouped bar chart for comparing two series across labels
-function groupedBarChart(el, labels, series, colorsA, colorsB, ylab, legends=['A','B']){
-  const containerWidth = el.parentElement.clientWidth || 600;
-  const W = Math.min(Math.max(containerWidth - 40, 400), 1200);
-  const H = 520, L = 80, B = 150, T = 50, R = 20;
-  const n = labels.length || 1;
-  const max = Math.max(...series[0], ...series[1], 1);
-  const groupWidth = Math.max(24, Math.floor((W - L - R) / Math.max(1, n)) - 12);
-  const bw = Math.max(10, Math.floor((groupWidth - 8) / 2));
-  const gap = Math.max(8, Math.floor((W - L - R - n*groupWidth) / Math.max(1,n-1)));
-  
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  svg.style.width = '100%'; svg.style.height = 'auto';
-  
-  const tip = document.createElement('div'); tip.className = 'tip'; 
-  el.style.position='relative'; el.appendChild(tip);
-  
-  // Title
-  const title = document.createElementNS(svg.namespaceURI,'text');
-  title.setAttribute('x', W/2); title.setAttribute('y', 25);
-  title.setAttribute('text-anchor', 'middle'); title.setAttribute('font-size', '16');
-  title.setAttribute('font-weight', 'bold'); title.setAttribute('fill', 'currentColor');
-  title.textContent = ylab;
-  svg.appendChild(title);
-  
-  // Grid
-  for(let i=0;i<=5;i++){ 
-    const y = T + (H-B-T)*i/5;
-    const ln = document.createElementNS(svg.namespaceURI,'line');
-    ln.setAttribute('x1', L); ln.setAttribute('x2', W-R);
-    ln.setAttribute('y1', y); ln.setAttribute('y2', y);
-    ln.setAttribute('stroke', 'currentColor'); ln.setAttribute('opacity', '0.15');
-    ln.setAttribute('stroke-dasharray', '4,4');
-    svg.appendChild(ln);
-    
-    const t = document.createElementNS(svg.namespaceURI,'text');
-    t.setAttribute('x', L-8); t.setAttribute('y', y+4);
-    t.setAttribute('font-size', '12'); t.setAttribute('text-anchor', 'end');
-    t.setAttribute('fill', 'currentColor'); t.setAttribute('opacity', '0.7');
-    t.textContent = Math.round(max*(1-i/5)).toLocaleString();
-    svg.appendChild(t);
-  }
-  
-  // Legend
-  const leg1 = document.createElementNS(svg.namespaceURI, 'rect');
-  leg1.setAttribute('x', W-R-150); leg1.setAttribute('y', T-25);
-  leg1.setAttribute('width', 12); leg1.setAttribute('height', 12);
-  leg1.setAttribute('fill', colorsA[0] || '#3b82f6');
-  svg.appendChild(leg1);
-  
-  const txt1 = document.createElementNS(svg.namespaceURI, 'text');
-  txt1.setAttribute('x', W-R-135); txt1.setAttribute('y', T-16);
-  txt1.setAttribute('font-size', '11'); txt1.setAttribute('fill', 'currentColor');
-  txt1.textContent = legends[0];
-  svg.appendChild(txt1);
-  
-  const leg2 = document.createElementNS(svg.namespaceURI, 'rect');
-  leg2.setAttribute('x', W-R-70); leg2.setAttribute('y', T-25);
-  leg2.setAttribute('width', 12); leg2.setAttribute('height', 12);
-  leg2.setAttribute('fill', colorsB[0] || '#10b981');
-  svg.appendChild(leg2);
-  
-  const txt2 = document.createElementNS(svg.namespaceURI, 'text');
-  txt2.setAttribute('x', W-R-55); txt2.setAttribute('y', T-16);
-  txt2.setAttribute('font-size', '11'); txt2.setAttribute('fill', 'currentColor');
-  txt2.textContent = legends[1];
-  svg.appendChild(txt2);
-  
-  labels.forEach((lab, i) => {
-    const x0 = L + i*(groupWidth+gap);
-    const vA = series[0][i]||0, vB = series[1][i]||0;
-    const hA = Math.round((vA/max)*(H-B-T));
-    const hB = Math.round((vB/max)*(H-B-T));
-    const yA = (H-B)-hA, yB = (H-B)-hB;
-    
-    const rA = document.createElementNS(svg.namespaceURI,'rect');
-    rA.setAttribute('x', x0); rA.setAttribute('y', yA);
-    rA.setAttribute('width', bw); rA.setAttribute('height', hA);
-    rA.setAttribute('rx', '3'); rA.setAttribute('fill', colorsA[i]||'#3b82f6');
-    rA.setAttribute('opacity', '0.9');
-    rA.addEventListener('mousemove', (e) => {
-      tip.style.left = (e.offsetX+12)+'px'; tip.style.top = (e.offsetY-10)+'px';
-      tip.innerHTML = `<strong>${lab}</strong><br>${legends[0]}: ${vA.toLocaleString()}`;
-      tip.style.opacity = '1';
-    });
-    rA.addEventListener('mouseleave', () => tip.style.opacity='0');
-    svg.appendChild(rA);
-    
-    const rB = document.createElementNS(svg.namespaceURI,'rect');
-    rB.setAttribute('x', x0+bw+4); rB.setAttribute('y', yB);
-    rB.setAttribute('width', bw); rB.setAttribute('height', hB);
-    rB.setAttribute('rx', '3'); rB.setAttribute('fill', colorsB[i]||'#10b981');
-    rB.setAttribute('opacity', '0.9');
-    rB.addEventListener('mousemove', (e) => {
-      tip.style.left = (e.offsetX+12)+'px'; tip.style.top = (e.offsetY-10)+'px';
-      tip.innerHTML = `<strong>${lab}</strong><br>${legends[1]}: ${vB.toLocaleString()}`;
-      tip.style.opacity = '1';
-    });
-    rB.addEventListener('mouseleave', () => tip.style.opacity='0');
-    svg.appendChild(rB);
-    
-    const t = document.createElementNS(svg.namespaceURI,'text');
-    t.setAttribute('x', x0+groupWidth/2); t.setAttribute('y', H-B+12);
-    t.setAttribute('text-anchor', 'end');
-    t.setAttribute('font-size', '10');
-    t.setAttribute('fill', 'currentColor'); t.setAttribute('opacity', '0.8');
-    t.setAttribute('transform', `rotate(-90 ${x0+groupWidth/2} ${H-B+12})`);
-    t.textContent = lab.length > 18 ? lab.substring(0, 16) + '..' : lab;
-    svg.appendChild(t);
-  });
-  
-  el.innerHTML = ''; el.appendChild(svg);
-}
-
-function renderConditionPies(rows){
-  const rk = DATA.region_keys||[];
-  const conds = [...new Set(rows.map(r=>r.condition).filter(Boolean))].sort();
-  const wrap = document.getElementById('cond-pies'); if (!wrap) return;
-  wrap.innerHTML = '';
-  conds.forEach(cond=>{
-    const subset = rows.filter(r=>r.condition===cond);
-    const totals = rk.map(k=> subset.reduce((a,r)=> a + (Number(r['func_'+k])||0), 0));
-    const card = document.createElement('div'); card.className='card';
-    const title = document.createElement('h3'); title.textContent = `Condition: ${cond}`; title.style.margin = '0 0 8px'; card.appendChild(title);
-    const div = document.createElement('div'); div.className='chart'; card.appendChild(div);
-    wrap.appendChild(card);
-    donut(div, rk, totals, s=>regionColor(s));
-  });
-}
-
-function renderConditionCompare(rows){
-  const rk = DATA.region_keys||[];
-  const a = (document.getElementById('cmp-cond-a')||{}).value || '';
-  const b = (document.getElementById('cmp-cond-b')||{}).value || '';
-  const el = document.getElementById('chart-cond-compare'); if (!el) return;
-  if (!a || !b || a===b){ el.innerHTML = '<div class="muted">Select two different conditions to compare.</div>'; return; }
-  const rowsA = rows.filter(r=>r.condition===a);
-  const rowsB = rows.filter(r=>r.condition===b);
-  const valsA = rk.map(k=> rowsA.reduce((s,r)=> s + (Number(r['func_'+k])||0), 0));
-  const valsB = rk.map(k=> rowsB.reduce((s,r)=> s + (Number(r['func_'+k])||0), 0));
-  groupedBarChart(el, rk, [valsA, valsB], rk.map(regionColor), rk.map(regionColor), 'Reads by region', [a,b]);
-}
-
-function build(){
-  // Hero KPIs & badge
-  const rows = DATA.rows || [];
-  const dupVals = rows.map(r=>Number(r.duplicate_percent)).filter(v=>!Number.isNaN(v)).sort((a,b)=>a-b);
-  const medianDup = dupVals.length ? (dupVals.length%2 ? dupVals[Math.floor(dupVals.length/2)] : (dupVals[dupVals.length/2-1]+dupVals[dupVals.length/2])/2) : null;
-  const unlocVals = rows.map(r=>Number(r.unlocalized_fraction)).filter(v=>!Number.isNaN(v)).sort((a,b)=>a-b);
-  const medianUnloc = unlocVals.length ? (unlocVals.length%2 ? unlocVals[Math.floor(unlocVals.length/2)] : (unlocVals[unlocVals.length/2-1]+unlocVals[unlocVals.length/2])/2) : null;
-
-  const badge = (()=>{ const ok = (medianUnloc!=null && medianUnloc<=0.25) && (medianDup!=null && medianDup<=30);
-    return { label: ok? 'PASS' : (medianUnloc!=null && medianUnloc<=0.4 ? 'WARN' : 'FAIL'), color: ok? 'var(--ok)' : (medianUnloc!=null && medianUnloc<=0.4 ? 'var(--warn)' : 'var(--fail)')};
-  })();
-
-  $('#badge').innerHTML = `<span class="status" style="--status:${badge.color}"><span style="width:10px;height:10px;border-radius:50%;background:${badge.color}"></span>${badge.label}</span>`;
-  $('#kpi-n').textContent = rows.length;
-  $('#kpi-reads').textContent = (rows.reduce((a,r)=>a+(Number(r.reads_total_functional)||0),0)).toLocaleString();
-  $('#kpi-dup').textContent = (medianDup==null? 'n/a' : medianDup.toFixed(2)+'%');
-  $('#kpi-reg').textContent = (DATA.region_keys||[]).length;
-  $('#kpi-unloc').textContent = (medianUnloc==null? 'n/a' : (100*medianUnloc).toFixed(1)+'%');
-  
-  // Quality status summary
-  const passCount = rows.filter(r => {
-    const reads = r.input_reads || 0;
-    const dup = r.duplicate_percent || 0;
-    const unloc = r.unlocalized_fraction || 0;
-    return reads >= 5e6 && dup < 15 && unloc < 0.25;
-  }).length;
-  const warnCount = rows.filter(r => {
-    const reads = r.input_reads || 0;
-    const dup = r.duplicate_percent || 0;
-    const unloc = r.unlocalized_fraction || 0;
-    return reads >= 2e6 && dup < 30 && unloc < 0.4 && !(reads >= 5e6 && dup < 15 && unloc < 0.25);
-  }).length;
-  const failCount = rows.length - passCount - warnCount;
-  $('#kpi-quality').innerHTML = `<span style="color: #10b981">${passCount}P</span> <span style="color: #f59e0b">${warnCount}W</span> <span style="color: #ef4444">${failCount}F</span>`;
-
-  // Charts
-  const labels = rows.map(r=>r.sample_id);
-  const colors = labels.map(colorOfSample);
-  const reads  = rows.map(r=>Number(r.reads_total_functional)||0);
-  const piMed  = rows.map(r=>Number(r.median_pausing_index)||0);
-  const dens   = rows.map(r=>Number(r.median_density)||0);
-  const unlocs = rows.map(r=>Number(r.unlocalized_fraction)||0);
-  const dups   = rows.map(r=>Number(r.duplicate_percent)||0);
-
-  // Charts with enhanced information
-  barChart($('#chart-reads'), labels, reads, colors, 'Reads in functional regions', sid => location.hash = '#sample/'+encodeURIComponent(sid));
-  
-  // Calculate correlation for scatter plot
-  const validPairs = piMed.map((pi, i) => [pi, dens[i]]).filter(([pi, d]) => pi > 0 && d > 0);
-  const correlation = validPairs.length > 1 ? 
-    calculateCorrelation(validPairs.map(p => p[0]), validPairs.map(p => p[1])) : 0;
-  
-  scatter($('#chart-scatter'), labels, piMed, dens, colors, 'Median Pausing Index', 'Median Density', sid => location.hash = '#sample/'+encodeURIComponent(sid));
-  
-  // Add correlation info below scatter plot
-  const scatterContainer = $('#chart-scatter').parentElement;
-  if (scatterContainer && !scatterContainer.querySelector('.correlation-info')) {
-    const corrInfo = document.createElement('div');
-    corrInfo.className = 'correlation-info';
-    corrInfo.style.cssText = 'margin-top: 0.5rem; text-align: center; font-size: 0.9em; color: var(--muted);';
-    corrInfo.innerHTML = `<strong>Correlation (PI vs Density):</strong> r = ${correlation.toFixed(3)} ${Math.abs(correlation) > 0.7 ? '(Strong)' : Math.abs(correlation) > 0.3 ? '(Moderate)' : '(Weak)'}`;
-    scatterContainer.appendChild(corrInfo);
-  }
-  
-  const rk = DATA.region_keys||[]; donut($('#chart-pie'), rk, rk.map(k=>(DATA.region_totals||{})[k]||0), s=>regionColor(s));
-  regionLegend($('#region-legend'), rk);
-
-  // New: Region-level bars across cohort
-  const renderRegionCharts = () => {
-    const regionReads = rk.map(k => (DATA.region_totals||{})[k] || 0);
-    const pctToggle = document.getElementById('toggle-region-percent');
-    const usePct = pctToggle && pctToggle.checked;
-    const dispReads = usePct ? toPercent(regionReads) : regionReads;
-    barChart($('#chart-reg-reads'), rk, dispReads, rk.map(regionColor), usePct? 'Reads by region (%)' : 'Total reads by region', null);
-    
-    const regionLenTotals = rk.map(k => rows.reduce((a,r)=> a + (Number(r['len_total_'+k])||0), 0));
-    const dispLen = usePct ? toPercent(regionLenTotals) : regionLenTotals;
-    barChart($('#chart-reg-lentot'), rk, dispLen, rk.map(regionColor), usePct? 'Total length by region (%)' : 'Total length (bp) by region', null);
-  };
-  
-  renderRegionCharts();
-  
-  // Wire up the toggle
-  const pctToggle = document.getElementById('toggle-region-percent');
-  if (pctToggle) {
-    pctToggle.addEventListener('change', renderRegionCharts);
-  }
-
-  // Sum counts across samples per region
-  const regionCounts = rk.map(k => rows.reduce((a,r)=> a + (Number(r['count_'+k])||0), 0));
-  barChart($('#chart-reg-counts'), rk, regionCounts, rk.map(regionColor), 'Total region count (cohort)', null);
-
-  // (moved into renderRegionCharts function above)
-
-  // Median of median lengths across samples per region
-  const regionLenMedians = rk.map(k => {
-    const vals = rows.map(r => Number(r['len_median_'+k])||0).filter(v=>v>0).sort((a,b)=>a-b);
-    if (!vals.length) return 0;
-    return vals.length%2? vals[Math.floor(vals.length/2)] : (vals[vals.length/2-1]+vals[vals.length/2])/2;
-  });
-  barChart($('#chart-reg-lenmed'), rk, regionLenMedians, rk.map(regionColor), 'Median length (bp) by region', null);
-
-  // New scatters: Functional reads vs Unlocalized; Duplicate% vs Unlocalized
-  scatter($('#chart-unloc-vs-reads'), labels, reads, unlocs.map(x=>x*100), colors, 'Reads (functional)', 'Unlocalized %', sid => location.hash = '#sample/'+encodeURIComponent(sid));
-  scatter($('#chart-dup-vs-unloc'), labels, dups, unlocs.map(x=>x*100), colors, 'Duplicate %', 'Unlocalized %', sid => location.hash = '#sample/'+encodeURIComponent(sid));
-  
-  // Histograms for duplicate and unlocalized percentages
-  histogram($('#chart-hist-dup'), dups.filter(v=>!isNaN(v)&&v>0), 'Duplicate %', 'Number of samples', 20);
-  histogram($('#chart-hist-unloc'), unlocs.filter(v=>!isNaN(v)&&v>0).map(x=>x*100), 'Unlocalized %', 'Number of samples', 20);
-  
-  // CPM factor vs reads scatter
-  const cpmFactors = rows.map(r=>Number(r.cpm_factor)||0).filter(v=>v>0);
-  scatter($('#chart-cpm-vs-reads'), 
-          rows.filter(r=>Number(r.cpm_factor)>0).map(r=>r.sample_id),
-          cpmFactors,
-          rows.filter(r=>Number(r.cpm_factor)>0).map(r=>Number(r.reads_total_functional)||0),
-          rows.filter(r=>Number(r.cpm_factor)>0).map(r=>colorOfSample(r.sample_id)),
-          'CPM Normalization Factor', 'Functional Reads',
-          sid => location.hash = '#sample/'+encodeURIComponent(sid));
-
-  // Table
-  const tb = $('#table-body'); tb.innerHTML='';
-  rows.forEach(r=>{
-    const tr=document.createElement('tr');
-    const unlocCell = (r.unlocalized_fraction==null || isNaN(r.unlocalized_fraction)) ? 'n/a' : (100*Number(r.unlocalized_fraction)).toFixed(1)+'%';
-    tr.innerHTML = `
-      <td class="sticky">${r.sample_id}</td>
-      <td>${labelNA(r.condition)}</td>
-      <td>${labelNA(r.timepoint)}</td>
-      <td>${labelNA(r.replicate)}</td>
-      <td>${fmt(r.input_reads)}</td>
-      <td>${fmt(r.dedup_reads)}</td>
-      <td>${r.duplicate_percent!=null? (r.umi_deduplication_enabled? 'UMI: ' : '') + Number(r.duplicate_percent).toFixed(2)+'%':'n/a'}</td>
-      <td>${fmt(r.divergent_regions)}</td>
-      <td>${fmt(r.total_regions)}</td>
-      <td>${fmt(r.reads_total_functional)}</td>
-      <td>${r.median_pausing_index!=null? Number(r.median_pausing_index).toFixed(2):'n/a'}</td>
-      <td>${r.median_density!=null? Number(r.median_density).toFixed(2):'n/a'}</td>
-      <td>${r.cpm_factor!=null? Number(r.cpm_factor).toFixed(2):'n/a'}</td>
-      <td>${r.crpmsi_factor!=null? Number(r.crpmsi_factor).toFixed(2):'n/a'}</td>
-      <td>${unlocCell}</td>
-      </td>`;
-    tr.onclick = ()=> location.hash = '#sample/'+encodeURIComponent(r.sample_id);
-    tb.appendChild(tr);
-  });
-  
-  // Initialize filter options
-  initializeFilters(rows);
-  populateChartFilters(rows);
-  renderConditionPies(rows);
-  const setCmpOptions = ()=>{
-    const aSel = document.getElementById('cmp-cond-a');
-    const bSel = document.getElementById('cmp-cond-b');
-    if (!aSel || !bSel) return;
-    const conds = [...new Set(rows.map(r=>r.condition).filter(Boolean))].sort();
-    aSel.innerHTML = '<option value="">Select A</option>' + conds.map(c=>`<option value="${c}">${c}</option>`).join('');
-    bSel.innerHTML = '<option value="">Select B</option>' + conds.map(c=>`<option value="${c}">${c}</option>`).join('');
-  };
-  setCmpOptions();
-  const cmpBtn = document.getElementById('cmp-render'); if (cmpBtn) cmpBtn.onclick = ()=> renderConditionCompare(rows);
-  
-  // Initialize table info
-  const info = $('#table-info');
-  if (info) info.textContent = `${rows.length} samples`;
-
-  // Missing inputs / n/a reasons
-  const missingDiv = document.getElementById('missing-inputs');
-  if (missingDiv){
-    const issues = [];
-    rows.forEach(r=>{
-      if (r.median_density==null || isNaN(r.median_density)){
-        issues.push(`• ${r.sample_id}: median density n/a${r.density_reason? ' — '+r.density_reason : ''}`);
-      }
-      if (r.duplicate_percent==null || isNaN(r.duplicate_percent)){
-        issues.push(`• ${r.sample_id}: duplicate% n/a — missing in qc_pol2.json`);
-      }
-    });
-    missingDiv.innerHTML = issues.length? issues.join('<br>') : 'No issues detected.';
-  }
-  const missingQC = document.getElementById('missing-inputs-qc');
-  if (missingQC){
-    missingQC.innerHTML = (document.getElementById('missing-inputs')||{}).innerHTML || '';
-  }
-
-  // Functional regions table
-  const ftb = $('#functional-table-body'); ftb.innerHTML='';
-  rows.forEach(r=>{
-    const tr=document.createElement('tr');
-    tr.innerHTML = `
-      <td class="sticky">${r.sample_id}</td>
-      <td>${labelNA(r.condition)}</td>
-      <td>${fmt(r['func_Promoter'] || 0)}</td>
-      <td>${fmt(r['func_Gene body'] || 0)}</td>
-      <td>${fmt(r['func_CPS'] || 0)}</td>
-      <td>${fmt(r['func_DivergentTx'] || 0)}</td>
-      <td>${fmt(r['func_Enhancers'] || 0)}</td>
-      <td>${fmt(r['func_Short genes'] || 0)}</td>
-      <td>${fmt(r['func_Termination window'] || 0)}</td>
-      <td>${fmt(r['func_Non-localized polymerase'] || 0)}</td>`;
-    tr.onclick = ()=> location.hash = '#sample/'+encodeURIComponent(r.sample_id);
-    ftb.appendChild(tr);
-  });
-
-  // Sidebar: samples list
-  const sl = $('#sample-links'); sl.innerHTML='';
-  rows.forEach(r=>{
-    const a = document.createElement('a');
-    a.href = '#sample/' + encodeURIComponent(r.sample_id);
-    a.textContent = r.sample_id;
-    a.className = 'sample-link';
-    a.onclick = () => { if (window.innerWidth < 1024) toggleSidebar(); };
-    sl.appendChild(a);
-  });
-
-  // Per-sample pages
-  const pages = $('#sample-pages'); pages.innerHTML='';
-  (DATA.samples||[]).forEach(s=>{
-    const div=document.createElement('div'); div.id='sample/'+encodeURIComponent(s.sample_id); div.className='card';
-    const totalReads = fmt(s.input_reads), funcReads = fmt(s.reads_total_functional);
-    const unloc = (s.unlocalized_fraction==null || isNaN(s.unlocalized_fraction)) ? 'n/a' : (100*Number(s.unlocalized_fraction)).toFixed(1)+'%';
-    div.innerHTML = `
-      <h2>Sample: ${s.sample_id}</h2>
-      <div class="kpi-grid">
-        <div class="kpi"><div class="lab">Total Reads</div><div class="val">${totalReads}</div></div>
-        <div class="kpi"><div class="lab">Functional Reads</div><div class="val">${funcReads}</div></div>
-        <div class="kpi"><div class="lab">${s.umi_deduplication_enabled? 'UMI Dedup %' : 'Duplicate %'}</div><div class="val">${s.duplicate_percent!=null? Number(s.duplicate_percent).toFixed(2)+'%':'n/a'}</div></div>
-        <div class="kpi"><div class="lab">Median PI</div><div class="val">${s.median_pausing_index!=null? Number(s.median_pausing_index).toFixed(2):'n/a'}</div></div>
-        <div class="kpi"><div class="lab">Median Density</div><div class="val">${s.median_density!=null? Number(s.median_density).toFixed(2):'n/a'}</div></div>
-        <div class="kpi"><div class="lab">Unlocalized</div><div class="val">${unloc}</div></div>
-      </div>
-      <div class="card">
-        <h3>Region composition</h3>
-        <div id="reg-${s.sample_id}" class="chart"></div>
-      </div>`;
-    pages.appendChild(div);
-    const labels=(s.regions||[]).map(r=>r.region), values=(s.regions||[]).map(r=>Number(r.reads)||0),
-          colors=labels.map(regionColor);
-    barChart($('#reg-'+s.sample_id), labels, values, colors, 'Reads', null);
-  });
-
-  // Group visibility helpers
-  const REGION_IDS = ['region-legend','chart-reg-reads','chart-reg-counts','chart-reg-lentot','chart-reg-lenmed','cond-pies','chart-cond-compare'];
-  const QC_IDS = ['chart-unloc-vs-reads','chart-dup-vs-unloc','chart-hist-dup','chart-hist-unloc','chart-cpm-vs-reads','missing-inputs','missing-inputs-qc','chart-cond','chart-tp','chart-reset'];
-  function setGroupVisible(ids, visible){
-    ids.forEach(id=>{ const el=document.getElementById(id); if(!el) return; const card=el.closest('.card')||el; card.style.display = visible? '' : 'none'; });
-  }
-
-  // Routing
-  function show(hash){
-    const h = (hash || '#overview');
-    $$('.section').forEach(s=> s.style.display='none');
-    if (h.startsWith('#sample/')){
-      $('#overview').style.display='none';
-      $('#sample-section').style.display='block';
-      const id = decodeURIComponent(h.split('/')[1]||'');
-      const target = document.getElementById('sample/'+encodeURIComponent(id));
-      if (target){ target.scrollIntoView({behavior:'smooth',block:'start'}); }
-      // hide both groups on sample view
-      setGroupVisible(REGION_IDS, false); setGroupVisible(QC_IDS, false);
-    } else if (h === '#regions'){
-      $('#overview').style.display='block';
-      // show regions, hide qc
-      setGroupVisible(REGION_IDS, true); setGroupVisible(QC_IDS, false);
-      const el = document.getElementById('chart-reg-reads') || document.getElementById('region-legend') || document.getElementById('chart-pie');
-      if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
-    } else if (h === '#qc'){
-      $('#overview').style.display='block';
-      // show qc, hide regions
-      setGroupVisible(REGION_IDS, false); setGroupVisible(QC_IDS, true);
-      const el = document.getElementById('chart-unloc-vs-reads') || document.getElementById('chart-hist-dup');
-      if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
-    } else if (h === '#samples'){
-      $('#overview').style.display='block';
-      setGroupVisible(REGION_IDS, false); setGroupVisible(QC_IDS, false);
-      const el = document.getElementById('table-body');
-      if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
-    } else {
-      $('#sample-section').style.display='none';
-      $('#overview').style.display='block';
-      // default: show a light overview (hide extra groups)
-      setGroupVisible(REGION_IDS, false); setGroupVisible(QC_IDS, false);
-    }
-  }
-  window.addEventListener('hashchange', ()=> show(location.hash));
-  if (!location.hash) location.hash = '#overview';
-  show(location.hash);
-}
-
-// ---------- Theme toggle ----------
-function toggleTheme() {
-  const currentTheme = document.documentElement.getAttribute('data-theme');
-  const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', newTheme);
-  localStorage.setItem('theme', newTheme);
-  
-  // Update button icon
-  const btn = document.querySelector('button[onclick="toggleTheme()"]');
-  if (btn) btn.textContent = newTheme === 'dark' ? '☀️' : '🌙';
-}
-
-// Initialize theme on load
-function initTheme() {
-  const savedTheme = localStorage.getItem('theme') || 
-    (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  document.documentElement.setAttribute('data-theme', savedTheme);
-  
-  // Update button icon
-  const btn = document.querySelector('button[onclick="toggleTheme()"]');
-  if (btn) btn.textContent = savedTheme === 'dark' ? '☀️' : '🌙';
-}
-
-// Copy to clipboard functionality
-function copyToClipboard(text) {
-  navigator.clipboard.writeText(text).then(() => {
-    // Show temporary feedback
-    const btn = event.target;
-    const originalText = btn.textContent;
-    btn.textContent = '✅ Copied!';
-    btn.style.background = 'var(--ok)';
-    setTimeout(() => {
-      btn.textContent = originalText;
-      btn.style.background = 'var(--accent)';
-    }, 2000);
-  }).catch(() => {
-    // Fallback for older browsers
-    const textArea = document.createElement('textarea');
-    textArea.value = text;
-    document.body.appendChild(textArea);
-    textArea.select();
-    document.execCommand('copy');
-    document.body.removeChild(textArea);
-    
-    const btn = event.target;
-    const originalText = btn.textContent;
-    btn.textContent = '✅ Copied!';
-    setTimeout(() => btn.textContent = originalText, 2000);
-  });
-}
-
-// Enhanced table filter functionality with statistics
-function filterTable() {
-  const searchTerm = document.getElementById('sample-search').value.toLowerCase();
-  const conditionFilter = document.getElementById('condition-filter').value;
-  const qualityFilter = document.getElementById('quality-filter').value;
-  const rows = document.querySelectorAll('#table-body tr');
-  
-  let visibleCount = 0;
-  const filteredData = [];
-  
-  rows.forEach(row => {
-    const cells = row.querySelectorAll('td');
-    const sampleId = cells[0]?.textContent || '';
-    const condition = cells[1]?.textContent || '';
-    const timepoint = cells[2]?.textContent || '';
-    const replicate = cells[3]?.textContent || '';
-    const inputReads = parseFloat(cells[4]?.textContent.replace(/,/g, '') || '0');
-    const dupPercent = parseFloat(cells[6]?.textContent.replace(/[^0-9.]/g, '') || '0');
-    const functionalReads = parseFloat(cells[9]?.textContent.replace(/,/g, '') || '0');
-    const medianPI = parseFloat(cells[10]?.textContent || '0');
-    const unlocPercent = parseFloat(cells[14]?.textContent.replace(/[^0-9.]/g, '') || '0');
-    
-    // Text search
-    const textContent = [sampleId, condition, timepoint, replicate].join(' ').toLowerCase();
-    const matchesText = !searchTerm || textContent.includes(searchTerm);
-    
-    // Condition filter
-    const matchesCondition = !conditionFilter || condition === conditionFilter;
-    
-    // Quality filter
-    let matchesQuality = true;
-    if (qualityFilter) {
-      const isPass = inputReads >= 5e6 && dupPercent < 15 && unlocPercent < 25;
-      const isWarn = inputReads >= 2e6 && dupPercent < 30 && unlocPercent < 40;
-      
-      if (qualityFilter === 'pass') matchesQuality = isPass;
-      else if (qualityFilter === 'warn') matchesQuality = isPass || isWarn;
-      else if (qualityFilter === 'fail') matchesQuality = !isPass && !isWarn;
+    # Build normalized record
+    record = {
+        "sample_id": sample_id,
+        "condition": condition,
+        "timepoint": timepoint,
+        "replicate": replicate,
+        "divergent_regions": metrics.get("divergent_regions"),
+        "total_regions": metrics.get("total_functional_regions") or metrics.get("total_regions"),
+        "reads_total_functional": reads_total_functional,
+        "median_pausing_index": (
+            metrics.get("median_pausing_index") if metrics.get("median_pausing_index") is not None 
+            else metrics.get("median_pi")
+        ),
+        "median_density": (
+            metrics.get("median_functional_cpm") if metrics.get("median_functional_cpm") is not None 
+            else metrics.get("median_density")
+        ),
+        "cpm_factor": metrics.get("cpm_factor"),
+        "crpmsi_factor": (
+            metrics.get("sicpm_factor") if metrics.get("sicpm_factor") is not None 
+            else metrics.get("crpmsi_factor")
+        ),
+        "density_source": metrics.get("density_source"),
+        "density_reason": metrics.get("density_reason"),
+        "input_reads": qc.get("total_reads_raw") or json_data.get("input_reads"),
+        "dedup_reads": qc.get("dedup_reads_mapq_ge") or json_data.get("dedup_reads"),
+        "duplicate_percent": dup_percent,
+        "umi_deduplication_enabled": qc.get("umi_deduplication_enabled", False),
+        "umi_deduplication_percent": qc.get("umi_deduplication_percent"),
+        "unlocalized_fraction": unloc_frac,
+        "func_totals": func_totals,
+        "region_counts": region_counts,
+        "region_length_totals": region_len_totals,
+        "region_length_medians": region_len_medians,
+        "regions": regions
     }
     
-    const isVisible = matchesText && matchesCondition && matchesQuality;
-    row.style.display = isVisible ? '' : 'none';
+    return record
+
+# =============================================================================
+# REGION AGGREGATION
+# =============================================================================
+
+def collect_region_keys(samples: List[Dict[str, Any]]) -> List[str]:
+    """
+    Collect all unique region names from samples
     
-    if (isVisible) {
-      visibleCount++;
-      filteredData.push({
-        sampleId, condition, inputReads, functionalReads, medianPI, dupPercent, unlocPercent
-      });
-    }
-  });
-  
-  updateTableStats(visibleCount, rows.length, filteredData);
-}
-
-function updateTableStats(visibleCount, totalCount, filteredData) {
-  const info = document.getElementById('table-info');
-  const stats = document.getElementById('filter-stats');
-  
-  if (info) {
-    info.textContent = visibleCount === totalCount ? 
-      `${totalCount} samples` : 
-      `Showing ${visibleCount} of ${totalCount} samples`;
-  }
-  
-  if (stats && filteredData.length > 0) {
-    const avgReads = Math.round(filteredData.reduce((a, b) => a + b.functionalReads, 0) / filteredData.length);
-    const medianPI = filteredData.map(d => d.medianPI).filter(v => v > 0).sort((a,b) => a-b);
-    const medianPIValue = medianPI.length > 0 ? 
-      (medianPI.length % 2 ? medianPI[Math.floor(medianPI.length/2)] : 
-       (medianPI[medianPI.length/2-1] + medianPI[medianPI.length/2])/2) : 0;
+    Args:
+        samples: List of normalized sample dicts
+        
+    Returns:
+        Sorted list of region names
+    """
+    region_set = set()
     
-    stats.innerHTML = `
-      <strong>Selection Stats:</strong> 
-      Avg Functional Reads: ${avgReads.toLocaleString()} | 
-      Median PI: ${medianPIValue.toFixed(2)}
-    `;
-  } else if (stats) {
-    stats.innerHTML = '';
-  }
-}
+    for sample in samples:
+        func_totals = sample.get("func_totals") or {}
+        region_set.update(func_totals.keys())
+    
+    return sorted(region_set)
 
-function clearFilters() {
-  document.getElementById('sample-search').value = '';
-  document.getElementById('condition-filter').value = '';
-  document.getElementById('quality-filter').value = '';
-  filterTable();
-}
+def aggregate_region_totals(samples: List[Dict[str, Any]]) -> Dict[str, float]:
+    """
+    Sum region read counts across all samples
+    
+    Args:
+        samples: List of normalized sample dicts
+        
+    Returns:
+        Dictionary mapping region name to total reads
+    """
+    totals = {}
+    
+    for sample in samples:
+        func_totals = sample.get("func_totals") or {}
+        for region_name, reads in func_totals.items():
+            try:
+                totals[region_name] = totals.get(region_name, 0.0) + float(reads or 0.0)
+            except (ValueError, TypeError):
+                continue
+    
+    return totals
 
-function exportFilteredCSV() {
-  const rows = Array.from(document.querySelectorAll('#table-body tr'))
-    .filter(row => row.style.display !== 'none');
-  
-  if (rows.length === 0) {
-    alert('No data to export. Please adjust your filters.');
-    return;
-  }
-  
-  const headers = ['Sample', 'Condition', 'Timepoint', 'Replicate', 'Input Reads', 'Dedup Reads', 
-                   'Duplicate %', 'Divergent Regions', 'Total Regions', 'Functional Reads', 
-                   'Median PI', 'Median Density', 'CPM Factor', 'cRPMsi Factor', 'Unlocalized %'];
-  
-  let csv = headers.join(',') + '\\n';
-  
-  rows.forEach(row => {
-    const cells = Array.from(row.querySelectorAll('td'));
-    const values = cells.map(cell => {
-      let text = cell.textContent.trim();
-      // Escape commas and quotes in CSV
-      if (text.includes(',') || text.includes('"')) {
-        text = '"' + text.replace(/"/g, '""') + '"';
-      }
-      return text;
-    });
-    csv += values.join(',') + '\\n';
-  });
-  
-  // Download CSV
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `tracktx_filtered_samples_${new Date().toISOString().split('T')[0]}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
+# =============================================================================
+# OUTPUT GENERATION
+# =============================================================================
 
-function initializeFilters(rows) {
-  // Populate condition filter
-  const conditionFilter = document.getElementById('condition-filter');
-  if (conditionFilter) {
-    const conditions = [...new Set(rows.map(r => r.condition))].filter(c => c && c !== 'NA').sort();
-    conditions.forEach(condition => {
-      const option = document.createElement('option');
-      option.value = condition;
-      option.textContent = condition;
-      conditionFilter.appendChild(option);
-    });
-  }
-}
+def build_cohort_dataframe(
+    samples: List[Dict[str, Any]],
+    region_keys: List[str]
+) -> pd.DataFrame:
+    """
+    Build pandas DataFrame with cohort data
+    
+    Args:
+        samples: List of normalized sample dicts
+        region_keys: List of all region names
+        
+    Returns:
+        DataFrame with cohort metrics
+    """
+    log("DATAFRAME", "Building cohort table...")
+    
+    # Core columns
+    core_cols = [
+        "sample_id", "condition", "timepoint", "replicate",
+        "input_reads", "dedup_reads", "duplicate_percent",
+        "divergent_regions", "total_regions", "reads_total_functional",
+        "median_pausing_index", "median_density",
+        "cpm_factor", "crpmsi_factor", "unlocalized_fraction"
+    ]
+    
+    rows = []
+    for sample in samples:
+        # Start with core columns
+        row = {col: sample.get(col) for col in core_cols}
+        
+        # Add optional diagnostic fields
+        row["density_source"] = sample.get("density_source")
+        row["density_reason"] = sample.get("density_reason")
+        
+        # Add per-region columns
+        for region_name in region_keys:
+            func_totals = sample.get("func_totals") or {}
+            region_counts = sample.get("region_counts") or {}
+            region_len_totals = sample.get("region_length_totals") or {}
+            region_len_medians = sample.get("region_length_medians") or {}
+            
+            row[f"func_{region_name}"] = func_totals.get(region_name, 0)
+            row[f"count_{region_name}"] = region_counts.get(region_name, 0)
+            row[f"len_total_{region_name}"] = region_len_totals.get(region_name, 0)
+            row[f"len_median_{region_name}"] = region_len_medians.get(region_name, 0)
+        
+        rows.append(row)
+    
+    df = pd.DataFrame(rows)
+    log("DATAFRAME", f"Created table with {len(df)} rows × {len(df.columns)} columns")
+    
+    return df
 
-function populateChartFilters(rows) {
-  // Populate condition and timepoint filters for charts
-  const condSel = document.getElementById('chart-cond');
-  const tpSel = document.getElementById('chart-tp');
-  
-  if (condSel) {
-    const conditions = [...new Set(rows.map(r => r.condition))].filter(c => c && c !== 'NA').sort();
-    conditions.forEach(c => {
-      const opt = document.createElement('option');
-      opt.value = c;
-      opt.textContent = c;
-      condSel.appendChild(opt);
-    });
-  }
-  
-  if (tpSel) {
-    const timepoints = [...new Set(rows.map(r => r.timepoint))].filter(t => t && t !== 'NA').sort();
-    timepoints.forEach(t => {
-      const opt = document.createElement('option');
-      opt.value = t;
-      opt.textContent = t;
-      tpSel.appendChild(opt);
-    });
-  }
-}
+def write_tsv_output(df: pd.DataFrame, output_path: str):
+    """
+    Write DataFrame to TSV file
+    
+    Args:
+        df: DataFrame to write
+        output_path: Output file path
+    """
+    log("TSV", f"Writing: {output_path}")
+    df.to_csv(output_path, sep="\t", index=False)
+    
+    file_size = os.path.getsize(output_path)
+    log("TSV", f"Written: {file_size:,} bytes")
 
-function filteredRowsForCharts(rows) {
-  const condSel = document.getElementById('chart-cond');
-  const tpSel = document.getElementById('chart-tp');
-  
-  let filtered = rows;
-  if (condSel && condSel.value) {
-    filtered = filtered.filter(r => r.condition === condSel.value);
-  }
-  if (tpSel && tpSel.value) {
-    filtered = filtered.filter(r => r.timepoint === tpSel.value);
-  }
-  return filtered;
-}
-
-function renderCharts(rows) {
-  // Re-render main charts with filtered data
-  if (!rows || rows.length === 0) return;
-  
-  const labels = rows.map(r => r.sample_id);
-  const colors = labels.map(colorOfSample);
-  const reads = rows.map(r => Number(r.reads_total_functional) || 0);
-  const piMed = rows.map(r => Number(r.median_pausing_index) || 0);
-  const dens = rows.map(r => Number(r.median_density) || 0);
-  
-  barChart($('#chart-reads'), labels, reads, colors, 'Reads in functional regions', sid => location.hash = '#sample/' + encodeURIComponent(sid));
-  scatter($('#chart-scatter'), labels, piMed, dens, colors, 'Median Pausing Index', 'Median Density', sid => location.hash = '#sample/' + encodeURIComponent(sid));
-}
-
-function calculateCorrelation(xs, ys) {
-  const n = xs.length;
-  if (n < 2) return 0;
-  
-  const meanX = xs.reduce((a, b) => a + b, 0) / n;
-  const meanY = ys.reduce((a, b) => a + b, 0) / n;
-  
-  let num = 0, denX = 0, denY = 0;
-  for (let i = 0; i < n; i++) {
-    const dx = xs[i] - meanX;
-    const dy = ys[i] - meanY;
-    num += dx * dy;
-    denX += dx * dx;
-    denY += dy * dy;
-  }
-  
-  const den = Math.sqrt(denX * denY);
-  return den === 0 ? 0 : num / den;
-}
-
-// Keyboard shortcuts
-document.addEventListener('keydown', (e) => {
-  // Ctrl+F or Cmd+F - focus search box
-  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-    e.preventDefault();
-    const searchBox = document.getElementById('sample-search');
-    if (searchBox) {
-      searchBox.focus();
-      searchBox.select();
+def write_json_output(
+    samples: List[Dict[str, Any]],
+    rows: List[Dict[str, Any]],
+    region_totals: Dict[str, float],
+    region_keys: List[str],
+    skipped_files: List[str],
+    output_path: str
+):
+    """
+    Write cohort JSON output
+    
+    Args:
+        samples: List of sample dicts
+        rows: List of row dicts
+        region_totals: Aggregated region totals
+        region_keys: List of region names
+        skipped_files: List of skipped file paths
+        output_path: Output file path
+    """
+    log("JSON", f"Writing: {output_path}")
+    
+    # Build column list
+    core_cols = [
+        "sample_id", "condition", "timepoint", "replicate",
+        "input_reads", "dedup_reads", "duplicate_percent",
+        "divergent_regions", "total_regions", "reads_total_functional",
+        "median_pausing_index", "median_density",
+        "cpm_factor", "crpmsi_factor", "unlocalized_fraction"
+    ]
+    
+    all_columns = (
+        core_cols +
+        [f"func_{k}" for k in region_keys] +
+        [f"count_{k}" for k in region_keys] +
+        [f"len_total_{k}" for k in region_keys] +
+        [f"len_median_{k}" for k in region_keys]
+    )
+    
+    # Build payload
+    payload = {
+        "n_samples": len(samples),
+        "rows": rows,
+        "samples": samples,
+        "region_totals": region_totals,
+        "region_keys": region_keys,
+        "columns": all_columns,
+        "skipped_inputs": skipped_files
     }
-  }
-  
-  // Escape - clear all filters
-  if (e.key === 'Escape') {
-    clearFilters();
-  }
-  
-  // Ctrl+E or Cmd+E - export CSV
-  if ((e.ctrlKey || e.metaKey) && e.key === 'e') {
-    e.preventDefault();
-    exportFilteredCSV();
-  }
-});
+    
+    # Sanitize and write
+    sanitized = sanitize_data(payload)
+    
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(sanitized, f, indent=2)
+    
+    file_size = os.path.getsize(output_path)
+    log("JSON", f"Written: {file_size:,} bytes")
 
-window.addEventListener('load', () => {
-  initTheme();
-  build();
-  // After build, wire up chart filters and initial render
-  const rows = (DATA && DATA.rows) ? DATA.rows : [];
-  if (rows && rows.length){
-    // Delay to ensure DOM is ready
-    setTimeout(()=>{
-      if (typeof populateChartFilters==='function'){
-        populateChartFilters(rows);
-      }
-      if (typeof renderCharts==='function'){
-        const render = ()=> renderCharts(filteredRowsForCharts(rows));
-        const condSel = document.getElementById('chart-cond');
-        const tpSel   = document.getElementById('chart-tp');
-        const rst     = document.getElementById('chart-reset');
-        const pctTgl  = document.getElementById('toggle-region-percent');
-        if (condSel) condSel.onchange = render;
-        if (tpSel)   tpSel.onchange   = render;
-        if (rst)     rst.onclick      = ()=>{ condSel && (condSel.value=''); tpSel && (tpSel.value=''); render(); };
-        if (pctTgl)  pctTgl.onchange  = render;
-        render();
-      }
-    }, 0);
-  }
-});
-</script>
-"""
+def write_region_totals_tsv(
+    region_totals: Dict[str, float],
+    region_keys: List[str],
+    output_path: str
+):
+    """
+    Write optional region totals TSV
+    
+    Args:
+        region_totals: Dictionary of region totals
+        region_keys: Sorted list of region names
+        output_path: Output file path
+    """
+    if not region_totals:
+        log_warning("No region totals to write")
+        return
+    
+    log("REGIONS", f"Writing: {output_path}")
+    
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("region\treads\n")
+        for region_name in region_keys:
+            reads = region_totals.get(region_name, 0)
+            f.write(f"{region_name}\t{reads}\n")
+    
+    file_size = os.path.getsize(output_path)
+    log("REGIONS", f"Written: {len(region_keys)} regions ({file_size:,} bytes)")
 
-HTML = f"""<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TrackTx — Cohort Summary</title>
-{CSS}
+# =============================================================================
+# HTML GENERATION
+# =============================================================================
+
+def generate_html_report(
+    data_json: str,
+    css: str,
+    js: str,
+    args: argparse.Namespace,
+    run_command: str,
+    output_path: str
+):
+    """
+    Generate single-file HTML report with embedded CSS/JS
+    
+    Args:
+        data_json: JSON data string
+        css: CSS string
+        js: JavaScript string
+        args: Command-line arguments
+        run_command: Full command line
+        output_path: Output HTML path
+    """
+    log("HTML", "Generating interactive dashboard...")
+    
+    # Generate timestamp
+    timestamp = datetime.datetime.now().strftime("%B %d, %Y at %H:%M")
+    
+    # Build comprehensive HTML report
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>TrackTx Cohort Report v{VERSION}</title>
+  {css}
+</head>
+<body>
 <div class="container">
-  <div class="header">
-    <h1>TrackTx Cohort Summary</h1>
-    <div class="muted">{args.run_name} • v{args.pipeline_version} • {args.profile} • {args.duration}</div>
-  </div>
+  <!-- Header -->
+  <header class="page-header">
+    <div class="eyebrow">TrackTx PRO-seq Analysis • Cohort Report</div>
+    <h1>Global Summary v{VERSION}</h1>
+    <p class="muted">Pipeline v{args.pipeline_version} • Profile: {args.profile} • Run: {args.run_name} • Duration: {args.duration}</p>
+    <p class="muted">Generated {timestamp} • <span id="sample-count-header"></span></p>
+  </header>
 
-  <div class="tabs">
-    <div class="tab active" onclick="switchTab('overview')">Overview</div>
-    <div class="tab" onclick="switchTab('samples')">Samples</div>
-    <div class="tab" onclick="switchTab('regions')">Regions</div>
-    <div class="tab" onclick="switchTab('quality')">Quality</div>
-  </div>
+  <!-- Navigation -->
+  <nav class="nav-pills">
+    <a href="#overview">📊 Overview</a>
+    <a href="#qc">✓ Quality Control</a>
+    <a href="#divergent">🔀 Divergent TX</a>
+    <a href="#pausing">⏸️ Pausing</a>
+    <a href="#regions">🎯 Functional Regions</a>
+    <a href="#normalization">📏 Normalization</a>
+    <a href="#samples">📋 Sample Table</a>
+    <a href="#files">📁 Files</a>
+  </nav>
 
-  <div class="section active" id="overview">
-      <!-- Hero Banner -->
-      <div class="hero" style="background: linear-gradient(135deg, rgba(37,99,235,0.05) 0%, rgba(37,99,235,0.1) 50%, rgba(147,51,234,0.05) 100%); padding: 2.5rem; margin-bottom: 2rem; border: 2px solid var(--line);">
-        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1.5rem;">
-          <div>
-            <h1 style="margin: 0 0 0.5rem; font-size: 2.5rem; background: linear-gradient(135deg, #2563eb, #9333ea); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">Cohort Analysis Summary</h1>
-            <p style="margin: 0; font-size: 1.1rem; color: var(--muted);">
-              <strong>{args.run_name}</strong> • TrackTx v{args.pipeline_version} • {args.profile} profile
-            </p>
-            <p style="margin: 0.5rem 0 0; font-size: 0.9rem; color: var(--muted);">
-              Generated {datetime.datetime.now().strftime("%B %d, %Y at %H:%M")} • Duration: {args.duration}
-            </p>
-          </div>
-          <div id="badge"></div>
-        </div>
-      </div>
+  <!-- SECTION: Overview -->
+  <section class="layer" id="overview">
+    <div class="layer-heading">
+      <h2>Cohort Overview</h2>
+      <div class="subtitle">High-level summary and experimental design</div>
+    </div>
+    
+    <div class="help-box">
+      <strong>What is this report?</strong> This cohort-level dashboard aggregates metrics from all individual sample reports in your TrackTx PRO-seq analysis.
+      Use it to assess overall experiment quality, identify outliers, compare conditions, and understand transcriptional dynamics across your cohort.
+      <ul>
+        <li><strong>QC metrics:</strong> Read depth, duplication rates, mapping stats</li>
+        <li><strong>Biological metrics:</strong> Divergent transcription, Pol II pausing, functional region distributions</li>
+        <li><strong>Normalization:</strong> CPM and spike-in factors for cross-sample comparisons</li>
+      </ul>
+    </div>
 
-      <!-- Key Performance Indicators -->
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">Total Samples <span class="info-tip" title="Total number of samples successfully processed and included in this cohort report">?</span></div>
+        <div class="kpi-value" id="kpi-total">0</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Conditions <span class="info-tip" title="Number of unique experimental conditions in the cohort">?</span></div>
+        <div class="kpi-value" id="kpi-conditions">0</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Avg Read Depth <span class="info-tip" title="Average total input reads per sample (millions)">?</span></div>
+        <div class="kpi-value" id="kpi-depth">0M</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Cohort Quality <span class="info-tip" title="QC status: PASS (green), WARN (yellow), FAIL (red) based on read depth and duplication thresholds">?</span></div>
+        <div class="kpi-value" id="kpi-quality">-</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Total Divergent Loci <span class="info-tip" title="Sum of divergent transcription regions detected across all samples">?</span></div>
+        <div class="kpi-value" id="kpi-div-total">0</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Avg Functional Regions <span class="info-tip" title="Average number of functional genomic regions (genes, promoters, etc.) with signal per sample">?</span></div>
+        <div class="kpi-value" id="kpi-regions-avg">0</div>
+      </div>
+    </div>
 
-      <div class="kpi-grid">
-        <div class="kpi"><div class="lab">Total Samples</div><div id="kpi-n" class="val"></div></div>
-        <div class="kpi"><div class="lab">Functional Reads</div><div id="kpi-reads" class="val"></div></div>
-        <div class="kpi"><div class="lab">Median Duplicate %</div><div id="kpi-dup" class="val"></div></div>
-        <div class="kpi"><div class="lab">Region Types</div><div id="kpi-reg" class="val"></div></div>
-        <div class="kpi"><div class="lab">Median Unlocalized</div><div id="kpi-unloc" class="val"></div></div>
-        <div class="kpi"><div class="lab">Quality Status</div><div id="kpi-quality" class="val"></div></div>
-      </div>
+    <div id="experimental-design-summary" style="margin-top:2rem;"></div>
+  </section>
 
-      <!-- Section Divider -->
-      <div style="border-top: 3px solid var(--line); margin: 3rem 0 2rem; padding-top: 1rem;">
-        <h2 style="font-size: 1.75rem; margin-bottom: 0.5rem;">📊 Quality Control Overview</h2>
-        <p class="muted" style="margin: 0;">Understand your data quality at a glance</p>
-      </div>
-      
-      <div class="card">
-        <h3>💡 What do these metrics mean?</h3>
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; margin-top: 1rem;">
-          <div>
-            <strong>Duplicate %:</strong> Percentage of reads removed as duplicates. UMI deduplication (shown as "UMI: X%") is more accurate than PCR duplicate detection.
-          </div>
-          <div>
-            <strong>Unlocalized %:</strong> Percentage of reads not mapping to functional regions. Values >40% may indicate issues.
-          </div>
-          <div>
-            <strong>Functional Reads:</strong> Reads mapping to biologically relevant regions (promoters, gene bodies, etc.).
-          </div>
-          <div>
-            <strong>Pausing Index:</strong> Measures RNA polymerase pausing. Higher values indicate more transcriptional pausing.
-          </div>
-          <div>
-            <strong>Median Density:</strong> Median CPM/signal across functional regions. Source shown in the KPI. If n/a, hover the KPI to see the reason.
-          </div>
-        </div>
-      </div>
+  <!-- SECTION: Quality Control -->
+  <section class="layer" id="qc">
+    <div class="layer-heading">
+      <h2>Quality Control Analysis</h2>
+      <div class="subtitle">Sequencing depth, duplication rates, and sample consistency</div>
+    </div>
+    
+    <div class="help-box">
+      <strong>What to look for:</strong>
+      <ul>
+        <li><strong>Read Depth:</strong> PRO-seq typically requires 5-20M reads per sample for good gene coverage. Lower depth may miss lowly-expressed genes.</li>
+        <li><strong>Duplication Rate:</strong> <15% is excellent, 15-30% is acceptable, >30% suggests PCR over-amplification or low library complexity.</li>
+        <li><strong>Unlocalized Reads:</strong> <20% is typical. Higher values may indicate contamination, rRNA, or incomplete genome annotation.</li>
+        <li><strong>Sample Consistency:</strong> Replicates within a condition should cluster together. Large variability suggests technical issues or biological heterogeneity.</li>
+      </ul>
+    </div>
 
-      <div class="card">
-        <h3>Missing Inputs / n/a Reasons</h3>
-        <div id="missing-inputs" class="muted">Computed from sample metadata at load.</div>
+    <div class="stats-grid">
+      <div class="stat-item">
+        <div class="stat-label">Median Depth</div>
+        <div class="stat-value" id="qc-median-depth">-</div>
       </div>
+      <div class="stat-item">
+        <div class="stat-label">Median Duplication</div>
+        <div class="stat-value" id="qc-median-dup">-</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Median Unlocalized</div>
+        <div class="stat-value" id="qc-median-unloc">-</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Pass Rate</div>
+        <div class="stat-value" id="qc-pass-rate">-</div>
+      </div>
+    </div>
 
-      <!-- Section Divider -->
-      <div style="border-top: 3px solid var(--line); margin: 3rem 0 2rem; padding-top: 1rem;">
-        <h2 id="regions" style="font-size: 1.75rem; margin-bottom: 0.5rem;">📈 Interactive Visualizations</h2>
-        <p class="muted" style="margin: 0;">Explore data patterns through dynamic charts</p>
+    <div class="viz-grid">
+      <div class="viz-card">
+        <h3>Read Depth Distribution <span class="info-tip" title="Distribution of total input reads across all samples. Outliers may need additional sequencing.">?</span></h3>
+        <div id="chart-depth-dist" class="viz-body"></div>
+        <div class="distrib-summary" id="depth-stats"></div>
       </div>
-      
-      <div class="chart-grid">
-        <div class="card"><div id="chart-reads" class="chart"></div></div>
-        <div class="card"><div id="chart-scatter" class="chart"></div></div>
-        <div class="card"><div id="chart-pie" class="chart"></div></div>
-        <div class="card"><div id="region-legend"></div></div>
-        <div class="card"><div id="chart-unloc-vs-reads" class="chart"></div></div>
-        <div class="card"><div id="chart-dup-vs-unloc" class="chart"></div></div>
-        <div class="card">
-          <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
-            <strong>Facet charts by:</strong>
-            <select id="chart-cond" style="padding:4px 6px; border:1px solid var(--line); background: var(--card); color: var(--fg);">
-              <option value="">All Conditions</option>
-            </select>
-            <select id="chart-tp" style="padding:4px 6px; border:1px solid var(--line); background: var(--card); color: var(--fg);">
-              <option value="">All Timepoints</option>
-            </select>
-            <button id="chart-reset" style="margin-left:auto; padding:4px 8px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer;">Reset</button>
-          </div>
-          <div id="chart-hist-dup" class="chart"></div>
-        </div>
-        <div class="card"><div id="chart-hist-unloc" class="chart"></div></div>
-        <div class="card"><div id="chart-cpm-vs-reads" class="chart"></div></div>
+      <div class="viz-card">
+        <h3>Duplication Rate Distribution <span class="info-tip" title="PCR duplication rates. High uniform duplication across samples indicates library prep issue; outliers suggest sample-specific problems.">?</span></h3>
+        <div id="chart-dup-dist" class="viz-body"></div>
+        <div class="distrib-summary" id="dup-stats"></div>
       </div>
+      <div class="viz-card">
+        <h3>Unlocalized Fraction <span class="info-tip" title="Percentage of reads not mapping to defined functional regions. Consistent across samples is normal; outliers may have contamination.">?</span></h3>
+        <div id="chart-unloc-dist" class="viz-body"></div>
+        <div class="distrib-summary" id="unloc-stats"></div>
+      </div>
+      <div class="viz-card">
+        <h3>QC Status by Sample <span class="info-tip" title="Bar chart showing QC pass/warn/fail status for each sample. Identify problematic samples quickly.">?</span></h3>
+        <div id="chart-qc-status" class="viz-body"></div>
+      </div>
+    </div>
 
-      <!-- Section Divider -->
-      <div style="border-top: 3px solid var(--line); margin: 3rem 0 2rem; padding-top: 1rem;">
-        <h2 style="font-size: 1.75rem; margin-bottom: 0.5rem;">🧬 Functional Region Landscape</h2>
-        <p class="muted" style="margin: 0;">Comprehensive analysis of genomic region assignment across the cohort</p>
-      </div>
-      
-      <div class="chart-grid">
-        <div class="card">
-          <div style="display:flex; gap:10px; align-items:center; margin-bottom:6px;">
-            <strong>Display:</strong>
-            <label style="display:inline-flex;gap:6px;align-items:center;font-size:0.9em"><input id="toggle-region-percent" type="checkbox"> Percent composition</label>
-          </div>
-          <div id="chart-reg-reads" class="chart"></div>
-        </div>
-        <div class="card"><div id="chart-reg-counts" class="chart"></div></div>
-        <div class="card"><div id="chart-reg-lentot" class="chart"></div></div>
-        <div class="card"><div id="chart-reg-lenmed" class="chart"></div></div>
-      </div>
+    <div id="qc-outliers-alert"></div>
+  </section>
 
-      <h2>Per-Condition Composition</h2>
-      <div id="cond-pies" class="chart-grid"></div>
+  <!-- SECTION: Divergent Transcription -->
+  <section class="layer" id="divergent">
+    <div class="layer-heading">
+      <h2>Divergent Transcription Analysis</h2>
+      <div class="subtitle">Bidirectional transcription from promoters and enhancers</div>
+    </div>
+    
+    <div class="help-box">
+      <strong>What is divergent transcription?</strong> Divergent (bidirectional) transcription occurs when RNA Polymerase II initiates in both directions from a promoter or enhancer.
+      It's a hallmark of active regulatory elements. TrackTx uses statistical detection (Gaussian Mixture Models + FDR control) to identify high-confidence divergent regions.
+      <ul>
+        <li><strong>More regions:</strong> Indicates higher transcriptional activity or more active enhancers</li>
+        <li><strong>Condition differences:</strong> Can reflect stimulus-dependent enhancer activation</li>
+        <li><strong>Variability:</strong> High variability within replicates may suggest technical noise or biological heterogeneity</li>
+      </ul>
+    </div>
 
-      <h2>Compare Conditions</h2>
-      <div class="card">
-        <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
-          <strong>Compare</strong>
-          <select id="cmp-cond-a" style="padding:4px 6px; border:1px solid var(--line); background: var(--card); color: var(--fg);"></select>
-          <strong>vs</strong>
-          <select id="cmp-cond-b" style="padding:4px 6px; border:1px solid var(--line); background: var(--card); color: var(--fg);"></select>
-          <button id="cmp-render" style="margin-left:auto; padding:4px 8px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer;">Render</button>
-        </div>
-        <div id="chart-cond-compare" class="chart"></div>
+    <div class="stats-grid">
+      <div class="stat-item">
+        <div class="stat-label">Total Regions</div>
+        <div class="stat-value" id="div-total-regions">-</div>
       </div>
+      <div class="stat-item">
+        <div class="stat-label">Mean per Sample</div>
+        <div class="stat-value" id="div-mean">-</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Median per Sample</div>
+        <div class="stat-value" id="div-median">-</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Range</div>
+        <div class="stat-value" id="div-range">-</div>
+      </div>
+    </div>
 
-      <!-- Section Divider -->
-      <div style="border-top: 3px solid var(--line); margin: 3rem 0 2rem; padding-top: 1rem;">
-        <h2 id="samples" style="font-size: 1.75rem; margin-bottom: 0.5rem;">📋 Sample Data Explorer</h2>
-        <p class="muted" style="margin: 0;">Detailed metrics for all samples with advanced filtering</p>
+    <div class="viz-grid">
+      <div class="viz-card">
+        <h3>Divergent Regions per Sample <span class="info-tip" title="Number of high-confidence divergent transcription sites detected in each sample">?</span></h3>
+        <div id="chart-div-per-sample" class="viz-body"></div>
       </div>
-      
-      <div class="card" style="margin: 1rem 0;">
-        <h3>🔍 Filter & Search Samples</h3>
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; margin-top: 1rem;">
-          <div>
-            <label style="display: block; font-weight: 600; margin-bottom: 0.25rem;">Text Search</label>
-            <input type="text" id="sample-search" placeholder="🔍 Search samples, conditions, timepoints..." style="width: 100%; padding: 0.5rem; border: 1px solid var(--line); border-radius: 4px; background: var(--card); color: var(--fg);" oninput="filterTable()">
-          </div>
-          <div>
-            <label style="display: block; font-weight: 600; margin-bottom: 0.25rem;">Condition</label>
-            <select id="condition-filter" style="width: 100%; padding: 0.5rem; border: 1px solid var(--line); border-radius: 4px; background: var(--card); color: var(--fg);" onchange="filterTable()">
-              <option value="">All Conditions</option>
-            </select>
-          </div>
-          <div>
-            <label style="display: block; font-weight: 600; margin-bottom: 0.25rem;">Quality Status</label>
-            <select id="quality-filter" style="width: 100%; padding: 0.5rem; border: 1px solid var(--line); border-radius: 4px; background: var(--card); color: var(--fg);" onchange="filterTable()">
-              <option value="">All Quality</option>
-              <option value="pass">PASS Only</option>
-              <option value="warn">WARN+ (PASS + WARN)</option>
-              <option value="fail">FAIL Only</option>
-            </select>
-          </div>
-          <div>
-            <label style="display: block; font-weight: 600; margin-bottom: 0.25rem;">Actions</label>
-            <div style="display: flex; gap: 0.5rem;">
-              <button onclick="clearFilters()" style="flex: 1; padding: 0.5rem; border: 1px solid var(--line); border-radius: 4px; background: var(--card); color: var(--fg); cursor: pointer;">Clear All</button>
-              <button onclick="exportFilteredCSV()" style="flex: 1; padding: 0.5rem; border: 1px solid var(--accent); border-radius: 4px; background: var(--accent); color: white; cursor: pointer;">📊 Export CSV</button>
-            </div>
-          </div>
-        </div>
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem;">
-          <small id="table-info" class="muted"></small>
-          <div id="filter-stats" style="font-size: 0.9em;"></div>
-        </div>
-        <div style="margin-top: 0.5rem; font-size: 0.85em; color: var(--muted);">
-          💡 <strong>Tips:</strong> 
-          <kbd>Ctrl+F</kbd> for quick search | 
-          <kbd>Escape</kbd> to clear filters | 
-          Click chart points to jump to samples
-        </div>
+      <div class="viz-card">
+        <h3>Distribution Across Cohort <span class="info-tip" title="Histogram showing how divergent region counts are distributed across samples">?</span></h3>
+        <div id="chart-div-hist" class="viz-body"></div>
+        <div class="distrib-summary" id="div-stats"></div>
       </div>
-      <div class="tbl-container">
-        <table class="tbl">
-          <thead>
-            <tr>
-              <th class="sticky">Sample</th>
-              <th>Condition</th>
-              <th>Timepoint</th>
-              <th>Replicate</th>
-              <th>Input</th>
-              <th>Dedup</th>
-              <th>Dup %</th>
-              <th>Divergent</th>
-              <th>Total Regions</th>
-              <th>Functional Reads</th>
-              <th>Median PI</th>
-              <th>Median Density</th>
-              <th>CPM</th>
-              <th>cRPMsi</th>
-              <th>Unlocalized</th>
-            </tr>
-          </thead>
-          <tbody id="table-body"></tbody>
+      <div class="viz-card">
+        <h3>By Condition <span class="info-tip" title="Compare divergent transcription levels across experimental conditions">?</span></h3>
+        <div id="chart-div-by-condition" class="viz-body"></div>
+      </div>
+      <div class="viz-card">
+        <h3>Replicate Consistency <span class="info-tip" title="Coefficient of variation within replicate groups. Lower is better (more consistent).">?</span></h3>
+        <div id="chart-div-cv" class="viz-body"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SECTION: Pausing Index -->
+  <section class="layer" id="pausing">
+    <div class="layer-heading">
+      <h2>Pol II Pausing Analysis</h2>
+      <div class="subtitle">Promoter-proximal pausing and elongation dynamics</div>
+    </div>
+    
+    <div class="help-box">
+      <strong>What is Pol II pausing?</strong> After transcription initiation, RNA Polymerase II often pauses 20-60 bp downstream of the TSS before entering productive elongation.
+      The <strong>Pausing Index (PI)</strong> quantifies this: PI = (Promoter Signal) / (Gene Body Signal). 
+      <ul>
+        <li><strong>PI &gt; 2:</strong> Strong pausing - typical for rapidly-induced genes (e.g., heat shock genes)</li>
+        <li><strong>PI = 0.5-2:</strong> Moderate pausing - most constitutive genes</li>
+        <li><strong>PI &lt; 0.5:</strong> Weak/no pausing - highly elongating genes</li>
+        <li><strong>Condition changes:</strong> PI shifts can indicate transcriptional regulation at elongation step vs. initiation</li>
+      </ul>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-item">
+        <div class="stat-label">Cohort Median PI</div>
+        <div class="stat-value" id="pi-cohort-median">-</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Mean PI</div>
+        <div class="stat-value" id="pi-cohort-mean">-</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Std Dev</div>
+        <div class="stat-value" id="pi-std">-</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Range</div>
+        <div class="stat-value" id="pi-range">-</div>
+      </div>
+    </div>
+
+    <div class="viz-grid">
+      <div class="viz-card">
+        <h3>Median PI per Sample <span class="info-tip" title="Median pausing index for each sample. Shows overall pausing landscape.">?</span></h3>
+        <div id="chart-pi-per-sample" class="viz-body"></div>
+      </div>
+      <div class="viz-card">
+        <h3>PI Distribution <span class="info-tip" title="Distribution of median pausing indices across cohort">?</span></h3>
+        <div id="chart-pi-dist" class="viz-body"></div>
+        <div class="distrib-summary" id="pi-stats"></div>
+      </div>
+      <div class="viz-card">
+        <h3>PI by Condition <span class="info-tip" title="Compare pausing indices across experimental conditions. Differences may reflect regulation at elongation stage.">?</span></h3>
+        <div id="chart-pi-by-condition" class="viz-body"></div>
+      </div>
+      <div class="viz-card">
+        <h3>PI vs Read Depth <span class="info-tip" title="Pausing index should be independent of sequencing depth. Strong correlation suggests technical bias.">?</span></h3>
+        <div id="chart-pi-vs-depth" class="viz-body"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SECTION: Functional Regions -->
+  <section class="layer" id="regions">
+    <div class="layer-heading">
+      <h2>Functional Region Composition</h2>
+      <div class="subtitle">Read distribution across genomic features</div>
+    </div>
+    
+    <div class="help-box">
+      <strong>Functional regions</strong> are genomic features where Pol II signal is measured:
+      <ul>
+        <li><strong>Promoters:</strong> TSS ± window (default: -500 to +250 bp). High signal indicates active transcription initiation.</li>
+        <li><strong>Gene Bodies:</strong> From TSS + offset to TES (default: start +2000 bp). Measures elongating Pol II.</li>
+        <li><strong>CPS (Cleavage/PolyA Sites):</strong> 3' end regions. Signal here indicates termination events.</li>
+        <li><strong>Enhancers:</strong> Distal regulatory elements (if annotated). Active enhancers produce eRNAs.</li>
+        <li><strong>Divergent TX:</strong> Bidirectional transcription sites detected by pipeline.</li>
+        <li><strong>Non-localized:</strong> Reads not mapping to any defined feature. Should be <20%.</li>
+      </ul>
+      <strong>What to look for:</strong> Samples should have similar functional region distributions. Large differences may indicate varying library quality or biological states.
+    </div>
+
+    <div class="viz-grid">
+      <div class="viz-card">
+        <h3>Cohort-wide Region Totals <span class="info-tip" title="Aggregate read counts across all samples for each functional region type">?</span></h3>
+        <div id="chart-region-totals" class="viz-body"></div>
+      </div>
+      <div class="viz-card">
+        <h3>Region Composition by Sample <span class="info-tip" title="Stacked bar showing percentage distribution of reads across regions for each sample">?</span></h3>
+        <div id="chart-region-composition" class="viz-body"></div>
+      </div>
+      <div class="viz-card">
+        <h3>Promoter Signal Distribution <span class="info-tip" title="Distribution of promoter signal across samples">?</span></h3>
+        <div id="chart-promoter-dist" class="viz-body"></div>
+      </div>
+      <div class="viz-card">
+        <h3>Gene Body Signal Distribution <span class="info-tip" title="Distribution of gene body signal across samples">?</span></h3>
+        <div id="chart-genebody-dist" class="viz-body"></div>
+      </div>
+    </div>
+
+    <div style="margin-top:2rem;">
+      <h3 style="margin-bottom:1rem;font-size:1.25rem;">Detailed Region Counts by Sample</h3>
+      <div class="table-wrap">
+        <table id="region-counts-table">
+          <thead id="region-counts-thead"></thead>
+          <tbody id="region-counts-tbody"></tbody>
         </table>
       </div>
+    </div>
+  </section>
 
-      <div class="card" style="margin: 2rem 0; background: linear-gradient(135deg, rgba(37,99,235,0.02) 0%, rgba(147,51,234,0.02) 100%);">
-        <h3 style="font-size: 1.3rem; margin-bottom: 1rem;">🧬 Functional Region Assignment Details</h3>
-        <div style="background: var(--bg); padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
-          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; font-size: 0.9em;">
-            <div>
-              <strong style="color: rgb(243,132,0);">● Promoter</strong> — Active transcription start sites (DT sites overlapping gene promoters)
-            </div>
-            <div>
-              <strong style="color: rgb(178,59,212);">● DivergentTx</strong> — Upstream divergent transcription regions (opposite strand from promoters)
-            </div>
-            <div>
-              <strong style="color: rgb(115,212,122);">● Enhancers</strong> — Active enhancers (DT sites NOT near gene promoters)
-            </div>
-            <div>
-              <strong style="color: rgb(0,0,0);">● Gene Body</strong> — Transcribed gene regions between promoter and CPS
-            </div>
-            <div>
-              <strong style="color: rgb(103,200,249);">● CPS</strong> — Cleavage and polyadenylation sites (3' processing)
-            </div>
-            <div>
-              <strong style="color: rgb(253,218,13);">● Short Genes</strong> — Genes ≤750bp (too short for region subdivision)
-            </div>
-            <div>
-              <strong style="color: rgb(255,54,98);">● Termination</strong> — Termination windows downstream of genes
-            </div>
-            <div>
-              <strong style="color: rgb(160,170,180);">● Non-localized</strong> — Reads not assigned to defined functional regions
-            </div>
-          </div>
-        </div>
-        
-        <div class="tbl-container">
-          <table class="tbl">
-            <thead>
-              <tr>
-                <th class="sticky">Sample</th>
-                <th>Condition</th>
-                <th title="Active promoter sites (DT overlapping genes)">Promoter</th>
-                <th title="Transcribed gene bodies">Gene Body</th>
-                <th title="Cleavage/polyadenylation sites">CPS</th>
-                <th title="Divergent transcription regions">DivergentTx</th>
-                <th title="Active enhancers (DT not near genes)">Enhancers</th>
-                <th title="Short genes (≤750bp)">Short Genes</th>
-                <th title="Transcription termination windows">Termination</th>
-                <th title="Reads outside functional regions">Non-localized</th>
-              </tr>
-            </thead>
-            <tbody id="functional-table-body"></tbody>
-          </table>
-        </div>
-      </div>
+  <!-- SECTION: Normalization -->
+  <section class="layer" id="normalization">
+    <div class="layer-heading">
+      <h2>Normalization Factors</h2>
+      <div class="subtitle">CPM and spike-in normalization for cross-sample comparisons</div>
+    </div>
+    
+    <div class="help-box">
+      <strong>Why normalize?</strong> Raw read counts vary with sequencing depth and library preparation efficiency. Normalization enables quantitative comparison across samples.
+      <ul>
+        <li><strong>CPM (Counts Per Million):</strong> Simple depth normalization. Assumes total transcription is similar across samples.
+          <br>Formula: CPM = (raw_counts / total_reads) × 1,000,000</li>
+        <li><strong>siCPM (Spike-in CPM):</strong> Uses exogenous spike-in control (e.g., Drosophila) for absolute quantification. Accounts for global changes in transcription.
+          <br>Formula: siCPM = CPM × (spike-in_reads_control / spike-in_reads_sample)</li>
+        <li><strong>When to use spike-in:</strong> Essential when comparing samples with expected global transcriptional changes (e.g., stress conditions, differentiation)</li>
+        <li><strong>Quality check:</strong> Spike-in factors should be consistent across replicates within a condition. Large variation suggests pipetting errors or contamination.</li>
+      </ul>
+    </div>
 
-      <!-- Section Divider -->
-      <div style="border-top: 3px solid var(--line); margin: 3rem 0 2rem; padding-top: 1rem;">
-        <h2 style="font-size: 1.75rem; margin-bottom: 0.5rem;">📁 Results Navigation & Reproducibility</h2>
-        <p class="muted" style="margin: 0;">Access your data and reproduce this analysis</p>
+    <div class="stats-grid">
+      <div class="stat-item">
+        <div class="stat-label">Samples with CPM</div>
+        <div class="stat-value" id="norm-cpm-count">-</div>
       </div>
-      
-      <div class="card">
-        <h3>🎯 Quick Access to Output Files</h3>
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; margin-top: 1rem;">
-          <div>
-            <strong>📊 Interactive Reports</strong><br>
-            <code>11_reports/cohort/global_summary.html</code> ← You are here!<br>
-            <code>11_reports/samples/&lt;SAMPLE&gt;/&lt;SAMPLE&gt;.report.html</code><br>
-            <small class="muted">Rich HTML reports with interactive visualizations</small>
-          </div>
-          <div>
-            <strong>🧬 Genome Browser Tracks</strong><br>
-            <code>03_genome_tracks/&lt;SAMPLE&gt;/3p/*.bw</code><br>
-            <code>05_normalized_tracks/&lt;SAMPLE&gt;/*.bw</code><br>
-            <small class="muted">BigWig files for IGV, UCSC Genome Browser</small>
-          </div>
-          <div>
-            <strong>📋 Data Tables</strong><br>
-            <code>global_summary.tsv</code> ← Cohort data<br>
-            <code>11_reports/samples/&lt;SAMPLE&gt;/&lt;SAMPLE&gt;.report.tsv</code><br>
-            <small class="muted">Machine-readable data for downstream analysis</small>
-          </div>
-          <div>
-            <strong>🔬 Analysis Results</strong><br>
-            <code>08_pol2_metrics/&lt;SAMPLE&gt;/</code> ← Pol II metrics<br>
-            <code>06_divergent_tx/&lt;SAMPLE&gt;/</code> ← Divergent transcription<br>
-            <small class="muted">Detailed analysis outputs and intermediate files</small>
-          </div>
-        </div>
+      <div class="stat-item">
+        <div class="stat-label">Samples with siCPM</div>
+        <div class="stat-value" id="norm-sicpm-count">-</div>
       </div>
+      <div class="stat-item">
+        <div class="stat-label">CPM Factor Range</div>
+        <div class="stat-value" id="norm-cpm-range">-</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">siCPM Factor Range</div>
+        <div class="stat-value" id="norm-sicpm-range">-</div>
+      </div>
+    </div>
 
-      <div class="card">
-        <h3>📂 Complete Directory Structure</h3>
-        <div style="font-family: monospace; font-size: 0.9em; line-height: 1.4; background: #f8f9fa; padding: 1rem; border-radius: 8px; overflow-x: auto;">
-results/<br>
-├── 📁 <strong>00_references/</strong> ← Genome references and indices<br>
-├── 📁 <strong>01_trimmed_fastq/&lt;SAMPLE&gt;/</strong> ← Processed FASTQ files and QC<br>
-├── 📁 <strong>02_alignments/&lt;SAMPLE&gt;/</strong> ← BAM files and alignment stats<br>
-├── 📁 <strong>03_genome_tracks/&lt;SAMPLE&gt;/</strong> ← Raw 3′/5′ bedGraphs & BigWigs<br>
-├── 📁 <strong>04_counts/&lt;SAMPLE&gt;/</strong> ← Read count matrices<br>
-├── 📁 <strong>05_normalized_tracks/&lt;SAMPLE&gt;/</strong> ← CPM & spike-in normalized tracks<br>
-├── 📁 <strong>06_divergent_tx/&lt;SAMPLE&gt;/</strong> ← Bidirectional transcription analysis<br>
-├── 📁 <strong>07_functional_regions/&lt;SAMPLE&gt;/</strong> ← Region assignments & summaries<br>
-├── 📁 <strong>08_pol2_metrics/&lt;SAMPLE&gt;/</strong> ← RNA Pol II density & pausing metrics<br>
-├── 📁 <strong>09_pol2_aggregate/</strong> ← Cross-sample Pol II comparisons<br>
-├── 📁 <strong>10_qc/&lt;SAMPLE&gt;/</strong> ← Quality control metrics & stats<br>
-└── 📁 <strong>11_reports/</strong> ← Interactive HTML reports (start here!)<br>
-    ├── 📁 <strong>cohort/</strong> ← This cohort summary<br>
-    └── 📁 <strong>samples/&lt;SAMPLE&gt;/</strong> ← Individual sample reports
-        </div>
+    <div class="viz-grid">
+      <div class="viz-card">
+        <h3>CPM Factors <span class="info-tip" title="CPM normalization factors for each sample. Should be inversely proportional to sequencing depth.">?</span></h3>
+        <div id="chart-cpm-factors" class="viz-body"></div>
       </div>
-
-      <div class="card">
-        <h3>🔄 Reproducibility</h3>
-        <p><strong>To reproduce this analysis:</strong></p>
-        <div style="position: relative;">
-          <div style="font-family: monospace; background: #f1f5f9; padding: 1rem; border-radius: 8px; margin: 1rem 0; position: relative;">
-            <button onclick="copyToClipboard(this.nextElementSibling.textContent)" style="position: absolute; top: 0.5rem; right: 0.5rem; background: var(--accent); color: white; border: none; border-radius: 4px; padding: 0.25rem 0.5rem; cursor: pointer; font-size: 0.8em;">📋 Copy</button>
-            <div style="display: none;">nextflow run main.nf -entry TrackTx -profile {args.profile} -resume</div>
-# Resume with same parameters<br>
-nextflow run main.nf -entry TrackTx -profile {args.profile} -resume<br><br>
-# Fresh run with monitoring<br>
-./run_pipeline.sh -profile {args.profile} -with-report -with-timeline
-          </div>
-        </div>
-        <p><small class="muted">💡 <strong>Tip:</strong> Use <code>./run_pipeline.sh --validate-only</code> to test your environment before running.</small></p>
+      <div class="viz-card">
+        <h3>siCPM Factors <span class="info-tip" title="Spike-in normalization factors. Consistent within condition indicates good technical reproducibility.">?</span></h3>
+        <div id="chart-sicpm-factors" class="viz-body"></div>
       </div>
-    </section>
+      <div class="viz-card">
+        <h3>CPM vs siCPM Comparison <span class="info-tip" title="Compare CPM and siCPM factors. Large differences suggest global transcriptional changes between conditions.">?</span></h3>
+        <div id="chart-cpm-vs-sicpm" class="viz-body"></div>
+      </div>
+      <div class="viz-card">
+        <h3>Normalization Factor CV by Condition <span class="info-tip" title="Coefficient of variation for normalization factors within each condition. Lower = more consistent.">?</span></h3>
+        <div id="chart-norm-cv" class="viz-body"></div>
+      </div>
+    </div>
+  </section>
 
-    <section id="sample-section" class="section" style="display:none">
-      <h1>Per-sample</h1>
-      <div id="sample-pages" class="grid"></div>
-    </section>
-  </main>
+  <!-- SECTION: Sample Table -->
+  <section class="layer" id="samples">
+    <div class="layer-heading">
+      <h2>Sample-Level Metrics</h2>
+      <div class="subtitle">Interactive table with all metrics, filters, and export</div>
+    </div>
+
+    <div class="table-tools">
+      <div>
+        <label>Search</label>
+        <input id="sample-search" type="text" placeholder="Search samples, conditions, timepoints...">
+      </div>
+      <div>
+        <label>Condition</label>
+        <select id="condition-filter"><option value="">All</option></select>
+      </div>
+      <div>
+        <label>QC Status</label>
+        <select id="quality-filter">
+          <option value="">All</option>
+          <option value="pass">PASS only</option>
+          <option value="warn">WARN only</option>
+          <option value="fail">FAIL only</option>
+        </select>
+      </div>
+      <div>
+        <label>Actions</label>
+        <button id="export-csv">Export CSV</button>
+      </div>
+    </div>
+    
+    <div class="table-wrap">
+      <table id="sample-table">
+        <thead>
+          <tr>
+            <th>QC</th>
+            <th>Sample</th>
+            <th>Condition</th>
+            <th>Time</th>
+            <th>Rep</th>
+            <th>Input Reads</th>
+            <th>Functional Reads</th>
+            <th>Dup %</th>
+            <th>Unloc %</th>
+            <th>Div Regions</th>
+            <th>Total Regions</th>
+            <th>Median PI</th>
+            <th>Median Density</th>
+            <th>CPM Factor</th>
+            <th>siCPM Factor</th>
+          </tr>
+        </thead>
+        <tbody id="sample-table-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- SECTION: Files -->
+  <section class="layer" id="files">
+    <div class="layer-heading">
+      <h2>Output Files & Documentation</h2>
+      <div class="subtitle">Locate results and reproduce analysis</div>
+    </div>
+
+    <div class="help-box">
+      <strong>Output Organization:</strong> TrackTx organizes results hierarchically by analysis step and sample:
+      <ul>
+        <li><strong>11_reports/:</strong> This cohort report and individual sample HTML reports</li>
+        <li><strong>05_normalized_tracks/:</strong> BigWig files for genome browser visualization (CPM and siCPM normalized)</li>
+        <li><strong>06_divergent_tx/:</strong> Divergent transcription BED files and QC reports</li>
+        <li><strong>07_functional_regions/:</strong> Region assignments and read count summaries</li>
+        <li><strong>08_pol2_metrics/:</strong> Pausing indices and density calculations per gene/region</li>
+        <li><strong>10_qc/:</strong> Quality control JSON files with alignment stats</li>
+      </ul>
+    </div>
+
+    <div style="background:var(--card);padding:1.5rem;border-radius:0.75rem;border:1px solid var(--line);">
+      <h3 style="margin:0 0 1rem 0;font-size:1.125rem;">Run Command</h3>
+      <pre style="background:var(--bg);padding:1rem;border-radius:0.5rem;overflow-x:auto;"><code>{run_command}</code></pre>
+    </div>
+
+    <div style="background:var(--card);padding:1.5rem;border-radius:0.75rem;border:1px solid var(--line);margin-top:1.5rem;">
+      <h3 style="margin:0 0 1rem 0;font-size:1.125rem;">File Locations</h3>
+      <ul style="line-height:1.8;">
+        <li>Cohort HTML: <code>{args.out_html}</code></li>
+        <li>Cohort TSV: <code>{args.out_tsv}</code></li>
+        <li>Cohort JSON: <code>{args.out_json}</code></li>
+        <li>Sample reports: <code>{{output_dir}}/11_reports/samples/&lt;sample&gt;/&lt;sample&gt;.report.html</code></li>
+        <li>Normalized tracks: <code>{{output_dir}}/05_normalized_tracks/&lt;sample&gt;/*.bw</code></li>
+        <li>Divergent TX: <code>{{output_dir}}/06_divergent_tx/&lt;sample&gt;/divergent_transcription.bed</code></li>
+        <li>Functional regions: <code>{{output_dir}}/07_functional_regions/&lt;sample&gt;/functional_regions.bed</code></li>
+        <li>Pol II metrics: <code>{{output_dir}}/08_pol2_metrics/&lt;sample&gt;/*.tsv</code></li>
+        <li>QC stats: <code>{{output_dir}}/10_qc/&lt;sample&gt;/qc_summary.json</code></li>
+      </ul>
+    </div>
+  </section>
+
 </div>
 
-<script type="application/json" id="payload">{DATA_JSON}</script>
-{JS}
+<script type="application/json" id="payload">{data_json}</script>
+{js}
+</body>
+</html>
 """
+    
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html)
+    
+    file_size = os.path.getsize(output_path)
+    log("HTML", f"Written: {file_size:,} bytes ({file_size / 1024 / 1024:.2f} MB)")
 
-with open(args.out_html, "w", encoding="utf-8") as fh:
-    fh.write(HTML)
+# =============================================================================
+# MAIN FUNCTION
+# =============================================================================
 
-print("INFO: cohort report written.", file=sys.stderr)
-print(f"[combine_py] done ts={datetime.datetime.utcnow().isoformat()}Z", file=sys.stderr)
+def main():
+    """Main execution function"""
+    
+    # Parse arguments
+    parser = argparse.ArgumentParser(
+        description="Combine TrackTx per-sample summaries into cohort report",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument(
+        "--inputs",
+        nargs="+",
+        required=True,
+        help="Per-sample JSONs (files or directories). Supports *.json, *.json.gz"
+    )
+    parser.add_argument(
+        "--out-tsv",
+        required=True,
+        help="Output TSV path"
+    )
+    parser.add_argument(
+        "--out-json",
+        required=True,
+        help="Output JSON path"
+    )
+    parser.add_argument(
+        "--out-html",
+        required=True,
+        help="Output HTML path"
+    )
+    parser.add_argument(
+        "--out-regions",
+        default=None,
+        help="Optional TSV of summed functional-region totals"
+    )
+    parser.add_argument(
+        "--pipeline-version",
+        default="unknown",
+        help="Pipeline version for metadata"
+    )
+    parser.add_argument(
+        "--run-name",
+        default="unnamed",
+        help="Run name for metadata"
+    )
+    parser.add_argument(
+        "--duration",
+        default="unknown",
+        help="Run duration for metadata"
+    )
+    parser.add_argument(
+        "--profile",
+        default="unknown",
+        help="Execution profile for metadata"
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {VERSION}"
+    )
+    
+    args = parser.parse_args()
+    
+    # Capture run command
+    run_command = " ".join(shlex.quote(arg) for arg in sys.argv)
+    
+    # Start
+    log("START", f"combine_reports.py v{VERSION}")
+    log("START", f"Input paths: {len(args.inputs)}")
+    log("START", f"Pipeline version: {args.pipeline_version}")
+    
+    # Discover JSON files
+    log("═" * 70, "")
+    json_files = discover_json_files(args.inputs)
+    
+    if not json_files:
+        log_error("No usable input files found")
+        log_error("Expected: *.summary.json, *.report.json, *.json, or *.json.gz")
+        return 2
+    
+    # Load and normalize samples
+    log("═" * 70, "")
+    log("LOAD", f"Loading {len(json_files)} JSON files...")
+    
+    samples = []
+    skipped_files = []
+    
+    for i, filepath in enumerate(json_files, 1):
+        if i % 10 == 0:
+            log_info(f"Loaded {i}/{len(json_files)} files...")
+        
+        json_data = read_json_file(filepath)
+        if not json_data:
+            skipped_files.append(filepath)
+            continue
+        
+        fallback_name = Path(filepath).stem.split(".")[0]
+        sample = normalize_sample_data(json_data, fallback_name)
+        
+        if sample:
+            samples.append(sample)
+        else:
+            skipped_files.append(filepath)
+    
+    log("LOAD", f"Successfully loaded: {len(samples)} samples")
+    if skipped_files:
+        log_warning(f"Skipped: {len(skipped_files)} files")
+        for path in skipped_files[:5]:  # Show first 5
+            log_warning(f"  {path}")
+        if len(skipped_files) > 5:
+            log_warning(f"  ... and {len(skipped_files) - 5} more")
+    
+    if not samples:
+        log_error("No valid samples loaded")
+        return 3
+    
+    # Aggregate region data
+    log("═" * 70, "")
+    log("AGGREGATE", "Collecting region information...")
+    region_keys = collect_region_keys(samples)
+    log("AGGREGATE", f"Found {len(region_keys)} unique regions")
+    
+    region_totals = aggregate_region_totals(samples)
+    log("AGGREGATE", f"Computed totals for {len(region_totals)} regions")
+    
+    # Build DataFrame
+    log("═" * 70, "")
+    df = build_cohort_dataframe(samples, region_keys)
+    
+    # Extract rows for JSON
+    rows = df.to_dict("records")
+    
+    # Write outputs
+    log("═" * 70, "")
+    write_tsv_output(df, args.out_tsv)
+    
+    write_json_output(
+        samples,
+        rows,
+        region_totals,
+        region_keys,
+        skipped_files,
+        args.out_json
+    )
+    
+    if args.out_regions:
+        write_region_totals_tsv(region_totals, region_keys, args.out_regions)
+    
+    # Generate HTML with embedded CSS/JS
+    # (Keeping existing CSS and JS strings from original)
+    log("═" * 70, "")
+    data_json = json.dumps(sanitize_data({
+        "n_samples": len(samples),
+        "rows": rows,
+        "samples": samples,
+        "region_totals": region_totals,
+        "region_keys": region_keys
+    }), ensure_ascii=False)
+    
+    # Embedded Assets
+    CSS = """
+    <style>
+    :root {
+      --bg: #ffffff; --fg: #111827; --muted: #6b7280;
+      --card: #f9fafb; --line: #e5e7eb; --primary: #3b82f6;
+      --ok: #10b981; --warn: #f59e0b; --fail: #ef4444;
+      --font: system-ui, -apple-system, sans-serif;
+      --accent: #8b5cf6; --accent-light: #c4b5fd;
+      --info: #06b6d4; --danger: #ef4444;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a; --fg: #f1f5f9; --muted: #94a3b8;
+        --card: #1e293b; --line: #334155; --primary: #60a5fa;
+        --accent: #a78bfa; --accent-light: #6d28d9;
+        --info: #22d3ee; --danger: #f87171;
+      }
+    }
+    
+    * { box-sizing: border-box; }
+    body { background: var(--bg); color: var(--fg); font-family: var(--font); margin: 0; line-height: 1.6; }
+    .container { max-width: 1400px; margin: 0 auto; padding: 2.5rem; }
+    
+    /* Header */
+    .page-header { 
+      background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
+      color: white; padding: 3rem 2rem; border-radius: 1rem; margin-bottom: 3rem;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+    }
+    .eyebrow { text-transform: uppercase; font-size: 0.75rem; font-weight: 700; opacity: 0.9; letter-spacing: 0.1em; }
+    h1 { margin: 0.5rem 0; font-size: 2.5rem; font-weight: 800; }
+    .page-header .muted { color: rgba(255,255,255,0.9); font-size: 1rem; }
+    
+    /* Navigation */
+    .nav-pills { 
+      display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 2rem;
+      position: sticky; top: 0; background: var(--bg); padding: 1rem 0; z-index: 100;
+      border-bottom: 2px solid var(--line);
+    }
+    .nav-pills a {
+      padding: 0.625rem 1.25rem; border-radius: 0.5rem; text-decoration: none;
+      color: var(--fg); background: var(--card); border: 1px solid var(--line);
+      font-weight: 600; font-size: 0.875rem; transition: all 0.2s;
+    }
+    .nav-pills a:hover { background: var(--primary); color: white; border-color: var(--primary); }
+    
+    /* Sections */
+    .layer { margin-bottom: 4rem; scroll-margin-top: 80px; }
+    .layer-heading { margin-bottom: 1.5rem; }
+    .layer-heading h2 { 
+      margin: 0; font-size: 1.75rem; font-weight: 700;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .layer-heading .subtitle { color: var(--muted); font-size: 1rem; margin-top: 0.5rem; }
+    
+    /* Help boxes */
+    .help-box {
+      background: linear-gradient(135deg, rgba(59,130,246,0.1), rgba(139,92,246,0.1));
+      border-left: 4px solid var(--primary); padding: 1.25rem; border-radius: 0.5rem;
+      margin: 1.5rem 0; font-size: 0.95rem; line-height: 1.7;
+    }
+    .help-box strong { color: var(--primary); }
+    .help-box ul { margin: 0.75rem 0 0 1.5rem; }
+    .help-box li { margin: 0.5rem 0; }
+    
+    /* KPI Cards */
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.25rem; }
+    .kpi-card { 
+      background: var(--card); padding: 1.5rem; border-radius: 0.75rem;
+      border: 1px solid var(--line); transition: all 0.3s;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    }
+    .kpi-card:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.12); transform: translateY(-2px); }
+    .kpi-label { font-size: 0.875rem; color: var(--muted); margin-bottom: 0.75rem; font-weight: 600; }
+    .kpi-value { font-size: 2rem; font-weight: 800; color: var(--fg); }
+    .kpi-trend { font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
+    .kpi-sparkline { height: 40px; margin-top: 0.75rem; }
+    
+    /* Visualization Cards */
+    .viz-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 1.5rem; }
+    .viz-card { 
+      background: var(--card); padding: 1.75rem; border-radius: 0.75rem;
+      border: 1px solid var(--line); box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    }
+    .viz-card h3 { margin: 0 0 1.25rem 0; font-size: 1.125rem; font-weight: 700; }
+    .viz-body { min-height: 320px; height: 320px; position: relative; width: 100%; }
+    
+    /* Stats Grid */
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
+    .stat-item { 
+      background: var(--card); padding: 1.25rem; border-radius: 0.5rem;
+      border-left: 4px solid var(--primary);
+    }
+    .stat-label { font-size: 0.8rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    .stat-value { font-size: 1.5rem; font-weight: 700; margin-top: 0.25rem; }
+    
+    /* Tables */
+    .table-tools { 
+      display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap; align-items: flex-end;
+      background: var(--card); padding: 1.25rem; border-radius: 0.75rem; border: 1px solid var(--line);
+    }
+    .table-tools > div { flex: 1; min-width: 200px; }
+    .table-tools label { display: block; font-size: 0.75rem; font-weight: 700; margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    input, select, button { 
+      width: 100%; padding: 0.625rem 0.875rem; border: 1px solid var(--line); 
+      border-radius: 0.5rem; background: var(--bg); color: var(--fg); font-size: 0.875rem;
+      transition: all 0.2s;
+    }
+    input:focus, select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }
+    button { 
+      cursor: pointer; background: var(--primary); color: white; border: none; font-weight: 600;
+      box-shadow: 0 2px 8px rgba(59,130,246,0.3);
+    }
+    button:hover { background: var(--accent); box-shadow: 0 4px 12px rgba(139,92,246,0.4); }
+    
+    .table-wrap { 
+      overflow-x: auto; border: 1px solid var(--line); border-radius: 0.75rem;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+    th, td { padding: 0.875rem 1.125rem; text-align: left; border-bottom: 1px solid var(--line); }
+    th { 
+      background: var(--card); font-weight: 700; white-space: nowrap; position: sticky; top: 0;
+      text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; color: var(--muted);
+    }
+    tbody tr { transition: background 0.2s; }
+    tbody tr:hover { background: rgba(59,130,246,0.05); }
+    tr:last-child td { border-bottom: none; }
+    
+    /* Status badges */
+    .status { 
+      display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 600;
+      font-size: 0.75rem; padding: 0.25rem 0.75rem; border-radius: 999px;
+      background: var(--card); border: 1px solid var(--line);
+    }
+    .status::before { content: ''; width: 0.625rem; height: 0.625rem; border-radius: 50%; background: var(--status); }
+    
+    /* Info tooltips */
+    .info-tip { 
+      cursor: help; color: var(--primary); border-bottom: 1px dotted var(--primary);
+      margin-left: 0.25rem; font-weight: 600; position: relative;
+      display: inline-block;
+    }
+    .info-tip:hover { color: var(--accent); }
+    .info-tip:hover::after {
+      content: attr(title);
+      position: absolute;
+      bottom: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(17, 24, 39, 0.95);
+      color: white;
+      padding: 0.5rem 0.75rem;
+      border-radius: 0.375rem;
+      font-size: 0.8125rem;
+      white-space: normal;
+      width: max-content;
+      max-width: 300px;
+      z-index: 1000;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      margin-bottom: 0.5rem;
+      pointer-events: none;
+      line-height: 1.4;
+    }
+    @media (prefers-color-scheme: dark) {
+      .info-tip:hover::after {
+        background: rgba(241, 245, 249, 0.95);
+        color: #0f172a;
+      }
+    }
+    
+    /* Charts */
+    .bar-chart { display: flex; align-items: flex-end; height: 100%; gap: 4px; padding: 1rem 0; }
+    .bar-col { 
+      flex: 1; display: flex; flex-direction: column; justify-content: flex-end;
+      height: 100%; position: relative; cursor: pointer;
+    }
+    .bar { 
+      background: linear-gradient(180deg, var(--primary), var(--accent)); 
+      width: 100%; border-radius: 4px 4px 0 0; transition: all 0.3s;
+      box-shadow: 0 2px 8px rgba(59,130,246,0.3);
+    }
+    .bar:hover { opacity: 0.8; transform: translateY(-4px); box-shadow: 0 4px 16px rgba(59,130,246,0.5); }
+    .bar-label { 
+      position: absolute; bottom: -25px; left: 50%; transform: translateX(-50%);
+      font-size: 0.7rem; color: var(--muted); white-space: nowrap;
+    }
+    
+    /* Histogram */
+    .histogram { display: flex; align-items: flex-end; height: 200px; gap: 2px; }
+    .hist-bar { background: var(--primary); flex-grow: 1; border-radius: 2px 2px 0 0; transition: opacity 0.2s; }
+    .hist-bar:hover { opacity: 0.7; }
+    
+    /* Distribution summary */
+    .distrib-summary {
+      display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.75rem;
+      margin-top: 1rem; padding: 1rem; background: rgba(59,130,246,0.05);
+      border-radius: 0.5rem;
+    }
+    .distrib-stat { text-align: center; }
+    .distrib-stat .label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; font-weight: 600; }
+    .distrib-stat .value { font-size: 1.125rem; font-weight: 700; margin-top: 0.25rem; }
+    
+    /* Alert boxes */
+    .alert { 
+      padding: 1rem 1.25rem; border-radius: 0.5rem; margin: 1rem 0;
+      border-left: 4px solid;
+    }
+    .alert-info { background: rgba(6,182,212,0.1); border-color: var(--info); }
+    .alert-warning { background: rgba(245,158,11,0.1); border-color: var(--warn); }
+    .alert-danger { background: rgba(239,68,68,0.1); border-color: var(--danger); }
+    .alert-success { background: rgba(16,185,129,0.1); border-color: var(--ok); }
+    
+    /* Responsive */
+    @media (max-width: 768px) {
+      .container { padding: 1rem; }
+      .page-header { padding: 2rem 1.5rem; }
+      h1 { font-size: 1.75rem; }
+      .kpi-grid, .viz-grid { grid-template-columns: 1fr; }
+    }
+    </style>
+    """
+
+    JS = """
+    <script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const payload = JSON.parse(document.getElementById('payload').textContent);
+        const { samples, rows, region_totals, region_keys } = payload;
+        
+        console.log('Loaded', rows.length, 'samples');
+        
+        // ===== UTILITY FUNCTIONS =====
+        function median(arr) {
+            if (!arr.length) return 0;
+            const s = [...arr].sort((a, b) => a - b);
+            const mid = Math.floor(s.length / 2);
+            return s.length % 2 !== 0 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+        }
+        
+        function mean(arr) {
+            if (!arr.length) return 0;
+            return arr.reduce((a,b) => a+b, 0) / arr.length;
+        }
+        
+        function stdDev(arr) {
+            if (!arr.length) return 0;
+            const m = mean(arr);
+            const variance = arr.reduce((sum, val) => sum + Math.pow(val - m, 2), 0) / arr.length;
+            return Math.sqrt(variance);
+        }
+        
+        function getStatus(r) {
+            const inp = r.input_reads || 0;
+            const dup = r.duplicate_percent || 100;
+            if (inp >= 5e6 && dup < 15) return 'PASS';
+            if (inp >= 2e6 && dup < 30) return 'WARN';
+            return 'FAIL';
+        }
+        
+        function formatNumber(n) {
+            if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+            if (n >= 1e3) return (n/1e3).toFixed(1) + 'K';
+            return n.toFixed(0);
+        }
+        
+        function renderDistribSummary(containerId, data) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            if (!data || data.length === 0) {
+                container.innerHTML = '<div style="padding:0.5rem;text-align:center;color:var(--muted);font-size:0.875rem;">No data</div>';
+                return;
+            }
+            const min = Math.min(...data);
+            const max = Math.max(...data);
+            const med = median(data);
+            const avg = mean(data);
+            const std = stdDev(data);
+            container.innerHTML = `
+                <div class="distrib-stat"><div class="label">Min</div><div class="value">${min.toFixed(1)}</div></div>
+                <div class="distrib-stat"><div class="label">Max</div><div class="value">${max.toFixed(1)}</div></div>
+                <div class="distrib-stat"><div class="label">Median</div><div class="value">${med.toFixed(1)}</div></div>
+                <div class="distrib-stat"><div class="label">Mean</div><div class="value">${avg.toFixed(1)}</div></div>
+                <div class="distrib-stat"><div class="label">Std Dev</div><div class="value">${std.toFixed(1)}</div></div>
+            `;
+        }
+        
+        function renderBarChart(containerId, data, labels = null) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            if (!data || data.length === 0) {
+                container.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No data available</div>';
+                return;
+            }
+            
+            // Get container dimensions - use parent or reasonable defaults
+            const containerRect = container.getBoundingClientRect();
+            const parentWidth = container.parentElement ? container.parentElement.getBoundingClientRect().width : 0;
+            const containerWidth = Math.max(containerRect.width || parentWidth || 600, 500);
+            const containerHeight = Math.max(containerRect.height || 320, 300);
+            
+            // Smart Y-axis max: add 10% padding, but round to nice numbers
+            const dataMax = Math.max(...data, 1);
+            const dataMin = Math.min(...data, 0);
+            const dataRange = dataMax - dataMin;
+            let yMax = dataMax;
+            if (dataRange > 0) {
+                // Add 10% padding
+                yMax = dataMax + (dataRange * 0.1);
+                // Round to nice number
+                const magnitude = Math.pow(10, Math.floor(Math.log10(yMax)));
+                yMax = Math.ceil(yMax / magnitude) * magnitude;
+            } else {
+                yMax = Math.max(dataMax * 1.1, 1);
+            }
+            
+            // Adaptive bar sizing to fill container
+            const barCount = data.length;
+            const margin = {top: 40, right: 20, bottom: 80, left: 70};
+            const chartWidth = containerWidth - margin.left - margin.right;
+            const chartHeight = containerHeight - margin.top - margin.bottom;
+            const minBarWidth = 30;
+            const maxBarWidth = 80;
+            const barSpacing = 8;
+            const totalBarSpace = chartWidth - (barSpacing * (barCount - 1));
+            const barWidth = Math.max(minBarWidth, Math.min(maxBarWidth, totalBarSpace / barCount));
+            
+            // Calculate actual width needed (only for bars that exist)
+            const actualChartWidth = (barWidth * barCount) + (barSpacing * (barCount - 1));
+            const width = margin.left + actualChartWidth + margin.right;
+            const height = containerHeight;
+            
+            // Color palette
+            const colorPalette = ['#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f59e0b', '#10b981', '#6366f1', '#06b6d4'];
+            
+            // Create SVG
+            let svg = `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" style="max-width:${width}px;font-family:var(--font);">`;
+            
+            // Gradients
+            svg += '<defs>';
+            colorPalette.forEach((color, i) => {
+                svg += `<linearGradient id="grad${i}" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" style="stop-color:${color};stop-opacity:0.9" />
+                    <stop offset="100%" style="stop-color:${color};stop-opacity:0.7" />
+                </linearGradient>
+                <filter id="shadow${i}">
+                    <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.3"/>
+                </filter>`;
+            });
+            svg += '</defs>';
+            
+            // Grid lines
+            const ySteps = 5;
+            for (let i = 0; i <= ySteps; i++) {
+                const y = margin.top + (chartHeight * i / ySteps);
+                svg += `<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="var(--line)" stroke-width="0.5" opacity="0.4"/>`;
+            }
+            
+            // Y-axis
+            svg += `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${height - margin.bottom}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
+            
+            // Y-axis labels
+            for (let i = 0; i <= ySteps; i++) {
+                const val = yMax - (yMax * i / ySteps);
+                const y = margin.top + (chartHeight * i / ySteps);
+                svg += `<text x="${margin.left - 12}" y="${y + 4}" text-anchor="end" font-size="11" fill="var(--muted)" font-weight="500">${formatNumber(val)}</text>`;
+            }
+            
+            // Bars
+            data.forEach((v, i) => {
+                const x = margin.left + (i * (barWidth + barSpacing));
+                const barHeight = Math.max(2, (v / yMax) * chartHeight);
+                const y = height - margin.bottom - barHeight;
+                const colorIdx = i % colorPalette.length;
+                const label = labels ? labels[i] : `Item ${i+1}`;
+                
+                // Bar shadow
+                svg += `<rect x="${x}" y="${y+2}" width="${barWidth}" height="${barHeight}" fill="black" opacity="0.1" rx="3"/>`;
+                
+                // Bar
+                svg += `<rect x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" fill="url(#grad${colorIdx})" rx="3" filter="url(#shadow${colorIdx})" style="cursor:pointer;transition:opacity 0.15s;" onmouseover="evt.target.style.opacity='0.7'" onmouseout="evt.target.style.opacity='1'">
+                    <title>${label}: ${v.toLocaleString()}</title>
+                </rect>`;
+                
+                // Value labels on top
+                if (barHeight > 25) {
+                    svg += `<text x="${x + barWidth/2}" y="${y - 8}" text-anchor="middle" font-size="10" fill="var(--fg)" font-weight="700" opacity="0.8">${formatNumber(v)}</text>`;
+                }
+            });
+            
+            // X-axis (only as wide as needed)
+            const xAxisEnd = margin.left + actualChartWidth;
+            svg += `<line x1="${margin.left}" y1="${height - margin.bottom}" x2="${xAxisEnd}" y2="${height - margin.bottom}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
+            
+            // X-axis labels
+            data.forEach((v, i) => {
+                const x = margin.left + (i * (barWidth + barSpacing)) + barWidth/2;
+                const label = labels ? labels[i] : `Item ${i+1}`;
+                const displayLabel = label.length > 10 ? label.substring(0,9) + '..' : label;
+                
+                svg += `<text x="${x}" y="${height - margin.bottom + 18}" text-anchor="end" font-size="10" fill="var(--muted)" font-weight="500" transform="rotate(-45 ${x} ${height - margin.bottom + 18})"><title>${label}</title>${displayLabel}</text>`;
+            });
+            
+            svg += '</svg>';
+            container.innerHTML = svg;
+        }
+        
+        function renderHistogram(containerId, data, bins = 20) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            if (!data || data.length === 0) {
+                container.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No data available</div>';
+                return;
+            }
+            if (data.length === 1) {
+                container.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--muted)">Single sample: <strong>${data[0].toFixed(2)}</strong></div>`;
+                return;
+            }
+            
+            const min = Math.min(...data);
+            const max = Math.max(...data);
+            const range = max - min;
+            
+            if (range === 0) {
+                container.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--muted)">All samples: <strong>${min.toFixed(2)}</strong></div>`;
+                return;
+            }
+            
+            // Get container dimensions - use parent or reasonable defaults
+            const containerRect = container.getBoundingClientRect();
+            const parentWidth = container.parentElement ? container.parentElement.getBoundingClientRect().width : 0;
+            const containerWidth = Math.max(containerRect.width || parentWidth || 600, 500);
+            const containerHeight = Math.max(containerRect.height || 280, 250);
+            
+            // Create histogram bins
+            const binSize = range / bins;
+            const histogram = new Array(bins).fill(0);
+            data.forEach(v => {
+                const binIndex = Math.min(Math.floor((v - min) / binSize), bins - 1);
+                histogram[binIndex]++;
+            });
+            const maxCount = Math.max(...histogram, 1);
+            
+            // Smart Y-axis max: add 10% padding
+            const yMax = Math.ceil(maxCount * 1.1);
+            
+            // Chart dimensions - fill container
+            const margin = {top: 30, right: 20, bottom: 50, left: 60};
+            const width = containerWidth;
+            const height = containerHeight;
+            const chartWidth = width - margin.left - margin.right;
+            const chartHeight = height - margin.top - margin.bottom;
+            const barWidth = chartWidth / bins;
+            
+            // Create SVG
+            let svg = `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" style="max-width:${width}px;font-family:var(--font);">`;
+            
+            // Gradients
+            svg += `<defs>
+                <linearGradient id="histGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:0.9" />
+                    <stop offset="100%" style="stop-color:#8b5cf6;stop-opacity:0.7" />
+                </linearGradient>
+                <filter id="histShadow">
+                    <feGaussianBlur in="SourceAlpha" stdDeviation="2"/>
+                    <feOffset dx="0" dy="1" result="offsetblur"/>
+                    <feComponentTransfer>
+                        <feFuncA type="linear" slope="0.3"/>
+                    </feComponentTransfer>
+                    <feMerge>
+                        <feMergeNode/>
+                        <feMergeNode in="SourceGraphic"/>
+                    </feMerge>
+                </filter>
+            </defs>`;
+            
+            // Grid lines
+            const ySteps = 4;
+            for (let i = 0; i <= ySteps; i++) {
+                const y = margin.top + (chartHeight * i / ySteps);
+                svg += `<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="var(--line)" stroke-width="0.5" opacity="0.3"/>`;
+            }
+            
+            // Y-axis
+            svg += `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${height - margin.bottom}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
+            
+            // Y-axis labels (count)
+            for (let i = 0; i <= ySteps; i++) {
+                const val = Math.round(yMax - (yMax * i / ySteps));
+                const y = margin.top + (chartHeight * i / ySteps);
+                svg += `<text x="${margin.left - 10}" y="${y + 4}" text-anchor="end" font-size="11" fill="var(--muted)" font-weight="500">${val}</text>`;
+            }
+            
+            // Y-axis label
+            svg += `<text x="${15}" y="${height/2}" text-anchor="middle" font-size="11" fill="var(--muted)" font-weight="600" transform="rotate(-90 15 ${height/2})">Count</text>`;
+            
+            // Histogram bars
+            histogram.forEach((count, i) => {
+                const x = margin.left + (i * barWidth);
+                const barHeight = (count / yMax) * chartHeight;
+                const y = height - margin.bottom - barHeight;
+                const binStart = min + (i * binSize);
+                const binEnd = binStart + binSize;
+                
+                // Bar
+                svg += `<rect x="${x}" y="${y}" width="${barWidth - 1}" height="${barHeight}" fill="url(#histGrad)" filter="url(#histShadow)" rx="2" style="cursor:pointer;transition:opacity 0.15s;" onmouseover="evt.target.style.opacity='0.7'" onmouseout="evt.target.style.opacity='1'">
+                    <title>${count} samples in ${binStart.toFixed(2)}-${binEnd.toFixed(2)}</title>
+                </rect>`;
+            });
+            
+            // X-axis
+            svg += `<line x1="${margin.left}" y1="${height - margin.bottom}" x2="${width - margin.right}" y2="${height - margin.bottom}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
+            
+            // X-axis labels (value range)
+            const xLabelCount = Math.min(5, bins);
+            for (let i = 0; i <= xLabelCount; i++) {
+                const val = min + (range * i / xLabelCount);
+                const x = margin.left + (chartWidth * i / xLabelCount);
+                svg += `<text x="${x}" y="${height - margin.bottom + 20}" text-anchor="middle" font-size="10" fill="var(--muted)" font-weight="500">${val.toFixed(1)}</text>`;
+            }
+            
+            // X-axis label
+            svg += `<text x="${width/2}" y="${height - 8}" text-anchor="middle" font-size="11" fill="var(--muted)" font-weight="600">Value</text>`;
+            
+            svg += '</svg>';
+            container.innerHTML = svg;
+        }
+        
+        function renderScatterPlot(containerId, xData, yData, xLabel, yLabel, labels = null) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            if (!xData || !yData || xData.length === 0 || yData.length === 0) {
+                container.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No data available</div>';
+                return;
+            }
+            
+            // Filter valid pairs
+            const points = [];
+            for (let i = 0; i < Math.min(xData.length, yData.length); i++) {
+                if (xData[i] != null && yData[i] != null && isFinite(xData[i]) && isFinite(yData[i])) {
+                    points.push({x: xData[i], y: yData[i], label: labels ? labels[i] : `Sample ${i+1}`});
+                }
+            }
+            
+            if (points.length === 0) {
+                container.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No valid data points</div>';
+                return;
+            }
+            
+            const containerRect = container.getBoundingClientRect();
+            const parentWidth = container.parentElement ? container.parentElement.getBoundingClientRect().width : 0;
+            const containerWidth = Math.max(containerRect.width || parentWidth || 600, 500);
+            const containerHeight = Math.max(containerRect.height || 320, 300);
+            
+            const xMin = Math.min(...points.map(p => p.x));
+            const xMax = Math.max(...points.map(p => p.x));
+            const yMin = Math.min(...points.map(p => p.y));
+            const yMax = Math.max(...points.map(p => p.y));
+            const xRange = xMax - xMin || 1;
+            const yRange = yMax - yMin || 1;
+            
+            // Add padding
+            const xPadding = xRange * 0.1;
+            const yPadding = yRange * 0.1;
+            const xScaleMin = xMin - xPadding;
+            const xScaleMax = xMax + xPadding;
+            const yScaleMin = yMin - yPadding;
+            const yScaleMax = yMax + yPadding;
+            
+            const margin = {top: 30, right: 20, bottom: 60, left: 70};
+            const width = containerWidth;
+            const height = containerHeight;
+            const chartWidth = width - margin.left - margin.right;
+            const chartHeight = height - margin.top - margin.bottom;
+            
+            const scaleX = (val) => margin.left + ((val - xScaleMin) / (xScaleMax - xScaleMin)) * chartWidth;
+            const scaleY = (val) => height - margin.bottom - ((val - yScaleMin) / (yScaleMax - yScaleMin)) * chartHeight;
+            
+            let svg = `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" style="font-family:var(--font);">`;
+            
+            // Grid lines
+            const xSteps = 5;
+            const ySteps = 5;
+            for (let i = 0; i <= xSteps; i++) {
+                const x = margin.left + (chartWidth * i / xSteps);
+                svg += `<line x1="${x}" y1="${margin.top}" x2="${x}" y2="${height - margin.bottom}" stroke="var(--line)" stroke-width="0.5" opacity="0.3"/>`;
+            }
+            for (let i = 0; i <= ySteps; i++) {
+                const y = margin.top + (chartHeight * i / ySteps);
+                svg += `<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="var(--line)" stroke-width="0.5" opacity="0.3"/>`;
+            }
+            
+            // Axes
+            svg += `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${height - margin.bottom}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
+            svg += `<line x1="${margin.left}" y1="${height - margin.bottom}" x2="${width - margin.right}" y2="${height - margin.bottom}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
+            
+            // Axis labels
+            for (let i = 0; i <= xSteps; i++) {
+                const val = xScaleMin + (xScaleMax - xScaleMin) * i / xSteps;
+                const x = margin.left + (chartWidth * i / xSteps);
+                svg += `<text x="${x}" y="${height - margin.bottom + 20}" text-anchor="middle" font-size="10" fill="var(--muted)" font-weight="500">${val.toFixed(2)}</text>`;
+            }
+            for (let i = 0; i <= ySteps; i++) {
+                const val = yScaleMax - (yScaleMax - yScaleMin) * i / ySteps;
+                const y = margin.top + (chartHeight * i / ySteps);
+                svg += `<text x="${margin.left - 10}" y="${y + 4}" text-anchor="end" font-size="10" fill="var(--muted)" font-weight="500">${val.toFixed(2)}</text>`;
+            }
+            
+            // Axis titles
+            svg += `<text x="${width/2}" y="${height - 10}" text-anchor="middle" font-size="11" fill="var(--muted)" font-weight="600">${xLabel}</text>`;
+            svg += `<text x="${15}" y="${height/2}" text-anchor="middle" font-size="11" fill="var(--muted)" font-weight="600" transform="rotate(-90 15 ${height/2})">${yLabel}</text>`;
+            
+            // Points
+            points.forEach((p, i) => {
+                const x = scaleX(p.x);
+                const y = scaleY(p.y);
+                const color = '#3b82f6';
+                svg += `<circle cx="${x}" cy="${y}" r="5" fill="${color}" opacity="0.7" stroke="white" stroke-width="1.5" style="cursor:pointer;" onmouseover="evt.target.setAttribute('r', '7');evt.target.setAttribute('opacity', '1');" onmouseout="evt.target.setAttribute('r', '5');evt.target.setAttribute('opacity', '0.7');">
+                    <title>${p.label}: ${xLabel}=${p.x.toFixed(3)}, ${yLabel}=${p.y.toFixed(3)}</title>
+                </circle>`;
+            });
+            
+            svg += '</svg>';
+            container.innerHTML = svg;
+        }
+        
+        function renderStackedBarChart(containerId, dataBySample, regionKeys, sampleLabels) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            if (!dataBySample || dataBySample.length === 0 || !regionKeys || regionKeys.length === 0) {
+                container.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No data available</div>';
+                return;
+            }
+            
+            const containerRect = container.getBoundingClientRect();
+            const parentWidth = container.parentElement ? container.parentElement.getBoundingClientRect().width : 0;
+            const containerWidth = Math.max(containerRect.width || parentWidth || 600, 500);
+            const containerHeight = Math.max(containerRect.height || 320, 300);
+            
+            // Calculate percentages for each sample
+            const percentages = dataBySample.map(sample => {
+                const total = Object.values(sample).reduce((sum, v) => sum + (v || 0), 0);
+                const pct = {};
+                regionKeys.forEach(key => {
+                    pct[key] = total > 0 ? ((sample[key] || 0) / total) * 100 : 0;
+                });
+                return pct;
+            });
+            
+            const margin = {top: 40, right: 20, bottom: 80, left: 70};
+            const width = containerWidth;
+            const height = containerHeight;
+            const chartWidth = width - margin.left - margin.right;
+            const chartHeight = height - margin.top - margin.bottom;
+            
+            const barCount = dataBySample.length;
+            const barSpacing = 8;
+            const barWidth = Math.max(30, (chartWidth - (barSpacing * (barCount - 1))) / barCount);
+            
+            const colorPalette = ['#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f59e0b', '#10b981', '#6366f1', '#06b6d4'];
+            
+            let svg = `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" style="font-family:var(--font);">`;
+            
+            // Gradients
+            svg += '<defs>';
+            colorPalette.forEach((color, i) => {
+                svg += `<linearGradient id="stackGrad${i}" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" style="stop-color:${color};stop-opacity:0.9" />
+                    <stop offset="100%" style="stop-color:${color};stop-opacity:0.7" />
+                </linearGradient>`;
+            });
+            svg += '</defs>';
+            
+            // Grid and axes
+            const ySteps = 5;
+            for (let i = 0; i <= ySteps; i++) {
+                const y = margin.top + (chartHeight * i / ySteps);
+                svg += `<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="var(--line)" stroke-width="0.5" opacity="0.4"/>`;
+            }
+            svg += `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${height - margin.bottom}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
+            svg += `<line x1="${margin.left}" y1="${height - margin.bottom}" x2="${width - margin.right}" y2="${height - margin.bottom}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
+            
+            // Y-axis labels (0-100%)
+            for (let i = 0; i <= ySteps; i++) {
+                const val = 100 - (100 * i / ySteps);
+                const y = margin.top + (chartHeight * i / ySteps);
+                svg += `<text x="${margin.left - 12}" y="${y + 4}" text-anchor="end" font-size="11" fill="var(--muted)" font-weight="500">${val}%</text>`;
+            }
+            
+            // Stacked bars
+            percentages.forEach((pct, sampleIdx) => {
+                const x = margin.left + (sampleIdx * (barWidth + barSpacing));
+                let yAccum = height - margin.bottom;
+                
+                regionKeys.forEach((key, regionIdx) => {
+                    const segmentHeight = (pct[key] / 100) * chartHeight;
+                    const colorIdx = regionIdx % colorPalette.length;
+                    const y = yAccum - segmentHeight;
+                    
+                    svg += `<rect x="${x}" y="${y}" width="${barWidth}" height="${segmentHeight}" fill="url(#stackGrad${colorIdx})" rx="0" style="cursor:pointer;" onmouseover="evt.target.style.opacity='0.8'" onmouseout="evt.target.style.opacity='1'">
+                        <title>${sampleLabels[sampleIdx]}: ${key} = ${pct[key].toFixed(1)}%</title>
+                    </rect>`;
+                    
+                    yAccum = y;
+                });
+            });
+            
+            // X-axis labels
+            percentages.forEach((pct, sampleIdx) => {
+                const x = margin.left + (sampleIdx * (barWidth + barSpacing)) + barWidth/2;
+                const label = sampleLabels[sampleIdx] || `Sample ${sampleIdx+1}`;
+                const displayLabel = label.length > 10 ? label.substring(0,9) + '..' : label;
+                svg += `<text x="${x}" y="${height - margin.bottom + 18}" text-anchor="end" font-size="10" fill="var(--muted)" font-weight="500" transform="rotate(-45 ${x} ${height - margin.bottom + 18})"><title>${label}</title>${displayLabel}</text>`;
+            });
+            
+            // Legend
+            const legendX = width - margin.right - 150;
+            const legendY = margin.top + 20;
+            regionKeys.forEach((key, i) => {
+                const colorIdx = i % colorPalette.length;
+                const y = legendY + (i * 18);
+                svg += `<rect x="${legendX}" y="${y - 8}" width="12" height="12" fill="url(#stackGrad${colorIdx})" rx="2"/>`;
+                svg += `<text x="${legendX + 18}" y="${y}" font-size="10" fill="var(--fg)" font-weight="500">${key}</text>`;
+            });
+            
+            svg += '</svg>';
+            container.innerHTML = svg;
+        }
+        
+        // ===== OVERVIEW SECTION =====
+        document.getElementById('sample-count-header').textContent = rows.length + ' samples analyzed';
+        document.getElementById('kpi-total').textContent = rows.length;
+        
+        const conditions = [...new Set(rows.map(r => r.condition).filter(Boolean))];
+        document.getElementById('kpi-conditions').textContent = conditions.length;
+        
+        const avgDepth = mean(rows.map(r => r.input_reads || 0)) / 1e6;
+        document.getElementById('kpi-depth').textContent = avgDepth.toFixed(1) + 'M';
+        
+        const qualityCounts = { PASS: 0, WARN: 0, FAIL: 0 };
+        rows.forEach(r => qualityCounts[getStatus(r)]++);
+        document.getElementById('kpi-quality').innerHTML = 
+            `<span style="color:var(--ok)">${qualityCounts.PASS}</span> / ` +
+            `<span style="color:var(--warn)">${qualityCounts.WARN}</span> / ` +
+            `<span style="color:var(--fail)">${qualityCounts.FAIL}</span>`;
+        
+        const totalDiv = rows.reduce((sum, r) => sum + (r.divergent_regions || 0), 0);
+        document.getElementById('kpi-div-total').textContent = totalDiv.toLocaleString();
+        
+        const avgRegions = mean(rows.map(r => r.total_regions || 0));
+        document.getElementById('kpi-regions-avg').textContent = avgRegions.toFixed(0);
+        
+        // ===== QC SECTION =====
+        const depths = rows.map(r => (r.input_reads || 0) / 1e6);
+        const dups = rows.map(r => r.duplicate_percent != null ? r.duplicate_percent : 0);
+        const unlocs = rows.map(r => (r.unlocalized_fraction || 0) * 100);
+        
+        document.getElementById('qc-median-depth').textContent = depths.length > 0 ? median(depths).toFixed(1) + 'M' : '-';
+        document.getElementById('qc-median-dup').textContent = dups.length > 0 ? median(dups).toFixed(1) + '%' : '-';
+        document.getElementById('qc-median-unloc').textContent = unlocs.length > 0 ? median(unlocs).toFixed(1) + '%' : '-';
+        document.getElementById('qc-pass-rate').textContent = 
+            rows.length > 0 ? ((qualityCounts.PASS / rows.length) * 100).toFixed(0) + '%' : '-';
+        
+        renderHistogram('chart-depth-dist', depths, 15);
+        renderDistribSummary('depth-stats', depths);
+        
+        renderHistogram('chart-dup-dist', dups, 15);
+        renderDistribSummary('dup-stats', dups);
+        
+        renderHistogram('chart-unloc-dist', unlocs, 15);
+        renderDistribSummary('unloc-stats', unlocs);
+        
+        // QC Status by sample
+        const qcStatuses = rows.map(r => getStatus(r));
+        const statusData = [qualityCounts.PASS, qualityCounts.WARN, qualityCounts.FAIL];
+        renderBarChart('chart-qc-status', statusData, ['PASS', 'WARN', 'FAIL']);
+        
+        // QC outliers alert
+        const failSamples = rows.filter(r => getStatus(r) === 'FAIL');
+        if (failSamples.length > 0) {
+            const alertDiv = document.getElementById('qc-outliers-alert');
+            alertDiv.className = 'alert alert-warning';
+            alertDiv.innerHTML = `<strong>⚠️ Quality Alert:</strong> ${failSamples.length} sample(s) failed QC thresholds. ` +
+                `Review: ${failSamples.slice(0, 5).map(s => s.sample_id).join(', ')}` +
+                (failSamples.length > 5 ? ` and ${failSamples.length - 5} more` : '');
+        }
+        
+        // ===== DIVERGENT SECTION =====
+        const divRegions = rows.map(r => r.divergent_regions || 0);
+        const divMean = mean(divRegions);
+        const divMedian = median(divRegions);
+        const divMin = Math.min(...divRegions);
+        const divMax = Math.max(...divRegions);
+        
+        document.getElementById('div-total-regions').textContent = totalDiv.toLocaleString();
+        document.getElementById('div-mean').textContent = divMean.toFixed(0);
+        document.getElementById('div-median').textContent = divMedian.toFixed(0);
+        document.getElementById('div-range').textContent = `${divMin}-${divMax}`;
+        
+        renderBarChart('chart-div-per-sample', divRegions, rows.map(r => r.sample_id));
+        renderHistogram('chart-div-hist', divRegions, 15);
+        renderDistribSummary('div-stats', divRegions);
+        
+        // Divergent by condition
+        const divByCondition = {};
+        rows.forEach(r => {
+            const cond = r.condition || 'Unknown';
+            if (!divByCondition[cond]) divByCondition[cond] = [];
+            divByCondition[cond].push(r.divergent_regions || 0);
+        });
+        const divCondLabels = Object.keys(divByCondition);
+        const divCondMeans = divCondLabels.map(c => mean(divByCondition[c]));
+        renderBarChart('chart-div-by-condition', divCondMeans, divCondLabels);
+        
+        // Replicate CV
+        const divCVs = divCondLabels.map(c => {
+            const data = divByCondition[c];
+            return data.length > 1 ? (stdDev(data) / mean(data)) * 100 : 0;
+        });
+        renderBarChart('chart-div-cv', divCVs, divCondLabels);
+        
+        // ===== PAUSING SECTION =====
+        const pausingIndices = rows.map(r => r.median_pausing_index).filter(p => p != null && p > 0 && isFinite(p));
+        if (pausingIndices.length > 0) {
+            const piMedian = median(pausingIndices);
+            const piMean = mean(pausingIndices);
+            const piStd = stdDev(pausingIndices);
+            const piMin = Math.min(...pausingIndices);
+            const piMax = Math.max(...pausingIndices);
+            
+            document.getElementById('pi-cohort-median').textContent = piMedian.toFixed(2);
+            document.getElementById('pi-cohort-mean').textContent = piMean.toFixed(2);
+            document.getElementById('pi-std').textContent = piStd.toFixed(2);
+            document.getElementById('pi-range').textContent = `${piMin.toFixed(2)}-${piMax.toFixed(2)}`;
+            
+            renderBarChart('chart-pi-per-sample', pausingIndices, rows.filter(r => r.median_pausing_index != null && r.median_pausing_index > 0).map(r => r.sample_id));
+            renderHistogram('chart-pi-dist', pausingIndices, 15);
+            renderDistribSummary('pi-stats', pausingIndices);
+            
+            // PI by condition
+            const piByCondition = {};
+            rows.forEach(r => {
+                if (r.median_pausing_index != null && r.median_pausing_index > 0 && isFinite(r.median_pausing_index)) {
+                    const cond = r.condition || 'Unknown';
+                    if (!piByCondition[cond]) piByCondition[cond] = [];
+                    piByCondition[cond].push(r.median_pausing_index);
+                }
+            });
+            const piCondLabels = Object.keys(piByCondition);
+            const piCondMeans = piCondLabels.map(c => mean(piByCondition[c]));
+            renderBarChart('chart-pi-by-condition', piCondMeans, piCondLabels);
+        } else {
+            document.getElementById('pi-cohort-median').textContent = '-';
+            document.getElementById('pi-cohort-mean').textContent = '-';
+            document.getElementById('pi-std').textContent = '-';
+            document.getElementById('pi-range').textContent = '-';
+            document.getElementById('chart-pi-per-sample').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No pausing index data available</div>';
+            document.getElementById('chart-pi-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No data</div>';
+            document.getElementById('chart-pi-by-condition').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No data</div>';
+        }
+        
+        // ===== FUNCTIONAL REGIONS SECTION =====
+        if (region_totals && region_keys && region_keys.length > 0) {
+            const regionData = region_keys.filter(k => !k.toLowerCase().includes('localized')).map(k => region_totals[k] || 0);
+            const regionLabels = region_keys.filter(k => !k.toLowerCase().includes('localized'));
+            
+            if (regionLabels.length > 0 && regionData.some(d => d > 0)) {
+                renderBarChart('chart-region-totals', regionData, regionLabels);
+                
+                // Region counts table
+                const regionTableHead = document.getElementById('region-counts-thead');
+                const regionTableBody = document.getElementById('region-counts-tbody');
+                regionTableHead.innerHTML = '<tr><th>Sample</th>' + regionLabels.map(k => `<th>${k}</th>`).join('') + '</tr>';
+                regionTableBody.innerHTML = rows.map(r => {
+                    return '<tr><td>' + r.sample_id + '</td>' +
+                        regionLabels.map(k => {
+                            const count = r['count_' + k] || 0;
+                            return `<td>${count.toLocaleString()}</td>`;
+                        }).join('') + '</tr>';
+                }).join('');
+            } else {
+                document.getElementById('chart-region-totals').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No functional region data available</div>';
+            }
+        } else {
+            document.getElementById('chart-region-totals').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No region data available</div>';
+        }
+        
+        // Region composition by sample - Stacked bar chart
+        if (region_keys && region_keys.length > 0) {
+            const filteredRegionKeys = region_keys.filter(k => !k.toLowerCase().includes('localized'));
+            if (filteredRegionKeys.length > 0) {
+                const regionDataBySample = rows.map(r => {
+                    const sampleData = {};
+                    filteredRegionKeys.forEach(key => {
+                        sampleData[key] = r['func_' + key] || 0;
+                    });
+                    return sampleData;
+                });
+                const sampleLabels = rows.map(r => r.sample_id);
+                renderStackedBarChart('chart-region-composition', regionDataBySample, filteredRegionKeys, sampleLabels);
+            } else {
+                document.getElementById('chart-region-composition').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No region data available</div>';
+            }
+        } else {
+            document.getElementById('chart-region-composition').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No region data available</div>';
+        }
+        
+        // Promoter and gene body distributions
+        const promoterSignals = rows.map(r => r.func_Promoter || 0).filter(v => v > 0);
+        const geneBodySignals = rows.map(r => r['func_Gene body'] || 0).filter(v => v > 0);
+        
+        if (promoterSignals.length > 0) {
+            renderHistogram('chart-promoter-dist', promoterSignals, 15);
+        } else {
+            document.getElementById('chart-promoter-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No promoter data</div>';
+        }
+        
+        if (geneBodySignals.length > 0) {
+            renderHistogram('chart-genebody-dist', geneBodySignals, 15);
+        } else {
+            document.getElementById('chart-genebody-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No gene body data</div>';
+        }
+        
+        // ===== NORMALIZATION SECTION =====
+        const cpmFactors = rows.map(r => r.cpm_factor).filter(f => f != null && isFinite(f));
+        const sicpmFactors = rows.map(r => r.crpmsi_factor).filter(f => f != null && isFinite(f));
+        
+        document.getElementById('norm-cpm-count').textContent = cpmFactors.length;
+        document.getElementById('norm-sicpm-count').textContent = sicpmFactors.length;
+        
+        if (cpmFactors.length > 0) {
+            const cpmMin = Math.min(...cpmFactors);
+            const cpmMax = Math.max(...cpmFactors);
+            document.getElementById('norm-cpm-range').textContent = `${cpmMin.toFixed(2)}-${cpmMax.toFixed(2)}`;
+            renderBarChart('chart-cpm-factors', cpmFactors, rows.filter(r => r.cpm_factor != null).map(r => r.sample_id));
+        } else {
+            document.getElementById('norm-cpm-range').textContent = 'No data';
+            document.getElementById('chart-cpm-factors').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No CPM normalization factors available</div>';
+        }
+        
+        if (sicpmFactors.length > 0) {
+            const sicpmMin = Math.min(...sicpmFactors);
+            const sicpmMax = Math.max(...sicpmFactors);
+            document.getElementById('norm-sicpm-range').textContent = `${sicpmMin.toFixed(2)}-${sicpmMax.toFixed(2)}`;
+            renderBarChart('chart-sicpm-factors', sicpmFactors, rows.filter(r => r.crpmsi_factor != null).map(r => r.sample_id));
+        } else {
+            document.getElementById('norm-sicpm-range').textContent = 'No data';
+            document.getElementById('chart-sicpm-factors').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No spike-in normalization available</div>';
+        }
+        
+        // CPM vs siCPM comparison scatter plot
+        const cpmVsSicpmPairs = rows.filter(r => r.cpm_factor != null && r.crpmsi_factor != null && isFinite(r.cpm_factor) && isFinite(r.crpmsi_factor));
+        if (cpmVsSicpmPairs.length > 0) {
+            const cpmValues = cpmVsSicpmPairs.map(r => r.cpm_factor);
+            const sicpmValues = cpmVsSicpmPairs.map(r => r.crpmsi_factor);
+            const sampleLabels = cpmVsSicpmPairs.map(r => r.sample_id);
+            renderScatterPlot('chart-cpm-vs-sicpm', cpmValues, sicpmValues, 'CPM Factor', 'siCPM Factor', sampleLabels);
+        } else {
+            document.getElementById('chart-cpm-vs-sicpm').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No CPM/siCPM data available</div>';
+        }
+        
+        // Normalization CV by condition
+        const normCVByCondition = {};
+        conditions.forEach(cond => {
+            const condRows = rows.filter(r => r.condition === cond);
+            const cpmVals = condRows.map(r => r.cpm_factor).filter(f => f != null && isFinite(f));
+            const sicpmVals = condRows.map(r => r.crpmsi_factor).filter(f => f != null && isFinite(f));
+            
+            if (cpmVals.length > 1) {
+                const cpmCV = (stdDev(cpmVals) / mean(cpmVals)) * 100;
+                normCVByCondition[cond] = normCVByCondition[cond] || {};
+                normCVByCondition[cond].cpm = cpmCV;
+            }
+            if (sicpmVals.length > 1) {
+                const sicpmCV = (stdDev(sicpmVals) / mean(sicpmVals)) * 100;
+                normCVByCondition[cond] = normCVByCondition[cond] || {};
+                normCVByCondition[cond].sicpm = sicpmCV;
+            }
+        });
+        
+        if (Object.keys(normCVByCondition).length > 0) {
+            const condLabels = Object.keys(normCVByCondition);
+            const cpmCVs = condLabels.map(c => normCVByCondition[c].cpm || 0);
+            const sicpmCVs = condLabels.map(c => normCVByCondition[c].sicpm || 0);
+            
+            // Show both CPM and siCPM CVs as grouped bars
+            if (cpmCVs.some(v => v > 0) || sicpmCVs.some(v => v > 0)) {
+                // For simplicity, show CPM CV (can be enhanced to show both)
+                const cvData = condLabels.map(c => normCVByCondition[c].cpm || normCVByCondition[c].sicpm || 0);
+                renderBarChart('chart-norm-cv', cvData, condLabels);
+            } else {
+                document.getElementById('chart-norm-cv').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">Insufficient data for CV calculation</div>';
+            }
+        } else {
+            document.getElementById('chart-norm-cv').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No normalization data available</div>';
+        }
+        
+        // PI vs depth scatter plot
+        const piVsDepthPairs = rows.filter(r => r.median_pausing_index != null && r.input_reads != null && isFinite(r.median_pausing_index) && r.input_reads > 0);
+        if (piVsDepthPairs.length > 0) {
+            const depths = piVsDepthPairs.map(r => (r.input_reads || 0) / 1e6); // Convert to millions
+            const pis = piVsDepthPairs.map(r => r.median_pausing_index);
+            const sampleLabels = piVsDepthPairs.map(r => r.sample_id);
+            renderScatterPlot('chart-pi-vs-depth', depths, pis, 'Read Depth (M)', 'Median Pausing Index', sampleLabels);
+        } else {
+            document.getElementById('chart-pi-vs-depth').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No pausing index or depth data available</div>';
+        }
+        
+        // ===== SAMPLE TABLE =====
+        const tbody = document.getElementById('sample-table-body');
+        const searchInput = document.getElementById('sample-search');
+        const condFilter = document.getElementById('condition-filter');
+        const qualityFilter = document.getElementById('quality-filter');
+        
+        // Populate condition filter
+        conditions.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c;
+            opt.textContent = c;
+            condFilter.appendChild(opt);
+        });
+        
+        function renderTable(data) {
+            tbody.innerHTML = data.map(row => {
+                const status = getStatus(row);
+                const color = status === 'PASS' ? 'var(--ok)' : status === 'WARN' ? 'var(--warn)' : 'var(--fail)';
+                return `<tr>
+                    <td><div class="status" style="--status:${color}">${status}</div></td>
+                    <td><strong>${row.sample_id}</strong></td>
+                    <td>${row.condition || '-'}</td>
+                    <td>${row.timepoint || '-'}</td>
+                    <td>${row.replicate || '-'}</td>
+                    <td>${((row.input_reads || 0) / 1e6).toFixed(1)}M</td>
+                    <td>${formatNumber(row.reads_total_functional || 0)}</td>
+                    <td>${(row.duplicate_percent || 0).toFixed(1)}%</td>
+                    <td>${((row.unlocalized_fraction || 0) * 100).toFixed(1)}%</td>
+                    <td>${(row.divergent_regions || 0).toLocaleString()}</td>
+                    <td>${(row.total_regions || 0).toLocaleString()}</td>
+                    <td>${row.median_pausing_index ? row.median_pausing_index.toFixed(2) : '-'}</td>
+                    <td>${row.median_density ? row.median_density.toFixed(2) : '-'}</td>
+                    <td>${row.cpm_factor ? row.cpm_factor.toFixed(2) : '-'}</td>
+                    <td>${row.crpmsi_factor ? row.crpmsi_factor.toFixed(2) : '-'}</td>
+                </tr>`;
+            }).join('');
+        }
+        
+        function filterTable() {
+            const term = searchInput.value.toLowerCase();
+            const cond = condFilter.value;
+            const qual = qualityFilter.value;
+            
+            const filtered = rows.filter(r => {
+                const matchesSearch = (r.sample_id + (r.condition || '') + (r.timepoint || '')).toLowerCase().includes(term);
+                const matchesCond = !cond || r.condition === cond;
+                const matchesQual = !qual || getStatus(r).toLowerCase() === qual.toLowerCase();
+                return matchesSearch && matchesCond && matchesQual;
+            });
+            renderTable(filtered);
+        }
+        
+        searchInput.addEventListener('input', filterTable);
+        condFilter.addEventListener('change', filterTable);
+        qualityFilter.addEventListener('change', filterTable);
+        
+        // Export CSV
+        document.getElementById('export-csv').addEventListener('click', () => {
+            const headers = ['Sample','Condition','Timepoint','Replicate','Input_Reads','Functional_Reads','Dup_Pct','Unloc_Pct','Div_Regions','Total_Regions','Median_PI','Median_Density','CPM_Factor','siCPM_Factor'];
+            const csv = [headers.join(',')].concat(rows.map(r => [
+                r.sample_id, r.condition || '', r.timepoint || '', r.replicate || '',
+                r.input_reads || 0, r.reads_total_functional || 0,
+                (r.duplicate_percent || 0).toFixed(2),
+                ((r.unlocalized_fraction || 0) * 100).toFixed(2),
+                r.divergent_regions || 0, r.total_regions || 0,
+                r.median_pausing_index || '', r.median_density || '',
+                r.cpm_factor || '', r.crpmsi_factor || ''
+            ].join(','))).join('\\n');
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'tracktx_cohort_metrics.csv';
+            a.click();
+        });
+        
+        renderTable(rows);
+        
+        // Smooth scroll for navigation
+        document.querySelectorAll('.nav-pills a').forEach(link => {
+            link.addEventListener('click', (e) => {
+                e.preventDefault();
+                const targetId = link.getAttribute('href').substring(1);
+                const target = document.getElementById(targetId);
+                if (target) {
+                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            });
+        });
+        
+        console.log('Report fully loaded');
+    });
+    </script>
+    """
+    
+    generate_html_report(
+        data_json,
+        CSS,
+        JS,
+        args,
+        run_command,
+        args.out_html
+    )
+    
+    # Success
+    log("═" * 70, "")
+    log("COMPLETE", f"Cohort report generated successfully")
+    log("COMPLETE", f"Samples: {len(samples)}")
+    log("COMPLETE", f"Regions: {len(region_keys)}")
+    log("COMPLETE", f"Outputs: 3-4 files")
+    
+    return 0
+
+# =============================================================================
+# ENTRY POINT
+# =============================================================================
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        log_error("Interrupted by user")
+        sys.exit(130)
+    except Exception as e:
+        log_error(f"Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

@@ -47,12 +47,6 @@ ap.add_argument("--allmap3p-neg-raw", default=None)
 ap.add_argument("--allmap3p-pos-cpm-bw", default=None)
 ap.add_argument("--allmap3p-neg-cpm-bw", default=None)
 
-# Run metadata flags
-ap.add_argument("--paired-end", default=None)
-ap.add_argument("--umi-enabled", default=None)
-ap.add_argument("--qc-run", default=None)
-ap.add_argument("--reference-genome", default=None)
-
 args = ap.parse_args()
 print(f"[render_py] start ts={datetime.datetime.utcnow().isoformat()}Z", file=sys.stderr)
 
@@ -64,14 +58,21 @@ def exists_nonempty(p: Optional[str]) -> bool:
     except Exception: return False
 
 def read_table_any(path: Optional[str]) -> pd.DataFrame:
-    if not exists_nonempty(path): return pd.DataFrame()
-    for sep in ["\t", ",", ";", r"\s+"]:
+    """Read a table file with automatic separator detection"""
+    if not exists_nonempty(path): 
+        return pd.DataFrame()
+    
+    # Try multiple separators in order of likelihood
+    # \s+ is most flexible and handles multiple spaces/tabs
+    for sep in [r"\s+", "\t", ",", ";"]:
         try:
-            df = pd.read_csv(path, sep=sep, engine="python")
-            if df.shape[0]:
+            df = pd.read_csv(path, sep=sep, engine="python", skip_blank_lines=True)
+            # Valid if we got rows AND columns
+            if df.shape[0] > 0 and df.shape[1] > 0:
                 return df
         except Exception:
-            pass
+            continue
+    
     return pd.DataFrame()
 
 def read_bed6(path: Optional[str]) -> pd.DataFrame:
@@ -83,15 +84,22 @@ def read_bed6(path: Optional[str]) -> pd.DataFrame:
     df.columns = ["chr","start","end","name","score","strand"]
     return df
 
-def to_num(x) -> float:
+def to_num(x) -> Optional[float]:
+    """Convert to float, returning None for invalid/infinite values"""
+    if x is None:
+        return None
     try:
-        v = float(x);  return v if np.isfinite(v) else np.nan
-    except Exception:
-        return np.nan
+        v = float(x)
+        # Only return valid, finite numbers
+        if np.isfinite(v):
+            return v
+        return None
+    except (ValueError, TypeError, AttributeError):
+        return None
 
 def median_num(series: pd.Series) -> float:
     x = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-    return float(np.median(x)) if len(x) else float("nan")
+    return float(np.median(x)) if len(x) > 0 else float("nan")
 
 def b64(fig) -> str:
     buf = io.BytesIO()
@@ -120,18 +128,53 @@ def pick_region_reads_columns(df: pd.DataFrame) -> Tuple[Optional[str], Optional
     return reg, rea, cnt
 
 def norm_factor_lookup(df: pd.DataFrame, key: str) -> Optional[float]:
-    if df.empty: return None
-    # Accept either 2-col key/value or labeled columns
-    if df.shape[1] == 2:
-        kv = {str(k).strip().lower(): str(v) for k,v in df.values.tolist()}
-        for k,v in kv.items():
-            if key in k: return to_num(v)
+    """
+    Look up normalization factor from DataFrame.
+    
+    Handles two formats:
+    1. Two-column key-value format: method | factor
+    2. Multi-column format with explicit column names
+    """
+    if df.empty or df.shape[0] == 0:
         return None
-    low = {c.lower(): c for c in df.columns}
-    for cand in ["cpm","cpm_factor","fac_cpm"]:
-        if cand in low and key == "cpm": return to_num(df[low[cand]].iloc[0])
-    for cand in ["sicpm","crpmsi","sicpm_factor","fac_sicpm"]:
-        if cand in low and key == "sicpm": return to_num(df[low[cand]].iloc[0])
+    
+    key_lower = key.lower()
+    
+    # Check if columns themselves are the method names (single row format)
+    # Example: CPM  siCPM
+    #          0.01 0.02
+    col_lower = {str(c).strip().lower(): c for c in df.columns}
+    if key_lower in col_lower and df.shape[0] > 0:
+        result = to_num(df[col_lower[key_lower]].iloc[0])
+        if result is not None:
+            return result
+    
+    # Standard two-column key-value format (most common)
+    # Example: method  factor
+    #          CPM     0.0106
+    #          siCPM   0.0106
+    if df.shape[1] >= 2:
+        # Try iterating through rows
+        for idx in range(len(df)):
+            try:
+                k = str(df.iloc[idx, 0]).strip().lower()
+                v = str(df.iloc[idx, 1]).strip()
+                
+                # Exact match or substring match
+                if key_lower == k or key_lower in k:
+                    result = to_num(v)
+                    if result is not None:
+                        return result
+            except (IndexError, ValueError, AttributeError, TypeError):
+                continue
+    
+    # Format 3: Column-based with explicit names (e.g., 'cpm_factor' column)
+    for candidate in ["cpm", "cpm_factor", "fac_cpm"] if key == "cpm" else ["sicpm", "crpmsi", "sicpm_factor", "fac_sicpm", "si_cpm"]:
+        if candidate in col_lower and df.shape[0] > 0:
+            result = to_num(df[col_lower[candidate]].iloc[0])
+            if result is not None:
+                return result
+    
     return None
 
 def nl(s: Optional[str]) -> str:
@@ -270,13 +313,15 @@ sicpm_factor  = norm_factor_lookup(norm_df, "sicpm")
 # QC fields used for status + unlocalized fraction
 input_reads       = qc.get("total_reads_raw") if isinstance(qc, dict) else None
 dedup_reads       = qc.get("mapq_ge_reads_nodup") if isinstance(qc, dict) else None
-# duplicate %: accept synonyms
+# Duplicate percentage: use explicit None checks to handle 0.0 correctly
+# (Python's 'or' treats 0.0 as falsy, which would skip valid zero values)
 duplicate_percent = None
 if isinstance(qc, dict):
-    duplicate_percent = (
-        qc.get("duplicate_perc_of_total")
-        or qc.get("duplicate_percent")
-    )
+    # Try different field names
+    for field in ["duplicate_perc_of_total", "duplicate_percent", "dup_percent"]:
+        if field in qc and qc[field] is not None:
+            duplicate_percent = qc[field]
+            break
 
 # UMI deduplication fields
 umi_enabled = qc.get("umi_deduplication_enabled", False) if isinstance(qc, dict) else False
@@ -465,7 +510,6 @@ def stacked_bar_regions(reg_df: pd.DataFrame) -> str:
         'enhancers': '#73d47a', 'enhancer': '#73d47a', 'enh': '#73d47a',
         'genebody': '#000000', 'gene body': '#000000', 'body': '#000000', 'gb': '#000000',
         'cps': '#67c8f9', 'cleavagepolyadenylation': '#67c8f9',
-        'shortgenes': '#fdda0d', 'short genes': '#fdda0d', 'sg': '#fdda0d',
         'terminationwindow': '#ff3662', 'termination window': '#ff3662', 'termination': '#ff3662', 'tw': '#ff3662'
     }
     
@@ -519,7 +563,6 @@ def pie_regions(reg_df: pd.DataFrame) -> str:
         'enhancers': '#73d47a', 'enhancer': '#73d47a', 'enh': '#73d47a',
         'genebody': '#000000', 'gene body': '#000000', 'body': '#000000', 'gb': '#000000',
         'cps': '#67c8f9', 'cleavagepolyadenylation': '#67c8f9',
-        'shortgenes': '#fdda0d', 'short genes': '#fdda0d', 'sg': '#fdda0d',
         'terminationwindow': '#ff3662', 'termination window': '#ff3662', 'termination': '#ff3662', 'tw': '#ff3662'
     }
     
@@ -652,7 +695,6 @@ hr{{border:none;border-top:1px solid var(--line);margin:16px 0}}
     <h1>{SID}</h1>
     <div>{status_strip()}</div>
     <div class="muted">Condition: <b>{COND}</b> • Timepoint: <b>{TP}</b> • Replicate: <b>{REP}</b></div>
-    <div class="muted">Mode: <b>{'PE' if str(args.paired_end).lower()=='true' else 'SE'}</b> • UMI: <b>{'on' if str(args.umi_enabled).lower()=='true' else 'off'}</b> • QC: <b>{'on' if str(args.qc_run).lower()=='true' else 'off'}</b> • Reference: <b>{args.reference_genome or 'NA'}</b></div>
   </div>
 
   <h2>At-a-glance</h2>

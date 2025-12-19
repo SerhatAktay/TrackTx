@@ -1,242 +1,364 @@
 // ============================================================================
-// download_gtf.nf — GTF fetch + gene catalog + functional regions
-// ----------------------------------------------------------------------------
-// Overview
-//   • Uses params.* to obtain a reference GTF (custom path/URL or UCSC)
-//   • Caches artifacts (GTF + derived tables) under params.genome_cache
-//   • Creates gene catalog and functional region coordinate files
-//   • Persists deterministic outputs via storeDir; publishes links under results/
-//   • Derived BED6 files are sorted (chr, start asc)
+// download_gtf.nf — Genome Annotation Download and Processing
+// ============================================================================
 //
-// Inputs
-//   (none — driven by params)
-//   Required params:
-//     params.reference_genome : hs1|hg38|mm10|mm39|dm6|TAIR10|other
-//     params.genome_cache     : cache dir for fetched/derived files
-//     params.assets_dir       : canonical artifact store (for storeDir)
-//   When reference_genome == "other":
-//     params.gtf_path | params.gtf_url
+// Purpose:
+//   Downloads reference GTF annotation and generates derived gene catalogs
 //
-// Outputs (publishDir):
-//   ${params.output_dir}/00_references/${params.reference_genome}/
-//     ├── ${reference_genome}.gtf
-//     ├── ${reference_genome}.genes.tsv  (gene_id, gene_name, chr, strand, start, end, tss, tes, biotype)
-//     ├── ${reference_genome}.tss.bed    (BED6; 1bp TSS per gene)
-//     ├── ${reference_genome}.tes.bed    (BED6; 1bp TES per gene)
-//     └── ${reference_genome}.functional_regions.tsv  (all functional region coordinates)
+// Features:
+//   • Fetches GTF from multiple sources (local, custom URL, or UCSC)
+//   • Generates gene catalog tables (genes.tsv, TSS.bed, TES.bed)
+//   • Caches artifacts for reuse across pipeline runs
+//   • Deterministic outputs with coordinate sorting
+//
+// Sources (in priority order):
+//   1. Local file (if exists in genomes/ directory)
+//   2. Custom path (if reference_genome='other' with --gtf_path)
+//   3. Custom URL (if reference_genome='other' with --gtf_url)
+//   4. UCSC (rsync → https fallback)
+//
+// Inputs:
+//   None (driven by params)
+//
+//   Required Parameters:
+//     params.reference_genome : genome ID (hg38, mm39, etc.) or 'other'
+//     params.genome_cache     : cache directory for downloads
+//     params.assets_dir       : persistent artifact storage
+//
+//   Custom GTF (when reference_genome='other'):
+//     params.gtf_path : local file path
+//     params.gtf_url  : remote URL
+//
+// Outputs:
+//   ${params.output_dir}/00_references/${reference_genome}/
+//     ├── ${reference_genome}.gtf        — Full GTF annotation
+//     ├── ${reference_genome}.genes.tsv  — Gene catalog table
+//     ├── ${reference_genome}.tss.bed    — Transcription start sites (sorted)
+//     └── ${reference_genome}.tes.bed    — Transcription end sites (sorted)
+//
+// Caching:
+//   Artifacts stored in: ${assets_dir}/annotation/${reference_genome}/
+//   This enables fast reuse across pipeline runs
+//
 // ============================================================================
 
 nextflow.enable.dsl = 2
 
 process download_gtf {
 
-  // ── Meta / resources ─────────────────────────────────────────────────────
-  // Resource allocation handled dynamically by base.config
   tag        { params.reference_genome }
   label      'conda'
-  cache      'lenient'
+  cache      'deep'
+  conda      'envs/tracktx.yaml'
 
-  // Use the main tracktx conda environment
-  conda 'envs/tracktx.yaml'
-
-  // Persist artifacts; publish lightweight links
+  // Persistent storage for caching across runs
   storeDir   "${params.assets_dir ?: "${projectDir}/assets"}/annotation/${params.reference_genome}"
-  publishDir "${params.output_dir}/00_references/${params.reference_genome}", mode: 'link', overwrite: true
+  
+  // Lightweight links in output directory
+  publishDir "${params.output_dir}/00_references/${params.reference_genome}", 
+             mode: 'link', 
+             overwrite: true
 
-  // ── Inputs ──────────────────────────────────────────────────────────────
-  input:
-    // none
-
-  // ── Declared outputs ────────────────────────────────────────────────────
+  // ── Outputs ───────────────────────────────────────────────────────────────
   output:
     path("${params.reference_genome}.gtf")
     path("${params.reference_genome}.genes.tsv"), emit: genes
-    path("${params.reference_genome}.tss.bed"),  emit: tss
-    path("${params.reference_genome}.tes.bed"),  emit: tes
-    path("${params.reference_genome}.functional_regions.tsv"), emit: functional_regions
+    path("${params.reference_genome}.tss.bed"),   emit: tss
+    path("${params.reference_genome}.tes.bed"),   emit: tes
 
-  // ── Script ──────────────────────────────────────────────────────────────
+  // ── Main Script ───────────────────────────────────────────────────────────
   shell:
   '''
   #!/usr/bin/env bash
   set -euo pipefail
-  trap 'echo "ERROR [gtf] failed at $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >&2' ERR
   export LC_ALL=C
-  
-  # Debug: show which Python is being used
-  echo "DEBUG [gtf] Using Python: $(which python3)"
-  echo "DEBUG [gtf] Python version: $(python3 --version)"
 
-  # ── Bindings / locals ────────────────────────────────────────────────────
+  TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  echo "════════════════════════════════════════════════════════════════════════"
+  echo "GTF | START | genome=!{params.reference_genome} | ts=${TIMESTAMP}"
+  echo "════════════════════════════════════════════════════════════════════════"
+
+  ###########################################################################
+  # 1) CONFIGURATION
+  ###########################################################################
+
   ASM='!{params.reference_genome}'
-  CACHE_DIR='!{ params.genome_cache ?: "/tmp/genomes_cache" }'
+  CACHE_DIR='!{params.genome_cache ?: "/tmp/genomes_cache"}'
   mkdir -p "${CACHE_DIR}"
 
+  # Output file names
   OUT_GTF="${ASM}.gtf"
   OUT_GENES="${ASM}.genes.tsv"
   OUT_TSS="${ASM}.tss.bed"
   OUT_TES="${ASM}.tes.bed"
-  OUT_FUNC_REGIONS="${ASM}.functional_regions.tsv"
 
+  # Cache file paths
   CACHE_GTF="${CACHE_DIR}/${ASM}.gtf"
   CACHE_GENES="${CACHE_DIR}/${ASM}.genes.tsv"
   CACHE_TSS="${CACHE_DIR}/${ASM}.tss.bed"
   CACHE_TES="${CACHE_DIR}/${ASM}.tes.bed"
-  CACHE_FUNC_REGIONS="${CACHE_DIR}/${ASM}.functional_regions.tsv"
 
+  # Custom GTF sources
   CUSTOM_PATH='!{params.gtf_path ?: ""}'
-  CUSTOM_URL='!{params.gtf_url  ?: ""}'
+  CUSTOM_URL='!{params.gtf_url ?: ""}'
 
+  # UCSC download URLs
   RSYNC_URL="rsync://hgdownload.soe.ucsc.edu/goldenPath/${ASM}/bigZips/genes/${ASM}.ncbiRefSeq.gtf.gz"
   HTTPS_URL="https://hgdownload.soe.ucsc.edu/goldenPath/${ASM}/bigZips/genes/${ASM}.ncbiRefSeq.gtf.gz"
 
-  # Local GTF preference (mirrors index module's local reuse)
-  # If a GTF exists under ./genomes/<ASM>.gtf or ./genomes/<ASM>/<ASM>.gtf, use it.
-  stage_local_gtf_if_any(){
-    local asm="$1"
-    # Look for local genomes in standard locations
-    local g1="${CACHE_DIR}/local_genomes/${asm}.gtf"
-    local g2="${CACHE_DIR}/local_genomes/${asm}/${asm}.gtf"
-    if [[ -s "$g1" ]]; then
-      cp -f "$g1" "${CACHE_GTF}"; return 0
-    elif [[ -s "$g2" ]]; then
-      cp -f "$g2" "${CACHE_GTF}"; return 0
-    fi
-    return 1
-  }
+  echo "GTF | CONFIG | Assembly: ${ASM}"
+  echo "GTF | CONFIG | Cache directory: ${CACHE_DIR}"
+  echo "GTF | CONFIG | Custom path: ${CUSTOM_PATH:-none}"
+  echo "GTF | CONFIG | Custom URL: ${CUSTOM_URL:-none}"
 
-  echo "INFO  [gtf] ▶ assembly=${ASM} ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  command -v python3 >/dev/null 2>&1 || { echo "ERROR python3 not found" >&2; exit 1; }
+  # Validate dependencies
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "GTF | ERROR | python3 not found in PATH"
+    exit 1
+  fi
+  echo "GTF | CONFIG | Python: $(which python3) ($(python3 --version))"
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # 1) Fast path: reuse complete cache
-  # ─────────────────────────────────────────────────────────────────────────
-  if [[ -s "${CACHE_GTF}" && -s "${CACHE_GENES}" && -s "${CACHE_TSS}" && -s "${CACHE_TES}" && -s "${CACHE_FUNC_REGIONS}" ]]; then
-    echo "INFO  [gtf] using cached GTF + derived catalogs + functional regions"
+  ###########################################################################
+  # 2) FAST PATH - Use Complete Cache
+  ###########################################################################
+
+  if [[ -s "${CACHE_GTF}" && -s "${CACHE_GENES}" && \
+        -s "${CACHE_TSS}" && -s "${CACHE_TES}" ]]; then
+    echo "GTF | CACHE | Found complete cached annotation set"
+    echo "GTF | CACHE | Reusing: ${CACHE_GTF}"
+    echo "GTF | CACHE | Reusing: ${CACHE_GENES}"
+    echo "GTF | CACHE | Reusing: ${CACHE_TSS}"
+    echo "GTF | CACHE | Reusing: ${CACHE_TES}"
+    
     cp -f "${CACHE_GTF}"   "${OUT_GTF}"
     cp -f "${CACHE_GENES}" "${OUT_GENES}"
     cp -f "${CACHE_TSS}"   "${OUT_TSS}"
     cp -f "${CACHE_TES}"   "${OUT_TES}"
-    cp -f "${CACHE_FUNC_REGIONS}" "${OUT_FUNC_REGIONS}"
+    
+    TIMESTAMP_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    echo "════════════════════════════════════════════════════════════════════════"
+    echo "GTF | COMPLETE | Using cached files | ts=${TIMESTAMP_END}"
+    echo "════════════════════════════════════════════════════════════════════════"
     exit 0
   fi
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # 2) Ensure GTF present in cache (custom → rsync → https)
-  # ─────────────────────────────────────────────────────────────────────────
+  ###########################################################################
+  # 3) FETCH GTF (if not cached)
+  ###########################################################################
+
   if [[ -s "${CACHE_GTF}" ]]; then
-    echo "INFO  [gtf] cached GTF found; rebuilding derived tables"
+    echo "GTF | CACHE | GTF found in cache, will regenerate derived files"
     cp -f "${CACHE_GTF}" "${OUT_GTF}"
   else
-    tmpd="$(mktemp -d "${CACHE_DIR}/.gtf_${ASM}.XXXXXX")"; trap 'rm -rf "${tmpd}"' EXIT
-    GTF_TMP="${tmpd}/${ASM}.gtf"
-    fetch_ok=0
+    echo "GTF | FETCH | GTF not in cache, downloading..."
+    
+    # Create temporary directory for download
+    TEMP_DIR="$(mktemp -d "${CACHE_DIR}/.gtf_${ASM}.XXXXXX")"
+    trap 'rm -rf "${TEMP_DIR}"' EXIT
+    GTF_TEMP="${TEMP_DIR}/${ASM}.gtf"
+    
+    FETCH_SUCCESS=0
 
-    if [[ "${ASM}" == "other" && -n "${CUSTOM_PATH}" && -e "${CUSTOM_PATH}" ]]; then
-      echo "INFO  [gtf] copying custom GTF from path"
-      if [[ "${CUSTOM_PATH}" == *.gz ]]; then gzip -cd -- "${CUSTOM_PATH}" > "${GTF_TMP}"; else cp -f "${CUSTOM_PATH}" "${GTF_TMP}"; fi
-      fetch_ok=1
-    elif [[ "${ASM}" == "other" && -n "${CUSTOM_URL}" ]]; then
-      echo "INFO  [gtf] fetching custom GTF from URL"
-      if [[ "${CUSTOM_URL}" == *.gz ]]; then
-        curl -fsSL --retry 3 --retry-delay 4 "${CUSTOM_URL}" | gzip -cd > "${GTF_TMP}" && fetch_ok=1 || true
+    # ── Source 1: Local file in genomes/ directory ──
+    echo "GTF | FETCH | Checking for local GTF file..."
+    LOCAL_GTF_1="${CACHE_DIR}/local_genomes/${ASM}.gtf"
+    LOCAL_GTF_2="${CACHE_DIR}/local_genomes/${ASM}/${ASM}.gtf"
+    
+    if [[ -s "${LOCAL_GTF_1}" ]]; then
+      echo "GTF | FETCH | Found local GTF: ${LOCAL_GTF_1}"
+      cp -f "${LOCAL_GTF_1}" "${GTF_TEMP}"
+      FETCH_SUCCESS=1
+    elif [[ -s "${LOCAL_GTF_2}" ]]; then
+      echo "GTF | FETCH | Found local GTF: ${LOCAL_GTF_2}"
+      cp -f "${LOCAL_GTF_2}" "${GTF_TEMP}"
+      FETCH_SUCCESS=1
+    fi
+
+    # ── Source 2: Custom path (for reference_genome='other') ──
+    if [[ ${FETCH_SUCCESS} -eq 0 && "${ASM}" == "other" && -n "${CUSTOM_PATH}" ]]; then
+      if [[ -e "${CUSTOM_PATH}" ]]; then
+        echo "GTF | FETCH | Using custom GTF path: ${CUSTOM_PATH}"
+        
+        if [[ "${CUSTOM_PATH}" == *.gz ]]; then
+          echo "GTF | FETCH | Decompressing gzipped GTF..."
+          gzip -cd "${CUSTOM_PATH}" > "${GTF_TEMP}"
+        else
+          cp -f "${CUSTOM_PATH}" "${GTF_TEMP}"
+        fi
+        FETCH_SUCCESS=1
       else
-        curl -fsSL --retry 3 --retry-delay 4 "${CUSTOM_URL}" > "${GTF_TMP}" && fetch_ok=1 || true
+        echo "GTF | ERROR | Custom GTF path does not exist: ${CUSTOM_PATH}"
+        exit 1
       fi
-    else
-      if stage_local_gtf_if_any "${ASM}"; then
-        echo "INFO  [gtf] using local genomes/${ASM}.gtf"
-        cp -f "${CACHE_GTF}" "${OUT_GTF}"
-        fetch_ok=1
+    fi
+
+    # ── Source 3: Custom URL (for reference_genome='other') ──
+    if [[ ${FETCH_SUCCESS} -eq 0 && "${ASM}" == "other" && -n "${CUSTOM_URL}" ]]; then
+      echo "GTF | FETCH | Downloading from custom URL: ${CUSTOM_URL}"
+      
+      if [[ "${CUSTOM_URL}" == *.gz ]]; then
+        echo "GTF | FETCH | Downloading and decompressing..."
+        if curl -fsSL --retry 3 --retry-delay 4 "${CUSTOM_URL}" | gzip -cd > "${GTF_TEMP}"; then
+          FETCH_SUCCESS=1
+          echo "GTF | FETCH | Download successful"
+        else
+          echo "GTF | ERROR | Failed to download from: ${CUSTOM_URL}"
+        fi
+      else
+        if curl -fsSL --retry 3 --retry-delay 4 "${CUSTOM_URL}" > "${GTF_TEMP}"; then
+          FETCH_SUCCESS=1
+          echo "GTF | FETCH | Download successful"
+        else
+          echo "GTF | ERROR | Failed to download from: ${CUSTOM_URL}"
+        fi
       fi
-      if [[ "${fetch_ok}" -ne 1 ]]; then
+    fi
+
+    # ── Source 4: UCSC (rsync → https fallback) ──
+    if [[ ${FETCH_SUCCESS} -eq 0 && "${ASM}" != "other" ]]; then
+      echo "GTF | FETCH | Downloading from UCSC: ${ASM}"
+      
+      # Try rsync first (faster)
       if command -v rsync >/dev/null 2>&1; then
-        echo "INFO  [gtf] UCSC rsync…"
-        rsync --quiet "${RSYNC_URL}" - 2>/dev/null | gunzip -c > "${GTF_TMP}" && fetch_ok=1 || true
+        echo "GTF | FETCH | Attempting rsync download..."
+        if rsync --quiet "${RSYNC_URL}" - 2>/dev/null | gunzip -c > "${GTF_TEMP}"; then
+          FETCH_SUCCESS=1
+          echo "GTF | FETCH | Rsync download successful"
+        else
+          echo "GTF | FETCH | Rsync failed, will try HTTPS..."
+        fi
+      else
+        echo "GTF | FETCH | Rsync not available, using HTTPS..."
       fi
-      if [[ "${fetch_ok}" -ne 1 ]]; then
-        echo "WARN  [gtf] rsync unavailable/failed — trying HTTPS"
-        curl -fsSL --retry 3 --retry-delay 4 "${HTTPS_URL}" | gunzip -c > "${GTF_TMP}" && fetch_ok=1 || true
-      fi
+      
+      # Fallback to HTTPS
+      if [[ ${FETCH_SUCCESS} -eq 0 ]]; then
+        echo "GTF | FETCH | Downloading via HTTPS..."
+        if curl -fsSL --retry 3 --retry-delay 4 "${HTTPS_URL}" | gunzip -c > "${GTF_TEMP}"; then
+          FETCH_SUCCESS=1
+          echo "GTF | FETCH | HTTPS download successful"
+        else
+          echo "GTF | ERROR | HTTPS download failed"
+        fi
       fi
     fi
 
-    [[ "${fetch_ok}" -eq 1 && -s "${GTF_TMP}" ]] || { echo "ERROR [gtf] unable to obtain GTF for ${ASM}" >&2; exit 2; }
-
-    # Minimal validation (non-fatal)
-    if ! awk 'BEGIN{FS="\\t"} NF>=9{ok=1; exit} END{exit (ok?0:1)}' "${GTF_TMP}"; then
-      echo "WARN  [gtf] GTF may not be strictly 9 columns; proceeding" >&2
+    # Validate download
+    if [[ ${FETCH_SUCCESS} -eq 0 || ! -s "${GTF_TEMP}" ]]; then
+      echo "GTF | ERROR | Failed to obtain GTF for assembly: ${ASM}"
+      echo "GTF | ERROR | Tried: local file, custom path/URL, UCSC"
+      exit 1
     fi
 
-    if [[ -s "${GTF_TMP}" ]]; then
-      mv -f "${GTF_TMP}" "${CACHE_GTF}"
-      cp -f "${CACHE_GTF}" "${OUT_GTF}"
+    # Validate GTF format (non-fatal warning)
+    echo "GTF | VALIDATE | Checking GTF format..."
+    if ! awk 'BEGIN{FS="\\t"} NF>=9{ok=1; exit} END{exit (ok?0:1)}' "${GTF_TEMP}"; then
+      echo "GTF | WARNING | GTF may not have standard 9-column format"
+      echo "GTF | WARNING | Proceeding anyway..."
+    else
+      echo "GTF | VALIDATE | GTF format appears valid"
     fi
+
+    # Get file size for reporting
+    GTF_SIZE=$(stat -f%z "${GTF_TEMP}" 2>/dev/null || stat -c%s "${GTF_TEMP}" 2>/dev/null || echo "unknown")
+    echo "GTF | FETCH | Downloaded GTF size: ${GTF_SIZE} bytes"
+
+    # Move to cache
+    mv -f "${GTF_TEMP}" "${CACHE_GTF}"
+    cp -f "${CACHE_GTF}" "${OUT_GTF}"
+    echo "GTF | FETCH | GTF saved to cache: ${CACHE_GTF}"
   fi
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # 3) Build catalogs (deterministic; BEDs sorted)
-  #    - Includes ALL gene types (maintains scientific completeness)
-  #    - Calculates single TSS/TES coordinates from transcript boundaries
-  #    - Improved GTF parsing with better biotype handling
-  # ─────────────────────────────────────────────────────────────────────────
-  tmpw="$(mktemp -d "${CACHE_DIR}/.build_${ASM}.XXXXXX")"; trap 'rm -rf "${tmpw}"' EXIT
+  ###########################################################################
+  # 4) GENERATE DERIVED CATALOGS
+  ###########################################################################
 
-  # Use container-safe path to Python script
-  BIN_SCRIPT="!{projectDir}/bin/gtf_to_catalog.py"
-  if [[ ! -f "$BIN_SCRIPT" ]]; then
-    BIN_SCRIPT="gtf_to_catalog.py"  # Fall back to PATH
+  echo "GTF | PROCESS | Generating gene catalogs from GTF..."
+  
+  # Create temporary work directory
+  WORK_DIR="$(mktemp -d "${CACHE_DIR}/.build_${ASM}.XXXXXX")"
+  trap 'rm -rf "${WORK_DIR}"' EXIT
+
+  # Locate Python script
+  SCRIPT_PATH="!{projectDir}/bin/gtf_to_catalog.py"
+  if [[ ! -f "${SCRIPT_PATH}" ]]; then
+    # Fallback to PATH if not found (for container environments)
+    SCRIPT_PATH="gtf_to_catalog.py"
+    echo "GTF | PROCESS | Using gtf_to_catalog.py from PATH"
+  else
+    echo "GTF | PROCESS | Using script: ${SCRIPT_PATH}"
   fi
-  python3 "$BIN_SCRIPT" "${CACHE_GTF}" "${tmpw}/genes.tsv" "${tmpw}/tss.bed" "${tmpw}/tes.bed"
 
-  LC_ALL=C sort -k1,1 -k2,2n -o "${tmpw}/tss.bed" "${tmpw}/tss.bed"
-  LC_ALL=C sort -k1,1 -k2,2n -o "${tmpw}/tes.bed" "${tmpw}/tes.bed"
+  # Generate catalogs
+  echo "GTF | PROCESS | Running gtf_to_catalog.py..."
+  python3 "${SCRIPT_PATH}" \
+    "${CACHE_GTF}" \
+    "${WORK_DIR}/genes.tsv" \
+    "${WORK_DIR}/tss.bed" \
+    "${WORK_DIR}/tes.bed"
 
-  mv -f "${tmpw}/genes.tsv" "${CACHE_GENES}"
-  mv -f "${tmpw}/tss.bed"   "${CACHE_TSS}"
-  mv -f "${tmpw}/tes.bed"   "${CACHE_TES}"
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # 4) Create functional regions based on user parameters
-  # ─────────────────────────────────────────────────────────────────────────
-  echo "INFO  [gtf] Creating functional regions based on parameters"
-  
-  # Use container-safe path to Python script
-  FUNC_REGIONS_SCRIPT="!{projectDir}/bin/create_functional_regions.py"
-  if [[ ! -f "$FUNC_REGIONS_SCRIPT" ]]; then
-    FUNC_REGIONS_SCRIPT="create_functional_regions.py"  # Fall back to PATH
+  if [[ $? -ne 0 ]]; then
+    echo "GTF | ERROR | Failed to generate gene catalogs"
+    exit 1
   fi
-  
-  # Get functional region parameters (with defaults matching old R script)
-  PROM_UP="!{ (params.functional_regions?.prom_up ?: 250) as int }"
-  PROM_DOWN="!{ (params.functional_regions?.prom_down ?: 250) as int }"
-  DIV_INNER="!{ (params.functional_regions?.div_inner ?: 251) as int }"
-  DIV_OUTER="!{ (params.functional_regions?.div_outer ?: 750) as int }"
-  CPS_OFFSET="!{ (params.functional_regions?.cps_offset ?: 500) as int }"
-  TW_LENGTH="!{ (params.functional_regions?.tw_length ?: 10000) as int }"
-  
-  python3 "$FUNC_REGIONS_SCRIPT" \
-    --genes "${CACHE_GENES}" \
-    --prom-up "$PROM_UP" \
-    --prom-down "$PROM_DOWN" \
-    --div-inner "$DIV_INNER" \
-    --div-outer "$DIV_OUTER" \
-    --cps-offset "$CPS_OFFSET" \
-    --tw-length "$TW_LENGTH" \
-    --output "${CACHE_FUNC_REGIONS}"
 
+  # Count entries
+  GENE_COUNT=$(tail -n +2 "${WORK_DIR}/genes.tsv" | wc -l | tr -d ' ')
+  TSS_COUNT=$(wc -l < "${WORK_DIR}/tss.bed" | tr -d ' ')
+  TES_COUNT=$(wc -l < "${WORK_DIR}/tes.bed" | tr -d ' ')
+  
+  echo "GTF | PROCESS | Generated ${GENE_COUNT} gene entries"
+  echo "GTF | PROCESS | Generated ${TSS_COUNT} TSS sites"
+  echo "GTF | PROCESS | Generated ${TES_COUNT} TES sites"
+
+  # Sort BED files (deterministic, coordinate-sorted)
+  echo "GTF | PROCESS | Sorting BED files by coordinates..."
+  LC_ALL=C sort -k1,1 -k2,2n -o "${WORK_DIR}/tss.bed" "${WORK_DIR}/tss.bed"
+  LC_ALL=C sort -k1,1 -k2,2n -o "${WORK_DIR}/tes.bed" "${WORK_DIR}/tes.bed"
+  echo "GTF | PROCESS | BED files sorted"
+
+  # Move to cache
+  mv -f "${WORK_DIR}/genes.tsv" "${CACHE_GENES}"
+  mv -f "${WORK_DIR}/tss.bed"   "${CACHE_TSS}"
+  mv -f "${WORK_DIR}/tes.bed"   "${CACHE_TES}"
+  echo "GTF | PROCESS | Catalogs saved to cache"
+
+  # Copy to output
   cp -f "${CACHE_GTF}"   "${OUT_GTF}"
   cp -f "${CACHE_GENES}" "${OUT_GENES}"
   cp -f "${CACHE_TSS}"   "${OUT_TSS}"
   cp -f "${CACHE_TES}"   "${OUT_TES}"
-  cp -f "${CACHE_FUNC_REGIONS}" "${OUT_FUNC_REGIONS}"
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # 5) Guards
-  # ─────────────────────────────────────────────────────────────────────────
-  [[ -s "${OUT_GTF}" && -s "${OUT_GENES}" && -s "${OUT_TSS}" && -s "${OUT_TES}" && -s "${OUT_FUNC_REGIONS}" ]] \
-    || { echo "ERROR [gtf] expected outputs missing" >&2; exit 3; }
+  ###########################################################################
+  # 5) VALIDATION
+  ###########################################################################
 
-  echo "INFO  [gtf] ✔ made: ${CACHE_GTF}, ${CACHE_GENES}, ${CACHE_TSS}, ${CACHE_TES}, ${CACHE_FUNC_REGIONS} ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  echo "GTF | VALIDATE | Checking all output files..."
+  
+  ALL_VALID=1
+  for FILE in "${OUT_GTF}" "${OUT_GENES}" "${OUT_TSS}" "${OUT_TES}"; do
+    if [[ ! -s "${FILE}" ]]; then
+      echo "GTF | ERROR | Missing or empty output: ${FILE}"
+      ALL_VALID=0
+    fi
+  done
+
+  if [[ ${ALL_VALID} -eq 0 ]]; then
+    echo "GTF | ERROR | Not all expected outputs were created"
+    exit 1
+  fi
+
+  # Report final file sizes
+  echo "────────────────────────────────────────────────────────────────────────"
+  echo "GTF | OUTPUT | ${OUT_GTF}: $(stat -f%z "${OUT_GTF}" 2>/dev/null || stat -c%s "${OUT_GTF}" 2>/dev/null) bytes"
+  echo "GTF | OUTPUT | ${OUT_GENES}: $(stat -f%z "${OUT_GENES}" 2>/dev/null || stat -c%s "${OUT_GENES}" 2>/dev/null) bytes"
+  echo "GTF | OUTPUT | ${OUT_TSS}: $(stat -f%z "${OUT_TSS}" 2>/dev/null || stat -c%s "${OUT_TSS}" 2>/dev/null) bytes"
+  echo "GTF | OUTPUT | ${OUT_TES}: $(stat -f%z "${OUT_TES}" 2>/dev/null || stat -c%s "${OUT_TES}" 2>/dev/null) bytes"
+  echo "────────────────────────────────────────────────────────────────────────"
+
+  TIMESTAMP_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  echo "════════════════════════════════════════════════════════════════════════"
+  echo "GTF | COMPLETE | genome=${ASM} | ts=${TIMESTAMP_END}"
+  echo "════════════════════════════════════════════════════════════════════════"
   '''
 }

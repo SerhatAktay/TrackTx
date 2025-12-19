@@ -1,115 +1,37 @@
-# Nextflow work directories
+# Nextflow runtime directories
+.work/
 work/
 .nextflow/
 .nextflow.log*
-.nf-test/
-nf-test/
 
-# Pipeline outputs
-results/
-.cache/
-*.log
+# Local run outputs
+results*/
+Vihervaara_2021/
 
-# OS files
-.DS_Store
-Thumbs.db
+# Large or generated assets
+assets/references/
+assets/annotation/
+assets/*.bedgraph
+assets/*.fastq
+assets/*.png
 
-# Temporary files
-*.tmp
-*.temp
-*~
-.#*
-
-# Test data (if any)
-test_data/
-*.fastq
-*.fq
-*.bam
-*.sam
-
-# Conda environments
+# Conda and environments
 .conda/
-conda-meta/
+.env/
+venv/
 
-# Large reference files (optional - users should download separately)
-# assets/*.fa
-# assets/*.gtf
-# assets/*.bt2
+# Local configs and sample sheets (generated per run)
+params.yaml
+samplesheet.csv
 
-# IDE files
-.vscode/
-.idea/
+# OS / editor noise
+.DS_Store
 *.swp
 *.swo
+.idea/
+.vscode/
 
-# Backup files and development artifacts
-*.bak
-*.backup
-*.orig
-*.save
-*_old*
-*_new*
-*_backup*
-*_test*
-Old_script_inspo/
-bin/*_old_*.py
-bin/*_new*.py
-
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-
-# Jupyter notebooks checkpoints
-.ipynb_checkpoints/
-
-# Environment files
-.env
-.env.local
-
-# Docker volumes (if using local Docker volumes)
-docker-volumes/
-
-# Local cohort/sample data and user-specific config
-K562_hs1/
-samplesheet.csv
-params.yaml
-
-# Reference and annotation assets (downloaded/generated locally)
-assets/annotation/
-assets/references/
-# Catch common large asset extensions if added elsewhere
-*.fa
-*.fai
-*.gtf
-*.gff
-*.bed
-*.bedgraph
-*.bt2
-*.bwt
-*.dict
-
-# Local-only notes/docs that normal users don't need
-docs/local/
-notes/
-*.local.md
-*.private.md
-*.draft.md
-
-# R / RStudio files
-.Rhistory
-.RData
-.Ruserdata
-.Rprofile
-.Renviron
-.Rproj.user/
-
-# Local-only internal notes (removed duplicates)
-BUGFIX_SUMMARY.md
-CHANGES_APPLIED.md
-GITHUB_SETUP.md
-RERUN_INSTRUCTIONS.md
-COMPLETE_GITHUB_INSTRUCTIONS.txt
-.DS_Store
-__pycache__/
-*.pyc
+# Logs
+*.log
+log/
+logs/

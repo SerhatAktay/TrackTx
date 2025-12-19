@@ -1,245 +1,452 @@
 // ============================================================================
-// download_srr.nf — SRA → FASTQ (robust, cache-aware)
-// ----------------------------------------------------------------------------
-// Overview
-//   • (Re)use published FASTQs in ${params.output_dir}/fastq when present
-//   • Best-effort prefetch → fasterq-dump (multi-thread), name normalize
-//   • Optional gzip via pigz; portable checksums (md5sum|shasum)
-//   • Stronger validation (non-empty, heuristic FASTQ header check)
-//   • Per-sample README with provenance
+// download_srr.nf — SRA to FASTQ Conversion
+// ============================================================================
 //
-// Workflow
-//   0) Reuse cache in publishDir if files exist
-//   1) prefetch (if installed; OK to fail)
-//   2) fasterq-dump --split-files (-e ${task.cpus}) [--temp <dir>]
-//   3) Normalize names → *_R1.fastq / *_R2.fastq
-//   4) Optional: pigz compression → *.fastq.gz (+ checksums)
-//   5) Sanity checks & README
+// Purpose:
+//   Downloads and converts SRA accessions to FASTQ files
 //
-// Inputs
-//   tuple( sample_id, sra_id, condition, timepoint, replicate, paired_end )
+// Features:
+//   • Intelligent caching - reuses existing FASTQs from previous runs
+//   • Multi-threaded conversion with fasterq-dump
+//   • Optional compression with pigz
+//   • Robust validation with header checks
+//   • Checksum generation (MD5 or SHA256)
+//   • Per-sample provenance documentation
 //
-// Outputs (publishDir):
+// Workflow:
+//   1. Check for cached FASTQs in output directory
+//   2. Prefetch SRA data (optional, best-effort)
+//   3. Convert with fasterq-dump (multi-threaded)
+//   4. Normalize filenames (_1/_2 → _R1/_R2)
+//   5. Optional compression with pigz
+//   6. Validate FASTQ format
+//   7. Generate checksums
+//   8. Create README with provenance
+//
+// Inputs:
+//   tuple(sample_id, sra_id, condition, timepoint, replicate, paired_end)
+//
+// Outputs:
 //   ${params.output_dir}/01_trimmed_fastq/
-//     ├── <SRR>_R1.fastq            (or .fastq.gz if compression enabled)
-//     ├── <SRR>_R2.fastq            (paired only; or .fastq.gz)
-//     ├── <SRR>_R1.fastq.md5|.sha256
-//     ├── <SRR>_R2.fastq.md5|.sha256 (paired only)
-//     └── README_fastq.txt
+//     ├── <SRR>_R1.fastq[.gz]        — Read 1 FASTQ
+//     ├── <SRR>_R2.fastq[.gz]        — Read 2 FASTQ (PE only)
+//     ├── <SRR>_R1.fastq.md5         — Checksums
+//     ├── <SRR>_R2.fastq.md5         — Checksums (PE only)
+//     └── README_fastq.txt           — Provenance documentation
 //
-// Tunables (params.*)
-//   • conda_sra     : conda spec (default: 'sra-tools>=3 pigz')
-//   • advanced.sra_cpus / advanced.sra_mem
-//   • sra_tmp       : tmp dir for fasterq-dump scratch (default: work dir)
-//   • sra_max_size  : prefetch max size (default: '200G')
-//   • fastq_gzip    : true/false (default: false)
+// Parameters:
+//   params.fastq_gzip       : Compress FASTQs with pigz (default: false)
+//   params.sra_tmp          : Temp directory for fasterq-dump
+//   params.sra_max_size     : Max prefetch size (default: 200G)
+//   params.conda_sra        : Conda environment override
+//
 // ============================================================================
 
 nextflow.enable.dsl = 2
 
 process download_srr {
 
-  // ── Meta / resources ─────────────────────────────────────────────────────
   tag        { sra_id }
   label      'conda'
-  cache      'lenient'
-  // Resource allocation handled dynamically by base.config
-  publishDir "${params.output_dir}/01_trimmed_fastq", mode: 'copy', overwrite: true
+  cache      'deep'
+  conda      (params.conda_sra ?: "${projectDir}/envs/tracktx.yaml")
+  
+  // NOTE: Raw FASTQ files are NOT published here to save disk space (~100GB+)
+  // They are intermediate files that get processed by prepare_input
+  // Only the final trimmed/processed FASTQs are published by prepare_input
+  // Raw files remain in work/ directory for Nextflow caching with -resume
+  
+  publishDir "${params.output_dir}/01_trimmed_fastq",
+             mode: 'copy',
+             overwrite: true,
+             saveAs: { filename ->
+               // Only publish checksums and README, NOT the raw FASTQ files
+               // This saves ~100GB+ of redundant storage
+               if (filename.endsWith('.md5') || 
+                   filename.endsWith('.sha256') || 
+                   filename == 'README_fastq.txt') {
+                 return filename
+               }
+               return null  // Don't publish raw FASTQs
+             }
 
-  // Conda env (override with --conda_sra)
-  conda (params.conda_sra ?: "${projectDir}/envs/tracktx.yaml")
-
-  // ── Inputs ──────────────────────────────────────────────────────────────
+  // ── Inputs ────────────────────────────────────────────────────────────────
   input:
     tuple val(sample_id), val(sra_id),
           val(condition), val(timepoint), val(replicate),
           val(paired_end)
 
-  // ── Declared outputs ────────────────────────────────────────────────────
-  // Use glob patterns to capture either .fastq or .fastq.gz depending on params.fastq_gzip
+  // ── Outputs ───────────────────────────────────────────────────────────────
   output:
     tuple val(sample_id),
           path("${sra_id}_R1.fastq{,.gz}"),
-          path("${sra_id}_R2.fastq{,.gz}", optional: true),
+          path("${sra_id}_R2.fastq{,.gz}"),
           val(condition), val(timepoint), val(replicate)
 
-    // Checksums (either md5 or sha256), optional
-    path "${sra_id}*.md5",     optional: true, emit: checksums_md5
-    path "${sra_id}*.sha256",  optional: true, emit: checksums_sha
+    path "${sra_id}*.md5",    optional: true, emit: checksums_md5
+    path "${sra_id}*.sha256", optional: true, emit: checksums_sha
+    path "README_fastq.txt",                  emit: readme
 
-    // Per-sample README (file-only)
-    path "README_fastq.txt", emit: readme
-
-  // ── Script ──────────────────────────────────────────────────────────────
+  // ── Main Script ───────────────────────────────────────────────────────────
   shell:
   '''
   #!/usr/bin/env bash
   set -euo pipefail
-  trap 'echo "ERROR  [srr] failed at $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >&2' ERR
   export LC_ALL=C
 
-  # ── Bindings ─────────────────────────────────────────────────────────────
-  SID="!{sample_id}"
+  TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  echo "════════════════════════════════════════════════════════════════════════"
+  echo "SRR | START | sample=!{sample_id} | accession=!{sra_id} | ts=${TIMESTAMP}"
+  echo "════════════════════════════════════════════════════════════════════════"
+
+  ###########################################################################
+  # 1) CONFIGURATION
+  ###########################################################################
+
+  SAMPLE_ID="!{sample_id}"
   SRR="!{sra_id}"
-  COND="!{condition}"
-  TP="!{timepoint}"
-  REP="!{replicate}"
-  PE="!{paired_end}"
+  CONDITION="!{condition}"
+  TIMEPOINT="!{timepoint}"
+  REPLICATE="!{replicate}"
+  IS_PE="!{paired_end}"
   THREADS=!{task.cpus}
-  OUTPUB="!{params.output_dir}/fastq"
-  FQ_GZIP="!{ (params.fastq_gzip == null) ? 'false' : (params.fastq_gzip as boolean ? 'true' : 'false') }"
-  SRA_TMP="!{ params.sra_tmp ?: '' }"
-  SRA_MAXSZ="!{ params.sra_max_size ?: '200G' }"
+  
+  # Compression settings
+  COMPRESS_FQ="!{(params.fastq_gzip == null) ? 'false' : (params.fastq_gzip as boolean ? 'true' : 'false')}"
+  
+  # SRA settings
+  SRA_TMP="!{params.sra_tmp ?: ''}"
+  SRA_MAX_SIZE="!{params.sra_max_size ?: '200G'}"
+  
+  # Output directory for caching
+  CACHE_DIR="!{params.output_dir}/01_trimmed_fastq"
+  mkdir -p "${CACHE_DIR}"
 
-  echo "INFO  [srr] ▶ sample=${SID} sra=${SRR} PE=${PE} cpus=${THREADS} gzip=${FQ_GZIP} ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  echo "SRR | CONFIG | Sample ID: ${SAMPLE_ID}"
+  echo "SRR | CONFIG | Accession: ${SRR}"
+  echo "SRR | CONFIG | Layout: $([ "${IS_PE}" == "true" ] && echo "Paired-end" || echo "Single-end")"
+  echo "SRR | CONFIG | Threads: ${THREADS}"
+  echo "SRR | CONFIG | Compression: ${COMPRESS_FQ}"
+  echo "SRR | CONFIG | Cache directory: ${CACHE_DIR}"
 
-  mkdir -p "${OUTPUB}"
+  ###########################################################################
+  # 2) VALIDATE TOOLS
+  ###########################################################################
 
-  # ── Helper: portable checksum ────────────────────────────────────────────
-  mk_checksum() {
-    local f="$1"
-    if command -v md5sum >/dev/null 2>&1; then
-      md5sum "$f" > "${f}.md5" || true
-    elif command -v shasum >/dev/null 2>&1; then
-      shasum -a 256 "$f" > "${f}.sha256" || true
-    fi
-  }
+  echo "SRR | VALIDATE | Checking required tools..."
 
-  # ── Helper: quick FASTQ validation (heuristic) ───────────────────────────
-  quick_fastq_check() {
-    # 1) file exists and non-empty; 2) first record header starts with '@'
-    local f="$1"
-    [[ -s "$f" ]] || return 1
-    local head
-    head=$(head -n 1 "$f" 2>/dev/null || echo "")
-    [[ "$head" == @* ]] || return 2
-    return 0
-  }
-
-  # ── 0) Resume from published cache (validate + link) ─────────────────────
-  reuse_ok=0
-  if [[ -e "${OUTPUB}/${SRR}_R1.fastq" || -e "${OUTPUB}/${SRR}_R1.fastq.gz" ]]; then
-    echo "INFO  [srr] reusing published FASTQs from ${OUTPUB}"
-    for cand in "${OUTPUB}/${SRR}_R1.fastq" "${OUTPUB}/${SRR}_R1.fastq.gz" \
-                "${OUTPUB}/${SRR}_R2.fastq" "${OUTPUB}/${SRR}_R2.fastq.gz"; do
-      if [[ -e "$cand" ]]; then
-        sz=$(stat -c%s "$cand" 2>/dev/null || stat -f%z "$cand" 2>/dev/null || echo 0)
-        echo "INFO  [srr]   found $(basename "$cand")  size=${sz}"
-        ln -sf "$cand" .
-      fi
-    done
-    reuse_ok=1
+  if ! command -v fasterq-dump >/dev/null 2>&1; then
+    echo "SRR | ERROR | fasterq-dump not found in PATH"
+    exit 1
   fi
+  echo "SRR | VALIDATE | fasterq-dump: $(which fasterq-dump)"
 
-  # ── 1) Tools ─────────────────────────────────────────────────────────────
-  command -v fasterq-dump >/dev/null 2>&1 || { echo "ERROR fasterq-dump not found" >&2; exit 1; }
   HAVE_PREFETCH=0
-  if command -v prefetch >/dev/null 2>&1; then HAVE_PREFETCH=1; fi
-  command -v pigz >/dev/null 2>&1 || true
-
-  # ── 2) If no staged R1*, fetch/convert ───────────────────────────────────
-  if [[ ! -e "${SRR}_R1.fastq" && ! -e "${SRR}_R1.fastq.gz" ]]; then
-    # Prefetch (best-effort)
-    if [[ "${HAVE_PREFETCH}" -eq 1 ]]; then
-      echo "INFO  [srr] prefetch ${SRR} (max-size=${SRA_MAXSZ})"
-      ( prefetch -O . --verify yes --max-size "${SRA_MAXSZ}" "${SRR}" 2>&1 | grep -v "^|" | grep -v "^2025" ) \
-        || echo "WARN  [srr] prefetch failed; continuing with fasterq-dump"
-    else
-      echo "WARN  [srr] prefetch not available; fasterq-dump will stream"
-    fi
-
-    # Temp directory for fasterq-dump
-    FQ_TMP="${SRA_TMP}"
-    if [[ -n "${FQ_TMP}" ]]; then
-      mkdir -p "${FQ_TMP}"
-      echo "INFO  [srr] using fasterq-dump temp dir: ${FQ_TMP}"
-      TMP_ARG=( --temp "${FQ_TMP}" )
-    else
-      TMP_ARG=()
-    fi
-
-    echo "INFO  [srr] fasterq-dump --split-files -e ${THREADS}"
-    fasterq-dump --split-files -e "${THREADS}" "${TMP_ARG[@]}" -O . "${SRR}" 2>&1 | grep -E "spots read|reads read|reads written" || true
-
-    # Normalize names (handle both *_1.fastq / *_2.fastq and single-end)
-    [[ -f "${SRR}_1.fastq" ]] && mv -f "${SRR}_1.fastq" "${SRR}_R1.fastq"
-    [[ -f "${SRR}_2.fastq" ]] && mv -f "${SRR}_2.fastq" "${SRR}_R2.fastq"
-    [[ -f "${SRR}.fastq"    ]] && mv -f "${SRR}.fastq"    "${SRR}_R1.fastq"
+  if command -v prefetch >/dev/null 2>&1; then
+    HAVE_PREFETCH=1
+    echo "SRR | VALIDATE | prefetch: $(which prefetch)"
+  else
+    echo "SRR | VALIDATE | prefetch not available (will stream directly)"
   fi
 
-  # ── 3) Optional compression with pigz ────────────────────────────────────
-  if [[ "${FQ_GZIP}" == "true" ]]; then
+  if command -v pigz >/dev/null 2>&1; then
+    echo "SRR | VALIDATE | pigz: $(which pigz) (for compression)"
+  else
+    echo "SRR | VALIDATE | pigz not available (compression disabled)"
+  fi
+
+  ###########################################################################
+  # 3) CHECK FOR CACHED FILES
+  ###########################################################################
+
+  echo "SRR | CACHE | Checking for existing FASTQs..."
+
+  CACHE_FOUND=0
+  for CACHED in "${CACHE_DIR}/${SRR}_R1.fastq" "${CACHE_DIR}/${SRR}_R1.fastq.gz" \
+                "${CACHE_DIR}/${SRR}_R2.fastq" "${CACHE_DIR}/${SRR}_R2.fastq.gz"; do
+    if [[ -e "${CACHED}" ]]; then
+      FILE_SIZE=$(stat -c%s "${CACHED}" 2>/dev/null || stat -f%z "${CACHED}" 2>/dev/null || echo "unknown")
+      echo "SRR | CACHE | Found: $(basename "${CACHED}") (${FILE_SIZE} bytes)"
+      ln -sf "${CACHED}" .
+      CACHE_FOUND=1
+    fi
+  done
+
+  if [[ ${CACHE_FOUND} -eq 1 ]]; then
+    echo "SRR | CACHE | Reusing cached FASTQs from previous run"
+  else
+    echo "SRR | CACHE | No cached FASTQs found, will download"
+  fi
+
+  ###########################################################################
+  # 4) DOWNLOAD SRA DATA
+  ###########################################################################
+
+  # Only download if R1 doesn't exist yet
+  if [[ ! -e "${SRR}_R1.fastq" && ! -e "${SRR}_R1.fastq.gz" ]]; then
+    
+    # ── Step 4a: Prefetch (optional, best-effort) ──
+    if [[ ${HAVE_PREFETCH} -eq 1 ]]; then
+      echo "SRR | PREFETCH | Downloading SRA file for ${SRR}..."
+      echo "SRR | PREFETCH | Max size: ${SRA_MAX_SIZE}"
+      
+      if prefetch -O . --verify yes --max-size "${SRA_MAX_SIZE}" "${SRR}" 2>&1 | \
+         grep -v "^|" | grep -v "^2025" | grep -v "^$"; then
+        echo "SRR | PREFETCH | Download successful"
+      else
+        echo "SRR | PREFETCH | Prefetch failed or incomplete, will stream directly"
+      fi
+    fi
+
+    # ── Step 4b: Convert to FASTQ with fasterq-dump ──
+    echo "SRR | CONVERT | Converting SRA to FASTQ format..."
+    echo "SRR | CONVERT | Using fasterq-dump with ${THREADS} threads"
+
+    # Setup temp directory if specified
+    if [[ -n "${SRA_TMP}" ]]; then
+      mkdir -p "${SRA_TMP}"
+      echo "SRR | CONVERT | Temp directory: ${SRA_TMP}"
+      TEMP_ARG="--temp ${SRA_TMP}"
+    else
+      echo "SRR | CONVERT | Using default temp directory"
+      TEMP_ARG=""
+    fi
+
+    # Run fasterq-dump with proper error capture
+    echo "SRR | CONVERT | Running fasterq-dump --split-files..."
+    
+    FASTQ_OUTPUT=$(mktemp)
+    FASTQ_EXIT=0
+    
+    if [[ -n "${TEMP_ARG}" ]]; then
+      fasterq-dump --split-files -e "${THREADS}" ${TEMP_ARG} -O . "${SRR}" 2>&1 | tee "${FASTQ_OUTPUT}" || FASTQ_EXIT=$?
+    else
+      fasterq-dump --split-files -e "${THREADS}" -O . "${SRR}" 2>&1 | tee "${FASTQ_OUTPUT}" || FASTQ_EXIT=$?
+    fi
+    
+    # Check for errors
+    if [[ ${FASTQ_EXIT} -ne 0 ]]; then
+      echo "SRR | ERROR | fasterq-dump failed with exit code ${FASTQ_EXIT}"
+      echo "SRR | ERROR | Full output:"
+      cat "${FASTQ_OUTPUT}"
+      rm -f "${FASTQ_OUTPUT}"
+      exit 1
+    fi
+    
+    # Show summary stats only
+    grep -E "spots read|reads read|reads written" "${FASTQ_OUTPUT}" || true
+    rm -f "${FASTQ_OUTPUT}"
+
+    echo "SRR | CONVERT | Conversion complete"
+
+    # ── Step 4c: Normalize filenames ──
+    echo "SRR | CONVERT | Normalizing FASTQ filenames..."
+    
+    # Handle different output patterns from fasterq-dump
+    if [[ -f "${SRR}_1.fastq" ]]; then
+      mv -f "${SRR}_1.fastq" "${SRR}_R1.fastq"
+      echo "SRR | CONVERT | Renamed ${SRR}_1.fastq → ${SRR}_R1.fastq"
+    fi
+    
+    if [[ -f "${SRR}_2.fastq" ]]; then
+      mv -f "${SRR}_2.fastq" "${SRR}_R2.fastq"
+      echo "SRR | CONVERT | Renamed ${SRR}_2.fastq → ${SRR}_R2.fastq"
+    fi
+    
+    if [[ -f "${SRR}.fastq" ]]; then
+      mv -f "${SRR}.fastq" "${SRR}_R1.fastq"
+      echo "SRR | CONVERT | Renamed ${SRR}.fastq → ${SRR}_R1.fastq"
+    fi
+
+  else
+    echo "SRR | CONVERT | Skipping download, using cached files"
+  fi
+
+  ###########################################################################
+  # 5) OPTIONAL COMPRESSION
+  ###########################################################################
+
+  if [[ "${COMPRESS_FQ}" == "true" ]]; then
+    echo "SRR | COMPRESS | Compressing FASTQs with pigz..."
+    
     if command -v pigz >/dev/null 2>&1; then
-      for fq in "${SRR}_R1.fastq" "${SRR}_R2.fastq"; do
-        [[ -f "$fq" ]] || continue
-        echo "INFO  [srr] pigz → ${fq}.gz"
-        pigz -p "${THREADS}" --force "$fq"
+      for FASTQ in "${SRR}_R1.fastq" "${SRR}_R2.fastq"; do
+        if [[ -f "${FASTQ}" ]]; then
+          echo "SRR | COMPRESS | Compressing ${FASTQ}..."
+          pigz -p "${THREADS}" --force "${FASTQ}"
+          echo "SRR | COMPRESS | Created ${FASTQ}.gz"
+        fi
       done
     else
-      echo "WARN  [srr] pigz not found; leaving FASTQs uncompressed"
+      echo "SRR | COMPRESS | WARNING: pigz not found, leaving FASTQs uncompressed"
     fi
+  else
+    echo "SRR | COMPRESS | Compression disabled, FASTQs will remain uncompressed"
   fi
 
-  # ── 4) Sanity checks & PE layout verification ────────────────────────────
-  # Pick extensions depending on compression outcome
-  R1=""
-  R2=""
-  if   [[ -f "${SRR}_R1.fastq.gz" ]]; then R1="${SRR}_R1.fastq.gz"
-  elif [[ -f "${SRR}_R1.fastq"    ]]; then R1="${SRR}_R1.fastq"
-  fi
-  if   [[ -f "${SRR}_R2.fastq.gz" ]]; then R2="${SRR}_R2.fastq.gz"
-  elif [[ -f "${SRR}_R2.fastq"    ]]; then R2="${SRR}_R2.fastq"
+  ###########################################################################
+  # 6) VALIDATE OUTPUT FILES
+  ###########################################################################
+
+  echo "SRR | VALIDATE | Validating output FASTQ files..."
+
+  # Determine actual filenames based on compression
+  R1_FILE=""
+  R2_FILE=""
+
+  if [[ -f "${SRR}_R1.fastq.gz" ]]; then
+    R1_FILE="${SRR}_R1.fastq.gz"
+  elif [[ -f "${SRR}_R1.fastq" ]]; then
+    R1_FILE="${SRR}_R1.fastq"
   fi
 
-  if [[ -z "${R1}" || ! -s "${R1}" ]]; then
-    echo "ERROR R1 FASTQ missing/empty for ${SRR}" >&2
+  if [[ -f "${SRR}_R2.fastq.gz" ]]; then
+    R2_FILE="${SRR}_R2.fastq.gz"
+  elif [[ -f "${SRR}_R2.fastq" ]]; then
+    R2_FILE="${SRR}_R2.fastq"
+  fi
+
+  # Validate R1 (required)
+  if [[ -z "${R1_FILE}" || ! -s "${R1_FILE}" ]]; then
+    echo "SRR | ERROR | R1 FASTQ file missing or empty"
     exit 1
   fi
 
-  # Quick header check (only for uncompressed, cheap heuristic)
-  if [[ "${R1}" == *.fastq ]]; then
-    if ! quick_fastq_check "${R1}"; then
-      echo "ERROR R1 FASTQ failed quick header check (${R1})" >&2
+  R1_SIZE=$(stat -c%s "${R1_FILE}" 2>/dev/null || stat -f%z "${R1_FILE}" 2>/dev/null || echo "unknown")
+  echo "SRR | VALIDATE | R1 file: ${R1_FILE} (${R1_SIZE} bytes)"
+
+  # Quick header check for uncompressed files
+  if [[ "${R1_FILE}" == *.fastq ]]; then
+    FIRST_LINE=$(head -n 1 "${R1_FILE}" 2>/dev/null || echo "")
+    if [[ ! "${FIRST_LINE}" =~ ^@ ]]; then
+      echo "SRR | ERROR | R1 FASTQ header validation failed"
+      echo "SRR | ERROR | First line does not start with '@': ${FIRST_LINE}"
       exit 1
     fi
+    echo "SRR | VALIDATE | R1 FASTQ header looks valid"
   fi
 
-  if [[ "${PE}" == "true" ]]; then
-    if [[ -z "${R2}" || ! -s "${R2}" ]]; then
-      echo "ERROR Paired-end expected but R2 missing/empty for ${SRR}" >&2
+  # Validate R2 (if paired-end)
+  if [[ "${IS_PE}" == "true" ]]; then
+    if [[ -z "${R2_FILE}" || ! -s "${R2_FILE}" ]]; then
+      echo "SRR | ERROR | Paired-end mode but R2 FASTQ missing or empty"
       exit 1
     fi
-    if [[ "${R2}" == *.fastq ]]; then
-      if ! quick_fastq_check "${R2}"; then
-        echo "ERROR R2 FASTQ failed quick header check (${R2})" >&2
+
+    R2_SIZE=$(stat -c%s "${R2_FILE}" 2>/dev/null || stat -f%z "${R2_FILE}" 2>/dev/null || echo "unknown")
+    echo "SRR | VALIDATE | R2 file: ${R2_FILE} (${R2_SIZE} bytes)"
+
+    # Quick header check for uncompressed R2
+    if [[ "${R2_FILE}" == *.fastq ]]; then
+      FIRST_LINE=$(head -n 1 "${R2_FILE}" 2>/dev/null || echo "")
+      if [[ ! "${FIRST_LINE}" =~ ^@ ]]; then
+        echo "SRR | ERROR | R2 FASTQ header validation failed"
+        echo "SRR | ERROR | First line does not start with '@': ${FIRST_LINE}"
         exit 1
       fi
+      echo "SRR | VALIDATE | R2 FASTQ header looks valid"
     fi
   else
-    # If SE run yet stray zero-byte R2 exists, drop it
-    if [[ -f "${SRR}_R2.fastq" && ! -s "${SRR}_R2.fastq" ]]; then rm -f "${SRR}_R2.fastq"; fi
-    if [[ -f "${SRR}_R2.fastq.gz" && ! -s "${SRR}_R2.fastq.gz" ]]; then rm -f "${SRR}_R2.fastq.gz"; fi
+    echo "SRR | VALIDATE | Single-end mode, R2 not expected"
+    # Create empty R2 placeholder for Nextflow output consistency
+    touch "${SRR}_R2.fastq"
+    echo "SRR | VALIDATE | Created empty R2 placeholder for single-end mode"
   fi
 
-  # ── 5) Checksums ─────────────────────────────────────────────────────────
-  mk_checksum "${R1}"
-  [[ -n "${R2}" ]] && mk_checksum "${R2}"
+  ###########################################################################
+  # 7) GENERATE CHECKSUMS
+  ###########################################################################
 
-  # ── 6) README (idempotent) ───────────────────────────────────────────────
-  {
-    echo "TrackTx FASTQ cache"
-    echo "  sample    : ${SID}"
-    echo "  accession : ${SRR}"
-    echo "  layout    : ${PE}"
-    echo "  gzip      : ${FQ_GZIP}"
-    echo "  generated : $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-    echo
-    echo "Notes"
-    echo "  • Files are copied by Nextflow's publishDir for re-use on -resume."
-    echo "  • If access-controlled (dbGaP/private), ensure SRA Toolkit is configured:"
-    echo "      vdb-config --interactive    or    vdb-config --import <project.krt>"
-  } > README_fastq.txt
+  echo "SRR | CHECKSUM | Generating checksums..."
 
-  echo "INFO  [srr] ✔ done: ${R1} ${R2:+and ${R2}} ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  # Generate checksum for R1
+  if command -v md5sum >/dev/null 2>&1; then
+    md5sum "${R1_FILE}" > "${R1_FILE}.md5"
+    echo "SRR | CHECKSUM | ${R1_FILE}.md5 created"
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "${R1_FILE}" > "${R1_FILE}.sha256"
+    echo "SRR | CHECKSUM | ${R1_FILE}.sha256 created"
+  else
+    echo "SRR | CHECKSUM | WARNING: No checksum tool available (md5sum/shasum)"
+  fi
+
+  # Generate checksum for R2 if exists
+  if [[ -n "${R2_FILE}" && -f "${R2_FILE}" ]]; then
+    if command -v md5sum >/dev/null 2>&1; then
+      md5sum "${R2_FILE}" > "${R2_FILE}.md5"
+      echo "SRR | CHECKSUM | ${R2_FILE}.md5 created"
+    elif command -v shasum >/dev/null 2>&1; then
+      shasum -a 256 "${R2_FILE}" > "${R2_FILE}.sha256"
+      echo "SRR | CHECKSUM | ${R2_FILE}.sha256 created"
+    fi
+  fi
+
+  ###########################################################################
+  # 8) CREATE README
+  ###########################################################################
+
+  echo "SRR | README | Creating provenance documentation..."
+
+  cat > README_fastq.txt <<'DOCEOF'
+================================================================================
+SRA FASTQ DOWNLOAD — !{sra_id}
+================================================================================
+
+SAMPLE INFORMATION
+────────────────────────────────────────────────────────────────────────────
+  Sample ID:    !{sample_id}
+  SRA Accession: !{sra_id}
+  Condition:    !{condition}
+  Timepoint:    !{timepoint}
+  Replicate:    !{replicate}
+  Layout:       !{paired_end == "true" ? "Paired-end" : "Single-end"}
+  Compression:  !{(params.fastq_gzip == null) ? "false" : (params.fastq_gzip as boolean ? "true" : "false")}
+  Downloaded:   $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+PIPELINE INFORMATION
+────────────────────────────────────────────────────────────────────────────
+  Pipeline:     TrackTx PRO-seq Analysis
+  Module:       02_download_srr
+  Threads:      !{task.cpus}
+
+FILES
+────────────────────────────────────────────────────────────────────────────
+  R1: !{sra_id}_R1.fastq!{(params.fastq_gzip == null) ? "" : (params.fastq_gzip as boolean ? ".gz" : "")}
+  R2: !{paired_end == "true" ? sra_id + "_R2.fastq" + ((params.fastq_gzip == null) ? "" : (params.fastq_gzip as boolean ? ".gz" : "")) : "N/A (single-end)"}
+
+CACHING
+────────────────────────────────────────────────────────────────────────────
+  These files are cached in the output directory for reuse across pipeline runs.
+  Nextflow will automatically detect and reuse these files with -resume.
+
+NOTES
+────────────────────────────────────────────────────────────────────────────
+  • Files downloaded using SRA Toolkit (fasterq-dump)
+  • Checksums (MD5 or SHA256) generated for data integrity
+  • For access-controlled data (dbGaP), ensure SRA Toolkit is properly configured:
+      vdb-config --interactive
+      vdb-config --import <project.krt>
+
+================================================================================
+DOCEOF
+
+  echo "SRR | README | Documentation created"
+
+  ###########################################################################
+  # 9) SUMMARY
+  ###########################################################################
+
+  echo "────────────────────────────────────────────────────────────────────────"
+  echo "SRR | SUMMARY | Download complete for ${SRR}"
+  echo "SRR | SUMMARY | R1: ${R1_FILE} (${R1_SIZE} bytes)"
+  if [[ -n "${R2_FILE}" ]]; then
+    echo "SRR | SUMMARY | R2: ${R2_FILE} (${R2_SIZE} bytes)"
+  fi
+  echo "────────────────────────────────────────────────────────────────────────"
+
+  TIMESTAMP_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  echo "════════════════════════════════════════════════════════════════════════"
+  echo "SRR | COMPLETE | sample=${SAMPLE_ID} | accession=${SRR} | ts=${TIMESTAMP_END}"
+  echo "════════════════════════════════════════════════════════════════════════"
   '''
 }

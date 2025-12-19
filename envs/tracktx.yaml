@@ -52,10 +52,10 @@ dependencies:
   - which               # Command location utility (used in validation)
 
   # ── I/O & QC ───────────────────────────────────────────────────────────
-  - fastqc              # Per-sample QC
-  - fastp               # Fast, all-in-one QC with HTML/JSON reports
+  - fastqc              # Standard per-sample QC (HTML reports)
   - multiqc             # Aggregated QC reporting
   - seqkit              # Fast FASTQ/FASTA utilities
+  - seqtk               # FASTQ/FASTA manipulation (reverse-complement for PRO-seq)
   - sra-tools           # fasterq-dump / prefetch (download_srr module)
 
   # ── Alignment & BAM ops ────────────────────────────────────────────────
@@ -81,6 +81,7 @@ dependencies:
   - pytables>=3.9       # HDF5 backend for pandas
   - h5py
   - scipy
+  - scikit-learn        # GMM for divergent transcription detection
 
   # ── Plotting (used in reports/QC) ──────────────────────────────────────
   - matplotlib
@@ -89,11 +90,10 @@ dependencies:
 
   # ── UMI / trimming ─────────────────────────────────────────────────────
   - cutadapt
-  # umi_tools installed via pip (below) to avoid conda shebang issues on Linux
+  - umi_tools>=1.1.5    # Moved from pip to avoid C compilation in Docker
 
-  # ── Pip-only packages (correct shebangs, latest versions) ─────────────
-  - pip:
-    - umi_tools>=1.1.5  # Python-based; pip handles shebangs better than conda
+  # ── Pip-only packages (if needed in future) ───────────────────────────
+  # - pip:
 
   # ── Optional (uncomment if you want local testing of docs rendering) ───
   # - jupyter
