@@ -450,7 +450,7 @@ If TrackTx is useful for your research, please cite:
 ```
 
 ### Key References
-- **PRO-seq**: [Kwak et al., 2013](https://doi.org/10.1038/nmeth.2478) - Precision run-on sequencing
+- **PRO-seq**: [Kwak et al., 2013](https://doi.org/10.1126/science.1229386) - Precision run-on sequencing
 - **Nascent RNA-seq**: [Core et al., 2008](https://doi.org/10.1126/science.1162228) - Global nascent transcription
 - **Gaussian Mixture Models**: [Reynolds, 2009](https://doi.org/10.1002/9780470743386) - Statistical modeling
 - **Nextflow**: [Di Tommaso et al., 2017](https://doi.org/10.1038/nbt.3820) - Scalable workflows
