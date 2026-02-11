@@ -632,7 +632,7 @@ def generate_html_report(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>TrackTx Cohort Report v{VERSION}</title>
+  <title>TrackTx Cohort Report</title>
   {css}
 </head>
 <body>
@@ -640,8 +640,8 @@ def generate_html_report(
   <!-- Header -->
   <header class="page-header">
     <div class="eyebrow">TrackTx PRO-seq Analysis • Cohort Report</div>
-    <h1>Global Summary v{VERSION}</h1>
-    <p class="muted">Pipeline v{args.pipeline_version} • Profile: {args.profile} • Run: {args.run_name} • Duration: {args.duration}</p>
+    <h1>Global Summary</h1>
+    <p class="muted">Profile: {args.profile} • Run: {args.run_name} • Duration: {args.duration}</p>
     <p class="muted">Generated {timestamp} • <span id="sample-count-header"></span></p>
   </header>
 
@@ -688,10 +688,6 @@ def generate_html_report(
         <div class="kpi-value" id="kpi-depth">0M</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-label">Cohort Quality <span class="info-tip" title="QC status: PASS (green), WARN (yellow), FAIL (red) based on read depth and duplication thresholds">?</span></div>
-        <div class="kpi-value" id="kpi-quality">-</div>
-      </div>
-      <div class="kpi-card">
         <div class="kpi-label">Total Divergent Loci <span class="info-tip" title="Sum of divergent transcription regions detected across all samples">?</span></div>
         <div class="kpi-value" id="kpi-div-total">0</div>
       </div>
@@ -734,35 +730,33 @@ def generate_html_report(
         <div class="stat-label">Median Unlocalized</div>
         <div class="stat-value" id="qc-median-unloc">-</div>
       </div>
-      <div class="stat-item">
-        <div class="stat-label">Pass Rate</div>
-        <div class="stat-value" id="qc-pass-rate">-</div>
-      </div>
     </div>
 
     <div class="viz-grid">
       <div class="viz-card">
-        <h3>Read Depth Distribution <span class="info-tip" title="Distribution of total input reads across all samples. Outliers may need additional sequencing.">?</span></h3>
+        <h3>Read Depth per Sample <span class="info-tip" title="Total input reads for each sample. HOVER over bars to see sample names and exact values.">?</span></h3>
+        <div id="chart-depth-per-sample" class="viz-body"></div>
+        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over bars to see sample IDs</p>
+      </div>
+      <div class="viz-card">
+        <h3>Duplication Rate per Sample <span class="info-tip" title="PCR duplication rate for each sample. HOVER over bars to see sample names. Lower is better.">?</span></h3>
+        <div id="chart-dup-per-sample" class="viz-body"></div>
+        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over bars to see sample IDs</p>
+      </div>
+      <div class="viz-card">
+        <h3>Read Depth Distribution <span class="info-tip" title="Histogram showing how read depths are distributed. HOVER over bars to see which samples fall in each bin.">?</span></h3>
         <div id="chart-depth-dist" class="viz-body"></div>
         <div class="distrib-summary" id="depth-stats"></div>
+        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">📊 Aggregate distribution - hover to see samples in each bin</p>
       </div>
       <div class="viz-card">
-        <h3>Duplication Rate Distribution <span class="info-tip" title="PCR duplication rates. High uniform duplication across samples indicates library prep issue; outliers suggest sample-specific problems.">?</span></h3>
+        <h3>Duplication Rate Distribution <span class="info-tip" title="Histogram showing how duplication rates are distributed. HOVER over bars to see which samples fall in each bin.">?</span></h3>
         <div id="chart-dup-dist" class="viz-body"></div>
         <div class="distrib-summary" id="dup-stats"></div>
-      </div>
-      <div class="viz-card">
-        <h3>Unlocalized Fraction <span class="info-tip" title="Percentage of reads not mapping to defined functional regions. Consistent across samples is normal; outliers may have contamination.">?</span></h3>
-        <div id="chart-unloc-dist" class="viz-body"></div>
-        <div class="distrib-summary" id="unloc-stats"></div>
-      </div>
-      <div class="viz-card">
-        <h3>QC Status by Sample <span class="info-tip" title="Bar chart showing QC pass/warn/fail status for each sample. Identify problematic samples quickly.">?</span></h3>
-        <div id="chart-qc-status" class="viz-body"></div>
+        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">📊 Aggregate distribution - hover to see samples in each bin</p>
       </div>
     </div>
 
-    <div id="qc-outliers-alert"></div>
   </section>
 
   <!-- SECTION: Divergent Transcription -->
@@ -805,19 +799,23 @@ def generate_html_report(
       <div class="viz-card">
         <h3>Divergent Regions per Sample <span class="info-tip" title="Number of high-confidence divergent transcription sites detected in each sample">?</span></h3>
         <div id="chart-div-per-sample" class="viz-body"></div>
+        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over bars to see sample IDs</p>
       </div>
       <div class="viz-card">
-        <h3>Distribution Across Cohort <span class="info-tip" title="Histogram showing how divergent region counts are distributed across samples">?</span></h3>
+        <h3>Distribution Across Cohort <span class="info-tip" title="Histogram showing how divergent region counts are distributed. HOVER over bars to see which samples fall in each bin.">?</span></h3>
         <div id="chart-div-hist" class="viz-body"></div>
         <div class="distrib-summary" id="div-stats"></div>
+        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">📊 Aggregate distribution - hover to see samples in each bin</p>
       </div>
       <div class="viz-card">
         <h3>By Condition <span class="info-tip" title="Compare divergent transcription levels across experimental conditions">?</span></h3>
         <div id="chart-div-by-condition" class="viz-body"></div>
+        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over bars to see condition names</p>
       </div>
       <div class="viz-card">
         <h3>Replicate Consistency <span class="info-tip" title="Coefficient of variation within replicate groups. Lower is better (more consistent).">?</span></h3>
         <div id="chart-div-cv" class="viz-body"></div>
+        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over bars to see condition names</p>
       </div>
     </div>
   </section>
@@ -863,19 +861,23 @@ def generate_html_report(
       <div class="viz-card">
         <h3>Median PI per Sample <span class="info-tip" title="Median pausing index for each sample. Shows overall pausing landscape.">?</span></h3>
         <div id="chart-pi-per-sample" class="viz-body"></div>
+        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over bars to see sample IDs</p>
       </div>
       <div class="viz-card">
-        <h3>PI Distribution <span class="info-tip" title="Distribution of median pausing indices across cohort">?</span></h3>
+        <h3>PI Distribution <span class="info-tip" title="Histogram showing how pausing indices are distributed. HOVER over bars to see which samples fall in each bin.">?</span></h3>
         <div id="chart-pi-dist" class="viz-body"></div>
         <div class="distrib-summary" id="pi-stats"></div>
+        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">📊 Aggregate distribution - hover to see samples in each bin</p>
       </div>
       <div class="viz-card">
         <h3>PI by Condition <span class="info-tip" title="Compare pausing indices across experimental conditions. Differences may reflect regulation at elongation stage.">?</span></h3>
         <div id="chart-pi-by-condition" class="viz-body"></div>
+        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over bars to see condition names</p>
       </div>
       <div class="viz-card">
         <h3>PI vs Read Depth <span class="info-tip" title="Pausing index should be independent of sequencing depth. Strong correlation suggests technical bias.">?</span></h3>
         <div id="chart-pi-vs-depth" class="viz-body"></div>
+        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over points to see sample IDs</p>
       </div>
     </div>
   </section>
@@ -910,12 +912,12 @@ def generate_html_report(
         <div id="chart-region-composition" class="viz-body"></div>
       </div>
       <div class="viz-card">
-        <h3>Promoter Signal Distribution <span class="info-tip" title="Distribution of promoter signal across samples">?</span></h3>
-        <div id="chart-promoter-dist" class="viz-body"></div>
+        <h3>Promoter Signal per Sample <span class="info-tip" title="Promoter signal for each sample. Hover to see sample names and exact counts.">?</span></h3>
+        <div id="chart-promoter-per-sample" class="viz-body"></div>
       </div>
       <div class="viz-card">
-        <h3>Gene Body Signal Distribution <span class="info-tip" title="Distribution of gene body signal across samples">?</span></h3>
-        <div id="chart-genebody-dist" class="viz-body"></div>
+        <h3>Gene Body Signal per Sample <span class="info-tip" title="Gene body signal for each sample. Hover to see sample names and exact counts.">?</span></h3>
+        <div id="chart-genebody-per-sample" class="viz-body"></div>
       </div>
     </div>
 
@@ -1005,15 +1007,6 @@ def generate_html_report(
         <select id="condition-filter"><option value="">All</option></select>
       </div>
       <div>
-        <label>QC Status</label>
-        <select id="quality-filter">
-          <option value="">All</option>
-          <option value="pass">PASS only</option>
-          <option value="warn">WARN only</option>
-          <option value="fail">FAIL only</option>
-        </select>
-      </div>
-      <div>
         <label>Actions</label>
         <button id="export-csv">Export CSV</button>
       </div>
@@ -1023,7 +1016,6 @@ def generate_html_report(
       <table id="sample-table">
         <thead>
           <tr>
-            <th>QC</th>
             <th>Sample</th>
             <th>Condition</th>
             <th>Time</th>
@@ -1344,13 +1336,13 @@ def main():
     .kpi-sparkline { height: 40px; margin-top: 0.75rem; }
     
     /* Visualization Cards */
-    .viz-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 1.5rem; }
+    .viz-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 1.5rem; }
     .viz-card { 
-      background: var(--card); padding: 1.75rem; border-radius: 0.75rem;
+      background: var(--card); padding: 1.5rem; border-radius: 0.75rem;
       border: 1px solid var(--line); box-shadow: 0 2px 8px rgba(0,0,0,0.05);
     }
-    .viz-card h3 { margin: 0 0 1.25rem 0; font-size: 1.125rem; font-weight: 700; }
-    .viz-body { min-height: 320px; height: 320px; position: relative; width: 100%; }
+    .viz-card h3 { margin: 0 0 1rem 0; font-size: 1.125rem; font-weight: 700; }
+    .viz-body { min-height: 380px; height: 380px; position: relative; width: 100%; }
     
     /* Stats Grid */
     .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
@@ -1516,17 +1508,16 @@ def main():
             return Math.sqrt(variance);
         }
         
-        function getStatus(r) {
-            const inp = r.input_reads || 0;
-            const dup = r.duplicate_percent || 100;
-            if (inp >= 5e6 && dup < 15) return 'PASS';
-            if (inp >= 2e6 && dup < 30) return 'WARN';
-            return 'FAIL';
-        }
         
-        function formatNumber(n) {
+        function formatNumber(n, forceDecimals = false) {
             if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
             if (n >= 1e3) return (n/1e3).toFixed(1) + 'K';
+            // For values < 1, show up to 3 decimal places
+            if (n < 1 && n > 0) return n.toFixed(3);
+            // For values 1-10, show 2 decimals
+            if (n < 10) return n.toFixed(2);
+            // For larger values < 1000, show 1 decimal or integer
+            if (n < 100) return n.toFixed(1);
             return n.toFixed(0);
         }
         
@@ -1565,20 +1556,28 @@ def main():
             const containerWidth = Math.max(containerRect.width || parentWidth || 600, 500);
             const containerHeight = Math.max(containerRect.height || 320, 300);
             
-            // Smart Y-axis max: add 10% padding, but round to nice numbers
-            const dataMax = Math.max(...data, 1);
-            const dataMin = Math.min(...data, 0);
+            // Smart Y-axis max: add small padding (5%), but ensure it's tight to data
+            const dataMax = Math.max(...data);
+            const dataMin = Math.min(...data);
             const dataRange = dataMax - dataMin;
             let yMax = dataMax;
             if (dataRange > 0) {
-                // Add 10% padding
-                yMax = dataMax + (dataRange * 0.1);
-                // Round to nice number
-                const magnitude = Math.pow(10, Math.floor(Math.log10(yMax)));
-                yMax = Math.ceil(yMax / magnitude) * magnitude;
+                // Add 5% padding above max
+                yMax = dataMax + (dataRange * 0.05);
+                // For small ranges (like PI 0-1), use tighter scaling
+                if (dataMax <= 1 && dataMin >= 0) {
+                    yMax = Math.min(1, dataMax + 0.05);
+                } else {
+                    // Round to nice number for larger ranges
+                    const magnitude = Math.pow(10, Math.floor(Math.log10(yMax)));
+                    yMax = Math.ceil(yMax / magnitude) * magnitude;
+                }
             } else {
-                yMax = Math.max(dataMax * 1.1, 1);
+                // Single value or no range - add small padding
+                yMax = dataMax > 0 ? dataMax * 1.05 : 1;
             }
+            // Ensure minimum height for visibility
+            if (yMax <= dataMax) yMax = dataMax * 1.05;
             
             // Adaptive bar sizing to fill container
             const barCount = data.length;
@@ -1644,8 +1643,9 @@ def main():
                 svg += `<rect x="${x}" y="${y+2}" width="${barWidth}" height="${barHeight}" fill="black" opacity="0.1" rx="3"/>`;
                 
                 // Bar
+                const formattedValue = v < 1 ? v.toFixed(3) : (v < 10 ? v.toFixed(2) : v.toLocaleString());
                 svg += `<rect x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" fill="url(#grad${colorIdx})" rx="3" filter="url(#shadow${colorIdx})" style="cursor:pointer;transition:opacity 0.15s;" onmouseover="evt.target.style.opacity='0.7'" onmouseout="evt.target.style.opacity='1'">
-                    <title>${label}: ${v.toLocaleString()}</title>
+                    <title>${label}: ${formattedValue}</title>
                 </rect>`;
                 
                 // Value labels on top
@@ -1667,11 +1667,14 @@ def main():
                 svg += `<text x="${x}" y="${height - margin.bottom + 18}" text-anchor="end" font-size="10" fill="var(--muted)" font-weight="500" transform="rotate(-45 ${x} ${height - margin.bottom + 18})"><title>${label}</title>${displayLabel}</text>`;
             });
             
+            // X-axis label
+            svg += `<text x="${width/2}" y="${height - 8}" text-anchor="middle" font-size="11" fill="var(--muted)" font-weight="600">Sample</text>`;
+            
             svg += '</svg>';
             container.innerHTML = svg;
         }
         
-        function renderHistogram(containerId, data, bins = 20) {
+        function renderHistogram(containerId, data, bins = 20, xAxisLabel = 'Value', labels = null) {
             const container = document.getElementById(containerId);
             if (!container) return;
             if (!data || data.length === 0) {
@@ -1679,7 +1682,8 @@ def main():
                 return;
             }
             if (data.length === 1) {
-                container.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--muted)">Single sample: <strong>${data[0].toFixed(2)}</strong></div>`;
+                const sampleInfo = labels && labels[0] ? ` (${labels[0]})` : '';
+                container.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--muted)">Single sample${sampleInfo}: <strong>${data[0].toFixed(2)}</strong></div>`;
                 return;
             }
             
@@ -1696,16 +1700,19 @@ def main():
             const containerRect = container.getBoundingClientRect();
             const parentWidth = container.parentElement ? container.parentElement.getBoundingClientRect().width : 0;
             const containerWidth = Math.max(containerRect.width || parentWidth || 600, 500);
-            const containerHeight = Math.max(containerRect.height || 280, 250);
+            const containerHeight = Math.max(containerRect.height || 360, 340);
             
-            // Create histogram bins
+            // Create histogram bins with sample tracking
             const binSize = range / bins;
-            const histogram = new Array(bins).fill(0);
-            data.forEach(v => {
+            const histogram = new Array(bins).fill(0).map(() => ({ count: 0, samples: [] }));
+            data.forEach((v, idx) => {
                 const binIndex = Math.min(Math.floor((v - min) / binSize), bins - 1);
-                histogram[binIndex]++;
+                histogram[binIndex].count++;
+                if (labels && labels[idx]) {
+                    histogram[binIndex].samples.push({ name: labels[idx], value: v });
+                }
             });
-            const maxCount = Math.max(...histogram, 1);
+            const maxCount = Math.max(...histogram.map(h => h.count), 1);
             
             // Smart Y-axis max: add 10% padding
             const yMax = Math.ceil(maxCount * 1.1);
@@ -1761,16 +1768,27 @@ def main():
             svg += `<text x="${15}" y="${height/2}" text-anchor="middle" font-size="11" fill="var(--muted)" font-weight="600" transform="rotate(-90 15 ${height/2})">Count</text>`;
             
             // Histogram bars
-            histogram.forEach((count, i) => {
+            histogram.forEach((bin, i) => {
                 const x = margin.left + (i * barWidth);
-                const barHeight = (count / yMax) * chartHeight;
+                const barHeight = (bin.count / yMax) * chartHeight;
                 const y = height - margin.bottom - barHeight;
                 const binStart = min + (i * binSize);
                 const binEnd = binStart + binSize;
                 
+                // Format bin range based on magnitude
+                const formatBinValue = (v) => v < 1 ? v.toFixed(3) : (v < 10 ? v.toFixed(2) : v.toFixed(1));
+                
+                // Build tooltip with sample names if available
+                let tooltip = `${bin.count} sample${bin.count !== 1 ? 's' : ''} in range ${formatBinValue(binStart)} - ${formatBinValue(binEnd)}`;
+                if (bin.samples.length > 0 && bin.samples.length <= 8) {
+                    tooltip += ':\\n' + bin.samples.map(s => `  ${s.name}: ${formatBinValue(s.value)}`).join('\\n');
+                } else if (bin.samples.length > 8) {
+                    tooltip += ':\\n' + bin.samples.slice(0, 8).map(s => `  ${s.name}: ${formatBinValue(s.value)}`).join('\\n') + `\\n  ... and ${bin.samples.length - 8} more`;
+                }
+                
                 // Bar
                 svg += `<rect x="${x}" y="${y}" width="${barWidth - 1}" height="${barHeight}" fill="url(#histGrad)" filter="url(#histShadow)" rx="2" style="cursor:pointer;transition:opacity 0.15s;" onmouseover="evt.target.style.opacity='0.7'" onmouseout="evt.target.style.opacity='1'">
-                    <title>${count} samples in ${binStart.toFixed(2)}-${binEnd.toFixed(2)}</title>
+                    <title>${tooltip}</title>
                 </rect>`;
             });
             
@@ -1782,11 +1800,12 @@ def main():
             for (let i = 0; i <= xLabelCount; i++) {
                 const val = min + (range * i / xLabelCount);
                 const x = margin.left + (chartWidth * i / xLabelCount);
-                svg += `<text x="${x}" y="${height - margin.bottom + 20}" text-anchor="middle" font-size="10" fill="var(--muted)" font-weight="500">${val.toFixed(1)}</text>`;
+                const formattedVal = val < 1 ? val.toFixed(3) : (val < 10 ? val.toFixed(2) : val.toFixed(1));
+                svg += `<text x="${x}" y="${height - margin.bottom + 20}" text-anchor="middle" font-size="10" fill="var(--muted)" font-weight="500">${formattedVal}</text>`;
             }
             
             // X-axis label
-            svg += `<text x="${width/2}" y="${height - 8}" text-anchor="middle" font-size="11" fill="var(--muted)" font-weight="600">Value</text>`;
+            svg += `<text x="${width/2}" y="${height - 8}" text-anchor="middle" font-size="11" fill="var(--muted)" font-weight="600">${xAxisLabel}</text>`;
             
             svg += '</svg>';
             container.innerHTML = svg;
@@ -1864,25 +1883,32 @@ def main():
             for (let i = 0; i <= xSteps; i++) {
                 const val = xScaleMin + (xScaleMax - xScaleMin) * i / xSteps;
                 const x = margin.left + (chartWidth * i / xSteps);
-                svg += `<text x="${x}" y="${height - margin.bottom + 20}" text-anchor="middle" font-size="10" fill="var(--muted)" font-weight="500">${val.toFixed(2)}</text>`;
+                const formattedVal = val < 1 ? val.toFixed(3) : (val < 10 ? val.toFixed(2) : val.toFixed(1));
+                svg += `<text x="${x}" y="${height - margin.bottom + 20}" text-anchor="middle" font-size="10" fill="var(--muted)" font-weight="500">${formattedVal}</text>`;
             }
             for (let i = 0; i <= ySteps; i++) {
                 const val = yScaleMax - (yScaleMax - yScaleMin) * i / ySteps;
                 const y = margin.top + (chartHeight * i / ySteps);
-                svg += `<text x="${margin.left - 10}" y="${y + 4}" text-anchor="end" font-size="10" fill="var(--muted)" font-weight="500">${val.toFixed(2)}</text>`;
+                const formattedVal = val < 1 ? val.toFixed(3) : (val < 10 ? val.toFixed(2) : val.toFixed(1));
+                svg += `<text x="${margin.left - 10}" y="${y + 4}" text-anchor="end" font-size="10" fill="var(--muted)" font-weight="500">${formattedVal}</text>`;
             }
             
             // Axis titles
             svg += `<text x="${width/2}" y="${height - 10}" text-anchor="middle" font-size="11" fill="var(--muted)" font-weight="600">${xLabel}</text>`;
             svg += `<text x="${15}" y="${height/2}" text-anchor="middle" font-size="11" fill="var(--muted)" font-weight="600" transform="rotate(-90 15 ${height/2})">${yLabel}</text>`;
             
-            // Points
+            // Color palette for scatter points
+            const colorPalette = ['#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f59e0b', '#10b981', '#6366f1', '#06b6d4'];
+            
+            // Points with different colors per sample
             points.forEach((p, i) => {
                 const x = scaleX(p.x);
                 const y = scaleY(p.y);
-                const color = '#3b82f6';
+                const colorIdx = i % colorPalette.length;
+                const color = colorPalette[colorIdx];
+                const formatScatterVal = (v) => v < 1 ? v.toFixed(4) : (v < 10 ? v.toFixed(3) : v.toFixed(2));
                 svg += `<circle cx="${x}" cy="${y}" r="5" fill="${color}" opacity="0.7" stroke="white" stroke-width="1.5" style="cursor:pointer;" onmouseover="evt.target.setAttribute('r', '7');evt.target.setAttribute('opacity', '1');" onmouseout="evt.target.setAttribute('r', '5');evt.target.setAttribute('opacity', '0.7');">
-                    <title>${p.label}: ${xLabel}=${p.x.toFixed(3)}, ${yLabel}=${p.y.toFixed(3)}</title>
+                    <title>${p.label}\n${xLabel}: ${formatScatterVal(p.x)}\n${yLabel}: ${formatScatterVal(p.y)}</title>
                 </circle>`;
             });
             
@@ -2000,15 +2026,9 @@ def main():
         const conditions = [...new Set(rows.map(r => r.condition).filter(Boolean))];
         document.getElementById('kpi-conditions').textContent = conditions.length;
         
-        const avgDepth = mean(rows.map(r => r.input_reads || 0)) / 1e6;
-        document.getElementById('kpi-depth').textContent = avgDepth.toFixed(1) + 'M';
-        
-        const qualityCounts = { PASS: 0, WARN: 0, FAIL: 0 };
-        rows.forEach(r => qualityCounts[getStatus(r)]++);
-        document.getElementById('kpi-quality').innerHTML = 
-            `<span style="color:var(--ok)">${qualityCounts.PASS}</span> / ` +
-            `<span style="color:var(--warn)">${qualityCounts.WARN}</span> / ` +
-            `<span style="color:var(--fail)">${qualityCounts.FAIL}</span>`;
+        const depthValues = rows.map(r => r.input_reads || 0).filter(v => v > 0);
+        const avgDepth = depthValues.length > 0 ? mean(depthValues) / 1e6 : 0;
+        document.getElementById('kpi-depth').textContent = avgDepth > 0 ? avgDepth.toFixed(1) + 'M' : '-';
         
         const totalDiv = rows.reduce((sum, r) => sum + (r.divergent_regions || 0), 0);
         document.getElementById('kpi-div-total').textContent = totalDiv.toLocaleString();
@@ -2017,38 +2037,94 @@ def main():
         document.getElementById('kpi-regions-avg').textContent = avgRegions.toFixed(0);
         
         // ===== QC SECTION =====
-        const depths = rows.map(r => (r.input_reads || 0) / 1e6);
-        const dups = rows.map(r => r.duplicate_percent != null ? r.duplicate_percent : 0);
-        const unlocs = rows.map(r => (r.unlocalized_fraction || 0) * 100);
+        // Extract read depths (filter out null/undefined values)
+        const depths = rows.map(r => r.input_reads).filter(v => v != null && v > 0).map(v => v / 1e6);
         
-        document.getElementById('qc-median-depth').textContent = depths.length > 0 ? median(depths).toFixed(1) + 'M' : '-';
-        document.getElementById('qc-median-dup').textContent = dups.length > 0 ? median(dups).toFixed(1) + '%' : '-';
-        document.getElementById('qc-median-unloc').textContent = unlocs.length > 0 ? median(unlocs).toFixed(1) + '%' : '-';
-        document.getElementById('qc-pass-rate').textContent = 
-            rows.length > 0 ? ((qualityCounts.PASS / rows.length) * 100).toFixed(0) + '%' : '-';
+        // Extract duplication rates - check if UMI deduplication was used
+        const hasUMIDedup = rows.some(r => r.umi_deduplication_enabled === true);
+        const dups = rows.map(r => {
+            if (r.umi_deduplication_enabled === true) {
+                return r.umi_deduplication_percent != null ? r.umi_deduplication_percent : null;
+            } else {
+                return r.duplicate_percent != null ? r.duplicate_percent : null;
+            }
+        }).filter(v => v != null);
         
-        renderHistogram('chart-depth-dist', depths, 15);
-        renderDistribSummary('depth-stats', depths);
+        // Display median depth
+        if (depths.length > 0) {
+            document.getElementById('qc-median-depth').textContent = median(depths).toFixed(1) + 'M';
+        } else {
+            document.getElementById('qc-median-depth').textContent = '-';
+        }
         
-        renderHistogram('chart-dup-dist', dups, 15);
-        renderDistribSummary('dup-stats', dups);
+        // Display median duplication with special handling for no UMI
+        if (dups.length > 0) {
+            document.getElementById('qc-median-dup').textContent = median(dups).toFixed(1) + '%';
+        } else if (!hasUMIDedup) {
+            document.getElementById('qc-median-dup').textContent = 'No deduplication done';
+        } else {
+            document.getElementById('qc-median-dup').textContent = '-';
+        }
         
-        renderHistogram('chart-unloc-dist', unlocs, 15);
-        renderDistribSummary('unloc-stats', unlocs);
+        // Render per-sample depth bar chart
+        if (depths.length > 0) {
+            const depthSampleIds = rows.filter(r => r.input_reads != null && r.input_reads > 0).map(r => r.sample_id);
+            renderBarChart('chart-depth-per-sample', depths, depthSampleIds);
+        } else {
+            document.getElementById('chart-depth-per-sample').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No read depth data available</div>';
+        }
         
-        // QC Status by sample
-        const qcStatuses = rows.map(r => getStatus(r));
-        const statusData = [qualityCounts.PASS, qualityCounts.WARN, qualityCounts.FAIL];
-        renderBarChart('chart-qc-status', statusData, ['PASS', 'WARN', 'FAIL']);
+        // Render per-sample duplication bar chart
+        if (dups.length > 0) {
+            const dupSampleIds = rows.filter(r => {
+                if (r.umi_deduplication_enabled === true) {
+                    return r.umi_deduplication_percent != null;
+                } else {
+                    return r.duplicate_percent != null;
+                }
+            }).map(r => r.sample_id);
+            renderBarChart('chart-dup-per-sample', dups, dupSampleIds);
+        } else if (!hasUMIDedup) {
+            document.getElementById('chart-dup-per-sample').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No deduplication done</div>';
+        } else {
+            document.getElementById('chart-dup-per-sample').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No duplication data available</div>';
+        }
         
-        // QC outliers alert
-        const failSamples = rows.filter(r => getStatus(r) === 'FAIL');
-        if (failSamples.length > 0) {
-            const alertDiv = document.getElementById('qc-outliers-alert');
-            alertDiv.className = 'alert alert-warning';
-            alertDiv.innerHTML = `<strong>⚠️ Quality Alert:</strong> ${failSamples.length} sample(s) failed QC thresholds. ` +
-                `Review: ${failSamples.slice(0, 5).map(s => s.sample_id).join(', ')}` +
-                (failSamples.length > 5 ? ` and ${failSamples.length - 5} more` : '');
+        // Render depth distribution histogram (only for larger cohorts)
+        if (depths.length > 0) {
+            if (depths.length >= 10) {
+                const depthSampleIds = rows.filter(r => r.input_reads != null && r.input_reads > 0).map(r => r.sample_id);
+                renderHistogram('chart-depth-dist', depths, 15, 'Read Depth (M)', depthSampleIds);
+                renderDistribSummary('depth-stats', depths);
+            } else {
+                // For small cohorts, show summary stats instead of histogram
+                document.getElementById('chart-depth-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">Distribution histograms require ≥10 samples<br>(current: ' + depths.length + ' samples)</div>';
+                renderDistribSummary('depth-stats', depths);
+            }
+        } else {
+            document.getElementById('chart-depth-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No read depth data available</div>';
+        }
+        
+        // Render duplication distribution histogram (only for larger cohorts)
+        if (dups.length > 0) {
+            if (dups.length >= 10) {
+                const dupSampleIds = rows.filter(r => {
+                    if (r.umi_deduplication_enabled === true) {
+                        return r.umi_deduplication_percent != null;
+                    } else {
+                        return r.duplicate_percent != null;
+                    }
+                }).map(r => r.sample_id);
+                renderHistogram('chart-dup-dist', dups, 15, 'Duplication Rate (%)', dupSampleIds);
+                renderDistribSummary('dup-stats', dups);
+            } else {
+                document.getElementById('chart-dup-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">Distribution histograms require ≥10 samples<br>(current: ' + dups.length + ' samples)</div>';
+                renderDistribSummary('dup-stats', dups);
+            }
+        } else if (!hasUMIDedup) {
+            document.getElementById('chart-dup-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No deduplication done</div>';
+        } else {
+            document.getElementById('chart-dup-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No duplication data available</div>';
         }
         
         // ===== DIVERGENT SECTION =====
@@ -2064,8 +2140,15 @@ def main():
         document.getElementById('div-range').textContent = `${divMin}-${divMax}`;
         
         renderBarChart('chart-div-per-sample', divRegions, rows.map(r => r.sample_id));
-        renderHistogram('chart-div-hist', divRegions, 15);
-        renderDistribSummary('div-stats', divRegions);
+        
+        // Only show histogram for larger cohorts
+        if (divRegions.length >= 10) {
+            renderHistogram('chart-div-hist', divRegions, 15, 'Divergent Regions per Sample', rows.map(r => r.sample_id));
+            renderDistribSummary('div-stats', divRegions);
+        } else {
+            document.getElementById('chart-div-hist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">Distribution histograms require ≥10 samples<br>(current: ' + divRegions.length + ' samples)</div>';
+            renderDistribSummary('div-stats', divRegions);
+        }
         
         // Divergent by condition
         const divByCondition = {};
@@ -2099,9 +2182,17 @@ def main():
             document.getElementById('pi-std').textContent = piStd.toFixed(2);
             document.getElementById('pi-range').textContent = `${piMin.toFixed(2)}-${piMax.toFixed(2)}`;
             
-            renderBarChart('chart-pi-per-sample', pausingIndices, rows.filter(r => r.median_pausing_index != null && r.median_pausing_index > 0).map(r => r.sample_id));
-            renderHistogram('chart-pi-dist', pausingIndices, 15);
-            renderDistribSummary('pi-stats', pausingIndices);
+            const piSampleIds = rows.filter(r => r.median_pausing_index != null && r.median_pausing_index > 0).map(r => r.sample_id);
+            renderBarChart('chart-pi-per-sample', pausingIndices, piSampleIds);
+            
+            // Only show histogram for larger cohorts
+            if (pausingIndices.length >= 10) {
+                renderHistogram('chart-pi-dist', pausingIndices, 15, 'Median Pausing Index', piSampleIds);
+                renderDistribSummary('pi-stats', pausingIndices);
+            } else {
+                document.getElementById('chart-pi-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">Distribution histograms require ≥10 samples<br>(current: ' + pausingIndices.length + ' samples)</div>';
+                renderDistribSummary('pi-stats', pausingIndices);
+            }
             
             // PI by condition
             const piByCondition = {};
@@ -2171,20 +2262,24 @@ def main():
             document.getElementById('chart-region-composition').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No region data available</div>';
         }
         
-        // Promoter and gene body distributions
+        // Promoter and gene body per-sample signals
         const promoterSignals = rows.map(r => r.func_Promoter || 0).filter(v => v > 0);
         const geneBodySignals = rows.map(r => r['func_Gene body'] || 0).filter(v => v > 0);
         
+        // Render per-sample promoter bar chart
         if (promoterSignals.length > 0) {
-            renderHistogram('chart-promoter-dist', promoterSignals, 15);
+            const promoterSampleIds = rows.filter(r => (r.func_Promoter || 0) > 0).map(r => r.sample_id);
+            renderBarChart('chart-promoter-per-sample', promoterSignals, promoterSampleIds);
         } else {
-            document.getElementById('chart-promoter-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No promoter data</div>';
+            document.getElementById('chart-promoter-per-sample').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No promoter data</div>';
         }
         
+        // Render per-sample gene body bar chart
         if (geneBodySignals.length > 0) {
-            renderHistogram('chart-genebody-dist', geneBodySignals, 15);
+            const geneBodySampleIds = rows.filter(r => (r['func_Gene body'] || 0) > 0).map(r => r.sample_id);
+            renderBarChart('chart-genebody-per-sample', geneBodySignals, geneBodySampleIds);
         } else {
-            document.getElementById('chart-genebody-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No gene body data</div>';
+            document.getElementById('chart-genebody-per-sample').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No gene body data</div>';
         }
         
         // ===== NORMALIZATION SECTION =====
@@ -2276,7 +2371,6 @@ def main():
         const tbody = document.getElementById('sample-table-body');
         const searchInput = document.getElementById('sample-search');
         const condFilter = document.getElementById('condition-filter');
-        const qualityFilter = document.getElementById('quality-filter');
         
         // Populate condition filter
         conditions.forEach(c => {
@@ -2288,17 +2382,24 @@ def main():
         
         function renderTable(data) {
             tbody.innerHTML = data.map(row => {
-                const status = getStatus(row);
-                const color = status === 'PASS' ? 'var(--ok)' : status === 'WARN' ? 'var(--warn)' : 'var(--fail)';
+                // Format duplication percentage
+                let dupDisplay = '-';
+                if (row.umi_deduplication_enabled === true) {
+                    dupDisplay = row.umi_deduplication_percent != null ? row.umi_deduplication_percent.toFixed(1) + '%' : '-';
+                } else if (row.duplicate_percent != null) {
+                    dupDisplay = row.duplicate_percent.toFixed(1) + '%';
+                } else {
+                    dupDisplay = 'No deduplication done';
+                }
+                
                 return `<tr>
-                    <td><div class="status" style="--status:${color}">${status}</div></td>
                     <td><strong>${row.sample_id}</strong></td>
                     <td>${row.condition || '-'}</td>
                     <td>${row.timepoint || '-'}</td>
                     <td>${row.replicate || '-'}</td>
                     <td>${((row.input_reads || 0) / 1e6).toFixed(1)}M</td>
                     <td>${formatNumber(row.reads_total_functional || 0)}</td>
-                    <td>${(row.duplicate_percent || 0).toFixed(1)}%</td>
+                    <td>${dupDisplay}</td>
                     <td>${((row.unlocalized_fraction || 0) * 100).toFixed(1)}%</td>
                     <td>${(row.divergent_regions || 0).toLocaleString()}</td>
                     <td>${(row.total_regions || 0).toLocaleString()}</td>
@@ -2313,20 +2414,17 @@ def main():
         function filterTable() {
             const term = searchInput.value.toLowerCase();
             const cond = condFilter.value;
-            const qual = qualityFilter.value;
             
             const filtered = rows.filter(r => {
                 const matchesSearch = (r.sample_id + (r.condition || '') + (r.timepoint || '')).toLowerCase().includes(term);
                 const matchesCond = !cond || r.condition === cond;
-                const matchesQual = !qual || getStatus(r).toLowerCase() === qual.toLowerCase();
-                return matchesSearch && matchesCond && matchesQual;
+                return matchesSearch && matchesCond;
             });
             renderTable(filtered);
         }
         
         searchInput.addEventListener('input', filterTable);
         condFilter.addEventListener('change', filterTable);
-        qualityFilter.addEventListener('change', filterTable);
         
         // Export CSV
         document.getElementById('export-csv').addEventListener('click', () => {

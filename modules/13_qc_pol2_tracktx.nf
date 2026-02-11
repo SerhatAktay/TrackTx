@@ -406,17 +406,24 @@ process qc_pol2_tracktx {
   if [[ -s "\${DEDUP_STATS}" ]]; then
     echo "QC | UMI | Parsing deduplication statistics..."
     
-    # Check if this is a real UMI dedup run (not just a placeholder)
-    if grep -q "Input Reads:" "\${DEDUP_STATS}" 2>/dev/null; then
+    # Check if this is a real UMI dedup run by looking for Summary section
+    if grep -q "=== Summary ===" "\${DEDUP_STATS}" 2>/dev/null; then
       UMI_ENABLED="true"
       
-      UMI_INPUT_READS=\$(grep "Input Reads:" "\${DEDUP_STATS}" | \
-                         awk '{print \$NF}' || echo 0)
-      UMI_OUTPUT_READS=\$(grep "Number of reads out:" "\${DEDUP_STATS}" | \
-                          awk '{print \$NF}' || echo 0)
-      UMI_DUPLICATES_REMOVED=\$((UMI_INPUT_READS - UMI_OUTPUT_READS))
+      # Parse the Summary section which has actual read counts from samtools
+      UMI_INPUT_READS=\$(grep "^reads_before=" "\${DEDUP_STATS}" | \
+                         cut -d= -f2 || echo 0)
+      UMI_OUTPUT_READS=\$(grep "^reads_after=" "\${DEDUP_STATS}" | \
+                          cut -d= -f2 || echo 0)
+      UMI_DUPLICATES_REMOVED=\$(grep "^reads_removed=" "\${DEDUP_STATS}" | \
+                                cut -d= -f2 || echo 0)
       
-      if [[ \${UMI_INPUT_READS} -gt 0 ]]; then
+      # Get percentage directly from summary if available, otherwise calculate
+      UMI_DEDUP_PERCENT=\$(grep "^percent_removed=" "\${DEDUP_STATS}" | \
+                           cut -d= -f2 || echo 0)
+      
+      # If percentage not in file, calculate it
+      if [[ "\${UMI_DEDUP_PERCENT}" == "0" && \${UMI_INPUT_READS} -gt 0 ]]; then
         UMI_DEDUP_PERCENT=\$(awk -v d=\${UMI_DUPLICATES_REMOVED} \
                                  -v t=\${UMI_INPUT_READS} \
                                  'BEGIN{printf "%.2f", 100.0*d/t}')
@@ -498,7 +505,7 @@ process qc_pol2_tracktx {
   "umi_output_reads": \${UMI_OUTPUT_READS},
   "umi_duplicates_removed": \${UMI_DUPLICATES_REMOVED},
   "umi_deduplication_percent": \${UMI_DEDUP_PERCENT}\$([ \${IS_PAIRED} -eq 1 ] && echo ",
-  \"median_fragment_length\": \${MEDIAN_FRAG:-null}" || echo "")
+  \\"median_fragment_length\\": \${MEDIAN_FRAG:-null}" || echo "")
 }
 JSONEOF
 

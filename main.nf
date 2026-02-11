@@ -921,7 +921,7 @@ workflow TrackTx {
   // log.info "─".multiply(80)
   // log.info "STEP 16 | PURPOSE | Generate cohort-level summary report"
 
-  // Sort reports for deterministic ordering (cache-friendly)
+  // Collect reports and stage with sequential names to avoid collisions
   per_sample_reports = report_json_ch
     .toSortedList { a, b -> a.name <=> b.name }
   

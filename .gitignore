@@ -7,6 +7,8 @@ work/
 # Local run outputs
 results*/
 Vihervaara_2021/
+DM_2023/
+MEFs*/
 
 # Large or generated assets
 assets/references/

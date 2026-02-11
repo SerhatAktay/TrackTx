@@ -27,7 +27,7 @@
 //   Handles gzipped files: *.json.gz
 //
 // Inputs:
-//   path(input_files) : Files or directories containing per-sample JSONs
+//   path('report_*.json') : Per-sample JSON reports (staged sequentially)
 //
 // Outputs:
 //   ${params.output_dir}/11_reports/cohort/
@@ -54,7 +54,7 @@ nextflow.enable.dsl = 2
 
 process combine_reports {
 
-  tag        { (input_files instanceof List) ? "n=${input_files.size()}" : input_files.getBaseName() }
+  tag        { "cohort" }
   label      'conda'
   cache      'deep'
 
@@ -65,8 +65,9 @@ process combine_reports {
   conda (params.conda_pol2 ?: "${projectDir}/envs/tracktx.yaml")
 
   // ── Inputs ────────────────────────────────────────────────────────────────
+  // Stage files with sequential names to avoid collisions (like metric_1, metric_2, etc.)
   input:
-    path input_files
+    path 'report_*.json'
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:
@@ -123,24 +124,12 @@ process combine_reports {
 
   echo "COHORT | DISCOVER | Finding per-sample JSON files..."
 
-  # Build array of input paths
-  mapfile -t INPUT_PATHS < <(printf '%s\n' !{(input_files instanceof List) ? input_files.collect{ '"' + it.toString().replace('"','\\"') + '"' }.join(' ') : '"' + input_files.toString().replace('"','\\"') + '"'})
-
-  TOTAL_INPUTS=${#INPUT_PATHS[@]}
-  echo "COHORT | DISCOVER | Input paths provided: ${TOTAL_INPUTS}"
-
-  # Find all JSON files (case-insensitive matching)
+  # Files are staged as report_1.json, report_2.json, etc. by Nextflow
   JSON_FILES=()
-  for INPUT_PATH in "${INPUT_PATHS[@]}"; do
-    # Convert to lowercase for comparison
-    LOWERCASE_PATH="${INPUT_PATH,,}"
-    
-    # Check if it matches our patterns
-    if [[ "${LOWERCASE_PATH}" == *.summary.json || \
-          "${LOWERCASE_PATH}" == *.report.json || \
-          "${LOWERCASE_PATH}" == *.json ]]; then
-      JSON_FILES+=("${INPUT_PATH}")
-      echo "COHORT | DISCOVER | Found: $(basename ${INPUT_PATH})"
+  for json_file in report_*.json; do
+    if [[ -f "${json_file}" ]]; then
+      JSON_FILES+=("${json_file}")
+      echo "COHORT | DISCOVER | Found: ${json_file}"
     fi
   done
 
