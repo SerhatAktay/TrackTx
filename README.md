@@ -8,7 +8,7 @@
 [![Docker](https://img.shields.io/badge/docker-supported-0db7ed.svg)](https://www.docker.com/)
 [![Conda](https://img.shields.io/badge/conda-supported-green.svg)](https://conda.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-3.0-blue.svg)](https://github.com/serhataktay/tracktx-nf/releases)
+[![Version](https://img.shields.io/badge/version-3.0-blue.svg)](https://github.com/serhataktay/tracktx/releases)
 
 </div>
 
@@ -172,8 +172,8 @@ graph LR
 
 ```bash
 # Install Docker Desktop: https://docs.docker.com/get-docker/
-git clone https://github.com/serhataktay/tracktx-nf.git
-cd tracktx-nf
+git clone https://github.com/serhataktay/tracktx.git
+cd tracktx
 ./run_pipeline.sh  # Auto-detects Docker
 ```
 
@@ -181,8 +181,8 @@ cd tracktx-nf
 
 ```bash
 # Install Miniconda: https://docs.conda.io/en/latest/miniconda.html
-git clone https://github.com/serhataktay/tracktx-nf.git
-cd tracktx-nf
+git clone https://github.com/serhataktay/tracktx.git
+cd tracktx
 ./run_pipeline.sh  # Auto-detects Conda
 ```
 
@@ -434,7 +434,7 @@ conda clean --all --yes
 1. **Check logs**: `.nextflow.log` in the working directory
 2. **Review trace**: `results/trace/report.html` for resource issues
 3. **Monitor live**: `python3 nfmon.py` to see what's happening
-4. **GitHub Issues**: [Report bugs](https://github.com/serhataktay/tracktx-nf/issues)
+4. **GitHub Issues**: [Report bugs](https://github.com/serhataktay/tracktx/issues)
 
 **Contributors:** See [HOW.md](HOW.md) for data flow, tester notes, and pre-launch checklist.
 
@@ -470,6 +470,6 @@ TrackTx is released under the [MIT License](LICENSE).
 
 **⭐ Star this repo if TrackTx is useful for your research!**
 
-[Issues](https://github.com/serhataktay/tracktx-nf/issues) • [Releases](https://github.com/serhataktay/tracktx-nf/releases)
+[Issues](https://github.com/serhataktay/tracktx/issues) • [Releases](https://github.com/serhataktay/tracktx/releases)
 
 </div>

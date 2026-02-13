@@ -567,8 +567,10 @@ workflow TrackTx {
     tuple(sid, tuple(file(ap3), file(an3)))
   }
 
-  norm_allmap5_kv = aligned_ch.map { sid, fb, ab, sb, c, t, r ->
-    tuple(sid, tuple(file(noBGAm5pPosPath), file(noBGAm5pNegPath)))
+  norm_allmap5_kv = allmap5p_pair_ch.map { sid, ap5, an5, bwp, bwn, c, t, r ->
+    def ap5_file = (ap5 && file(ap5).exists() && file(ap5).size() > 0) ? file(ap5) : file(noBGAm5pPosPath)
+    def an5_file = (an5 && file(an5).exists() && file(an5).size() > 0) ? file(an5) : file(noBGAm5pNegPath)
+    tuple(sid, tuple(ap5_file, an5_file))
   }
 
   // Join using sample_id as key only, rebuild full tuple at end

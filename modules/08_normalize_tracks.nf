@@ -9,7 +9,7 @@
 //   • CPM normalization: Counts per million mapped reads
 //   • siCPM normalization: Spike-in normalized CPM
 //   • Processes both main and allMap BAM tracks
-//   • Handles 3' tracks (always) and 5' tracks (PE only)
+//   • Handles 3' tracks (always) and 5' tracks (always)
 //   • Single-pass scaling for efficiency
 //   • Optional BigWig generation
 //   • Comprehensive manifest of all outputs
@@ -41,7 +41,7 @@
 //     │   ├── ${sample_id}.3p.neg.sicpm.bw
 //     │   ├── ${sample_id}.allMap.3p.*.bedgraph (if emit_allmap)
 //     │   └── ${sample_id}.allMap.3p.*.bw (if emit_allmap)
-//     ├── 5p/ (PE only or if emit_5p=true)
+//     ├── 5p/ (if emit_5p or auto-detected)
 //     │   └── [same structure as 3p/]
 //     ├── normalization_factors.tsv
 //     ├── tracks_manifest.tsv

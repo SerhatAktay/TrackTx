@@ -20,7 +20,7 @@
 //
 // Coverage Types:
 //   3' end: Always generated (PRO-seq standard)
-//   5' end: Paired-end only (R2 alignment start positions)
+//   5' end: Always generated (PE and SE; bedtools genomecov -5)
 //
 // Inputs:
 //   tuple(sample_id, filtered_bam, spikein_bam, condition, timepoint, replicate)
@@ -39,7 +39,7 @@
 //     │   ├── ${sample_id}.allMap.3p.neg.bedgraph
 //     │   ├── ${sample_id}.allMap.3p.pos.bw
 //     │   └── ${sample_id}.allMap.3p.neg.bw
-//     ├── 5p/ (PE only; SE creates empty placeholders)
+//     ├── 5p/
 //     │   └── [same structure as 3p/]
 //     ├── ${sample_id}.dedup_stats.txt
 //     ├── ${sample_id}.README_tracks.txt
@@ -91,12 +91,12 @@ process generate_tracks {
           val(condition), val(timepoint), val(replicate),
           emit: bw3p_pair
 
-    // Main 5' tracks (PE only)
+    // Main 5' tracks
     tuple val(sample_id),
-          path("5p/${sample_id}.5p.pos.bedgraph", optional: true),
-          path("5p/${sample_id}.5p.neg.bedgraph", optional: true),
-          path("5p/${sample_id}.5p.pos.bw", optional: true),
-          path("5p/${sample_id}.5p.neg.bw", optional: true),
+          path("5p/${sample_id}.5p.pos.bedgraph"),
+          path("5p/${sample_id}.5p.neg.bedgraph"),
+          path("5p/${sample_id}.5p.pos.bw"),
+          path("5p/${sample_id}.5p.neg.bw"),
           val(condition), val(timepoint), val(replicate),
           emit: bw5p_pair
 
@@ -109,12 +109,12 @@ process generate_tracks {
           val(condition), val(timepoint), val(replicate),
           emit: allmap3p_pair
 
-    // allMap 5' tracks (PE only)
+    // allMap 5' tracks
     tuple val(sample_id),
-          path("5p/${sample_id}.allMap.5p.pos.bedgraph", optional: true),
-          path("5p/${sample_id}.allMap.5p.neg.bedgraph", optional: true),
-          path("5p/${sample_id}.allMap.5p.pos.bw", optional: true),
-          path("5p/${sample_id}.allMap.5p.neg.bw", optional: true),
+          path("5p/${sample_id}.allMap.5p.pos.bedgraph"),
+          path("5p/${sample_id}.allMap.5p.neg.bedgraph"),
+          path("5p/${sample_id}.allMap.5p.pos.bw"),
+          path("5p/${sample_id}.allMap.5p.neg.bw"),
           val(condition), val(timepoint), val(replicate),
           emit: allmap5p_pair
 
@@ -123,8 +123,8 @@ process generate_tracks {
           path(filtered_bam), path(spikein_bam),
           path("3p/${sample_id}.3p.pos.bedgraph"),
           path("3p/${sample_id}.3p.neg.bedgraph"),
-          path("5p/${sample_id}.5p.pos.bedgraph", optional: true),
-          path("5p/${sample_id}.5p.neg.bedgraph", optional: true),
+          path("5p/${sample_id}.5p.pos.bedgraph"),
+          path("5p/${sample_id}.5p.neg.bedgraph"),
           val(condition), val(timepoint), val(replicate),
           emit: track_tuple
 
@@ -249,10 +249,7 @@ process generate_tracks {
   echo "TRACKS | VALIDATE | AllMap BAM reads: ${ALLMAP_READS}"
 
   # Create output directories
-  mkdir -p 3p
-  if [[ "${IS_PE}" == "true" ]]; then
-    mkdir -p 5p
-  fi
+  mkdir -p 3p 5p
   echo "TRACKS | VALIDATE | Output directories created"
 
   ###########################################################################
@@ -519,50 +516,28 @@ process generate_tracks {
   echo "TRACKS | 3P | 3' end coverage complete"
 
   ###########################################################################
-  # 7) GENERATE 5' END COVERAGE (Paired-end only)
+  # 7) GENERATE 5' END COVERAGE (Always — PE and SE)
   ###########################################################################
 
   echo "────────────────────────────────────────────────────────────────────────"
-  if [[ "${IS_PE}" == "true" ]]; then
-    echo "TRACKS | 5P | Generating 5' end coverage tracks..."
-    echo "────────────────────────────────────────────────────────────────────────"
-    
-    # Main BAM
-    echo "TRACKS | 5P | Processing main BAM..."
-    if ! generate_coverage "${INPUT_BAM}" "5" "5p/${SAMPLE_ID}.5p"; then
-      echo "TRACKS | ERROR | Failed to generate 5' coverage from main BAM"
-      exit 1
-    fi
-    
-    # AllMap BAM
-    echo "TRACKS | 5P | Processing allMap BAM..."
-    if ! generate_coverage "${ALLMAP_BAM}" "5" "5p/${SAMPLE_ID}.allMap.5p"; then
-      echo "TRACKS | ERROR | Failed to generate 5' coverage from allMap BAM"
-      exit 1
-    fi
-    
-    echo "TRACKS | 5P | 5' end coverage complete"
-  else
-    echo "TRACKS | 5P | Skipping 5' end coverage (single-end mode)"
-    echo "────────────────────────────────────────────────────────────────────────"
-    echo "TRACKS | 5P | Creating empty placeholder files for downstream compatibility"
-    
-    # Create 5p directory if not already created
-    mkdir -p 5p
-    
-    # Create empty placeholder files (required for downstream modules)
-    # Note: optional=true in output declarations doesn't work as intended
-    touch "5p/${SAMPLE_ID}.5p.pos.bedgraph"
-    touch "5p/${SAMPLE_ID}.5p.neg.bedgraph"
-    touch "5p/${SAMPLE_ID}.5p.pos.bw"
-    touch "5p/${SAMPLE_ID}.5p.neg.bw"
-    touch "5p/${SAMPLE_ID}.allMap.5p.pos.bedgraph"
-    touch "5p/${SAMPLE_ID}.allMap.5p.neg.bedgraph"
-    touch "5p/${SAMPLE_ID}.allMap.5p.pos.bw"
-    touch "5p/${SAMPLE_ID}.allMap.5p.neg.bw"
-    
-    echo "TRACKS | 5P | Placeholder files created"
+  echo "TRACKS | 5P | Generating 5' end coverage tracks..."
+  echo "────────────────────────────────────────────────────────────────────────"
+
+  # Main BAM
+  echo "TRACKS | 5P | Processing main BAM..."
+  if ! generate_coverage "${INPUT_BAM}" "5" "5p/${SAMPLE_ID}.5p"; then
+    echo "TRACKS | ERROR | Failed to generate 5' coverage from main BAM"
+    exit 1
   fi
+
+  # AllMap BAM
+  echo "TRACKS | 5P | Processing allMap BAM..."
+  if ! generate_coverage "${ALLMAP_BAM}" "5" "5p/${SAMPLE_ID}.allMap.5p"; then
+    echo "TRACKS | ERROR | Failed to generate 5' coverage from allMap BAM"
+    exit 1
+  fi
+
+  echo "TRACKS | 5P | 5' end coverage complete"
 
   ###########################################################################
   # 8) CREATE DOCUMENTATION
@@ -583,7 +558,7 @@ OVERVIEW
   
   Track Types:
     • 3' end coverage: Always generated (PRO-seq standard)
-    • 5' end coverage: Generated for paired-end data only
+    • 5' end coverage: Always generated (PE and SE)
   
   BAM Sources:
     • Main BAM: Primary alignments !{params.umi?.enabled ? 'with UMI deduplication' : '(duplicates retained)'}
@@ -617,7 +592,7 @@ FILES
   3p/!{sample_id}.allMap.3p.pos.bw       — BigWig format
   3p/!{sample_id}.allMap.3p.neg.bw       — BigWig format
 
-5' End Coverage (Paired-End Only):
+5' End Coverage:
   5p/!{sample_id}.5p.pos.bedgraph        — Main BAM positive strand
   5p/!{sample_id}.5p.neg.bedgraph        — Main BAM negative strand (mirrored)
   5p/!{sample_id}.5p.pos.bw              — BigWig format
@@ -627,9 +602,6 @@ FILES
   5p/!{sample_id}.allMap.5p.neg.bedgraph — AllMap BAM negative strand (mirrored)
   5p/!{sample_id}.allMap.5p.pos.bw       — BigWig format
   5p/!{sample_id}.allMap.5p.neg.bw       — BigWig format
-
-  Note: For single-end data, 5p/ directory contains empty placeholder files
-        for downstream pipeline compatibility.
 
 Statistics:
   !{sample_id}.dedup_stats.txt       — UMI deduplication statistics
@@ -722,19 +694,14 @@ QUALITY CHECKS
 ────────────────────────────────────────────────────────────────────────────
 
 Expected Output:
-  • Paired-end: 16 bedGraph + 16 BigWig files (32 total)
+  • 16 bedGraph + 16 BigWig files (32 total) for both PE and SE
     - 8 files for 3' end coverage (4 main + 4 allMap)
     - 8 files for 5' end coverage (4 main + 4 allMap)
-  • Single-end: 8 bedGraph + 8 BigWig files (16 total)
-    - 8 files for 3' end coverage only
-    - 5' directory contains empty placeholder files
 
 Troubleshooting:
   • Empty bedGraph: Check if BAM has mapped reads
   • BigWig conversion failure: bedGraph sorting issue (automatically handled)
-  • Missing 5' tracks: Normal for single-end data (placeholders created)
   • Large file sizes: Expected for high-coverage samples
-  • Empty 5' placeholders: Normal for SE mode (downstream compatibility)
 
 TECHNICAL NOTES
 ────────────────────────────────────────────────────────────────────────────
@@ -743,7 +710,6 @@ TECHNICAL NOTES
   • Chromosome sizes from BAM header ensure coordinate consistency
   • BigWig creation uses 600-second timeout for large genomes
   • bedGraph sorting is mandatory (automatically performed)
-  • Empty placeholders ensure downstream module compatibility
 
 PARAMETERS USED
 ────────────────────────────────────────────────────────────────────────────
@@ -776,14 +742,9 @@ DOCEOF
   BG_COUNT=$(find 3p 5p -name "*.bedgraph" -type f 2>/dev/null | wc -l | tr -d ' ')
   BW_COUNT=$(find 3p 5p -name "*.bw" -type f 2>/dev/null | wc -l | tr -d ' ')
 
-  # Expected file counts
-  if [[ "${IS_PE}" == "true" ]]; then
-    EXPECTED_BG=16  # 8 for 3p + 8 for 5p
-    EXPECTED_BW=16
-  else
-    EXPECTED_BG=16  # 8 for 3p + 8 placeholders for 5p
-    EXPECTED_BW=16
-  fi
+  # Expected file counts (8 for 3p + 8 for 5p, both PE and SE)
+  EXPECTED_BG=16
+  EXPECTED_BW=16
 
   echo "TRACKS | VALIDATE | bedGraph files: ${BG_COUNT}/${EXPECTED_BG}"
   echo "TRACKS | VALIDATE | BigWig files: ${BW_COUNT}/${EXPECTED_BW}"
@@ -809,7 +770,7 @@ DOCEOF
     fi
   done
 
-  # Check that 5' files exist (may be empty for SE)
+  # Check that 5' files exist
   for file in \
     "5p/${SAMPLE_ID}.5p.pos.bedgraph" \
     "5p/${SAMPLE_ID}.5p.neg.bedgraph" \
@@ -841,16 +802,11 @@ DOCEOF
   echo "TRACKS | SUMMARY | Processing Complete"
   echo "────────────────────────────────────────────────────────────────────────"
   echo "TRACKS | SUMMARY | Sample: ${SAMPLE_ID}"
-  echo "TRACKS | SUMMARY | Library type: $([ "${IS_PE}" == "true" ] && echo "PE (3' + 5')" || echo "SE (3' only)")"
+  echo "TRACKS | SUMMARY | Library type: $([ "${IS_PE}" == "true" ] && echo "Paired-end" || echo "Single-end") (3' + 5')"
   echo "TRACKS | SUMMARY | UMI dedup: ${UMI_ENABLED}"
   echo "TRACKS | SUMMARY | bedGraph files: ${BG_COUNT}"
   echo "TRACKS | SUMMARY | BigWig files: ${BW_COUNT}"
   echo "TRACKS | SUMMARY | Total output size: $(du -sh . 2>/dev/null | cut -f1 || echo "unknown")"
-  
-  if [[ "${IS_PE}" != "true" ]]; then
-    echo "TRACKS | SUMMARY | Note: 5' tracks are placeholders (SE mode)"
-  fi
-  
   echo "────────────────────────────────────────────────────────────────────────"
 
   TIMESTAMP_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
