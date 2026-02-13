@@ -168,8 +168,12 @@ if (params.spikein_genome == 'other' && !params.spikein_fasta) {
   error "PIPELINE | ERROR | When spikein_genome=other, must provide --spikein_fasta"
 }
 
-// Validate samplesheet exists
-if (!file(params.samplesheet).exists()) {
+// Validate samplesheet exists (resolve relative paths from projectDir)
+def samplesheetPath = params.samplesheet?.trim()
+def samplesheetFile = samplesheetPath && new File(samplesheetPath).isAbsolute() 
+  ? file(samplesheetPath) 
+  : file("${projectDir}/${samplesheetPath ?: 'samplesheet.csv'}")
+if (!samplesheetFile.exists()) {
   error "PIPELINE | ERROR | Samplesheet not found: ${params.samplesheet}"
 }
 
@@ -199,6 +203,14 @@ include { generate_reports                     } from "${MOD}/14_generate_report
 include { combine_reports                      } from "${MOD}/15_combine_reports.nf"
 
 // log.info "PIPELINE | IMPORT | All modules loaded successfully"
+
+// Resolve local FASTQ path: use as-is if absolute, else relative to projectDir
+def resolveLocalPath(path) {
+  if (!path?.trim()) return null
+  def p = path.trim()
+  def f = new File(p)
+  return f.isAbsolute() ? file(p) : file("${projectDir}/${p}")
+}
 
 // ============================================================================
 // MAIN WORKFLOW
@@ -238,7 +250,7 @@ workflow TrackTx {
 
   // Use .tap() to duplicate channel for counting without consuming it
   samples_ch = Channel
-    .fromPath(params.samplesheet)
+    .fromPath(samplesheetFile)
     .splitCsv(header: true)
     .map { row ->
       // Validate required fields
@@ -254,18 +266,18 @@ workflow TrackTx {
       // Build sample ID with replicate
       def sample_id = "${row.sample}_r${row.replicate ?: 1}"
       
-      // Build reads list based on source
+      // Build reads list based on source (supports absolute or relative paths for local files)
       def reads = (params.sample_source == 'srr')
         ? [row.file1.trim(), row.file2?.trim()]
         : (params.paired_end 
-            ? [file("${projectDir}/${row.file1}"), file("${projectDir}/${row.file2}")] 
-            : [file("${projectDir}/${row.file1}")])
+            ? [resolveLocalPath(row.file1), resolveLocalPath(row.file2)] 
+            : [resolveLocalPath(row.file1)])
       
       tuple(
         sample_id,
         reads,
-        row.sample,            // condition
-        row.timepoint,
+        (row.treatment ?: row.condition ?: row.sample) ?: '',  // condition (treatment/condition column)
+        row.timepoint ?: '',
         row.replicate ?: 1
       )
     }
@@ -711,10 +723,10 @@ workflow TrackTx {
   // log.info "STEP 12 | CONFIG | Input: Normalized CPM/siCPM tracks + functional regions"
 
   // Prepare Pol-II inputs (uses normalized CPM/siCPM tracks)
-  // Build proper siCPM file references based on normalize_tracks outputs
-  pol2_input_ch = aligned_ch
-    .map { sid, filt_bam, all, spike, c, t, r ->
-      tuple(sid, tuple(filt_bam, c, t, r))
+  // Use BAM from generate_tracks (same BAM as density/tracks; deduped when UMI on)
+  pol2_input_ch = generate_tracks.out.bam_for_tracks
+    .map { sid, bam, c, t, r ->
+      tuple(sid, tuple(bam, c, t, r))
     }
     .join(functional_regions_bed_ch)
     .join(

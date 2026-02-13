@@ -6,7 +6,7 @@
 //   Downloads and converts SRA accessions to FASTQ files
 //
 // Features:
-//   • Intelligent caching - reuses existing FASTQs from previous runs
+//   • Nextflow work/ caching - use -resume to reuse downloaded FASTQs
 //   • Multi-threaded conversion with fasterq-dump
 //   • Optional compression with pigz
 //   • Robust validation with header checks
@@ -14,7 +14,7 @@
 //   • Per-sample provenance documentation
 //
 // Workflow:
-//   1. Check for cached FASTQs in output directory
+//   1. Check for cached FASTQs (Nextflow -resume reuses work/ outputs)
 //   2. Prefetch SRA data (optional, best-effort)
 //   3. Convert with fasterq-dump (multi-threaded)
 //   4. Normalize filenames (_1/_2 → _R1/_R2)
@@ -77,10 +77,13 @@ process download_srr {
           val(paired_end)
 
   // ── Outputs ───────────────────────────────────────────────────────────────
+  // We always emit _R1.fastq and _R2.fastq. When compression is on, the script
+  // creates symlinks .fastq -> .fastq.gz so downstream tools (which auto-detect
+  // gzip via magic bytes) receive a consistent path without Nextflow brace-expansion issues.
   output:
     tuple val(sample_id),
-          path("${sra_id}_R1.fastq{,.gz}"),
-          path("${sra_id}_R2.fastq{,.gz}"),
+          path("${sra_id}_R1.fastq"),
+          path("${sra_id}_R2.fastq"),
           val(condition), val(timepoint), val(replicate)
 
     path "${sra_id}*.md5",    optional: true, emit: checksums_md5
@@ -117,8 +120,9 @@ process download_srr {
   # SRA settings
   SRA_TMP="!{params.sra_tmp ?: ''}"
   SRA_MAX_SIZE="!{params.sra_max_size ?: '200G'}"
+  SRA_SOURCE="!{params.sra_download_source ?: 'auto'}"
   
-  # Output directory for caching
+  # Cache check looks in output dir (for -resume, Nextflow reuses work/ outputs)
   CACHE_DIR="!{params.output_dir}/01_trimmed_fastq"
   mkdir -p "${CACHE_DIR}"
 
@@ -185,78 +189,89 @@ process download_srr {
   # Only download if R1 doesn't exist yet
   if [[ ! -e "${SRR}_R1.fastq" && ! -e "${SRR}_R1.fastq.gz" ]]; then
     
-    # ── Step 4a: Prefetch (optional, best-effort) ──
-    if [[ ${HAVE_PREFETCH} -eq 1 ]]; then
-      echo "SRR | PREFETCH | Downloading SRA file for ${SRR}..."
-      echo "SRR | PREFETCH | Max size: ${SRA_MAX_SIZE}"
-      
-      if prefetch -O . --verify yes --max-size "${SRA_MAX_SIZE}" "${SRR}" 2>&1 | \
-         grep -v "^|" | grep -v "^2025" | grep -v "^$"; then
-        echo "SRR | PREFETCH | Download successful"
+    TRY_ENA=0
+    if [[ "${SRA_SOURCE}" == "ena" ]]; then
+      TRY_ENA=1
+      echo "SRR | SOURCE | Using ENA (European Nucleotide Archive) for download"
+    fi
+    
+    # ── Try NCBI (unless ena-only) ──
+    NCBI_OK=0
+    if [[ ${TRY_ENA} -eq 0 ]]; then
+      if [[ ${HAVE_PREFETCH} -eq 1 ]]; then
+        echo "SRR | PREFETCH | Downloading SRA file for ${SRR}..."
+        prefetch -O . --verify yes --max-size "${SRA_MAX_SIZE}" "${SRR}" 2>&1 | grep -v "^|" | grep -v "^202" | grep -v "^$" || true
+      fi
+      echo "SRR | CONVERT | Converting SRA to FASTQ (fasterq-dump)..."
+      FASTQ_OUTPUT=\$(mktemp)
+      TEMP_ARG=""
+      [[ -n "${SRA_TMP}" ]] && mkdir -p "${SRA_TMP}" && TEMP_ARG="--temp ${SRA_TMP}"
+      if [[ -n "\${TEMP_ARG}" ]]; then
+        fasterq-dump --split-files -e "${THREADS}" \${TEMP_ARG} -O . "${SRR}" 2>&1 | tee "\${FASTQ_OUTPUT}" || true
       else
-        echo "SRR | PREFETCH | Prefetch failed or incomplete, will stream directly"
+        fasterq-dump --split-files -e "${THREADS}" -O . "${SRR}" 2>&1 | tee "\${FASTQ_OUTPUT}" || true
+      fi
+      grep -E "spots read|reads read|reads written" "\${FASTQ_OUTPUT}" 2>/dev/null || true
+      rm -f "\${FASTQ_OUTPUT}"
+      [[ -f "${SRR}_1.fastq" || -f "${SRR}_2.fastq" || -f "${SRR}.fastq" ]] && NCBI_OK=1
+    fi
+    
+    # ── Fallback to ENA if NCBI failed (or ena-only) ──
+    if [[ ${NCBI_OK} -eq 0 && ( ${TRY_ENA} -eq 1 || "${SRA_SOURCE}" == "auto" ) ]]; then
+      echo "SRR | ENA | Downloading from ENA (NCBI unavailable or ena-only mode)..."
+      ENA_REPORT=\$(mktemp)
+      if curl -sf "https://www.ebi.ac.uk/ena/portal/api/filereport?accession=${SRR}&result=read_run&fields=fastq_ftp" -o "\${ENA_REPORT}" 2>/dev/null; then
+        ENA_FTP=\$(tail -n 1 "\${ENA_REPORT}" | cut -f2)
+        rm -f "\${ENA_REPORT}"
+        if [[ -n "\${ENA_FTP}" && "\${ENA_FTP}" != "fastq_ftp" ]]; then
+          IX=0
+          for URL in \$(echo "\${ENA_FTP}" | tr ';' ' '); do
+            [[ -z "\${URL}" ]] && continue
+            IX=$((IX+1))
+            FNAME="\${URL##*/}"
+            FURL="https://\${URL}"
+            echo "SRR | ENA | Downloading file \${IX}: \${FNAME}"
+            if curl -sfL "\${FURL}" -o "\${FNAME}" 2>/dev/null; then
+              echo "SRR | ENA | Downloaded \${FNAME}"
+            else
+              echo "SRR | ENA | HTTPS failed, trying FTP..."
+              curl -sfL "ftp://\${URL}" -o "\${FNAME}"
+            fi
+          done
+          NCBI_OK=1
+        else
+          echo "SRR | ENA | No FASTQ URLs in ENA report"
+        fi
+      else
+        rm -f "\${ENA_REPORT}"
+        echo "SRR | ENA | Failed to fetch ENA filereport"
       fi
     fi
-
-    # ── Step 4b: Convert to FASTQ with fasterq-dump ──
-    echo "SRR | CONVERT | Converting SRA to FASTQ format..."
-    echo "SRR | CONVERT | Using fasterq-dump with ${THREADS} threads"
-
-    # Setup temp directory if specified
-    if [[ -n "${SRA_TMP}" ]]; then
-      mkdir -p "${SRA_TMP}"
-      echo "SRR | CONVERT | Temp directory: ${SRA_TMP}"
-      TEMP_ARG="--temp ${SRA_TMP}"
-    else
-      echo "SRR | CONVERT | Using default temp directory"
-      TEMP_ARG=""
-    fi
-
-    # Run fasterq-dump with proper error capture
-    echo "SRR | CONVERT | Running fasterq-dump --split-files..."
     
-    FASTQ_OUTPUT=$(mktemp)
-    FASTQ_EXIT=0
-    
-    if [[ -n "${TEMP_ARG}" ]]; then
-      fasterq-dump --split-files -e "${THREADS}" ${TEMP_ARG} -O . "${SRR}" 2>&1 | tee "${FASTQ_OUTPUT}" || FASTQ_EXIT=$?
-    else
-      fasterq-dump --split-files -e "${THREADS}" -O . "${SRR}" 2>&1 | tee "${FASTQ_OUTPUT}" || FASTQ_EXIT=$?
-    fi
-    
-    # Check for errors
-    if [[ ${FASTQ_EXIT} -ne 0 ]]; then
-      echo "SRR | ERROR | fasterq-dump failed with exit code ${FASTQ_EXIT}"
-      echo "SRR | ERROR | Full output:"
-      cat "${FASTQ_OUTPUT}"
-      rm -f "${FASTQ_OUTPUT}"
-      exit 1
-    fi
-    
-    # Show summary stats only
-    grep -E "spots read|reads read|reads written" "${FASTQ_OUTPUT}" || true
-    rm -f "${FASTQ_OUTPUT}"
-
-    echo "SRR | CONVERT | Conversion complete"
-
-    # ── Step 4c: Normalize filenames ──
+    # ── Normalize filenames ──
     echo "SRR | CONVERT | Normalizing FASTQ filenames..."
-    
-    # Handle different output patterns from fasterq-dump
     if [[ -f "${SRR}_1.fastq" ]]; then
       mv -f "${SRR}_1.fastq" "${SRR}_R1.fastq"
-      echo "SRR | CONVERT | Renamed ${SRR}_1.fastq → ${SRR}_R1.fastq"
+    elif [[ -f "${SRR}_1.fastq.gz" ]]; then
+      mv -f "${SRR}_1.fastq.gz" "${SRR}_R1.fastq.gz"
     fi
-    
     if [[ -f "${SRR}_2.fastq" ]]; then
       mv -f "${SRR}_2.fastq" "${SRR}_R2.fastq"
-      echo "SRR | CONVERT | Renamed ${SRR}_2.fastq → ${SRR}_R2.fastq"
+    elif [[ -f "${SRR}_2.fastq.gz" ]]; then
+      mv -f "${SRR}_2.fastq.gz" "${SRR}_R2.fastq.gz"
     fi
-    
     if [[ -f "${SRR}.fastq" ]]; then
       mv -f "${SRR}.fastq" "${SRR}_R1.fastq"
-      echo "SRR | CONVERT | Renamed ${SRR}.fastq → ${SRR}_R1.fastq"
+    elif [[ -f "${SRR}.fastq.gz" ]]; then
+      mv -f "${SRR}.fastq.gz" "${SRR}_R1.fastq.gz"
     fi
+    
+    # Validate we got files
+    if [[ ! -e "${SRR}_R1.fastq" && ! -e "${SRR}_R1.fastq.gz" ]]; then
+      echo "SRR | ERROR | Download failed from both NCBI and ENA"
+      exit 1
+    fi
+    echo "SRR | CONVERT | Conversion complete"
 
   else
     echo "SRR | CONVERT | Skipping download, using cached files"
@@ -283,6 +298,14 @@ process download_srr {
   else
     echo "SRR | COMPRESS | Compression disabled, FASTQs will remain uncompressed"
   fi
+
+  # Ensure .fastq outputs exist for Nextflow (when compressed, symlink .fastq -> .fastq.gz)
+  for F in "${SRR}_R1.fastq" "${SRR}_R2.fastq"; do
+    if [[ -f "${F}.gz" && ! -e "${F}" ]]; then
+      ln -sf "$(basename "${F}.gz")" "${F}"
+      echo "SRR | OUTPUT | Created symlink ${F} -> ${F}.gz"
+    fi
+  done
 
   ###########################################################################
   # 6) VALIDATE OUTPUT FILES
@@ -416,8 +439,8 @@ FILES
 
 CACHING
 ────────────────────────────────────────────────────────────────────────────
-  These files are cached in the output directory for reuse across pipeline runs.
-  Nextflow will automatically detect and reuse these files with -resume.
+  Files remain in Nextflow work/ directory. Use -resume to reuse cached outputs
+  and skip re-download on reruns.
 
 NOTES
 ────────────────────────────────────────────────────────────────────────────

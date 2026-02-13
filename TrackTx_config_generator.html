@@ -240,6 +240,14 @@
         </div>
       </div>
       
+      <!-- Local file options -->
+      <div id="localOptions" style="display:none" class="mt-4">
+        <div class="section-header">Local FASTQ Files</div>
+        <div class="help-box">
+          Enter the path to each FASTQ file. <strong>Absolute path</strong> recommended (e.g. <code>/Users/you/data/sample_R1.fastq.gz</code>) — copy from your file manager (right‑click → Copy path) and paste. Relative paths work too (relative to where you run the pipeline).
+        </div>
+      </div>
+      
       <!-- SRA Options -->
       <div id="sraOptions" style="display:none" class="mt-4">
         <div class="section-header">SRA Download Options</div>
@@ -265,6 +273,19 @@
               <label class="label">Max Prefetch Size</label>
               <input class="input small-input" id="sra_max_size" value="200G">
               <p class="help">Maximum size to prefetch from SRA (e.g., 200G, 500G).</p>
+            </div>
+          </div>
+          <div class="column">
+            <div class="field">
+              <label class="label">Download Source</label>
+              <div class="select">
+                <select id="sra_download_source">
+                  <option value="auto" selected>Auto (NCBI, fallback to ENA)</option>
+                  <option value="ena">ENA only (European Nucleotide Archive)</option>
+                  <option value="ncbi">NCBI only</option>
+                </select>
+              </div>
+              <p class="help">Use ENA if NCBI SRA is unreachable (firewall, network issues).</p>
             </div>
           </div>
         </div>
@@ -921,6 +942,7 @@ function setAdapterPreset(){
 function toggleSraOptions(){
   const show = (source() === 'srr');
   toggleBlock('sraOptions', show);
+  toggleBlock('localOptions', source() === 'local');
 }
 
 /* ====================== Samples UI ====================== */
@@ -936,10 +958,13 @@ function replicateHTML(){
         <strong>Replicate</strong>
         <div class="columns mt-2">
           <div class="column">
-            <input class="input rep-file1" placeholder="/full/path/to/R1.fastq or R1.fastq.gz">
+            <input class="input rep-file1" placeholder="/Users/you/data/sample_R1.fastq.gz">
             <p class="help">Full path to R1 FASTQ file (gzipped OK)</p>
           </div>
-          ${pe?'<div class="column"><input class="input rep-file2" placeholder="/full/path/to/R2.fastq or R2.fastq.gz"><p class="help">Full path to R2 FASTQ file</p></div>':''}
+          ${pe?`<div class="column">
+            <input class="input rep-file2" placeholder="/Users/you/data/sample_R2.fastq.gz">
+            <p class="help">Full path to R2 FASTQ file</p>
+          </div>`:''}
         </div>
       </div>`;
   }else{
@@ -1042,6 +1067,7 @@ function buildYAML(){
   const fastqGzip = $('#fastq_gzip').checked;
   const sraTmp = $('#sra_tmp').value.trim() || null;
   const sraMaxSize = $('#sra_max_size').value || '200G';
+  const sraSource = $('#sra_download_source').value || 'auto';
 
   const trimOn   = $('#enableAdapters').checked;
   let   preset   = $('#adapterPreset')?.value || '';
@@ -1124,7 +1150,8 @@ function buildYAML(){
   y += `# SRA download options\n`;
   y += `fastq_gzip: ${fastqGzip}\n`;
   y += `sra_tmp: ${sraTmp ? mono(sraTmp) : 'null'}\n`;
-  y += `sra_max_size: ${mono(sraMaxSize)}\n\n`;
+  y += `sra_max_size: ${mono(sraMaxSize)}\n`;
+  y += `sra_download_source: ${mono(sraSource)}\n\n`;
 
   y += `# Reference genomes\n`;
   y += `reference_genome: ${mono(refGenome)}\n`;
@@ -1212,7 +1239,7 @@ function buildYAML(){
 function buildCSV(){
   const pe = isPE();
   const src = source();
-  let csv = "sample,treatment,timepoint,replicate,file1,file2\n";
+  let csv = "sample,condition,timepoint,replicate,file1,file2\n";
   $$('#samplesContainer .sample-box').forEach((box,si)=>{
     const sname = box.querySelector('.sample-name').value || `Sample_${si+1}`;
     const treat = box.querySelector('.sample-treatment').value || '';

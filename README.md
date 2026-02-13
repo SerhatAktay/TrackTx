@@ -8,7 +8,7 @@
 [![Docker](https://img.shields.io/badge/docker-supported-0db7ed.svg)](https://www.docker.com/)
 [![Conda](https://img.shields.io/badge/conda-supported-green.svg)](https://conda.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.5-blue.svg)](https://github.com/SerhatAktay/TrackTx/releases)
+[![Version](https://img.shields.io/badge/version-3.0-blue.svg)](https://github.com/serhataktay/tracktx-nf/releases)
 
 </div>
 
@@ -16,7 +16,7 @@
 
 ## 📚 Contents
 
-- [🎉 What's New in v1.5](#-whats-new-in-v15)
+- [🎉 What's New in v3.0](#-whats-new-in-v30)
 - [⚡ Quick Start](#-quick-start)
 - [📊 What Does TrackTx Do?](#-what-does-tracktx-do)
 - [🔧 Installation](#-installation)
@@ -26,12 +26,13 @@
 - [⚙️ Execution Profiles](#-execution-profiles)
 - [⚡ Performance Optimization](#-performance-optimization)
 - [🔧 Troubleshooting](#-troubleshooting)
+- [📖 Documentation](#-documentation)
 - [🧬 Citation](#-citation)
 - [📜 License](#-license)
 
 ---
 
-## 🎉 What's New in v1.5
+## 🎉 What's New in v3.0
 
 ### 🔬 Statistical Divergent Transcription Detection
 - **Gaussian Mixture Models (GMM)** with FDR control for high-confidence region calling
@@ -75,15 +76,16 @@ Get started in **3 simple steps**:
 
 ### 1️⃣ Generate Configuration (Interactive, Recommended)
 
-Open the **TrackTx configuration generator** in your browser (this is the primary way to create `params.yaml` and `samplesheet.csv`):
+Open the **TrackTx configuration generator** in your browser:
 
 ```bash
-open TrackTx_config_generator.html  # macOS
-# Or double-click `TrackTx_config_generator.html` on any system
+open TrackTx_config_generator.html   # macOS
+# Or double-click the file on any system
 ```
 
 - Fill in your study details
-- Click **Export** to save `params.yaml` and `samplesheet.csv`
+- For local FASTQ files: enter the **full path** to each file (copy from your file manager → right-click → Copy path)
+- Click **Download ZIP** to save `params.yaml` and `samplesheet.csv`
 - Done!
 
 ### 2️⃣ Run Pipeline (Automatic)
@@ -150,6 +152,8 @@ graph LR
     F --> G[📊 Comprehensive Reports]
 ```
 
+**Pipeline overview:** See [HOW.md](HOW.md) for a step-by-step description of what happens to your data from raw FASTQ to final reports.
+
 **Key Features:**
 - 🎯 **Automated**: From raw reads to publication-ready figures
 - 🚀 **Fast**: Optimized for any system (laptop → HPC)
@@ -168,8 +172,8 @@ graph LR
 
 ```bash
 # Install Docker Desktop: https://docs.docker.com/get-docker/
-git clone https://github.com/SerhatAktay/TrackTx.git
-cd TrackTx
+git clone https://github.com/serhataktay/tracktx-nf.git
+cd tracktx-nf
 ./run_pipeline.sh  # Auto-detects Docker
 ```
 
@@ -177,8 +181,8 @@ cd TrackTx
 
 ```bash
 # Install Miniconda: https://docs.conda.io/en/latest/miniconda.html
-git clone https://github.com/SerhatAktay/TrackTx.git
-cd TrackTx
+git clone https://github.com/serhataktay/tracktx-nf.git
+cd tracktx-nf
 ./run_pipeline.sh  # Auto-detects Conda
 ```
 
@@ -197,23 +201,23 @@ cd TrackTx
 
 ### Sample Sheet (`samplesheet.csv`)
 
-```csv
-sample_id,condition,timepoint,replicate,file
-ctrl_rep1,control,0,1,data/ctrl_rep1.fastq
-heat_rep1,treatment,30,1,data/heat_rep1.fastq
-```
+Use the [config generator](TrackTx_config_generator.html) to create this, or format manually:
 
-**For paired-end data:**
 ```csv
-sample_id,condition,timepoint,replicate,file1,file2
+sample,condition,timepoint,replicate,file1,file2
 ctrl_rep1,control,0,1,data/ctrl_R1.fastq,data/ctrl_R2.fastq
+heat_rep1,treatment,30,1,data/heat_R1.fastq,data/heat_R2.fastq
 ```
 
-**For SRR downloads:**
+**Single-end:** Use `file1` only; `file2` can be empty.
+
+**For SRR downloads:** Put the SRR accession in `file1`:
 ```csv
-sample_id,condition,timepoint,replicate,srr
-sample1,control,0,1,SRR123456
+sample,condition,timepoint,replicate,file1,file2
+sample1,control,0,1,SRR123456,
 ```
+
+**Local files:** Use absolute paths (e.g. `/Users/you/data/sample_R1.fastq.gz`) or paths relative to the project directory.
 
 ### Parameters (`params.yaml`)
 
@@ -305,13 +309,13 @@ results/
 ### Time-Course Heat Shock
 
 ```bash
-# Create sample sheet
+# Create sample sheet (or use config generator)
 cat > timecourse.csv << EOF
-sample_id,condition,timepoint,replicate,file
-t0_r1,control,0,1,data/t0_r1.fastq
-t0_r2,control,0,2,data/t0_r2.fastq
-t30_r1,heat,30,1,data/t30_r1.fastq
-t30_r2,heat,30,2,data/t30_r2.fastq
+sample,condition,timepoint,replicate,file1,file2
+t0_r1,control,0,1,data/t0_r1.fastq,
+t0_r2,control,0,2,data/t0_r2.fastq,
+t30_r1,heat,30,1,data/t30_r1.fastq,
+t30_r2,heat,30,2,data/t30_r2.fastq,
 EOF
 
 ./run_pipeline.sh --samplesheet timecourse.csv
@@ -333,9 +337,9 @@ paired_end: false
 ### Download from SRA
 
 ```csv
-sample_id,condition,timepoint,replicate,srr
-sample1,control,0,1,SRR4454567
-sample2,treatment,30,1,SRR4454568
+sample,condition,timepoint,replicate,file1,file2
+sample1,control,0,1,SRR4454567,
+sample2,treatment,30,1,SRR4454568,
 ```
 
 ```bash
@@ -430,7 +434,18 @@ conda clean --all --yes
 1. **Check logs**: `.nextflow.log` in the working directory
 2. **Review trace**: `results/trace/report.html` for resource issues
 3. **Monitor live**: `python3 nfmon.py` to see what's happening
-4. **GitHub Issues**: [Report bugs](https://github.com/SerhatAktay/TrackTx/issues)
+4. **GitHub Issues**: [Report bugs](https://github.com/serhataktay/tracktx-nf/issues)
+
+**Contributors:** See [HOW.md](HOW.md) for data flow, tester notes, and pre-launch checklist.
+
+---
+
+## 📖 Documentation
+
+| Document | Description |
+|----------|-------------|
+| [HOW.md](HOW.md) | Data flow (raw input → output), tester notes, pre-launch checklist |
+| [TrackTx_config_generator.html](TrackTx_config_generator.html) | Interactive config and samplesheet generator |
 
 ---
 
@@ -455,6 +470,6 @@ TrackTx is released under the [MIT License](LICENSE).
 
 **⭐ Star this repo if TrackTx is useful for your research!**
 
-[Issues](https://github.com/SerhatAktay/TrackTx/issues) • [Releases](https://github.com/SerhatAktay/TrackTx/releases)
+[Issues](https://github.com/serhataktay/tracktx-nf/issues) • [Releases](https://github.com/serhataktay/tracktx-nf/releases)
 
 </div>

@@ -128,6 +128,10 @@ process generate_tracks {
           val(condition), val(timepoint), val(replicate),
           emit: track_tuple
 
+    // BAM used for tracks (deduped when UMI on; same as density/pausing source)
+    tuple val(sample_id), path("bam_for_downstream.bam"),
+          val(condition), val(timepoint), val(replicate), emit: bam_for_tracks
+
     // Logs and documentation
     tuple val(sample_id), path("${sample_id}.dedup_stats.txt"),
           val(condition), val(timepoint), val(replicate), emit: dedup_stats
@@ -454,6 +458,11 @@ process generate_tracks {
       echo "reads_removed=N/A"
     } > "${SAMPLE_ID}.dedup_stats.txt"
   fi
+
+  # Copy INPUT_BAM to named output for downstream (pol2 uses same BAM as tracks)
+  echo "TRACKS | OUTPUT | Copying BAM used for tracks (deduped when UMI on)..."
+  cp "${INPUT_BAM}" bam_for_downstream.bam
+  samtools index -@ ${THREADS} bam_for_downstream.bam
 
   ###########################################################################
   # 5) PREPARE GENOME SIZES

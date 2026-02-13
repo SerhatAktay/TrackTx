@@ -406,29 +406,52 @@ process qc_pol2_tracktx {
   if [[ -s "\${DEDUP_STATS}" ]]; then
     echo "QC | UMI | Parsing deduplication statistics..."
     
-    # Check if this is a real UMI dedup run by looking for Summary section
+    # Priority 1: Our appended Summary section (reads_before=, reads_after= from samtools)
+    # Use head -1 to avoid picking up stray matches; grep returns first match only
     if grep -q "=== Summary ===" "\${DEDUP_STATS}" 2>/dev/null; then
       UMI_ENABLED="true"
+      UMI_INPUT_READS=\$(grep "^reads_before=" "\${DEDUP_STATS}" 2>/dev/null | head -1 | cut -d= -f2 || echo 0)
+      UMI_OUTPUT_READS=\$(grep "^reads_after=" "\${DEDUP_STATS}" 2>/dev/null | head -1 | cut -d= -f2 || echo 0)
+      UMI_DUPLICATES_REMOVED=\$(grep "^reads_removed=" "\${DEDUP_STATS}" 2>/dev/null | head -1 | cut -d= -f2 || echo 0)
+      UMI_DEDUP_PERCENT=\$(grep "^percent_removed=" "\${DEDUP_STATS}" 2>/dev/null | head -1 | cut -d= -f2 || echo 0)
       
-      # Parse the Summary section which has actual read counts from samtools
-      UMI_INPUT_READS=\$(grep "^reads_before=" "\${DEDUP_STATS}" | \
-                         cut -d= -f2 || echo 0)
-      UMI_OUTPUT_READS=\$(grep "^reads_after=" "\${DEDUP_STATS}" | \
-                          cut -d= -f2 || echo 0)
-      UMI_DUPLICATES_REMOVED=\$(grep "^reads_removed=" "\${DEDUP_STATS}" | \
-                                cut -d= -f2 || echo 0)
-      
-      # Get percentage directly from summary if available, otherwise calculate
-      UMI_DEDUP_PERCENT=\$(grep "^percent_removed=" "\${DEDUP_STATS}" | \
-                           cut -d= -f2 || echo 0)
+      # Sanity: output must not exceed input (indicates parse error or N/A)
+      if [[ "\${UMI_INPUT_READS}" =~ ^[0-9]+\$ ]] && [[ "\${UMI_OUTPUT_READS}" =~ ^[0-9]+\$ ]] && [[ "\${UMI_OUTPUT_READS}" -gt "\${UMI_INPUT_READS}" ]] 2>/dev/null; then
+        echo "QC | UMI | WARNING: reads_after > reads_before — parsing may have failed, trying umi_tools native format"
+        UMI_INPUT_READS=0
+        UMI_OUTPUT_READS=0
+        UMI_DUPLICATES_REMOVED=0
+        UMI_DEDUP_PERCENT=0
+      fi
+      # Also reset if we got N/A or non-numeric
+      if [[ ! "\${UMI_INPUT_READS}" =~ ^[0-9]+\$ ]]; then
+        UMI_INPUT_READS=0
+      fi
+      if [[ ! "\${UMI_OUTPUT_READS}" =~ ^[0-9]+\$ ]]; then
+        UMI_OUTPUT_READS=0
+      fi
       
       # If percentage not in file, calculate it
-      if [[ "\${UMI_DEDUP_PERCENT}" == "0" && \${UMI_INPUT_READS} -gt 0 ]]; then
+      if [[ "\${UMI_DEDUP_PERCENT}" == "0" || "\${UMI_DEDUP_PERCENT}" == "0.00" ]] && [[ \${UMI_INPUT_READS} -gt 0 ]] 2>/dev/null; then
         UMI_DEDUP_PERCENT=\$(awk -v d=\${UMI_DUPLICATES_REMOVED} \
                                  -v t=\${UMI_INPUT_READS} \
                                  'BEGIN{printf "%.2f", 100.0*d/t}')
       fi
-      
+    fi
+    
+    # Priority 2: Fallback to umi_tools native log format (Input Reads: or Input reads:, Number of reads out:)
+    if [[ \${UMI_INPUT_READS:-0} -eq 0 || \${UMI_OUTPUT_READS:-0} -eq 0 ]] && grep -qiE "Input [Rr]eads:|Number of reads out:" "\${DEDUP_STATS}" 2>/dev/null; then
+      UMI_ENABLED="true"
+      UMI_INPUT_READS=\$(grep -i "Input Reads:" "\${DEDUP_STATS}" 2>/dev/null | tail -1 | sed -n 's/.*[Ii]nput [Rr]eads: *\\([0-9][0-9,]*\\).*/\\1/p' | tr -d ',' || echo 0)
+      UMI_OUTPUT_READS=\$(grep -i "Number of reads out:" "\${DEDUP_STATS}" 2>/dev/null | tail -1 | sed -n 's/.*[Nn]umber of reads out: *\\([0-9][0-9,]*\\).*/\\1/p' | tr -d ',' || echo 0)
+      if [[ \${UMI_INPUT_READS} -gt 0 ]] 2>/dev/null; then
+        UMI_DUPLICATES_REMOVED=\$((UMI_INPUT_READS - UMI_OUTPUT_READS))
+        UMI_DEDUP_PERCENT=\$(awk -v d=\${UMI_DUPLICATES_REMOVED} -v t=\${UMI_INPUT_READS} 'BEGIN{printf "%.2f", 100.0*d/t}')
+      fi
+      echo "QC | UMI | Parsed umi_tools native format (fallback)"
+    fi
+    
+    if [[ "\${UMI_ENABLED}" == "true" ]]; then
       echo "QC | UMI | UMI deduplication enabled"
       echo "QC | UMI | Input reads: \${UMI_INPUT_READS}"
       echo "QC | UMI | Output reads: \${UMI_OUTPUT_READS}"
@@ -504,8 +527,7 @@ process qc_pol2_tracktx {
   "umi_input_reads": \${UMI_INPUT_READS},
   "umi_output_reads": \${UMI_OUTPUT_READS},
   "umi_duplicates_removed": \${UMI_DUPLICATES_REMOVED},
-  "umi_deduplication_percent": \${UMI_DEDUP_PERCENT}\$([ \${IS_PAIRED} -eq 1 ] && echo ",
-  \\"median_fragment_length\\": \${MEDIAN_FRAG:-null}" || echo "")
+  "umi_deduplication_percent": \${UMI_DEDUP_PERCENT}\$([ \${IS_PAIRED} -eq 1 ] && echo ", \"median_fragment_length\": \${MEDIAN_FRAG:-null}" || echo "")
 }
 JSONEOF
 

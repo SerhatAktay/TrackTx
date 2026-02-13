@@ -248,9 +248,9 @@ def build_coordinate_lists(genes_tsv: str, tss_map: dict, tes_map: dict):
                 TWs = CPS - 10499              # CPS - 10499 (old script exact value)
                 TWe = CPS - 500
 
-            # Store gene info (use transcript length like old script: txEnd - txStart)
-            # Old script always uses txEnd - txStart regardless of strand
-            tx_length = tes - tss  # transcript length (old script: txEnd - txStart)
+            # Store gene info (use transcript length like old script: |txEnd - txStart|)
+            # For minus strand, tes < tss; use abs to avoid negative gene_length
+            tx_length = abs(tes - tss)
             gene_info = {
                 'gid': gid, 'gname': gname, 'chrom': chrom, 'strand': strand,
                 'gstart': gstart, 'gend': gend, 'TSS': TSS, 'CPS': CPS,

@@ -490,7 +490,7 @@ GENESEOF
 
   if [[ ! -s pausing_index.tsv ]]; then
     cat > pausing_index.tsv <<PAUSINGEOF
-gene_id chrom strand  tss_count gene_body_count pausing_index is_truncated
+gene_id	chrom	strand	tss_count	gene_body_count	pi_raw	pi_len_norm	is_truncated
 PAUSINGEOF
   fi
 
@@ -801,8 +801,9 @@ DOCEOF
   # Calculate some statistics if possible
   if [[ ${GENE_COUNT} -gt 0 && -s pausing_index.tsv ]]; then
     # Calculate median PI (excluding header and truncated)
+    # Use pi_len_norm (col 7) if 8-column format, else pi_raw (col 6); exclude truncated (last col)
     MEDIAN_PI=$(tail -n +2 pausing_index.tsv | \
-                awk -F'\t' '$NF!="True" && $6!="NA" && $6+0>0 {print $6}' | \
+                awk -F'\t' '$NF!="1" && $NF!="True" && ((NF>=8 && $7!="NA" && $7+0>0) || (NF==7 && $6!="NA" && $6+0>0)) {print (NF>=8?$7:$6)}' | \
                 sort -n | \
                 awk '{a[NR]=$1} END{print (NR%2==1)?a[(NR+1)/2]:(a[NR/2]+a[NR/2+1])/2}' || echo "NA")
   else

@@ -1058,7 +1058,8 @@ WRAP_DROP = [
     re.compile(r"^ulimit "), re.compile(r"^exec > "), re.compile(r"^nxf_"),
     re.compile(r"^NXF_"), re.compile(r"^CAPSULE:"), re.compile(r"^Picked up _JAVA_OPTIONS"),
     re.compile(r"^Warning: .*illegal reflective access"), re.compile(r"^INFO +\(.*Nextflow.*\)"),
-    re.compile(r"^ *\["), re.compile(r"read -t \d+ -r DONE")
+    re.compile(r"^ *\["), re.compile(r"read -t \d+ -r DONE"),
+    re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*"),  # VAR=value or VAR=$(...) - skip variable assignments
 ]
 
 def keep_line(s: str) -> bool:
@@ -1093,16 +1094,25 @@ def slurp_tail(path: str, n: int, scrub=True) -> List[str]:
         return []
 
 def payload_from(workdir: str) -> str:
-    """Extract actual command from task directory"""
+    """Extract actual command from task directory (skip var assignments, prefer real commands)"""
+    # Shell noise: variable assignments, control keywords, if/while/for conditions
+    PAYLOAD_SKIP = re.compile(
+        r"^(?:[A-Za-z_][A-Za-z0-9_]*=.*|\s*(?:fi|done|else|elif|then|esac)\s*$|"
+        r"\s*if\s+\[\[|\s*if\s+\[|\s*elif\s+\[\[|\s*elif\s+\[|\s*while\s+\[\[|\s*while\s+\[|\s*for\s+\w+\s+in)"
+    )
     for fn in (".command.sh", ".command.run"):
         p = os.path.join(workdir, fn)
         try:
-            last = ""
+            lines = []
             for ln in open(p, "r", encoding="utf-8", errors="ignore"):
                 if keep_line(ln):
-                    last = ln.strip()
-            if last:
-                return last
+                    lines.append(ln.strip())
+            # Prefer last line that looks like a real command
+            for ln in reversed(lines):
+                if ln and not PAYLOAD_SKIP.match(ln):
+                    return ln
+            if lines:
+                return lines[-1]
         except Exception:
             pass
     return "<no payload detected>"
@@ -1171,12 +1181,26 @@ def detect_stage_from_tail(lines: List[str]) -> Optional[str]:
             return ln.strip()
     return None
 
+def extract_timestamp_from_log(lines: List[str]) -> Optional[str]:
+    """Extract most recent timestamp from log (ts=YYYY-MM-DDTHH:MM:SSZ); prefer over script payload."""
+    for ln in reversed(lines or []):
+        m = re.search(r"ts=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)", ln)
+        if m:
+            ts = m.group(1)
+            if "COMPLETE" in ln:
+                return f"Completed {ts}"
+            if "START" in ln:
+                return f"Started {ts}"
+            return ts
+    return None
+
 def insight(d: str, tail_n: int) -> Tuple[str, List[str], List[Tuple[str, str]]]:
     """Bundle introspection: payload, log tail, outputs"""
-    payload = payload_from(d)
     user = newest_user_log(d)
     src = user or best_log_for_tail(d)
     tl = slurp_tail(src, tail_n, scrub=True) if src else ["<no output yet>"]
+    # Prefer actual timestamp from log (e.g. "Completed 2026-02-12T09:27:46Z") over script commands
+    payload = extract_timestamp_from_log(tl) or payload_from(d)
     outs = list_outputs(d)
     return payload, tl, outs
 

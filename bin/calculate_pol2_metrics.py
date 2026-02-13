@@ -443,21 +443,40 @@ def parse_gtf_file(
     log("PARSE", f"Found {feature_count:,} matching features")
     
     # Aggregate transcripts per gene
-    log("PARSE", "Aggregating transcript coordinates per gene...")
+    # Use LONGEST transcript per gene (by body length) instead of union to avoid
+    # huge bogus spans from genes with dispersed transcripts (e.g. chrY PAR).
+    # Union of distant transcripts produced 90+ Mb TSS windows and wrong PIs.
+    log("PARSE", "Aggregating transcript coordinates per gene (longest transcript)...")
     genes = []
+    max_tss_span = 1000   # Reject genes with TSS window > 1 kb (indicates bad aggregation)
+    max_body_span = 500_000  # Cap body at 500 kb; longer suggests multi-locus gene
     
     for gene_id, data in gene_data.items():
         transcripts = data['transcripts']
+        if not transcripts:
+            continue
+
+        # Pick transcript with longest body (most representative for pausing)
+        best = max(transcripts, key=lambda t: t[4])  # t[4] = body_len
+        tss_lo, tss_hi, body_lo, body_hi, body_len = best
         
-        # Union of all TSS windows
-        tss_lo = min(t[0] for t in transcripts)
-        tss_hi = max(t[1] for t in transcripts)
+        # Sanity: reject genes with bogus TSS span (should be ~2*tss_window)
+        tss_span = tss_hi - tss_lo
+        if tss_span > max_tss_span:
+            log_warning(f"Gene {gene_id}: TSS span {tss_span} bp > {max_tss_span}, skipping")
+            continue
         
-        # Union of all body regions
-        body_lo = min(t[2] for t in transcripts)
-        body_hi = max(t[3] for t in transcripts)
-        body_len = max(0, body_hi - body_lo)
-        
+        # Cap body length to avoid multi-locus genes inflating body counts
+        if body_len > max_body_span:
+            log_warning(f"Gene {gene_id}: body {body_len} bp truncated to {max_body_span}")
+            if data['strand'] == "+":
+                body_hi = body_lo + max_body_span
+            else:
+                body_lo = max(0, body_hi - max_body_span)
+            body_len = body_hi - body_lo  # Ensure consistency after coord adjustment
+        else:
+            body_len = body_hi - body_lo  # Recompute in case of float rounding
+
         genes.append((
             gene_id,
             data['gname'],
@@ -602,11 +621,11 @@ def write_output_files(
         p_writer = csv.writer(p_out, delimiter="\t", lineterminator="\n")
         g_writer = csv.writer(g_out, delimiter="\t", lineterminator="\n")
         
-        # Headers
+        # Headers (pi_len_norm preferred for reporting - corrects for TSS vs body length)
         p_writer.writerow([
             "gene_id", "chrom", "strand",
             "tss_count", "gene_body_count",
-            "pausing_index", "is_truncated"
+            "pi_raw", "pi_len_norm", "is_truncated"
         ])
         
         g_writer.writerow([
@@ -646,11 +665,11 @@ def write_output_files(
             tss_density = tss_count / max(1, tss_width)
             body_density = (body_count / body_len) if body_len > 0 else 0.0
             
-            # Write pausing index
+            # Write pausing index (pi_len_norm = (TSS_density)/(body_density) for proper comparison)
             p_writer.writerow([
                 gene_id, chrom, strand,
                 tss_count, body_count,
-                pi_raw, is_truncated
+                pi_raw, pi_len_norm, is_truncated
             ])
             
             # Write gene metrics

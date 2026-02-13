@@ -515,7 +515,7 @@ check_input_files() {
     if [[ ! -f "$samplesheet" ]]; then
         error "Sample sheet not found: $samplesheet"
         info "Create template:"
-        info "  echo 'sample,condition,timepoint,replicate,file1,file2' > samplesheet.csv"
+        info "  Use TrackTx_config_generator.html or: echo 'sample,condition,timepoint,replicate,file1,file2' > samplesheet.csv"
         return 1
     fi
     success "Sample sheet: $samplesheet"
