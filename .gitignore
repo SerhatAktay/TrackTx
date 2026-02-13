@@ -22,9 +22,16 @@ assets/*.png
 .env/
 venv/
 
+# Python
+__pycache__/
+*.py[cod]
+
 # Local configs and sample sheets (generated per run)
 params.yaml
 samplesheet.csv
+
+# Documentation (optional / local)
+CHANGELOG.md
 
 # OS / editor noise
 .DS_Store
