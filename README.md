@@ -168,21 +168,31 @@ graph LR
 
 ### Prerequisites
 
-Before installing TrackTx, you need **one** of the following:
+You need **Nextflow** (the workflow engine) plus **one** of Docker or Conda (for the tools):
 
-| Option | Best for | Install link |
-|--------|----------|--------------|
-| **Docker Desktop** | Easiest, most reliable | [Get Docker](https://docs.docker.com/get-docker/) |
-| **Miniconda** | If Docker won't work on your system | [Get Miniconda](https://docs.conda.io/en/latest/miniconda.html) |
+| Requirement | Purpose | Install |
+|-------------|---------|---------|
+| **Nextflow** (≥24.04.0) | Runs the pipeline | See below |
+| **Docker Desktop** | Easiest—packages all tools | [Get Docker](https://docs.docker.com/get-docker/) |
+| **Miniconda** | Alternative if Docker unavailable | [Get Miniconda](https://docs.conda.io/en/latest/miniconda.html) |
 
-**Verify your installation:**
+**Install Nextflow** (choose one):
+
 ```bash
-# Docker (must show version and "Server" running)
-docker --version
-docker info
+# Option A: Conda (recommended if you use Conda)
+conda install -c bioconda nextflow
 
-# Conda (must show version)
-conda --version
+# Option B: Standalone (works without Conda)
+curl -s https://get.nextflow.io | bash
+# Moves nextflow to your PATH, e.g.:
+sudo mv nextflow /usr/local/bin/   # Linux/macOS
+```
+
+**Verify:**
+```bash
+nextflow -version   # Must show 24.04.0 or higher
+docker --version   # If using Docker
+conda --version    # If using Conda
 ```
 
 ---

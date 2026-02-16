@@ -305,12 +305,45 @@
             <label class="label">Primary Reference Genome</label>
             <div class="select">
               <select id="ref_genome" onchange="toggleOtherGenomeUpload('ref')">
-                <option value="hs1">Human (T2T-CHM13 / hs1) - Latest complete genome</option>
-                <option value="hg38">Human (GRCh38 / hg38) - Standard reference</option>
-                <option value="mm10">Mouse (GRCm38 / mm10)</option>
-                <option value="dm6">Drosophila (dm6)</option>
-                <option value="TAIR10">Arabidopsis (TAIR10)</option>
-                <option value="other">Custom genome (provide FASTA + GTF)</option>
+                <optgroup label="Human">
+                  <option value="hs1">Human (T2T-CHM13 / hs1) - Latest complete genome</option>
+                  <option value="hg38" selected>Human (GRCh38 / hg38) - Standard reference</option>
+                  <option value="hg19">Human (GRCh37 / hg19) - Legacy reference</option>
+                </optgroup>
+                <optgroup label="Mouse">
+                  <option value="mm39">Mouse (GRCm39 / mm39) - Latest</option>
+                  <option value="mm10">Mouse (GRCm38 / mm10) - Standard</option>
+                </optgroup>
+                <optgroup label="Rat">
+                  <option value="rn7">Rat (mRatBN7.2 / rn7) - Latest</option>
+                  <option value="rn6">Rat (Rnor_6.0 / rn6) - Standard</option>
+                </optgroup>
+                <optgroup label="Zebrafish">
+                  <option value="danRer11">Zebrafish (GRCz11 / danRer11) - Latest</option>
+                  <option value="danRer10">Zebrafish (GRCz10 / danRer10) - Standard</option>
+                </optgroup>
+                <optgroup label="Drosophila">
+                  <option value="dm6">Drosophila melanogaster (dm6)</option>
+                </optgroup>
+                <optgroup label="Chicken">
+                  <option value="galGal6">Chicken (GRCg6a / galGal6)</option>
+                </optgroup>
+                <optgroup label="Rhesus macaque">
+                  <option value="rheMac10">Rhesus (Mmul_10 / rheMac10)</option>
+                </optgroup>
+                <optgroup label="C. elegans">
+                  <option value="ce11">C. elegans (WBcel235 / ce11)</option>
+                </optgroup>
+                <optgroup label="Yeast">
+                  <option value="sacCer3">S. cerevisiae (R64-1-1 / sacCer3)</option>
+                </optgroup>
+                <optgroup label="Xenopus">
+                  <option value="xenTro10">X. tropicalis (xenTro10)</option>
+                </optgroup>
+                <optgroup label="Other">
+                  <option value="TAIR10">Arabidopsis (TAIR10)</option>
+                  <option value="other">Custom genome (provide FASTA + GTF)</option>
+                </optgroup>
               </select>
             </div>
             <p class="help">For common genomes, the pipeline auto-downloads annotations from Ensembl.</p>
@@ -331,9 +364,20 @@
             <div class="select">
               <select id="spike_genome" onchange="toggleOtherGenomeUpload('spike')">
                 <option value="None" selected>None - no spike-in normalization</option>
-                <option value="dm6">Drosophila (dm6) - common for mammalian experiments</option>
-                <option value="mm10">Mouse (GRCm38 / mm10)</option>
-                <option value="ERCC">ERCC mix - synthetic spike-in</option>
+                <optgroup label="Most common">
+                  <option value="dm6">Drosophila (dm6) - for mammalian experiments</option>
+                  <option value="hg38">Human (hg38) - for non-human primary organisms</option>
+                  <option value="mm10">Mouse (mm10) - for human primary organisms</option>
+                </optgroup>
+                <optgroup label="Other spike-ins">
+                  <option value="sacCer3">S. cerevisiae (sacCer3)</option>
+                  <option value="ERCC">ERCC mix - synthetic</option>
+                  <option value="danRer10">Zebrafish (danRer10)</option>
+                  <option value="ce11">C. elegans (ce11)</option>
+                  <option value="galGal6">Chicken (galGal6)</option>
+                  <option value="rheMac10">Rhesus (rheMac10)</option>
+                  <option value="hs1">Human (hs1/T2T)</option>
+                </optgroup>
                 <option value="other">Custom spike-in (provide FASTA)</option>
               </select>
             </div>
@@ -398,6 +442,9 @@
       <div class="buttons mt-3">
         <button type="button" class="button is-link" onclick="addSampleUI()">
           ➕ Add Sample
+        </button>
+        <button type="button" class="button is-light" onclick="loadExampleSamples()" title="Add example samples to get started quickly">
+          📋 Load Example (SRA)
         </button>
         <button type="button" class="button is-danger is-light" onclick="clearSamples()">
           🗑️ Clear All Samples
@@ -756,7 +803,7 @@
     <!-- ================================================================ -->
     <div class="box">
       <h2 class="subtitle is-4"><span class="step">7</span> Output Preferences</h2>
-      <p class="mb-4">Control which outputs are generated and in which formats.</p>
+      <p class="mb-4">Control which outputs are generated and in which formats. Defaults are set for most users; <strong>power users</strong> can uncheck options to save disk space and speed up runs.</p>
       
       <div class="section-header">Track Normalization</div>
       <div class="help-box mb-3">
@@ -781,10 +828,10 @@
         </div>
         <div class="column">
           <label class="checkbox">
-            <input type="checkbox" id="outputRawTracks">
+            <input type="checkbox" id="outputRawTracks" checked>
             <strong>Keep raw (unnormalized) tracks</strong>
           </label>
-          <p class="help">Optional. Saves disk space if unchecked.</p>
+          <p class="help">Recommended. Uncheck to save disk space.</p>
         </div>
       </div>
       
@@ -804,10 +851,10 @@
         </div>
         <div class="column">
           <label class="checkbox">
-            <input type="checkbox" id="trackBedGraph">
+            <input type="checkbox" id="trackBedGraph" checked>
             <strong>BedGraph format</strong>
           </label>
-          <p class="help">Text format, useful for custom processing or debugging.</p>
+          <p class="help">Text format, useful for custom processing or debugging. Uncheck to save disk space.</p>
         </div>
       </div>
       
@@ -1036,6 +1083,40 @@ function addSampleUI(){
 function clearSamples(){ 
   if(confirm('Remove all samples?')){
     $('#samplesContainer').innerHTML=''; 
+  }
+}
+
+function loadExampleSamples(){
+  const container = $('#samplesContainer');
+  if(container.children.length > 0 && !confirm('Replace existing samples with example?')) return;
+  container.innerHTML = '';
+  // Set SRA as source so example uses SRR IDs
+  $$('input[name="sample_source"]').forEach(r => { r.checked = (r.value === 'srr'); });
+  rebuildAllReplicateUIs();
+  // Add two example samples: Control and Treatment
+  addSampleUI();
+  const boxes = $$('#samplesContainer .sample-box');
+  const box1 = boxes[0];
+  if(box1){
+    box1.querySelector('.sample-name').value = 'Control';
+    box1.querySelector('.sample-treatment').value = 'control';
+    box1.querySelector('.sample-timepoint').value = '0';
+    const rep1 = box1.querySelector('.rep-srr');
+    if(rep1) rep1.value = 'SRR12345678';
+    const reps = box1.querySelectorAll('.replicate');
+    if(reps.length > 1) reps[1].remove();
+  }
+  addSampleUI();
+  const allBoxes = $$('#samplesContainer .sample-box');
+  const box2 = allBoxes[allBoxes.length - 1];
+  if(box2){
+    box2.querySelector('.sample-name').value = 'Treatment';
+    box2.querySelector('.sample-treatment').value = 'treatment';
+    box2.querySelector('.sample-timepoint').value = '30min';
+    const rep2 = box2.querySelector('.rep-srr');
+    if(rep2) rep2.value = 'SRR87654321';
+    const reps2 = box2.querySelectorAll('.replicate');
+    if(reps2.length > 1) reps2[1].remove();
   }
 }
 
@@ -1271,6 +1352,22 @@ function fillPreview(){
 }
 
 async function downloadZip(){
+  const boxes = $$('#samplesContainer .sample-box');
+  if(boxes.length === 0){
+    alert('⚠️ Add at least one sample before downloading.');
+    return;
+  }
+  const hasData = boxes.some(b => {
+    const src = source();
+    if(src === 'local') return !!b.querySelector('.rep-file1')?.value?.trim();
+    return !!b.querySelector('.rep-srr')?.value?.trim();
+  });
+  if(!hasData && !confirm('No sample data (SRR IDs or file paths) entered. Download anyway?')) return;
+
+  if($('#ref_genome').value === 'other' && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
+    alert('⚠️ Custom genome requires a GTF file. Provide gtf_path or gtf_url before running the pipeline.');
+  }
+
   const zip = new JSZip();
   const yaml = buildYAML();
   const csv  = buildCSV();
