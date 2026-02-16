@@ -239,11 +239,41 @@ PYEND
   SPIKE_IDX=""
   if [[ -n "${SPIKE_ID}" && "${SPIKE_ID}" != "none" && -n "${SPIKE_INDEX_LIST}" ]]; then
     # shellcheck disable=SC2086
-    cp -f ${SPIKE_INDEX_LIST} bt2_index/ 2>/dev/null || true
+    if ! cp -f ${SPIKE_INDEX_LIST} bt2_index/ 2>/dev/null; then
+      echo "ALIGN | ERROR | Failed to stage spike-in index files" >&2
+      echo "ALIGN | DEBUG | SPIKE_INDEX_LIST: ${SPIKE_INDEX_LIST}" >&2
+      ls -la bt2_index/ 2>/dev/null || true
+      exit 1
+    fi
     SPIKE_IDX="bt2_index/${SPIKE_ID}"
     echo "ALIGN | INDEX | Spike-in index files staged"
   else
     echo "ALIGN | INDEX | No spike-in index provided"
+  fi
+
+  # Verify spike-in index completeness (when used)
+  if [[ -n "${SPIKE_IDX}" ]]; then
+    SPIKE_INDEX_COMPLETE=0
+    for ext in bt2 bt2l; do
+      ALL_PRESENT=1
+      for shard in 1 2 3 4 rev.1 rev.2; do
+        if [[ ! -s "${SPIKE_IDX}.${shard}.${ext}" ]]; then
+          ALL_PRESENT=0
+          break
+        fi
+      done
+      if [[ ${ALL_PRESENT} -eq 1 ]]; then
+        SPIKE_INDEX_COMPLETE=1
+        echo "ALIGN | INDEX | Spike-in index verified (${ext})"
+        break
+      fi
+    done
+    if [[ ${SPIKE_INDEX_COMPLETE} -eq 0 ]]; then
+      echo "ALIGN | ERROR | Incomplete spike-in index: ${SPIKE_IDX}" >&2
+      echo "ALIGN | DEBUG | Files in bt2_index/:" >&2
+      ls -lh bt2_index/ 2>/dev/null || true
+      exit 1
+    fi
   fi
 
   # Verify genome index completeness
@@ -353,13 +383,19 @@ PYEND
     echo "ALIGN | SPIKEIN | Aligning ${UNALIGNED_COUNT} unaligned reads to ${SPIKE_ID}"
     echo "ALIGN | SPIKEIN | Mode: Single-end (all spike-in alignments as SE)"
     
-    bowtie2 -p "${BT2_THREADS}" \
+    # Use -m 4G for samtools sort to avoid OOM with large unaligned sets (e.g. >20M reads)
+    if ! bowtie2 -p "${BT2_THREADS}" \
             --end-to-end \
             --no-unal \
             -x "${SPIKE_IDX}" \
             -U unaligned.fastq \
             2> bowtie2_spikein.log \
-    | samtools sort -@ "${SAM_THREADS}" -o "${SAMPLE_ID}_spikein.bam"
+    | samtools sort -@ "${SAM_THREADS}" -m 4G -o "${SAMPLE_ID}_spikein.bam"; then
+      echo "ALIGN | SPIKEIN | ERROR | Spike-in alignment failed" >&2
+      echo "ALIGN | SPIKEIN | DEBUG | bowtie2_spikein.log:" >&2
+      cat bowtie2_spikein.log 2>/dev/null | tail -100 >&2
+      exit 1
+    fi
     
     SPIKEIN_SIZE=$(stat -c%s "${SAMPLE_ID}_spikein.bam" 2>/dev/null || stat -f%z "${SAMPLE_ID}_spikein.bam" 2>/dev/null || echo "unknown")
     echo "ALIGN | SPIKEIN | Spike-in BAM created: ${SPIKEIN_SIZE} bytes"

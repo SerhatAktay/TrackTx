@@ -152,8 +152,6 @@ graph LR
     F --> G[📊 Comprehensive Reports]
 ```
 
-**Pipeline overview:** See [HOW.md](HOW.md) for a step-by-step description of what happens to your data from raw FASTQ to final reports.
-
 **Key Features:**
 - 🎯 **Automated**: From raw reads to publication-ready figures
 - 🚀 **Fast**: Optimized for any system (laptop → HPC)
@@ -168,23 +166,83 @@ graph LR
 
 ## 🔧 Installation
 
-### Option 1: Docker (Recommended)
+### Prerequisites
 
+Before installing TrackTx, you need **one** of the following:
+
+| Option | Best for | Install link |
+|--------|----------|--------------|
+| **Docker Desktop** | Easiest, most reliable | [Get Docker](https://docs.docker.com/get-docker/) |
+| **Miniconda** | If Docker won't work on your system | [Get Miniconda](https://docs.conda.io/en/latest/miniconda.html) |
+
+**Verify your installation:**
 ```bash
-# Install Docker Desktop: https://docs.docker.com/get-docker/
+# Docker (must show version and "Server" running)
+docker --version
+docker info
+
+# Conda (must show version)
+conda --version
+```
+
+---
+
+### Option 1: Docker (Recommended for Novices)
+
+Docker packages everything needed—no manual tool installation.
+
+**Step 1: Install Docker Desktop**
+- **macOS/Windows:** Download from [docker.com/get-started](https://www.docker.com/products/docker-desktop/)
+- **Linux:** `curl -fsSL https://get.docker.com | sh` (or use your package manager)
+- Start Docker Desktop and wait until it shows "Running"
+
+**Step 2: Install Git** (if not already installed)
+- **macOS:** `xcode-select --install` or install [Xcode Command Line Tools](https://developer.apple.com/xcode/)
+- **Windows:** Install [Git for Windows](https://git-scm.com/download/win)
+- **Linux:** `sudo apt install git` (Ubuntu/Debian) or equivalent
+
+**Step 3: Clone and run**
+```bash
 git clone https://github.com/serhataktay/tracktx.git
 cd tracktx
-./run_pipeline.sh  # Auto-detects Docker
+./run_pipeline.sh
 ```
+
+The script auto-detects Docker and runs the pipeline. First run will download the container image (~2–5 min).
+
+---
 
 ### Option 2: Conda
 
+Use Conda if Docker is not available (e.g. restricted HPC, no admin rights).
+
+**Step 1: Install Miniconda**
+- Download the installer for your OS: [docs.conda.io/en/latest/miniconda.html](https://docs.conda.io/en/latest/miniconda.html)
+- Run the installer and follow prompts (accept license, choose install location)
+- Restart your terminal, then run `conda --version` to verify
+
+**Step 2: Clone and run**
 ```bash
-# Install Miniconda: https://docs.conda.io/en/latest/miniconda.html
 git clone https://github.com/serhataktay/tracktx.git
 cd tracktx
-./run_pipeline.sh  # Auto-detects Conda
+./run_pipeline.sh
 ```
+
+The script auto-detects Conda and creates the pipeline environment on first run (~10–20 min).
+
+---
+
+### Option 3: Manual (Advanced)
+
+If you already have Nextflow and the required tools installed:
+
+```bash
+git clone https://github.com/serhataktay/tracktx.git
+cd tracktx
+nextflow run main.nf -entry TrackTx -profile local --samplesheet samplesheet.csv -params-file params.yaml
+```
+
+---
 
 ### System Requirements
 
@@ -194,6 +252,8 @@ cd tracktx
 | **CPU** | 2+ cores | 8+ cores |
 | **RAM** | 8+ GB | 32+ GB |
 | **Storage** | 50+ GB | 200+ GB (SSD) |
+
+**Note:** First run downloads reference genomes (~1–5 GB depending on species). Ensure enough free disk space.
 
 ---
 
@@ -429,6 +489,26 @@ conda clean --all --yes
 - Use SSD storage for better performance
 - Monitor with `python3 nfmon.py` to see bottlenecks
 
+**OverlappingFileLockException (download_gtf):**
+- Project on NFS/network drive/iCloud → run with `-w /tmp/nextflow-work` (or set `NXF_WORK`)
+- Upgrade Nextflow to ≥24.04.0 (pipeline requires it; 21.04.3 has locking bugs)
+- Don’t run multiple pipelines from the same directory
+
+**Spike-in alignment fails (sample-specific):**
+- Samples with many unaligned reads (e.g. 20M+) need more memory for spike-in alignment
+- Increase Docker memory (Settings → Resources) or system RAM
+- Check `bowtie2_spikein.log` in the failed task's work dir for details
+
+**Finished tasks re-run from sample 1 (even with -resume):**
+- Nextflow’s cache depends on input file path, size, and timestamp. NFS/network storage can give inconsistent timestamps → add `prepare_input_lenient_cache: true` to params.yaml or run with `--prepare_input_lenient_cache`.
+- Docker `:latest` changes when the image is updated → use a fixed tag (e.g. `tracktx:3.0`) for stable caching.
+- Debug: `nextflow run ... -resume -dump-hashes 2>&1 | grep "cache hash"` and compare between runs.
+
+**prepare_input re-runs after stop/restart:**
+- When you Ctrl+C, running/queued tasks are cancelled and not cached
+- Only completed tasks are reused with `-resume`
+- Let the pipeline finish, or stop when no prepare_input tasks are active
+
 ### Getting Help
 
 1. **Check logs**: `.nextflow.log` in the working directory
@@ -436,15 +516,12 @@ conda clean --all --yes
 3. **Monitor live**: `python3 nfmon.py` to see what's happening
 4. **GitHub Issues**: [Report bugs](https://github.com/serhataktay/tracktx/issues)
 
-**Contributors:** See [HOW.md](HOW.md) for data flow, tester notes, and pre-launch checklist.
-
 ---
 
 ## 📖 Documentation
 
 | Document | Description |
 |----------|-------------|
-| [HOW.md](HOW.md) | Data flow (raw input → output), tester notes, pre-launch checklist |
 | [TrackTx_config_generator.html](TrackTx_config_generator.html) | Interactive config and samplesheet generator |
 
 ---

@@ -65,7 +65,7 @@ process prepare_input {
 
   tag    { sample_id }
   label  'conda'
-  cache  'deep'
+  cache  { params.prepare_input_lenient_cache ? 'lenient' : 'deep' }
 
   publishDir "${params.output_dir}/01_trimmed_fastq/${sample_id}",
              mode: 'copy',
