@@ -527,6 +527,14 @@ def score_with_mixture_model(
     """
     log("Fitting statistical model...", quiet)
     
+    # GMM requires at least 2 samples; handle edge case of 0 or 1 candidate pairs
+    n_regions = len(features_df)
+    if n_regions == 0:
+        return np.array([], dtype=bool), np.array([])
+    if n_regions == 1:
+        log("  Only 1 candidate pair — skipping GMM (requires ≥2 samples), outputting with confidence 1.0", quiet)
+        return np.array([True]), np.array([1.0])
+    
     try:
         from sklearn.mixture import GaussianMixture
     except ImportError:
