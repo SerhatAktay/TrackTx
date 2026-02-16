@@ -86,7 +86,7 @@ open TrackTx_config_generator.html   # macOS
 - Fill in your study details
 - For local FASTQ files: enter the **full path** to each file (copy from your file manager → right-click → Copy path)
 - Click **Download ZIP** to save `params.yaml` and `samplesheet.csv`
-- Done!
+- **Put both files in the same folder as the pipeline** (the tracktx directory where `main.nf` lives)
 
 ### 2️⃣ Run Pipeline (Automatic)
 

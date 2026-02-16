@@ -118,7 +118,7 @@
         <strong>🚀 How to run:</strong>
         <ol class="mt-2 ml-4">
           <li>Fill out the sections below → Click <strong>Download ZIP</strong></li>
-          <li>Unzip in your project folder</li>
+          <li>Unzip and place <span class="mono">params.yaml</span> and <span class="mono">samplesheet.csv</span> in the <strong>same folder as the pipeline</strong> (the tracktx directory where <code class="mono">main.nf</code> lives)</li>
           <li>Run: <code class="mono">./run_pipeline.sh</code> (recommended) or <code class="mono">nextflow run main.nf -entry TrackTx -profile docker -params-file params.yaml</code></li>
         </ol>
         <strong>✨ Statistical divergent transcription detection:</strong> Uses Gaussian Mixture Models and FDR control. No manual threshold tuning needed.
@@ -925,7 +925,7 @@
       <div class="mt-4">
         <h3 class="subtitle is-6">How to Run After Download</h3>
         <div class="help-box">
-          <strong>Step 1:</strong> Unzip the downloaded file in your project directory<br>
+          <strong>Step 1:</strong> Unzip and place <code class="mono">params.yaml</code> and <code class="mono">samplesheet.csv</code> in the <strong>same folder as the pipeline</strong> (the tracktx directory where <code class="mono">main.nf</code> lives)<br>
           <strong>Step 2:</strong> Open terminal in that directory<br>
           <strong>Step 3:</strong> Run one of these commands:
         </div>
