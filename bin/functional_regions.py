@@ -338,7 +338,8 @@ def write_coordinate_files(active_genes: list):
         for gene in active_genes:
             pps, ppe = clamp(gene['PPs'], gene['PPe'])
             f.write(f"{gene['chrom']}\t{pps}\t{ppe}\t{gene['gname']}\t{gene['gname']}\t{gene['strand']}\n")
-    sort_bed(str(pp_file))
+    if pp_file.stat().st_size > 0:
+        sort_bed(str(pp_file))
     
     # Write divergent regions (divTx.txt) - TSS-750 to TSS-251 - all active genes
     div_file = OUT / "divTx.txt"
@@ -346,7 +347,8 @@ def write_coordinate_files(active_genes: list):
         for gene in active_genes:
             divs, dive = clamp(gene['DIVs'], gene['DIVe'])
             f.write(f"{gene['chrom']}\t{divs}\t{dive}\t{gene['gname']}\t{gene['gname']}\t{gene['strand']}\n")
-    sort_bed(str(div_file))
+    if div_file.stat().st_size > 0:
+        sort_bed(str(div_file))
     
     # Write CPS regions (CPS.txt) - all genes
     cps_file = OUT / "CPS.txt"
@@ -354,7 +356,8 @@ def write_coordinate_files(active_genes: list):
         for gene in active_genes:
             cpss, cpse = clamp(gene['CPSs'], gene['CPSe'])
             f.write(f"{gene['chrom']}\t{cpss}\t{cpse}\t{gene['gname']}\t{gene['gname']}\t{gene['strand']}\n")
-    sort_bed(str(cps_file))
+    if cps_file.stat().st_size > 0:
+        sort_bed(str(cps_file))
     
     # Write termination windows (TW.txt) - all genes
     tw_file = OUT / "TW.txt"
@@ -362,7 +365,8 @@ def write_coordinate_files(active_genes: list):
         for gene in active_genes:
             tws, twe = clamp(gene['TWs'], gene['TWe'])
             f.write(f"{gene['chrom']}\t{tws}\t{twe}\t{gene['gname']}\t{gene['gname']}\t{gene['strand']}\n")
-    sort_bed(str(tw_file))
+    if tw_file.stat().st_size > 0:
+        sort_bed(str(tw_file))
     
     # Write gene body regions (geneBody.txt) - all genes where GBe > GBs + 1
     gb_file = OUT / "geneBody.txt"
@@ -371,7 +375,8 @@ def write_coordinate_files(active_genes: list):
             gbs, gbe = clamp(gene['GBs'], gene['GBe'])
             if gbe > gbs + 1:  # Only write if body region exists
                 f.write(f"{gene['chrom']}\t{gbs}\t{gbe}\t{gene['gname']}\t{gene['gname']}\t{gene['strand']}\n")
-    sort_bed(str(gb_file))
+    if gb_file.stat().st_size > 0:
+        sort_bed(str(gb_file))
     
     return {
         'promoter': str(pp_file),
@@ -709,7 +714,7 @@ def main():
     active_genes, genes_with_promoters_bed, enhancers_bed = find_active_promoters_and_enhancers(all_genes, args.divergent)
     
     if not active_genes:
-        sys.exit("ERROR: No active genes found (DT sites ∩ TSS ±500bp); check divergent transcription input")
+        log("WARNING: No active genes found (DT sites ∩ TSS ±500bp); continuing with enhancers and non-localized only")
 
     # Write gene-based coordinate files for ALL functional regions (including promoter)
     coord_files = write_coordinate_files(active_genes)
