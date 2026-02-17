@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # =============================================================================
-# compare_pol2_metrics.py — Pol-II Metrics Aggregation and Comparison
+# compare_pol_metrics.py — Pol-II Metrics Aggregation and Comparison
 # =============================================================================
 #
 # Purpose:
@@ -741,7 +741,7 @@ def main():
     args = parser.parse_args()
     
     # Start
-    log("START", f"compare_pol2_metrics.py v{VERSION}")
+    log("START", f"compare_pol_metrics.py v{VERSION}")
     log("START", f"Samples manifest: {args.samples_tsv}")
     log("START", f"Output merged: {args.out_merged}")
     

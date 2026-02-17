@@ -31,7 +31,7 @@
 //
 // Inputs:
 //   tuple(sample_id,
-//         divergent_bed, functional_summary, pol2_density, pausing_index,
+//         divergent_bed, functional_summary, pol_density, pausing_index,
 //         normalization_factors, dedup_stats, qc_json,
 //         track_links (8 values: raw/normalized, pos/neg, main/allMap),
 //         condition, timepoint, replicate)
@@ -69,14 +69,14 @@ process generate_reports {
              mode: 'copy',
              overwrite: true
 
-  conda (params.conda_pol2 ?: "${projectDir}/envs/tracktx.yaml")
+  conda (params.conda_pol ?: "${projectDir}/envs/tracktx.yaml")
 
   // ── Inputs ────────────────────────────────────────────────────────────────
   input:
     tuple val(sample_id),
           path(div_bed),
           path(func_sum),
-          path(pol2_density),
+          path(pol_density),
           path(pausing_idx),
           path(norm_factors),
           path(dedup_stats),
@@ -128,7 +128,7 @@ process generate_reports {
   # Core input files
   DIV_BED="!{div_bed}"
   FUNC_SUM="!{func_sum}"
-  POL2_DENS="!{pol2_density}"
+  POL_DENS="!{pol_density}"
   PAUSING_IDX="!{pausing_idx}"
   NORM_FACTORS="!{norm_factors}"
   DEDUP_STATS="!{dedup_stats}"
@@ -198,7 +198,7 @@ process generate_reports {
 
   validate_file "Divergent bed" "${DIV_BED}"
   validate_file "Functional summary" "${FUNC_SUM}"
-  validate_file "Pol-II density" "${POL2_DENS}"
+  validate_file "Pol-II density" "${POL_DENS}"
   validate_file "Pausing index" "${PAUSING_IDX}"
   validate_file "Normalization factors" "${NORM_FACTORS}"
   validate_file "QC JSON" "${QC_JSON}"
@@ -329,7 +329,7 @@ process generate_reports {
     --replicate "${REPLICATE}"
     --divergent-bed "${DIV_BED}"
     --functional-summary "${FUNC_SUM}"
-    --pol2-density "${POL2_DENS}"
+    --pol-density "${POL_DENS}"
     --pausing-index "${PAUSING_IDX}"
     --norm-factors "${NORM_FACTORS}"
     --qc-json "${QC_JSON}"
@@ -523,7 +523,7 @@ INPUT DATA FILES
   Core Inputs:
     • Divergent bed:          ${DIV_BED} (${DIV_COUNT} loci)
     • Functional summary:     ${FUNC_SUM}
-    • Pol-II density:         ${POL2_DENS}
+    • Pol-II density:         ${POL_DENS}
     • Pausing index:          ${PAUSING_IDX} (${PAUSING_GENES} genes)
     • Normalization factors:  ${NORM_FACTORS}
     • QC JSON:                ${QC_JSON}

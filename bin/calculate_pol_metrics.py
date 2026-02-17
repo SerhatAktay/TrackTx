@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # =============================================================================
-# calculate_pol2_metrics.py — Per-Sample Pol-II Pausing and Gene Metrics
+# calculate_pol_metrics.py — Per-Sample Pol-II Pausing and Gene Metrics
 # =============================================================================
 #
 # Purpose:
@@ -26,8 +26,8 @@
 #
 # Outputs:
 #   • pausing_index.tsv: Lean pausing index table
-#   • pol2_gene_metrics.tsv: Comprehensive gene metrics
-#   • pol2_qc.json: Quality control summary
+#   • pol_gene_metrics.tsv: Comprehensive gene metrics
+#   • pol_qc.json: Quality control summary
 #
 # =============================================================================
 
@@ -50,14 +50,14 @@ from typing import Dict, List, Tuple, Optional
 # =============================================================================
 
 VERSION = "2.0.0"
-LOG_PREFIX = "[POL2_CALC]"
+LOG_PREFIX = "[POL_CALC]"
 
 # =============================================================================
 # LOGGING UTILITIES
 # =============================================================================
 
 def log(section: str, message: str, flush: bool = True):
-    """Consistent logging format: [POL2_CALC] SECTION | message"""
+    """Consistent logging format: [POL_CALC] SECTION | message"""
     timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     print(f"{LOG_PREFIX} {section} | {message} | ts={timestamp}", flush=flush)
 
@@ -752,7 +752,7 @@ def main():
     args = parser.parse_args()
     
     # Start
-    log("START", f"calculate_pol2_metrics.py v{VERSION}")
+    log("START", f"calculate_pol_metrics.py v{VERSION}")
     log("START", f"BAM: {args.bam}")
     log("START", f"GTF: {args.gtf}")
     
@@ -767,7 +767,7 @@ def main():
     log("CONFIG", f"Parsed {len(feature_types)} feature types")
     
     # Create temporary directory
-    tmpdir = Path(tempfile.mkdtemp(prefix=".pol2_calc_", dir=".")).resolve()
+    tmpdir = Path(tempfile.mkdtemp(prefix=".pol_calc_", dir=".")).resolve()
     log("SETUP", f"Temporary directory: {tmpdir}")
     
     try:

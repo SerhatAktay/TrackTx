@@ -1,5 +1,5 @@
 // ============================================================================
-// qc_pol2_tracktx.nf — Per-Sample Quality Control for PRO-seq Data
+// qc_pol_tracktx.nf — Per-Sample Quality Control for PRO-seq Data
 // ============================================================================
 //
 // Purpose:
@@ -53,7 +53,7 @@
 //     ├── qc_strand_bias.tsv       — Strand read counts
 //     ├── qc_fragment_length.tsv   — Insert size distribution (PE)
 //     ├── qc_coverage.tsv          — Coverage statistics
-//     ├── qc_pol2.json             — JSON summary (all metrics)
+//     ├── qc_pol.json             — JSON summary (all metrics)
 //     ├── README_qc.txt            — Documentation
 //     └── qc.log                   — Processing log
 //
@@ -71,7 +71,7 @@
 
 nextflow.enable.dsl = 2
 
-process qc_pol2_tracktx {
+process qc_pol_tracktx {
 
   tag        { sample_id }
   label      'conda'
@@ -81,7 +81,7 @@ process qc_pol2_tracktx {
              mode: 'copy',
              overwrite: true
 
-  conda (params.conda_pol2 ?: "${projectDir}/envs/tracktx.yaml")
+  conda (params.conda_pol ?: "${projectDir}/envs/tracktx.yaml")
 
   // ── Inputs ────────────────────────────────────────────────────────────────
   input:
@@ -97,8 +97,8 @@ process qc_pol2_tracktx {
           path('qc_fragment_length.tsv'),
           path('qc_coverage.tsv'),
           val(condition), val(timepoint), val(replicate), emit: tables
-    path 'qc_pol2.json',                                     emit: json
-    tuple val(sample_id), path('qc_pol2.json'),
+    path 'qc_pol.json',                                     emit: json
+    tuple val(sample_id), path('qc_pol.json'),
           val(condition), val(timepoint), val(replicate),    emit: json_meta
     path 'README_qc.txt',                                    emit: readme
     path 'qc.log',                                           emit: log
@@ -502,7 +502,7 @@ process qc_pol2_tracktx {
 
   echo "QC | OUTPUT | Writing JSON summary..."
 
-  cat > qc_pol2.json <<JSONEOF
+  cat > qc_pol.json <<JSONEOF
 {
   "sample_id": "\${SAMPLE_ID}",
   "condition": "\${CONDITION}",
@@ -531,7 +531,7 @@ process qc_pol2_tracktx {
 }
 JSONEOF
 
-  JSON_SIZE=\$(stat -c%s qc_pol2.json 2>/dev/null || stat -f%z qc_pol2.json 2>/dev/null || echo "unknown")
+  JSON_SIZE=\$(stat -c%s qc_pol.json 2>/dev/null || stat -f%z qc_pol.json 2>/dev/null || echo "unknown")
   echo "QC | OUTPUT | JSON summary: \${JSON_SIZE} bytes"
 
   ###########################################################################
@@ -686,7 +686,7 @@ FILES GENERATED
     Two-column TSV with metric and value
     Currently contains: mean_coverage_depth
   
-  qc_pol2.json:
+  qc_pol.json:
     JSON summary with all QC metrics
     Used for: Downstream aggregation and reporting
     Fields: 20+ metrics including alignment, strand, coverage stats
@@ -771,7 +771,7 @@ GENERATED
   Pipeline: TrackTx PRO-seq
   Date: \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
   Sample: \${SAMPLE_ID}
-  Module: 13_qc_pol2_tracktx
+  Module: 13_qc_pol_tracktx
 
 ================================================================================
 DOCEOF

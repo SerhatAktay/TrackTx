@@ -62,7 +62,7 @@ process combine_reports {
              mode: 'copy',
              overwrite: true
 
-  conda (params.conda_pol2 ?: "${projectDir}/envs/tracktx.yaml")
+  conda (params.conda_pol ?: "${projectDir}/envs/tracktx.yaml")
 
   // ── Inputs ────────────────────────────────────────────────────────────────
   // Stage files with sequential names to avoid collisions (like metric_1, metric_2, etc.)

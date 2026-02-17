@@ -43,8 +43,8 @@
 //     ├── 05_normalized_tracks/ — CPM/siCPM tracks
 //     ├── 06_divergent_tx/      — Divergent transcription calls
 //     ├── 07_functional_regions/— Functional region annotations
-//     ├── 08_pol2_metrics/      — Per-gene Pol-II metrics
-//     ├── 09_pol2_aggregate/    — Cohort-level summaries
+//     ├── 08_pol_metrics/      — Per-gene Pol-II metrics
+//     ├── 09_pol_aggregate/    — Cohort-level summaries
 //     ├── 10_qc/                — Quality control reports
 //     └── 11_reports/           — HTML reports
 //
@@ -63,19 +63,19 @@ params.reports_plots = params.reports_plots ?: 0
 
 // Conda environment overrides (if not using containers)
 params.conda_norm = params.conda_norm ?: null
-params.conda_pol2 = params.conda_pol2 ?: null
+params.conda_pol = params.conda_pol ?: null
 
-// QC parameters (used by prepare_input and qc_pol2_tracktx modules)
+// QC parameters (used by prepare_input and qc_pol_tracktx modules)
 params.qc = params.qc instanceof Map ? params.qc : [:]
 params.qc.enabled = params.qc.enabled != null ? params.qc.enabled : true
 params.qc.mapq = params.qc.mapq ?: 10
 params.qc.dedup = params.qc.dedup != null ? params.qc.dedup : true
 params.qc.depth_max_cov = params.qc.depth_max_cov ?: 0
 
-// Pol-II aggregate parameters (used by summarize_pol2_metrics module)
-params.pol2 = params.pol2 instanceof Map ? params.pol2 : [:]
-params.pol2.top_n = params.pol2.top_n ?: 100
-params.pol2.plots = params.pol2.plots != null ? params.pol2.plots : true
+// Pol-II aggregate parameters (used by summarize_pol_metrics module)
+params.pol = params.pol instanceof Map ? params.pol : [:]
+params.pol.top_n = params.pol.top_n ?: 100
+params.pol.plots = params.pol.plots != null ? params.pol.plots : true
 
 // ============================================================================
 // HELP MESSAGE
@@ -196,9 +196,9 @@ include { collect_counts                       } from "${MOD}/07_collect_counts.
 include { normalize_tracks                     } from "${MOD}/08_normalize_tracks.nf"
 include { detect_divergent_tx                  } from "${MOD}/09_detect_divergent_tx.nf"
 include { call_functional_regions              } from "${MOD}/10_call_functional_regions.nf"
-include { calculate_pol2_metrics               } from "${MOD}/11_calculate_pol2_metrics.nf"
-include { summarize_pol2_metrics               } from "${MOD}/12_summarize_pol2_metrics.nf"
-include { qc_pol2_tracktx                      } from "${MOD}/13_qc_pol2_tracktx.nf"
+include { calculate_pol_metrics               } from "${MOD}/11_calculate_pol_metrics.nf"
+include { summarize_pol_metrics               } from "${MOD}/12_summarize_pol_metrics.nf"
+include { qc_pol_tracktx                      } from "${MOD}/13_qc_pol_tracktx.nf"
 include { generate_reports                     } from "${MOD}/14_generate_reports.nf"
 include { combine_reports                      } from "${MOD}/15_combine_reports.nf"
 
@@ -726,7 +726,7 @@ workflow TrackTx {
 
   // Prepare Pol-II inputs (uses normalized CPM/siCPM tracks)
   // Use BAM from generate_tracks (same BAM as density/tracks; deduped when UMI on)
-  pol2_input_ch = generate_tracks.out.bam_for_tracks
+  pol_input_ch = generate_tracks.out.bam_for_tracks
     .map { sid, bam, c, t, r ->
       tuple(sid, tuple(bam, c, t, r))
     }
@@ -746,11 +746,11 @@ workflow TrackTx {
       tuple(sid, bam, bed, pos_cpm, neg_cpm, pos_si, neg_si, c, t, r)
     }
 
-  calculate_pol2_metrics(pol2_input_ch, gtf_ch)
+  calculate_pol_metrics(pol_input_ch, gtf_ch)
   
-  pol2_gene_ch    = calculate_pol2_metrics.out.genes
-  pol2_density_ch = calculate_pol2_metrics.out.density
-  pol2_pausing_ch = calculate_pol2_metrics.out.pausing
+  pol_gene_ch    = calculate_pol_metrics.out.genes
+  pol_density_ch = calculate_pol_metrics.out.density
+  pol_pausing_ch = calculate_pol_metrics.out.pausing
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 13: Summarize Pol-II Metrics (Cohort-Level)
@@ -762,11 +762,11 @@ workflow TrackTx {
   // log.info "STEP 13 | PURPOSE | Cohort-level aggregation and visualization"
 
   // Sort once and reuse to avoid channel exhaustion
-  pol2_sorted = pol2_gene_ch
+  pol_sorted = pol_gene_ch
     .toSortedList { a, b -> a[0] <=> b[0] }  // Sort by sample_id once
 
   // Build samples TSV - use sorted list for deterministic indexing (cache-friendly)
-  samples_lines = pol2_sorted
+  samples_lines = pol_sorted
     .flatMap { sorted_list ->
       sorted_list.withIndex().collect { item, idx ->
         def (sid, genes, c, t, r) = item
@@ -810,15 +810,15 @@ workflow TrackTx {
       tsv_file
     }
 
-  // Collect pol2 files in same sorted order as TSV for matching indices
-  pol2_files_ch = pol2_gene_ch
+  // Collect pol files in same sorted order as TSV for matching indices
+  pol_files_ch = pol_gene_ch
     .toSortedList { a, b -> a[0] <=> b[0] }
     .flatMap { sorted_list ->
       sorted_list.collect { sid, genes, c, t, r -> file(genes) }
     }
   
   // Combine TSV with collected files and pass to process
-  summarize_pol2_metrics(samples_tsv, pol2_files_ch.collect())
+  summarize_pol_metrics(samples_tsv, pol_files_ch.collect())
 
 
 
@@ -843,9 +843,9 @@ workflow TrackTx {
       tuple(sid, bam, dedup_stats, c, t, r)
     }
 
-  qc_pol2_tracktx(qc_input_ch)
+  qc_pol_tracktx(qc_input_ch)
   
-  qc_json_meta_ch = qc_pol2_tracktx.out.json_meta
+  qc_json_meta_ch = qc_pol_tracktx.out.json_meta
 
   // Monitor QC completion
   qc_json_meta_ch.subscribe { sid, _json, _cond, _time, _rep ->
@@ -876,8 +876,8 @@ workflow TrackTx {
     }
     .join(divergent_tx_ch.map { sid, bed, c, t, r -> tuple(sid, bed) })
     .join(functional_regions_sum_ch.map { sid, fsum, c, t, r -> tuple(sid, fsum) })
-    .join(pol2_density_ch.map { sid, dens, c, t, r -> tuple(sid, dens) })
-    .join(pol2_pausing_ch.map { sid, paus, c, t, r -> tuple(sid, paus) })
+    .join(pol_density_ch.map { sid, dens, c, t, r -> tuple(sid, dens) })
+    .join(pol_pausing_ch.map { sid, paus, c, t, r -> tuple(sid, paus) })
     .join(norm_factors_ch.map { sid, nf, c, t, r -> tuple(sid, nf) })
     .join(dedup_stats_ch.map { sid, dedup, c, t, r -> tuple(sid, dedup) })
     .join(qc_json_meta_ch.map { sid, qc, c, t, r -> tuple(sid, qc) })
@@ -961,6 +961,6 @@ workflow TrackTx {
   // log.info "  • Review QC reports in: ${params.output_dir}/10_qc/"
   // log.info "  • Check HTML reports in: ${params.output_dir}/11_reports/"
   // log.info "  • Examine divergent transcription in: ${params.output_dir}/06_divergent_tx/"
-  // log.info "  • Analyze Pol-II metrics in: ${params.output_dir}/08_pol2_metrics/"
+  // log.info "  • Analyze Pol-II metrics in: ${params.output_dir}/08_pol_metrics/"
   // log.info "═".multiply(80)
 }

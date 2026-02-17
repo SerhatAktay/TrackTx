@@ -341,9 +341,9 @@ results/
 ├── 🧬 07_functional_regions/       # Genomic region annotations
 │   ├── <sample>_regions.bed
 │   └── functional_regions_summary.tsv
-├── 📊 08_pol2_metrics/             # Pol-II pausing & density
+├── 📊 08_pol_metrics/             # Pol-II pausing & density
 │   ├── <sample>_pausing_index.tsv
-│   └── <sample>_pol2_density.tsv
+│   └── <sample>_pol_density.tsv
 ├── 🔍 10_qc/                       # Quality control metrics
 │   └── <sample>/qc_summary.json
 ├── 📋 11_reports/                  # Interactive HTML reports

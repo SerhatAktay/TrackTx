@@ -1038,7 +1038,7 @@ def generate_html_report(
       <div class="stat-item">
         <div class="stat-label">Read depth</div>
         <div class="stat-value" style="font-size:1rem;font-weight:600;">
-          total_reads_raw (from qc_pol2.json) → input_reads
+          total_reads_raw (from qc_pol.json) → input_reads
         </div>
         <p style="margin:0.5rem 0 0;font-size:0.9rem;color:var(--muted);">
           Primary: samtools view -c -F 0x900 on aligned BAM. Fallback: dedup_reads or reads_total_functional if QC parse failed.
@@ -1165,7 +1165,7 @@ def generate_html_report(
         <li><strong>05_normalized_tracks/:</strong> BigWig files for genome browser visualization (CPM and siCPM normalized)</li>
         <li><strong>06_divergent_tx/:</strong> Divergent transcription BED files and QC reports</li>
         <li><strong>07_functional_regions/:</strong> Region assignments and read count summaries</li>
-        <li><strong>08_pol2_metrics/:</strong> Pausing indices and density calculations per gene/region</li>
+        <li><strong>08_pol_metrics/:</strong> Pausing indices and density calculations per gene/region</li>
         <li><strong>10_qc/:</strong> Quality control JSON files with alignment stats</li>
       </ul>
     </div>
@@ -1185,7 +1185,7 @@ def generate_html_report(
         <li>Normalized tracks: <code>{{output_dir}}/05_normalized_tracks/&lt;sample&gt;/*.bw</code></li>
         <li>Divergent TX: <code>{{output_dir}}/06_divergent_tx/&lt;sample&gt;/divergent_transcription.bed</code></li>
         <li>Functional regions: <code>{{output_dir}}/07_functional_regions/&lt;sample&gt;/functional_regions.bed</code></li>
-        <li>Pol II metrics: <code>{{output_dir}}/08_pol2_metrics/&lt;sample&gt;/*.tsv</code></li>
+        <li>Pol II metrics: <code>{{output_dir}}/08_pol_metrics/&lt;sample&gt;/*.tsv</code></li>
         <li>QC stats: <code>{{output_dir}}/10_qc/&lt;sample&gt;/qc_summary.json</code></li>
       </ul>
     </div>

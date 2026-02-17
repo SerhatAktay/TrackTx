@@ -456,7 +456,7 @@ process generate_tracks {
     } > "${SAMPLE_ID}.dedup_stats.txt"
   fi
 
-  # Copy INPUT_BAM to named output for downstream (pol2 uses same BAM as tracks)
+  # Copy INPUT_BAM to named output for downstream (pol uses same BAM as tracks)
   echo "TRACKS | OUTPUT | Copying BAM used for tracks (deduped when UMI on)..."
   cp "${INPUT_BAM}" bam_for_downstream.bam
   samtools index -@ ${THREADS} bam_for_downstream.bam

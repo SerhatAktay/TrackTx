@@ -1,5 +1,5 @@
 // ============================================================================
-// summarize_pol2_metrics.nf — Cohort-Level Pol-II Metrics Aggregation
+// summarize_pol_metrics.nf — Cohort-Level Pol-II Metrics Aggregation
 // ============================================================================
 //
 // Purpose:
@@ -14,8 +14,8 @@
 //
 // Input Manifest Format (samples.tsv):
 //   sample_id  condition  timepoint  replicate  file
-//   sample1    control    0h         1          /path/to/pol2_gene_metrics.tsv
-//   sample2    treatment  24h        1          /path/to/pol2_gene_metrics.tsv
+//   sample1    control    0h         1          /path/to/pol_gene_metrics.tsv
+//   sample2    treatment  24h        1          /path/to/pol_gene_metrics.tsv
 //
 // Contrast Specification:
 //   Format: "group_variable:numerator,denominator"
@@ -28,23 +28,23 @@
 //   path(samples_tsv) : Manifest of per-sample metric files
 //
 // Outputs:
-//   ${params.output_dir}/09_pol2_aggregate/
-//     ├── pol2_gene_metrics_merged.tsv     — Combined tidy table
-//     ├── pol2_gene_metrics_contrasts.tsv  — Differential results (optional)
+//   ${params.output_dir}/09_pol_aggregate/
+//     ├── pol_gene_metrics_merged.tsv     — Combined tidy table
+//     ├── pol_gene_metrics_contrasts.tsv  — Differential results (optional)
 //     ├── plots/                           — Visualizations (optional)
 //     │   ├── heatmap_*.png
 //     │   └── ma_plot_*.png
 //     ├── README_aggregate.txt             — Documentation
 //     └── aggregate.log                    — Processing log
 //
-// Parameters (params.pol2.*):
+// Parameters (params.pol.*):
 //   top_n      : Top N variable genes for plots (default: 100)
 //   plots      : Generate plots (default: true)
 //   contrasts  : List of contrast specifications (default: [])
 //
 // Example Configuration:
 //   params {
-//     pol2 {
+//     pol {
 //       top_n = 100
 //       plots = true
 //       contrasts = [
@@ -58,17 +58,17 @@
 
 nextflow.enable.dsl = 2
 
-process summarize_pol2_metrics {
+process summarize_pol_metrics {
 
-  tag        'pol2-aggregate'
+  tag        'pol-aggregate'
   label      'conda'
   cache      'deep'
 
-  publishDir "${params.output_dir}/09_pol2_aggregate",
+  publishDir "${params.output_dir}/09_pol_aggregate",
              mode: 'copy',
              overwrite: true
 
-  conda (params.conda_pol2 ?: "${projectDir}/envs/tracktx.yaml")
+  conda (params.conda_pol ?: "${projectDir}/envs/tracktx.yaml")
 
   // ── Inputs ────────────────────────────────────────────────────────────────
   // NOTE: Each file is staged as "metric_N" where N is the index
@@ -78,8 +78,8 @@ process summarize_pol2_metrics {
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:
-    path 'pol2_gene_metrics_merged.tsv',              emit: merged
-    path 'pol2_gene_metrics_contrasts.tsv', optional: true, emit: contrasts
+    path 'pol_gene_metrics_merged.tsv',              emit: merged
+    path 'pol_gene_metrics_contrasts.tsv', optional: true, emit: contrasts
     path 'plots/**',                        optional: true, emit: plots
     path 'README_aggregate.txt',                      emit: readme
     path 'aggregate.log',                             emit: log
@@ -105,11 +105,11 @@ process summarize_pol2_metrics {
 
   SAMPLES_TSV_ORIG="samples.tsv"
   SAMPLES_TSV="samples_rewritten.tsv"
-  AGGREGATOR_SCRIPT="!{projectDir}/bin/compare_pol2_metrics.py"
+  AGGREGATOR_SCRIPT="!{projectDir}/bin/compare_pol_metrics.py"
 
   # Parameters
-  TOP_N=!{params.pol2?.top_n ?: 100}
-  ENABLE_PLOTS=$([[ "!{params.pol2?.plots}" == "false" ]] && echo 0 || echo 1)
+  TOP_N=!{params.pol?.top_n ?: 100}
+  ENABLE_PLOTS=$([[ "!{params.pol?.plots}" == "false" ]] && echo 0 || echo 1)
 
   echo "AGGREGATE | CONFIG | Samples manifest: ${SAMPLES_TSV}"
   echo "AGGREGATE | CONFIG | Aggregator script: ${AGGREGATOR_SCRIPT}"
@@ -124,10 +124,10 @@ process summarize_pol2_metrics {
 
   # Files are staged as metric_1, metric_2, etc. by Nextflow
   # TSV has the mapping: sample_id -> metric_N
-  # Create symlinks with meaningful names: Sample_ID.pol2_gene_metrics.tsv -> metric_N
+  # Create symlinks with meaningful names: Sample_ID.pol_gene_metrics.tsv -> metric_N
 
   tail -n +2 "${SAMPLES_TSV_ORIG}" | while IFS=$'\t' read -r SAMPLE_ID CONDITION TIMEPOINT REPLICATE STAGED_NAME; do
-    TARGET_NAME="${SAMPLE_ID}.pol2_gene_metrics.tsv"
+    TARGET_NAME="${SAMPLE_ID}.pol_gene_metrics.tsv"
     
     # Nextflow stages single files as "metric_" instead of "metric_1"
     # Check both patterns
@@ -157,7 +157,7 @@ process summarize_pol2_metrics {
   echo -e "sample_id\tcondition\ttimepoint\treplicate\tfile" > "${SAMPLES_TSV}"
   
   tail -n +2 "${SAMPLES_TSV_ORIG}" | while IFS=$'\t' read -r SAMPLE_ID CONDITION TIMEPOINT REPLICATE STAGED_NAME; do
-    TARGET_NAME="${SAMPLE_ID}.pol2_gene_metrics.tsv"
+    TARGET_NAME="${SAMPLE_ID}.pol_gene_metrics.tsv"
     echo -e "${SAMPLE_ID}\t${CONDITION}\t${TIMEPOINT}\t${REPLICATE}\t${TARGET_NAME}"
   done >> "${SAMPLES_TSV}"
 
@@ -165,7 +165,7 @@ process summarize_pol2_metrics {
 
   # Parse contrasts from params
   cat > contrasts.txt <<'CONTRASTEOF'
-!{((params.pol2?.contrasts ?: []) as List).join('\n')}
+!{((params.pol?.contrasts ?: []) as List).join('\n')}
 CONTRASTEOF
 
   # Count contrasts
@@ -289,7 +289,7 @@ CONTRASTEOF
   # Base arguments
   AGGREGATOR_ARGS=(
     --samples-tsv "${SAMPLES_TSV}"
-    --out-merged pol2_gene_metrics_merged.tsv
+    --out-merged pol_gene_metrics_merged.tsv
     --top-n "${TOP_N}"
   )
 
@@ -303,9 +303,9 @@ CONTRASTEOF
     if [[ ${#CONTRASTS[@]} -gt 0 ]]; then
       AGGREGATOR_ARGS+=(
         --contrasts "${CONTRASTS[@]}"
-        --out-contrasts pol2_gene_metrics_contrasts.tsv
+        --out-contrasts pol_gene_metrics_contrasts.tsv
       )
-      echo "AGGREGATE | BUILD | Contrast output: pol2_gene_metrics_contrasts.tsv"
+      echo "AGGREGATE | BUILD | Contrast output: pol_gene_metrics_contrasts.tsv"
     fi
   fi
 
@@ -352,21 +352,21 @@ CONTRASTEOF
   VALIDATION_OK=1
 
   # Check merged table
-  if [[ ! -s pol2_gene_metrics_merged.tsv ]]; then
+  if [[ ! -s pol_gene_metrics_merged.tsv ]]; then
     echo "AGGREGATE | ERROR | Merged table missing or empty"
     VALIDATION_OK=0
   else
-    MERGED_SIZE=$(stat -c%s pol2_gene_metrics_merged.tsv 2>/dev/null || stat -f%z pol2_gene_metrics_merged.tsv 2>/dev/null || echo "unknown")
-    MERGED_LINES=$(wc -l < pol2_gene_metrics_merged.tsv | tr -d ' ')
+    MERGED_SIZE=$(stat -c%s pol_gene_metrics_merged.tsv 2>/dev/null || stat -f%z pol_gene_metrics_merged.tsv 2>/dev/null || echo "unknown")
+    MERGED_LINES=$(wc -l < pol_gene_metrics_merged.tsv | tr -d ' ')
     MERGED_GENES=$((MERGED_LINES - 1))  # Exclude header
     echo "AGGREGATE | VALIDATE | Merged table: ${MERGED_SIZE} bytes (${MERGED_GENES} genes)"
   fi
 
   # Check contrasts table if expected
   if [[ ${CONTRAST_COUNT} -gt 0 ]]; then
-    if [[ -s pol2_gene_metrics_contrasts.tsv ]]; then
-      CONTRAST_SIZE=$(stat -c%s pol2_gene_metrics_contrasts.tsv 2>/dev/null || stat -f%z pol2_gene_metrics_contrasts.tsv 2>/dev/null || echo "unknown")
-      CONTRAST_LINES=$(wc -l < pol2_gene_metrics_contrasts.tsv | tr -d ' ')
+    if [[ -s pol_gene_metrics_contrasts.tsv ]]; then
+      CONTRAST_SIZE=$(stat -c%s pol_gene_metrics_contrasts.tsv 2>/dev/null || stat -f%z pol_gene_metrics_contrasts.tsv 2>/dev/null || echo "unknown")
+      CONTRAST_LINES=$(wc -l < pol_gene_metrics_contrasts.tsv | tr -d ' ')
       echo "AGGREGATE | VALIDATE | Contrasts table: ${CONTRAST_SIZE} bytes (${CONTRAST_LINES} lines)"
     else
       echo "AGGREGATE | WARNING | Contrasts requested but output missing"
@@ -402,9 +402,9 @@ CONTRASTEOF
   PLOT_COUNT=0
 
   # Get sample counts from merged table
-  if [[ -s pol2_gene_metrics_merged.tsv ]]; then
+  if [[ -s pol_gene_metrics_merged.tsv ]]; then
     # Count unique samples (columns after gene info)
-    HEADER_LINE=$(head -1 pol2_gene_metrics_merged.tsv)
+    HEADER_LINE=$(head -1 pol_gene_metrics_merged.tsv)
     TOTAL_COLS=$(echo "${HEADER_LINE}" | awk -F'\t' '{print NF}')
     
     echo "AGGREGATE | RESULTS | Merged table columns: ${TOTAL_COLS}"
@@ -412,12 +412,12 @@ CONTRASTEOF
   fi
 
   # Parse contrast results if available
-  if [[ -s pol2_gene_metrics_contrasts.tsv ]]; then
-    CONTRAST_GENES=$(tail -n +2 pol2_gene_metrics_contrasts.tsv | wc -l | tr -d ' ')
+  if [[ -s pol_gene_metrics_contrasts.tsv ]]; then
+    CONTRAST_GENES=$(tail -n +2 pol_gene_metrics_contrasts.tsv | wc -l | tr -d ' ')
     echo "AGGREGATE | RESULTS | Contrasts: ${CONTRAST_GENES} genes analyzed"
     
     # Count significant genes if possible (log2FC and padj columns)
-    SIG_COUNT=$(tail -n +2 pol2_gene_metrics_contrasts.tsv | \
+    SIG_COUNT=$(tail -n +2 pol_gene_metrics_contrasts.tsv | \
                 awk -F'\t' 'NF>=6 && $5!="NA" && $6!="NA" && ($5>1 || $5<-1) && $6<0.05' | \
                 wc -l | tr -d ' ' || echo "NA")
     
@@ -476,7 +476,7 @@ METRICS AGGREGATED
 FILES
 ────────────────────────────────────────────────────────────────────────────
 
-pol2_gene_metrics_merged.tsv:
+pol_gene_metrics_merged.tsv:
   Combined tidy table with all samples
   
   Format: One row per gene-sample combination
@@ -497,10 +497,10 @@ pol2_gene_metrics_merged.tsv:
   Lines: ${MERGED_LINES} (${MERGED_GENES} genes × samples)
   Size: ${MERGED_SIZE} bytes
 
-pol2_gene_metrics_contrasts.tsv (optional):
+pol_gene_metrics_contrasts.tsv (optional):
   Differential analysis results
   
-  Generated when: params.pol2.contrasts specified
+  Generated when: params.pol.contrasts specified
   Contrasts analyzed: ${CONTRAST_COUNT}
   
   Format: One row per gene-contrast combination
@@ -514,7 +514,7 @@ pol2_gene_metrics_contrasts.tsv (optional):
     • pvalue          — Statistical p-value
     • padj            — Adjusted p-value (FDR)
   
-  $([ -s pol2_gene_metrics_contrasts.tsv ] && cat <<STATS
+  $([ -s pol_gene_metrics_contrasts.tsv ] && cat <<STATS
   Lines: ${CONTRAST_LINES}
   Significant genes: ${SIG_COUNT} (|log2FC|>1, padj<0.05)
 STATS
@@ -523,7 +523,7 @@ STATS
 plots/ directory (optional):
   Visualization files
   
-  Generated when: params.pol2.plots = true
+  Generated when: params.pol.plots = true
   File format: PNG (Matplotlib)
   
   Types of plots:
@@ -551,7 +551,7 @@ CONTRAST SPECIFICATION
       → Compare 24h vs 0h timepoint
   
   Multiple contrasts supported:
-    params.pol2.contrasts = [
+    params.pol.contrasts = [
       "condition:KO,WT",
       "timepoint:late,early"
     ]
@@ -656,7 +656,7 @@ GENERATED
 ────────────────────────────────────────────────────────────────────────────
   Pipeline: TrackTx PRO-seq
   Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Module: 12_summarize_pol2_metrics
+  Module: 12_summarize_pol_metrics
   Samples: ${SAMPLE_COUNT}
 
 ================================================================================

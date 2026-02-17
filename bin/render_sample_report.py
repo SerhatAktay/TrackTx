@@ -28,7 +28,7 @@ ap.add_argument("--replicate", required=True)
 
 ap.add_argument("--divergent-bed", required=True)
 ap.add_argument("--functional-summary", required=True)
-ap.add_argument("--pol2-density", required=True)
+ap.add_argument("--pol-density", required=True)
 ap.add_argument("--pausing-index", required=True)
 ap.add_argument("--norm-factors", required=True)
 ap.add_argument("--qc-json", required=True)
@@ -183,7 +183,7 @@ def nl(s: Optional[str]) -> str:
 # ── load inputs ────────────────────────────────────────────────────────────
 bed_div  = read_bed6(args.divergent_bed)
 fun_sum  = read_table_any(args.functional_summary)
-density  = read_table_any(args.pol2_density)
+density  = read_table_any(args.pol_density)
 pausing  = read_table_any(args.pausing_index)
 norm_df  = read_table_any(args.norm_factors)
 
@@ -302,9 +302,9 @@ if not density.empty:
         median_density = median_num(density[use_col])
         density_source = "cpm" if cpm_col is not None else "signal"
     else:
-        density_reason = "pol2_density.tsv missing CPM/signal column"
+        density_reason = "pol_density.tsv missing CPM/signal column"
 else:
-    density_reason = "pol2_density.tsv not found or empty"
+    density_reason = "pol_density.tsv not found or empty"
 
 # Norm factors (accept synonyms)
 cpm_factor    = norm_factor_lookup(norm_df, "cpm")
@@ -699,8 +699,8 @@ hr{{border:none;border-top:1px solid var(--line);margin:16px 0}}
 
   <h2>At-a-glance</h2>
   <div class="grid">
-    {kpi("Total input reads", row["qc"]["total_reads_raw"], "qc_pol2.json")}
-    {kpi("De-dup reads (MAPQ≥)", row["qc"]["dedup_reads_mapq_ge"], "qc_pol2.json")}
+    {kpi("Total input reads", row["qc"]["total_reads_raw"], "qc_pol.json")}
+    {kpi("De-dup reads (MAPQ≥)", row["qc"]["dedup_reads_mapq_ge"], "qc_pol.json")}
     {kpi("UMI Dedup %" if row["qc"].get("umi_deduplication_enabled", False) else "Duplicate %", 
          row["qc"].get("umi_deduplication_percent") if row["qc"].get("umi_deduplication_enabled", False) else row["qc"].get("duplicate_percent"))}
     {kpi("# divergent loci", row["metrics"]["divergent_regions"])}
@@ -763,7 +763,7 @@ hr{{border:none;border-top:1px solid var(--line);margin:16px 0}}
     <ul>
       <li><span class="mono">{os.path.basename(args.divergent_bed)}</span></li>
       <li><span class="mono">{os.path.basename(args.functional_summary)}</span></li>
-      <li><span class="mono">{os.path.basename(args.pol2_density)}</span></li>
+      <li><span class="mono">{os.path.basename(args.pol_density)}</span></li>
       <li><span class="mono">{os.path.basename(args.pausing_index)}</span></li>
       <li><span class="mono">{os.path.basename(args.norm_factors)}</span></li>
       <li><span class="mono">{os.path.basename(args.qc_json)}</span></li>
