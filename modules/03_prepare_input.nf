@@ -218,6 +218,8 @@ process prepare_input {
   # Case 1: Symlink from download_srr (SRR_R1.fastq -> SRR_R1.fastq.gz). Use target, do NOT mv
   #   (mv would overwrite the real .gz file with the symlink and break it).
   # Case 2: Regular file with .fastq extension but gzip magic bytes. Rename to .gz.
+  # IMPORTANT: This function is used with $(fix_gzip_extension "${R1}"). Only the final
+  # path must go to stdout; all log messages must use >&2.
   fix_gzip_extension() {
     local f="$1"
     [[ -z "$f" || ! -e "$f" ]] && echo "$f" && return
@@ -232,7 +234,7 @@ process prepare_input {
         target="${dir}/${target}"
       fi
       if [[ -f "$target" && "$target" == *.gz ]]; then
-        echo "PREP | VALIDATE | Detected symlink .fastq -> .gz, using target: $target"
+        echo "PREP | VALIDATE | Detected symlink .fastq -> .gz, using target: $target" >&2
         echo "$target"
         return
       fi
@@ -241,18 +243,20 @@ process prepare_input {
     local magic
     magic=$(head -c 2 "$f" 2>/dev/null | od -A n -t x1 2>/dev/null | tr -d ' \n' | head -c 4)
     if [[ "$magic" == "1f8b" ]]; then
-      echo "PREP | VALIDATE | Detected gzipped content with .fastq extension, renaming to .gz: $f"
+      echo "PREP | VALIDATE | Detected gzipped content with .fastq extension, renaming to .gz: $f" >&2
       mv "$f" "${f}.gz"
       echo "${f}.gz"
     else
       echo "$f"
     fi
   }
+  # fix_gzip_extension returns path via stdout; use tail -1 so only the path is used
+  # (defensive: if any log line were echoed to stdout, the path is always last)
   R1_FIXED=$(fix_gzip_extension "${R1}")
-  R1="${R1_FIXED}"
+  R1=$(echo "${R1_FIXED}" | tail -1)
   if [[ -n "${R2}" && -f "${R2}" ]]; then
     R2_FIXED=$(fix_gzip_extension "${R2}")
-    R2="${R2_FIXED}"
+    R2=$(echo "${R2_FIXED}" | tail -1)
   fi
 
   if [[ "${MODE}" != "SE" && "${MODE}" != "PE" ]]; then
