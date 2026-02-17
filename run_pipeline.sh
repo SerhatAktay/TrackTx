@@ -134,7 +134,17 @@ docker_daemon_running() {
     if ! has_command docker; then
         return 1
     fi
-    timeout 5s docker info >/dev/null 2>&1
+    # macOS doesn't have 'timeout' by default; use it only if available
+    if has_command timeout; then
+        timeout 5s docker info >/dev/null 2>&1
+    else
+        docker info >/dev/null 2>&1
+    fi
+}
+
+# Check if Docker can actually run containers (catches file-sharing, permission issues)
+docker_can_run_containers() {
+    docker run --rm hello-world >/dev/null 2>&1
 }
 
 # Attempt to start Docker (with user interaction)
@@ -424,6 +434,15 @@ validate_profile() {
                 info "Install: https://docs.docker.com/get-docker/"
                 return 1
             fi
+            # Verify Docker can run containers (catches file-sharing issues on Mac)
+            if [[ ${SKIP_DOCKER_RUN_TEST:-0} -eq 0 ]] && ! docker_can_run_containers; then
+                error "Docker daemon responds but cannot run containers"
+                info "Common causes:"
+                info "  • Mac: Docker Desktop → Settings → Resources → File Sharing (add your project path)"
+                info "  • External drive: Try running from internal drive, or use: -profile conda"
+                info "  • Permissions: Ensure your user is in the 'docker' group (Linux)"
+                return 1
+            fi
             ;;
         conda|conda_server)
             if ! conda_available; then
@@ -632,6 +651,9 @@ TROUBLESHOOTING:
     NFS issues?    Use: -profile conda_server
     HPC cluster?   Use: -profile slurm,singularity
     Permissions?   Check: ls -la . && touch test.txt
+    Mac M1/M2/M3?  Use multi-arch image (see envs/tracktx.yaml build instructions)
+    External drive? Try -profile conda or run from internal drive if Docker fails
+    Skip Docker test?  SKIP_DOCKER_RUN_TEST=1 ./run_pipeline.sh
 
 MORE HELP:
     GitHub: https://github.com/SerhatAktay/TrackTx

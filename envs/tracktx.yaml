@@ -16,9 +16,9 @@
 #
 # Build locally (optional, from repo root):
 #   docker build -t ghcr.io/serhataktay/tracktx:latest -f envs/Dockerfile .
-#   # multi-arch:
+#   # multi-arch (Intel + Apple Silicon); requires: docker buildx create --use
 #   docker buildx build --platform linux/amd64,linux/arm64 \
-#     -t ghcr.io/serhataktay/tracktx:latest -f docker/Dockerfile . --push
+#     -t ghcr.io/serhataktay/tracktx:latest -f envs/Dockerfile . --push
 # ────────────────────────────────────────────────────────────────────────────
 
 name: tracktx
