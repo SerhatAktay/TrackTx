@@ -214,13 +214,30 @@ process prepare_input {
 
   echo "PREP | VALIDATE | Checking inputs..."
 
-  # Fix: Files may be gzipped but have .fastq extension (e.g. from download_srr symlinks).
-  # FastQC and cutadapt need correct extension to detect gzip. Rename if gzip magic bytes present.
-  # Use magic bytes (1f 8b) - portable, no dependency on 'file' command.
+  # Fix: Files may be gzipped but have .fastq extension.
+  # Case 1: Symlink from download_srr (SRR_R1.fastq -> SRR_R1.fastq.gz). Use target, do NOT mv
+  #   (mv would overwrite the real .gz file with the symlink and break it).
+  # Case 2: Regular file with .fastq extension but gzip magic bytes. Rename to .gz.
   fix_gzip_extension() {
     local f="$1"
-    [[ -z "$f" || ! -f "$f" ]] && echo "$f" && return
+    [[ -z "$f" || ! -e "$f" ]] && echo "$f" && return
     [[ "$f" == *.gz ]] && echo "$f" && return
+    # Symlink: use target (the actual .gz file) - do not mv
+    if [[ -L "$f" ]]; then
+      local dir base target
+      dir=$(dirname "$f")
+      base=$(basename "$f")
+      target=$(readlink "$f")  # target may be relative
+      if [[ "$target" != /* ]]; then
+        target="${dir}/${target}"
+      fi
+      if [[ -f "$target" && "$target" == *.gz ]]; then
+        echo "PREP | VALIDATE | Detected symlink .fastq -> .gz, using target: $target"
+        echo "$target"
+        return
+      fi
+    fi
+    # Regular file: check gzip magic bytes
     local magic
     magic=$(head -c 2 "$f" 2>/dev/null | od -A n -t x1 2>/dev/null | tr -d ' \n' | head -c 4)
     if [[ "$magic" == "1f8b" ]]; then
