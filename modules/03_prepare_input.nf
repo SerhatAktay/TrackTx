@@ -216,11 +216,14 @@ process prepare_input {
 
   # Fix: Files may be gzipped but have .fastq extension (e.g. from download_srr symlinks).
   # FastQC and cutadapt need correct extension to detect gzip. Rename if gzip magic bytes present.
+  # Use magic bytes (1f 8b) - portable, no dependency on 'file' command.
   fix_gzip_extension() {
     local f="$1"
     [[ -z "$f" || ! -f "$f" ]] && echo "$f" && return
     [[ "$f" == *.gz ]] && echo "$f" && return
-    if file -b "$f" 2>/dev/null | grep -qi gzip; then
+    local magic
+    magic=$(head -c 2 "$f" 2>/dev/null | od -A n -t x1 2>/dev/null | tr -d ' \n' | head -c 4)
+    if [[ "$magic" == "1f8b" ]]; then
       echo "PREP | VALIDATE | Detected gzipped content with .fastq extension, renaming to .gz: $f"
       mv "$f" "${f}.gz"
       echo "${f}.gz"
