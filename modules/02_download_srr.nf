@@ -78,8 +78,9 @@ process download_srr {
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   // We always emit _R1.fastq and _R2.fastq. When compression is on, the script
-  // creates symlinks .fastq -> .fastq.gz so downstream tools (which auto-detect
-  // gzip via magic bytes) receive a consistent path without Nextflow brace-expansion issues.
+  // creates symlinks .fastq -> .fastq.gz so downstream receives consistent paths.
+  // NOTE: prepare_input detects gzipped content with .fastq extension and renames
+  // to .gz so FastQC/cutadapt get correct format (they detect by extension).
   output:
     tuple val(sample_id),
           path("${sra_id}_R1.fastq"),

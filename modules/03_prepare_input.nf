@@ -214,6 +214,27 @@ process prepare_input {
 
   echo "PREP | VALIDATE | Checking inputs..."
 
+  # Fix: Files may be gzipped but have .fastq extension (e.g. from download_srr symlinks).
+  # FastQC and cutadapt need correct extension to detect gzip. Rename if gzip magic bytes present.
+  fix_gzip_extension() {
+    local f="$1"
+    [[ -z "$f" || ! -f "$f" ]] && echo "$f" && return
+    [[ "$f" == *.gz ]] && echo "$f" && return
+    if file -b "$f" 2>/dev/null | grep -qi gzip; then
+      echo "PREP | VALIDATE | Detected gzipped content with .fastq extension, renaming to .gz: $f"
+      mv "$f" "${f}.gz"
+      echo "${f}.gz"
+    else
+      echo "$f"
+    fi
+  }
+  R1_FIXED=$(fix_gzip_extension "${R1}")
+  R1="${R1_FIXED}"
+  if [[ -n "${R2}" && -f "${R2}" ]]; then
+    R2_FIXED=$(fix_gzip_extension "${R2}")
+    R2="${R2_FIXED}"
+  fi
+
   if [[ "${MODE}" != "SE" && "${MODE}" != "PE" ]]; then
     echo "PREP | ERROR | Mode must be SE or PE, got: ${MODE}"
     exit 1
