@@ -13,6 +13,15 @@ SHELL ["/bin/bash", "-lc"]
 COPY --chown=$MAMBA_USER:$MAMBA_USER envs/tracktx.yaml /tmp/env.yaml
 RUN micromamba install -y -n base -f /tmp/env.yaml && micromamba clean -a -y
 
+# Ensure divergent transcription detector deps (numpy, pandas, scikit-learn, scipy)
+# Belt-and-suspenders: conda should install these, but explicit pip ensures they work
+# across platforms (e.g. ARM vs x86) and catches any conda resolution gaps
+RUN micromamba run -n base pip install --no-cache-dir numpy pandas scikit-learn scipy
+
+# Verify Python deps for detect_divergent_transcription.py
+RUN micromamba run -n base python -c "import numpy, pandas, sklearn.mixture, scipy.stats" || \
+    (echo "ERROR: Divergent detector Python deps (numpy, pandas, scikit-learn, scipy) failed" && exit 1)
+
 # (Optional) small OS tools that don’t exist in Conda packages
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \

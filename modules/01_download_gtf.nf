@@ -111,12 +111,19 @@ process download_gtf {
   echo "GTF | CONFIG | Custom path: ${CUSTOM_PATH:-none}"
   echo "GTF | CONFIG | Custom URL: ${CUSTOM_URL:-none}"
 
+  # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
+  if command -v micromamba >/dev/null 2>&1; then
+    PYTHON_CMD="micromamba run -n base python3"
+  else
+    PYTHON_CMD="python3"
+  fi
+
   # Validate dependencies
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "GTF | ERROR | python3 not found in PATH"
+  if ! ${PYTHON_CMD} --version >/dev/null 2>&1; then
+    echo "GTF | ERROR | Python not found (tried: ${PYTHON_CMD})"
     exit 1
   fi
-  echo "GTF | CONFIG | Python: $(which python3) ($(python3 --version))"
+  echo "GTF | CONFIG | Python: $(${PYTHON_CMD} --version)"
 
   ###########################################################################
   # 2) FAST PATH - Use Complete Cache
@@ -291,7 +298,7 @@ process download_gtf {
 
   # Generate catalogs
   echo "GTF | PROCESS | Running gtf_to_catalog.py..."
-  python3 "${SCRIPT_PATH}" \
+  ${PYTHON_CMD} "${SCRIPT_PATH}" \
     "${CACHE_GTF}" \
     "${WORK_DIR}/genes.tsv" \
     "${WORK_DIR}/tss.bed" \

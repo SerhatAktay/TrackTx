@@ -169,6 +169,13 @@ process generate_reports {
 
   echo "REPORT | VALIDATE | Checking required input files..."
 
+  # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
+  if command -v micromamba >/dev/null 2>&1; then
+    PYTHON_CMD="micromamba run -n base python3"
+  else
+    PYTHON_CMD="python3"
+  fi
+
   VALIDATION_OK=1
 
   # Check renderer script
@@ -212,11 +219,11 @@ process generate_reports {
   fi
 
   # Validate tools
-  if command -v python3 >/dev/null 2>&1; then
-    PYTHON_VERSION=$(python3 --version 2>&1 || echo "unknown")
+  if ${PYTHON_CMD} --version >/dev/null 2>&1; then
+    PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
     echo "REPORT | VALIDATE | Python: ${PYTHON_VERSION}"
   else
-    echo "REPORT | ERROR | python3 not found in PATH"
+    echo "REPORT | ERROR | Python not found (tried: ${PYTHON_CMD})"
     VALIDATION_OK=0
   fi
 
@@ -377,7 +384,7 @@ process generate_reports {
   RENDER_START=$(date +%s)
 
   set +e
-  python3 "${RENDER_SCRIPT}" "${RENDERER_ARGS[@]}"
+  ${PYTHON_CMD} "${RENDER_SCRIPT}" "${RENDERER_ARGS[@]}"
   RENDER_RC=$?
   set -e
 

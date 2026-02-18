@@ -195,6 +195,13 @@ process combine_reports {
 
   echo "COHORT | VALIDATE | Checking required tools..."
 
+  # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
+  if command -v micromamba >/dev/null 2>&1; then
+    PYTHON_CMD="micromamba run -n base python3"
+  else
+    PYTHON_CMD="python3"
+  fi
+
   # Check combiner script
   if [[ ! -e "${COMBINER_SCRIPT}" ]]; then
     echo "COHORT | ERROR | Combiner script not found: ${COMBINER_SCRIPT}"
@@ -204,11 +211,11 @@ process combine_reports {
   fi
 
   # Check Python
-  if command -v python3 >/dev/null 2>&1; then
-    PYTHON_VERSION=$(python3 --version 2>&1 || echo "unknown")
+  if ${PYTHON_CMD} --version >/dev/null 2>&1; then
+    PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
     echo "COHORT | VALIDATE | Python: ${PYTHON_VERSION}"
   else
-    echo "COHORT | ERROR | python3 not found in PATH"
+    echo "COHORT | ERROR | Python not found (tried: ${PYTHON_CMD})"
     exit 1
   fi
 
@@ -222,7 +229,7 @@ process combine_reports {
   COMBINE_START=$(date +%s)
 
   set +e
-  python3 "${COMBINER_SCRIPT}" \
+  ${PYTHON_CMD} "${COMBINER_SCRIPT}" \
     --inputs "${JSON_FILES[@]}" \
     --out-tsv "${OUT_TSV}" \
     --out-json "${OUT_JSON}" \

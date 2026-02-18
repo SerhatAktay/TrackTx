@@ -191,6 +191,14 @@ process detect_divergent_tx {
 
   echo "DIVERGENT | VALIDATE | Checking inputs..."
 
+  # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
+  # Fixes: "Missing Python dependencies" when container runs non-login shell
+  if command -v micromamba >/dev/null 2>&1; then
+    PYTHON_CMD="micromamba run -n base python3"
+  else
+    PYTHON_CMD="python3"
+  fi
+
   # Check Python script exists
   if [[ ! -f "${DETECTOR_SCRIPT}" ]]; then
     echo "DIVERGENT | ERROR | Detector script not found: ${DETECTOR_SCRIPT}"
@@ -219,19 +227,19 @@ process detect_divergent_tx {
 
   # Validate tools and dependencies
   TOOLS_OK=1
-  if command -v python3 >/dev/null 2>&1; then
-    PYTHON_VERSION=$(python3 --version 2>&1 || echo "unknown")
+  if ${PYTHON_CMD} --version >/dev/null 2>&1; then
+    PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
     echo "DIVERGENT | VALIDATE | Python: ${PYTHON_VERSION}"
     
     # Check Python dependencies (including sklearn and scipy for GMM)
     echo "DIVERGENT | VALIDATE | Checking Python dependencies..."
-    python3 -c "import numpy, pandas, sklearn.mixture, scipy.stats" 2>/dev/null || {
+    ${PYTHON_CMD} -c "import numpy, pandas, sklearn.mixture, scipy.stats" 2>/dev/null || {
       echo "DIVERGENT | ERROR | Missing Python dependencies (numpy, pandas, scikit-learn, scipy)"
       echo "DIVERGENT | ERROR | Install with: pip install numpy pandas scikit-learn scipy"
       TOOLS_OK=0
     }
   else
-    echo "DIVERGENT | ERROR | python3 not found in PATH"
+    echo "DIVERGENT | ERROR | Python not found (tried: ${PYTHON_CMD})"
     TOOLS_OK=0
   fi
 
@@ -265,7 +273,7 @@ process detect_divergent_tx {
   # Run detector (capture exit code)
   DETECT_START=$(date +%s)
   set +e
-  python3 "${DETECTOR_SCRIPT}" \
+  ${PYTHON_CMD} "${DETECTOR_SCRIPT}" \
     --sample       "${SAMPLE_ID}" \
     --pos          "${POS_BG}" \
     --neg          "${NEG_BG}" \

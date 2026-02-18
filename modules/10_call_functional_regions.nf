@@ -200,6 +200,13 @@ process call_functional_regions {
 
   echo "FUNCREGION | VALIDATE | Checking input files..."
 
+  # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
+  if command -v micromamba >/dev/null 2>&1; then
+    PYTHON_CMD="micromamba run -n base python3"
+  else
+    PYTHON_CMD="python3"
+  fi
+
   VALIDATION_OK=1
 
   # Check Python script
@@ -233,11 +240,11 @@ process call_functional_regions {
   echo "FUNCREGION | VALIDATE | TES sites: ${TES_COUNT}"
 
   # Validate tools
-  if command -v python3 >/dev/null 2>&1; then
-    PYTHON_VERSION=$(python3 --version 2>&1 || echo "unknown")
+  if ${PYTHON_CMD} --version >/dev/null 2>&1; then
+    PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
     echo "FUNCREGION | VALIDATE | Python: ${PYTHON_VERSION}"
   else
-    echo "FUNCREGION | ERROR | python3 not found in PATH"
+    echo "FUNCREGION | ERROR | Python not found (tried: ${PYTHON_CMD})"
     VALIDATION_OK=0
   fi
 
@@ -261,7 +268,7 @@ process call_functional_regions {
   [[ ${DIV_FALLBACK_ENABLE} -eq 1 ]] && EXTRA_ARGS="${EXTRA_ARGS} --div-fallback-enable"
 
   set +e
-  python3 "${FGR_SCRIPT}" \
+  ${PYTHON_CMD} "${FGR_SCRIPT}" \
     --sid "${SAMPLE_ID}" \
     --genes "${GENES_TSV}" \
     --divergent "${DIV_BED}" \

@@ -190,6 +190,13 @@ process run_alignment {
   # 3) HELPER FUNCTIONS
   ###########################################################################
 
+  # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
+  if command -v micromamba >/dev/null 2>&1; then
+    PYTHON_CMD="micromamba run -n base python3"
+  else
+    PYTHON_CMD="python3"
+  fi
+
   # Decompress input files (handles .gz and uncompressed)
   decompress() {
     [[ "$1" == *.gz ]] && gzip -cd -- "$1" || cat -- "$1"
@@ -200,7 +207,7 @@ process run_alignment {
     if command -v seqkit >/dev/null 2>&1; then
       seqkit seq --quiet -t dna -r -p -j "${THREADS}"
     else
-      python3 - "$@" <<'PYEND'
+      ${PYTHON_CMD} - "$@" <<'PYEND'
 import sys
 comp = str.maketrans('ACGTNacgtn', 'TGCANtgcan')
 it = iter(sys.stdin)

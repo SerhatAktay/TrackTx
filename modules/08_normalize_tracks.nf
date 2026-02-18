@@ -225,16 +225,27 @@ process normalize_tracks {
 
   echo "NORMALIZE | VALIDATE | Found ${INPUT_COUNT} non-empty input bedGraphs"
 
+  # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
+  if command -v micromamba >/dev/null 2>&1; then
+    PYTHON_CMD="micromamba run -n base python3"
+  else
+    PYTHON_CMD="python3"
+  fi
+
   # Validate tools
   TOOLS_OK=1
-  for TOOL in python3 awk; do
-    if command -v ${TOOL} >/dev/null 2>&1; then
-      echo "NORMALIZE | VALIDATE | ${TOOL}: $(which ${TOOL})"
-    else
-      echo "NORMALIZE | ERROR | Required tool not found: ${TOOL}"
-      TOOLS_OK=0
-    fi
-  done
+  if ${PYTHON_CMD} --version >/dev/null 2>&1; then
+    echo "NORMALIZE | VALIDATE | python: $(${PYTHON_CMD} --version 2>&1)"
+  else
+    echo "NORMALIZE | ERROR | Python not found (tried: ${PYTHON_CMD})"
+    TOOLS_OK=0
+  fi
+  if command -v awk >/dev/null 2>&1; then
+    echo "NORMALIZE | VALIDATE | awk: $(which awk)"
+  else
+    echo "NORMALIZE | ERROR | Required tool not found: awk"
+    TOOLS_OK=0
+  fi
 
   if [[ ${EMIT_BW} -eq 1 ]]; then
     if command -v bedGraphToBigWig >/dev/null 2>&1; then
@@ -257,7 +268,7 @@ process normalize_tracks {
   echo "NORMALIZE | FACTORS | Computing CPM and siCPM scaling factors..."
 
   # Python script to compute factors from counts master
-  python3 - "${COUNTS_MASTER}" "${SAMPLE_ID}" "${CONTROL_LABEL}" > factors.tmp <<'PYSCRIPT'
+  ${PYTHON_CMD} - "${COUNTS_MASTER}" "${SAMPLE_ID}" "${CONTROL_LABEL}" > factors.tmp <<'PYSCRIPT'
 import sys
 import csv
 

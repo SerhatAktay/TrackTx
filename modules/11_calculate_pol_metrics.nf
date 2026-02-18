@@ -176,6 +176,13 @@ process calculate_pol_metrics {
 
   echo "POL | VALIDATE | Checking input files..."
 
+  # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
+  if command -v micromamba >/dev/null 2>&1; then
+    PYTHON_CMD="micromamba run -n base python3"
+  else
+    PYTHON_CMD="python3"
+  fi
+
   VALIDATION_OK=1
 
   # Check Python script
@@ -236,7 +243,7 @@ process calculate_pol_metrics {
   fi
 
   # Validate tools
-  for TOOL in samtools bedtools python3 awk; do
+  for TOOL in samtools bedtools awk; do
     if command -v ${TOOL} >/dev/null 2>&1; then
       echo "POL | VALIDATE | ${TOOL}: $(which ${TOOL})"
     else
@@ -244,6 +251,12 @@ process calculate_pol_metrics {
       VALIDATION_OK=0
     fi
   done
+  if ${PYTHON_CMD} --version >/dev/null 2>&1; then
+    echo "POL | VALIDATE | python: $(${PYTHON_CMD} --version 2>&1)"
+  else
+    echo "POL | ERROR | Python not found (tried: ${PYTHON_CMD})"
+    VALIDATION_OK=0
+  fi
 
   if [[ ${VALIDATION_OK} -eq 0 ]]; then
     echo "POL | ERROR | Validation failed"
@@ -448,7 +461,7 @@ process calculate_pol_metrics {
   [[ ${FAIL_IF_NO_GENES} -eq 1 ]] && FAIL_FLAG="--fail-if-empty true"
 
   set +e
-  python3 "${CALC_SCRIPT}" \
+  ${PYTHON_CMD} "${CALC_SCRIPT}" \
     --bam filtered.bam \
     --gtf "${GTF_FILE}" \
     --tss-win ${TSS_WIN} \
