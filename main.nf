@@ -177,6 +177,13 @@ if (!samplesheetFile.exists()) {
   error "PIPELINE | ERROR | Samplesheet not found: ${params.samplesheet}"
 }
 
+// Validate samplesheet has at least one data row (fail before workflow starts)
+def samplesheetLines = samplesheetFile.readLines()
+def dataRows = samplesheetLines.drop(1).findAll { it.trim() }
+if (dataRows.isEmpty()) {
+  error "PIPELINE | ERROR | Samplesheet has no data rows. Expected format: sample,condition,timepoint,replicate,file1,file2"
+}
+
 // log.info "PIPELINE | VALIDATE | Parameter validation complete"
 
 // ============================================================================
@@ -283,8 +290,11 @@ workflow TrackTx {
     }
     .tap { samples_for_count }
 
-  // Count samples without consuming main channel
+  // Count samples without consuming main channel; fail fast if none parsed
   samples_for_count.count().subscribe { count ->
+    if (count == 0) {
+      error "PIPELINE | ERROR | No samples parsed from samplesheet. Check column names (sample, file1), delimiter (comma), and encoding (UTF-8)."
+    }
     // log.info "STEP 2 | COMPLETE | Loaded ${count} samples from samplesheet"
   }
 
@@ -802,7 +812,12 @@ workflow TrackTx {
       }
       
       if (clean_lines.size() == 1) {
-        error "STEP 13 | ERROR | No valid samples in Pol-II aggregate TSV"
+        error """STEP 13 | ERROR | No valid samples in Pol-II aggregate TSV
+  This usually means no samples reached calculate_pol_metrics. Possible causes:
+  - An upstream process failed (check prepare_input, run_alignment, generate_tracks, normalize_tracks)
+  - Sample ID mismatch in join operations
+  - Run with -resume false to rule out stale cache
+  Check .nextflow.log and work/*/ for failed tasks."""
       }
       
       tsv_file.text = clean_lines.join('\n') + '\n'
