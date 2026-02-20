@@ -191,10 +191,12 @@ process detect_divergent_tx {
 
   echo "DIVERGENT | VALIDATE | Checking inputs..."
 
-  # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
-  # Fixes: "Missing Python dependencies" when container runs non-login shell
+  # Use micromamba run or explicit conda path to ensure correct Python env in container
+  # Fixes: "Missing Python dependencies" when container runs with restricted PATH (e.g. Singularity --cleanenv)
   if command -v micromamba >/dev/null 2>&1; then
     PYTHON_CMD="micromamba run -n base python3"
+  elif [[ -x /opt/conda/bin/python3 ]]; then
+    PYTHON_CMD="/opt/conda/bin/python3"
   else
     PYTHON_CMD="python3"
   fi

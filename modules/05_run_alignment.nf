@@ -193,6 +193,8 @@ process run_alignment {
   # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
   if command -v micromamba >/dev/null 2>&1; then
     PYTHON_CMD="micromamba run -n base python3"
+  elif [[ -x /opt/conda/bin/python3 ]]; then
+    PYTHON_CMD="/opt/conda/bin/python3"
   else
     PYTHON_CMD="python3"
   fi
