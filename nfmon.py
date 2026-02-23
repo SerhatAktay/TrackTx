@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# nf-monitor v12 — AWESOME Edition 🚀
+# nf-monitor — Nextflow pipeline monitoring
 # Enhanced monitoring tool for Nextflow pipelines with:
 # - Sparklines & trend visualization
 # - Predictive ETA & bottleneck detection
@@ -24,7 +24,6 @@ except ImportError:
 # ─── Constants & Configuration ─────────────────────────────────
 # ═══════════════════════════════════════════════════════════════
 
-VERSION = "12.0"
 SPARKLINE_BLOCKS = "▁▂▃▄▅▆▇█"
 SPARKLINE_WIDTH = 20
 
@@ -34,13 +33,13 @@ SPARKLINE_WIDTH = 20
 
 def parse_args():
     ap = argparse.ArgumentParser(
-        description=f"nf-monitor v{VERSION} — AWESOME Nextflow monitoring with trends & predictions",
+        description="nf-monitor — Nextflow pipeline monitoring with trends & predictions",
         epilog="Interactive keys: j/k=nav t=trends p=process e=export h=help q=quit"
     )
     ap.add_argument("--log", default=".nextflow.log", help="Path to .nextflow.log")
     ap.add_argument("--trace", default="results/trace/trace.txt", help="Path to trace file")
     ap.add_argument("--work", default="", help="Work directory (auto-detected if not specified)")
-    ap.add_argument("--refresh", type=float, default=0.8, help="Refresh interval in seconds")
+    ap.add_argument("--refresh", type=float, default=0.4, help="Refresh interval in seconds")
     ap.add_argument("--tail", type=int, default=20, help="Lines to tail from task logs")
     ap.add_argument("--oneshot", action="store_true", help="Run once and print summary")
     ap.add_argument("--json", default="", help="Export JSON snapshot path")
@@ -55,7 +54,6 @@ def parse_args():
     ap.add_argument("--from-start", action="store_true", help="Ingest full log history")
     ap.add_argument("--retain-sec", type=int, default=900, help="Seconds to retain completed tasks (0=immediate clear)")
     ap.add_argument("--max-tasks", type=int, default=2000, help="Max tasks to keep in memory")
-    ap.add_argument("--version", action="version", version=f"nfmon v{VERSION}")
     return ap.parse_args()
 
 # ═══════════════════════════════════════════════════════════════
@@ -1543,7 +1541,7 @@ def export_html(world: World, path: str):
     </style>
 </head>
 <body>
-    <h1>🚀 nfmon Dashboard v{VERSION}</h1>
+    <h1>nfmon Dashboard</h1>
     <p><strong>Pipeline:</strong> {world.meta.run_name}</p>
     <p><strong>Session:</strong> {world.meta.session}</p>
     <p><strong>Executor:</strong> {world.meta.executor}</p>
@@ -1682,37 +1680,25 @@ class TUI:
             except Exception:
                 pass
         
+        # Progress: use total_so_far (cumulative + current) so % doesn't jump when tasks are pruned
+        total_so_far = (C.get("cum_done", 0) + C.get("cum_cached", 0) + C.get("cum_failed", 0)
+                       + C.get("cum_killed", 0) + C["running"] + C["queued"])
+        pct_cum = min(100, int(((C.get("cum_done", 0) + C.get("cum_cached", 0)) * 100 / max(1, total_so_far)))) if total_so_far else 0
         total = C["running"] + C["queued"] + C["done"] + C["failed"] + C["cached"] + C["killed"]
-        pct_cum = int(((C.get("cum_done", 0) + C.get("cum_cached", 0)) * 100 / max(1, total))) if total else 0
-        
-        # Header
-        self._add(0, 0, f" nf-monitor v{VERSION} AWESOME Edition 🚀 ", curses.color_pair(1) | curses.A_BOLD)
-        self._add(0, 45, f"{time.strftime('%H:%M:%S')}  {self.w.meta.run_name[:20]}")
-        self._add(1, 0, f" Session: {self.w.meta.session}  Executor: {self.w.meta.executor}")
-        
-        cores_str = f" | CORES:{int(cores_in_use)}/{self.w.ncpu}" if self.w.ncpu > 0 else ""
-        self._add(2, 0, f" Uptime {sec2hms(now)} | CPU:{self.w.cpu_pct}% | MEM:{self.w.mem_pct}% | LOAD:{self.w.load_1}{cores_str}")
-        
-        # ETA
+
+        # Header (compact)
+        cores_str = f" C{int(cores_in_use)}/{self.w.ncpu}" if self.w.ncpu > 0 else ""
+        self._add(0, 0, f"nf-monitor {self.w.meta.run_name[:18]} {time.strftime('%H:%M:%S')}", curses.color_pair(1) | curses.A_BOLD)
+        self._add(1, 0, f"[{sec2hms(now)}] CPU:{self.w.cpu_pct}% MEM:{self.w.mem_pct}% LOAD:{self.w.load_1}{cores_str} | {C['running']} run {C['done']} done {C['failed']} fail")
         eta = predict_completion_eta(self.w)
-        eta_str = f" | ETA:{format_eta(eta)}" if eta else ""
-        self._add(2, maxx - 25, eta_str, curses.color_pair(4))
-        
+        if eta:
+            self._add(1, maxx - 12, format_eta(eta), curses.color_pair(4))
         # Progress bar
-        self._add(4, 0, "┌─ Pipeline Progress ─┐", curses.color_pair(5))
         barw = max(10, maxx - 12)
         fill = int(barw * pct_cum / 100)
-        self._add(5, 0, "[" + ("█" * fill) + ("·" * (barw - fill)) + f"] {pct_cum:3d}%")
-        self._add(6, 0, f"  🚀 {total}  ", 0)
-        self._add(6, 10, f"⚡ {C['running']}  ", curses.color_pair(4))
-        self._add(6, 20, f"✓ {C['done']}  ", curses.color_pair(2))
-        self._add(6, 30, f"✗ {C['failed']}  ", curses.color_pair(3))
-        self._add(6, 40, f"⚙ {C['cached']}", curses.color_pair(4))
-        
-        # ─── Layout Calculation ───
-        # Header: ~7 rows
-        # Remaining height split: 60% list, 40% details
-        header_h = 8
+        self._add(2, 0, "[" + ("█" * fill) + ("·" * (barw - fill)) + f"] {pct_cum:3d}%")
+        # Layout: header 3 rows, rest for list + details
+        header_h = 4
         avail_h = max(0, maxy - header_h)
         
         list_h = int(avail_h * 0.6)
@@ -1723,14 +1709,12 @@ class TUI:
             list_h = avail_h
             details_h = 0
         
-        # ─── Draw Task List ───
+        # Task list
         row = header_h
-        
-        self._add(row, 0, "┌─ Running Tasks ─┐", curses.color_pair(5))
+        self._add(row, 0, "Running:", curses.color_pair(5))
         row += 1
         
-        # Calculate available rows for list
-        list_content_h = max(0, list_h - 2) # minus border/header
+        list_content_h = max(0, list_h - 1)
         
         if run:
             start = max(0, min(self.sel, max(0, len(run) - list_content_h)))
@@ -1752,22 +1736,16 @@ class TUI:
                 # Slow indicator
                 slow = "🐌" if t.slow_flag else ""
                 
-                line = f" {mark} {truncate(label, 30):30}  CPU:{cpu:>4}  RSS:{rss:>7}  {age:>8}{spark}  {slow}"
+                line = f"{mark} {truncate(label, 30):30} CPU:{cpu:>4} RSS:{rss:>7} {age:>8}{spark}{' ' + slow if slow else ''}"
                 attr = curses.color_pair(4) if t.slow_flag else 0
                 self._add(row, 0, truncate(line, maxx - 1), attr)
                 row += 1
             
-            # Fill empty rows
             for _ in range(end - start, list_content_h):
                 self._add(row, 0, "")
                 row += 1
-                
-            self._add(row, 0, "└─┘")
-            row += 1
         else:
-            self._add(row, 2, "none")
-            row += 1
-            self._add(row, 0, "└─┘")
+            self._add(row, 0, "none")
             row += 1
         
         # ─── Draw Details Pane ───
@@ -1792,46 +1770,26 @@ class TUI:
             return
             
         if not t:
-            win.addstr(0, 0, "┌─ Process Details ─┐", curses.color_pair(5))
-            win.addstr(1, 2, "(no task selected)", curses.A_DIM)
+            win.addstr(0, 0, "Details: (none)", curses.color_pair(5))
             win.overwrite(self.s)
             return
 
-        win.addstr(0, 0, f"┌─ Process: {t.label()} ─┐", curses.color_pair(5))
-        
-        # Fetch insight
+        win.addstr(0, 0, truncate(f"Details: {t.label()}", w - 1), curses.color_pair(5))
         if t.workdir and os.path.isdir(t.workdir):
-            payload, logs, outs = insight(t.workdir, 20) # Fetch more lines
+            payload, logs, outs = insight(t.workdir, max(5, h - 3))
         else:
             payload, logs, outs = "Workdir not found", [], []
-        
-        # Layout: 3 columns? Or stacked?
-        # Stacked is better for logs.
-        # Command (2 lines) | Outputs (3 lines)
-        # Logs (Rest)
-        
+
         inner_w = w - 2
-        
-        # Command
-        win.addstr(1, 1, "Command:", curses.A_BOLD)
-        win.addstr(1, 10, truncate(payload, inner_w - 10), curses.A_DIM)
-        
-        # Outputs
-        win.addstr(2, 1, "Outputs:", curses.A_BOLD)
-        if outs:
-            out_str = ", ".join([f"{n} ({sz})" for n, sz in outs[:3]])
-            win.addstr(2, 10, truncate(out_str, inner_w - 10))
-        else:
-            win.addstr(2, 10, "(none)", curses.A_DIM)
-            
-        # Logs
-        win.addstr(3, 1, "Log Tail:", curses.A_BOLD)
-        avail_log_h = h - 4
+        # Line 1: cmd | line 2+: logs (skip Outputs label to save space)
+        win.addstr(1, 0, truncate(payload, inner_w), curses.A_DIM)
+        avail_log_h = h - 2
         
         for i, ln in enumerate(logs):
-            if i >= avail_log_h: break
+            if i >= avail_log_h:
+                break
             try:
-                win.addstr(4 + i, 1, truncate(ln, inner_w), 0)
+                win.addstr(2 + i, 0, truncate(ln, inner_w), 0)
             except curses.error:
                 pass
                 
@@ -1869,29 +1827,31 @@ def oneshot(w: World):
     """Print snapshot to terminal"""
     run, que, C = classify(w)
     total = sum([C[k] for k in ["running", "queued", "done", "failed", "cached", "killed"]])
-    pct = int(((C["done"] + C["cached"]) * 100 / total)) if total else 0
-    
-    print(f"nf-monitor v{VERSION}  {time.strftime('%H:%M:%S')}  (run:{w.meta.run_name}  session:{w.meta.session}  exec:{w.meta.executor})")
+    total_so_far = (C.get("cum_done", 0) + C.get("cum_cached", 0) + C.get("cum_failed", 0)
+                    + C.get("cum_killed", 0) + C["running"] + C["queued"])
+    pct = min(100, int(((C.get("cum_done", 0) + C.get("cum_cached", 0)) * 100 / max(1, total_so_far)))) if total_so_far else 0
+
+    print(f"nf-monitor  {time.strftime('%H:%M:%S')}  (run:{w.meta.run_name}  session:{w.meta.session}  exec:{w.meta.executor})")
     print(f" Root: {os.getcwd()}")
-    print(f" Uptime {sec2hms(int(time.time() - w.start_ts))} | CPU:{w.cpu_pct}% | MEM:{w.mem_pct}% | LOAD:{w.load_1}\n")
-    
+    print(f" Uptime {sec2hms(int(time.time() - w.start_ts))} | CPU:{w.cpu_pct}% | MEM:{w.mem_pct}% | LOAD:{w.load_1}")
+    print()
     bw = 80
     fill = int(bw * pct / 100)
     print("┌─ Pipeline ─┐")
     print("[" + ("█" * fill) + ("·" * (bw - fill)) + f"] {pct:3d}%")
-    print(f"  🚀 total:{total}  ⚡ run:{C['running']}  ✓ done:{C['done']}  ✗ fail:{C['failed']}  ⚙ cache:{C['cached']}\n")
+    print(f"  total:{total}  run:{C['running']}  done:{C['done']}  fail:{C['failed']}  cache:{C['cached']}")
     
     # ETA
     eta = predict_completion_eta(w)
     if eta:
-        print(f"  📊 Estimated completion: {format_eta(eta)}\n")
+        print(f"  Estimated completion: {format_eta(eta)}")
     
     print("┌─ Running ─┐")
     for t in run[:20]:
         cpu = f"{int(t.metrics.cpu_pct)}%" if t.metrics.cpu_pct is not None else "--"
         rss = f"{int(t.metrics.rss_mb)}MB" if t.metrics.rss_mb is not None else "--"
-        slow = " 🐌" if t.slow_flag else ""
-        print(f"  • {t.label():60} CPU:{cpu:>4} RSS:{rss:>6}{slow}")
+        slow = " [slow]" if t.slow_flag else ""
+        print(f"  {t.label():54} CPU:{cpu:>4} RSS:{rss:>6}{slow}")
     if not run:
         print("  none")
     print("└─┘")
@@ -2034,11 +1994,11 @@ def main():
                     export_json(w, tmp)
                     os.replace(tmp, a.json)
                 
-                next_tick = now + max(0.3, a.refresh)
+                next_tick = now + max(0.2, a.refresh)
             
             ui.draw()
             ui.keys()
-            time.sleep(0.05)
+            time.sleep(0.02)
     
     # Try Rich UI first (unless --simple)
     if not a.simple:
@@ -2103,7 +2063,7 @@ def main():
                     old = termios.tcgetattr(fd)
                     tty.setcbreak(fd)
                     while not stop_keys["stop"]:
-                        r,_,_ = select.select([sys.stdin], [], [], 0.1)
+                        r,_,_ = select.select([sys.stdin], [], [], 0.05)
                         if r:
                             ch = sys.stdin.read(1)
                             if ch in ('q','\x03','\x1b'):
@@ -2144,6 +2104,11 @@ def main():
                     pass
 
             def render():
+                import shutil
+                try:
+                    term_height = shutil.get_terminal_size().lines
+                except Exception:
+                    term_height = 40
                 run,que,C=classify(w)
                 total=C["running"]+C["queued"]+C["done"]+C["failed"]+C["cached"]+C["killed"]
                 pct=int(((C["done"]+C["cached"])*100/max(1,total))) if total else 0
@@ -2153,8 +2118,8 @@ def main():
                 # hide placeholders for run/session when unknown
                 rn = (w.meta.run_name or "?")
                 ss = (w.meta.session or "?")
-                hdr.append(f"Run: {rn if rn!='?' else 'n/a'}  ")
-                hdr.append(f"Session: {ss if ss!='?' else 'n/a'}  ")
+                hdr.append(f"Run: {rn if rn!='?' else 'n/a'} ")
+                hdr.append(f"Session: {ss if ss!='?' else 'n/a'} ")
                 hdr.append(f"Exec: {w.meta.executor}\n")
                 # compute cores-in-use and ETA similar to curses UI
                 run,que,C=classify(w)
@@ -2175,17 +2140,17 @@ def main():
                         if t.metrics.cpu_pct is not None:
                             approx += max(0.0, t.metrics.cpu_pct/100.0)
                     cores_in_use = min(float(w.ncpu), approx)
-                cores_txt = f"   CORES {int(round(cores_in_use))}/{w.ncpu}" if w.ncpu>0 else ""
-                hdr.append(f"CPU {w.cpu_pct}%   MEM {w.mem_pct}%   LOAD1 {w.load_1}{cores_txt}")
+                cores_txt = f" CORES {int(round(cores_in_use))}/{w.ncpu}" if w.ncpu>0 else ""
+                hdr.append(f"CPU {w.cpu_pct}% MEM {w.mem_pct}% LOAD1 {w.load_1}{cores_txt}")
                 if filter_state["proc"]:
                     hdr.append(f"\nFilter: {filter_state['proc']}", style="yellow")
                 sort_indicator = f" • Sort: {filter_state.get('sort', 'default')}" if filter_state.get('sort') != 'default' else ""
-                hdr.append(f"\n[dim]Keys: j/k navigate • f filter • s sort • a all-logs • q quit{sort_indicator}" + (" • [yellow]ALL LOGS MODE[/yellow]" if getattr(a, 'all_logs', False) else "") + "[/dim]")
+                hdr.append(f"\n[dim]j/k nav  f filter  s sort  a all-logs  q quit{sort_indicator}" + (" [yellow]ALL LOGS[/yellow]" if getattr(a, 'all_logs', False) else "") + "[/dim]")
                 header_panel = Panel(hdr, title="nf-monitor", border_style="cyan")
 
-                # pipeline progress bar (cumulative)
+                # pipeline progress bar (cumulative; cap at 100 so it doesn't jump)
                 total_so_far = C.get('cum_done',0)+C.get('cum_cached',0)+C.get('cum_failed',0)+C.get('cum_killed',0)+C['running']+C['queued']
-                pct_cum = int(((C.get('cum_done',0)+C.get('cum_cached',0))*100/max(1,total_so_far))) if total_so_far else 0
+                pct_cum = min(100, int(((C.get('cum_done',0)+C.get('cum_cached',0))*100/max(1,total_so_far)))) if total_so_far else 0
                 prog=Progress(TextColumn("[bold]Pipeline"), BarColumn(), TextColumn(f" {pct_cum}%"), expand=True)
                 prog.add_task("pipe", total=100, completed=pct_cum)
 
@@ -2208,7 +2173,8 @@ def main():
                     run_filtered.sort(key=lambda t: (-(t.metrics.rss_mb if t.metrics.rss_mb is not None else -1), -(t.metrics.cpu_pct if t.metrics.cpu_pct is not None else -1), -(time.time()-t.first_ts)))
                 elif sort_mode == 'age':
                     run_filtered.sort(key=lambda t: (-(time.time()-t.first_ts)))
-                for idx, t in enumerate(run_filtered[:18]):
+                max_rows = max(6, min(18, (term_height - 12) // 2))
+                for idx, t in enumerate(run_filtered[:max_rows]):
                     # Ensure we have proper labels from filesystem
                     ensure_task_label_from_fs(w, t)
                     
@@ -2256,72 +2222,16 @@ def main():
                 qt = Table(title="", expand=True)
 
                 # errors panel
-                err_txt = Text("✓ none", style="green") if not w.recent_errors else Text("\n".join(list(w.recent_errors)[-5:]), style="red")
+                err_txt = Text("✓ none", style="green") if not w.recent_errors else Text("\n".join(list(w.recent_errors)[-3:]), style="red")
                 err_panel = Panel(err_txt, title="Recent errors", border_style="red")
 
-                # help panel - Enhanced for first-time users
+                # help - compact single line so it doesn't eat screen space
                 help_txt = Text()
-                help_txt.append("NAVIGATION:\n", style="bold cyan")
-                help_txt.append("  j/k      ", style="yellow")
-                help_txt.append("Navigate up/down through running tasks\n", style="dim")
-                
-                help_txt.append("\nFILTERING & SORTING:\n", style="bold cyan")
-                help_txt.append("  f        ", style="yellow")
-                help_txt.append("Cycle through process filters (shows only selected module)\n", style="dim")
-                help_txt.append("  s        ", style="yellow")
-                help_txt.append("Cycle sort modes: Default → CPU% → Memory → Age\n", style="dim")
-                
-                help_txt.append("\nVIEW OPTIONS:\n", style="bold cyan")
-                help_txt.append("  a        ", style="yellow")
-                help_txt.append("Toggle All-Logs mode (show multiple task logs vs single focused)\n", style="dim")
-                help_txt.append("           ", style="dim")
-                help_txt.append("Window auto-resizes to show maximum log content\n", style="dim")
-                
-                help_txt.append("\nOTHER:\n", style="bold cyan")
-                help_txt.append("  q/ESC    ", style="yellow")
-                help_txt.append("Quit monitor\n", style="dim")
-                
-                help_txt.append("\nINFO:\n", style="bold green")
-                help_txt.append("• CPU%    ", style="cyan")
-                help_txt.append("= Process CPU usage (can exceed 100% for multi-threaded)\n", style="dim")
-                help_txt.append("• CPUS    ", style="cyan")
-                help_txt.append("= Number of CPU cores allocated to task\n", style="dim")
-                help_txt.append("• RSS     ", style="cyan")
-                help_txt.append("= Resident memory (RAM) currently used by task\n", style="dim")
-                help_txt.append("• CPU hist", style="cyan")
-                help_txt.append("= Sparkline showing CPU usage trend over time\n", style="dim")
-                
-                help_panel = Panel(help_txt, title="Quick Reference Guide", border_style="bright_white")
+                help_txt.append("j/k nav  f filter  s sort  a all-logs  q quit", style="dim")
+                help_panel = Panel(help_txt, title="Keys", border_style="dim")
 
-                # layout - Dynamic sizing based on terminal height
-                import shutil
-                try:
-                    term_height = shutil.get_terminal_size().lines
-                except Exception:
-                    term_height = 40  # fallback
-                
-                # Calculate available space for body
-                # Header: 4 lines, Progress: 3 lines, margins: ~2 lines
-                available_height = max(20, term_height - 9)
-                
-                # Fixed sizes for bottom sections
-                help_size = 12
-                error_size = 6
-                
-                # Table size: dynamic based on actual number of tasks
-                # Account for: table header (1) + border (2) + tasks + buffer (2 extra rows)
-                num_tasks_to_display = min(18, len(run_filtered))
-                table_content_rows = num_tasks_to_display + 5  # header + borders + buffer
-                
-                # Don't let table be too small or waste space
-                table_size = max(8, min(table_content_rows, int(available_height * 0.35)))
-                
-                # Log panel gets ALL remaining space - THIS IS THE PRIORITY
-                log_size = max(10, available_height - table_size - error_size - help_size)
-                
-                # NOW generate the log panel with dynamic content based on available log_size
-                # Account for panel borders (2 lines) and title (1 line)
-                available_log_lines = max(3, log_size - 3)
+                # Estimate log lines from terminal
+                available_log_lines = max(5, int((term_height - 8) * 0.55))
                 
                 if run_filtered:
                     if getattr(a, 'all_logs', False):
@@ -2385,29 +2295,26 @@ def main():
                             text.append("outputs: "+", ".join([f"{n} ({sz})" for n,sz in outs]))
                         log_panel = Panel(text, title=f"Live log (task {focused['idx']+1}/{len(run_filtered)})", border_style="blue")
                 
-                layout=Layout()
+                layout = Layout()
                 layout.split_column(
-                    Layout(header_panel, size=4),
+                    Layout(header_panel, size=5),
                     Layout(Panel(prog), size=3),
                     Layout(name="body")
                 )
-                layout["body"].split_row(
-                    Layout(name="right", ratio=1)
-                )
-                
-                # Dynamic layout: sizes adjust to terminal height
+                layout["body"].split_row(Layout(name="right", ratio=1))
+                # Ratio-based: table 2, log 5, errors 1, help 1 - log gets most space
                 layout["right"].split_column(
-                    Layout(rt, size=table_size),
-                    Layout(log_panel, size=log_size),
-                    Layout(err_panel, size=error_size),
-                    Layout(help_panel, size=help_size)
+                    Layout(rt, ratio=2, minimum_size=4),
+                    Layout(log_panel, ratio=5, minimum_size=5),
+                    Layout(err_panel, ratio=1, minimum_size=2),
+                    Layout(help_panel, ratio=1, minimum_size=2)
                 )
                 return layout
 
             import threading
             kt = threading.Thread(target=_key_thread, daemon=True)
             kt.start()
-            with Live(render(), refresh_per_second=max(2,int(1.0/max(0.2,a.refresh)))) as live:
+            with Live(render(), refresh_per_second=max(5, int(1.0 / max(0.15, a.refresh)))) as live:
                 next_tick=0.0
                 while True:
                     now=time.time()
@@ -2420,8 +2327,8 @@ def main():
                             apply_trace_row(w, row, time.time())
                         w.cpu_pct, w.mem_pct, w.load_1 = sys_metrics()
                         live.update(render())
-                        next_tick = now + max(0.3, a.refresh)
-                    time.sleep(0.05)
+                        next_tick = now + max(0.2, a.refresh)
+                    time.sleep(0.02)
             stop_keys["stop"] = True
             return
         except Exception:
