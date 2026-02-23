@@ -6,21 +6,21 @@
 //   Complete PRO-seq analysis from FASTQ to functional regions and Pol-II metrics
 //
 // Pipeline Steps:
-//   1.  Download annotations (GTF)
-//   2.  Download SRR data (optional)
-//   3.  Prepare/clean input reads
-//   4.  Build genome indices (primary + spike-in)
-//   5.  Alignment (Bowtie2)
+//   1.  Download genome annotations (GTF)
+//   2.  Download SRA samples (optional)
+//   3.  Preprocess and quality-filter reads
+//   4.  Download genome and build alignment index (primary + spike-in)
+//   5.  Align reads to genome (Bowtie2)
 //   6.  Generate coverage tracks (bedGraph/BigWig)
-//   7.  Collect read counts
-//   8.  Normalize tracks (CPM/siCPM)
+//   7.  Quantify reads per gene
+//   8.  Normalize coverage tracks (CPM/siCPM)
 //   9.  Detect divergent transcription (edge-to-edge distance)
-//   10. Call functional regions
-//   11. Calculate Pol-II metrics
-//   12. Summarize Pol-II metrics
-//   13. QC analysis
+//   10. Assign signal to functional regions
+//   11. Calculate polymerase occupancy metrics
+//   12. Summarize polymerase metrics
+//   13. Quality control aligned reads
 //   14. Generate per-sample reports
-//   15. Combine reports
+//   15. Combine reports into cohort
 //
 // Key Updates:
 //   • Divergent transcription uses edge-to-edge distance (not center-to-center)
@@ -30,7 +30,7 @@
 //   • Enhanced progress monitoring and validation throughout
 //
 // Inputs:
-//   - Samplesheet CSV (sample metadata + file paths or SRR IDs)
+//   - Samplesheet CSV (sample metadata + file paths or SRA accessions)
 //   - Reference genome (hg38, mm39, or custom FASTA)
 //   - Spike-in genome (optional)
 //
@@ -43,7 +43,7 @@
 //     ├── 05_normalized_tracks/ — CPM/siCPM tracks
 //     ├── 06_divergent_tx/      — Divergent transcription calls
 //     ├── 07_functional_regions/— Functional region annotations
-//     ├── 08_pol_metrics/      — Per-gene Pol-II metrics
+//     ├── 08_pol_metrics/      — Per-gene polymerase occupancy metrics
 //     ├── 09_pol_aggregate/    — Cohort-level summaries
 //     ├── 10_qc/                — Quality control reports
 //     └── 11_reports/           — HTML reports
@@ -65,14 +65,14 @@ params.reports_plots = params.reports_plots ?: 0
 params.conda_norm = params.conda_norm ?: null
 params.conda_pol = params.conda_pol ?: null
 
-// QC parameters (used by prepare_input and qc_pol_tracktx modules)
+// QC parameters (used by preprocess_and_quality_filter_reads and quality_control_aligned_reads modules)
 params.qc = params.qc instanceof Map ? params.qc : [:]
 params.qc.enabled = params.qc.enabled != null ? params.qc.enabled : true
 params.qc.mapq = params.qc.mapq ?: 10
 params.qc.dedup = params.qc.dedup != null ? params.qc.dedup : true
 params.qc.depth_max_cov = params.qc.depth_max_cov ?: 0
 
-// Pol-II aggregate parameters (used by summarize_pol_metrics module)
+// Polymerase aggregate parameters (used by summarize_polymerase_metrics module)
 params.pol = params.pol instanceof Map ? params.pol : [:]
 params.pol.top_n = params.pol.top_n ?: 100
 params.pol.plots = params.pol.plots != null ? params.pol.plots : true
@@ -192,22 +192,22 @@ if (dataRows.isEmpty()) {
 
 def MOD = "${projectDir}/modules"
 
-include { download_gtf                         } from "${MOD}/01_download_gtf.nf"
-include { download_srr                         } from "${MOD}/02_download_srr.nf"
-include { prepare_input                        } from "${MOD}/03_prepare_input.nf"
-include { fetch_and_build_index as build_index } from "${MOD}/04_fetch_and_build_index.nf"
-include { fetch_and_build_index as spike_index } from "${MOD}/04_fetch_and_build_index.nf"
-include { run_alignment                        } from "${MOD}/05_run_alignment.nf"
-include { generate_tracks                      } from "${MOD}/06_generate_tracks.nf"
-include { collect_counts                       } from "${MOD}/07_collect_counts.nf"
-include { normalize_tracks                     } from "${MOD}/08_normalize_tracks.nf"
-include { detect_divergent_tx                  } from "${MOD}/09_detect_divergent_tx.nf"
-include { call_functional_regions              } from "${MOD}/10_call_functional_regions.nf"
-include { calculate_pol_metrics               } from "${MOD}/11_calculate_pol_metrics.nf"
-include { summarize_pol_metrics               } from "${MOD}/12_summarize_pol_metrics.nf"
-include { qc_pol_tracktx                      } from "${MOD}/13_qc_pol_tracktx.nf"
-include { generate_reports                     } from "${MOD}/14_generate_reports.nf"
-include { combine_reports                      } from "${MOD}/15_combine_reports.nf"
+include { download_genome_annotations                             } from "${MOD}/01_download_genome_annotations.nf"
+include { download_sra_samples                                   } from "${MOD}/02_download_sra_samples.nf"
+include { preprocess_and_quality_filter_reads                    } from "${MOD}/03_preprocess_and_quality_filter_reads.nf"
+include { download_genome_and_build_alignment_index as build_index } from "${MOD}/04_download_genome_and_build_alignment_index.nf"
+include { download_genome_and_build_alignment_index as spike_index } from "${MOD}/04_download_genome_and_build_alignment_index.nf"
+include { align_reads_to_genome                                  } from "${MOD}/05_align_reads_to_genome.nf"
+include { generate_coverage_tracks                               } from "${MOD}/06_generate_coverage_tracks.nf"
+include { quantify_reads_per_gene                                } from "${MOD}/07_quantify_reads_per_gene.nf"
+include { normalize_coverage_tracks                              } from "${MOD}/08_normalize_coverage_tracks.nf"
+include { detect_divergent_transcription                         } from "${MOD}/09_detect_divergent_transcription.nf"
+include { assign_signal_to_functional_regions                    } from "${MOD}/10_assign_signal_to_functional_regions.nf"
+include { calculate_polymerase_occupancy_metrics                 } from "${MOD}/11_calculate_polymerase_occupancy_metrics.nf"
+include { summarize_polymerase_metrics                           } from "${MOD}/12_summarize_polymerase_metrics.nf"
+include { quality_control_aligned_reads                          } from "${MOD}/13_quality_control_aligned_reads.nf"
+include { generate_per_sample_reports                            } from "${MOD}/14_generate_per_sample_reports.nf"
+include { combine_reports_into_cohort                            } from "${MOD}/15_combine_reports_into_cohort.nf"
 
 // log.info "PIPELINE | IMPORT | All modules loaded successfully"
 
@@ -237,12 +237,12 @@ workflow TrackTx {
   // log.info "STEP 1 | Download Genome Annotations"
   // log.info "─".multiply(80)
   
-  download_gtf()
+  download_genome_annotations()
   
-  gtf_ch   = download_gtf.out[0]
-  genes_ch = download_gtf.out.genes
-  tss_ch   = download_gtf.out.tss
-  tes_ch   = download_gtf.out.tes
+  gtf_ch   = download_genome_annotations.out[0]
+  genes_ch = download_genome_annotations.out.genes
+  tss_ch   = download_genome_annotations.out.tss
+  tes_ch   = download_genome_annotations.out.tes
   
 
 
@@ -312,13 +312,13 @@ workflow TrackTx {
     // Explicitly evaluate parameter to avoid closure comparison issues
     def isPairedEnd = params.paired_end ? true : false
     
-    download_srr(
+    download_sra_samples(
       samples_ch.map { sid, reads, c, t, r ->
         tuple(sid, reads[0], c, t, r, isPairedEnd)
       }
     )
     
-    prepared_input_ch = download_srr.out[0].map { sid, fq1, fq2, c, t, r ->
+    prepared_input_ch = download_sra_samples.out[0].map { sid, fq1, fq2, c, t, r ->
       tuple(sid, [file(fq1), file(fq2)].findAll(), c, t, r)
     }
     
@@ -347,7 +347,7 @@ workflow TrackTx {
   // log.info "STEP 4 | CONFIG | Mode: ${params.paired_end ? 'Paired-end' : 'Single-end'}"
   // log.info "STEP 4 | CONFIG | Trimming and quality filtering enabled"
   
-  (clean_fastq_ch, fastqc_ch) = prepare_input(
+  (clean_fastq_ch, fastqc_ch) = preprocess_and_quality_filter_reads(
     prepared_input_ch,
     Channel.value(params.paired_end ? 'PE' : 'SE')
   )
@@ -365,7 +365,7 @@ workflow TrackTx {
   def noBGPath = "${assetsDir}/EMPTY.bedgraph"
   def noBGPosPath = "${assetsDir}/EMPTY_POS.bedgraph"
   def noBGNegPath = "${assetsDir}/EMPTY_NEG.bedgraph"
-  // Unique placeholders for normalize_tracks to avoid staging collisions
+  // Unique placeholders for normalize_coverage_tracks to avoid staging collisions
   def noBG5pPosPath = "${assetsDir}/EMPTY_5P_POS.bedgraph"
   def noBG5pNegPath = "${assetsDir}/EMPTY_5P_NEG.bedgraph"
   def noBGAm5pPosPath = "${assetsDir}/EMPTY_AM5P_POS.bedgraph"
@@ -456,7 +456,7 @@ workflow TrackTx {
   // log.info "STEP 6 | CONFIG | Aligner: Bowtie2"
   // log.info "STEP 6 | CONFIG | Mode: ${params.paired_end ? 'Paired-end' : 'Single-end'}"
 
-  run_alignment(
+  align_reads_to_genome(
     clean_fastq_with_r2,
     ref_meta_ch,
     ref_idx_ch,
@@ -465,7 +465,7 @@ workflow TrackTx {
     params.paired_end ?: false
   )
   
-  aligned_ch = run_alignment.out[0]
+  aligned_ch = align_reads_to_genome.out[0]
   
   // Monitor alignments
   aligned_ch.subscribe { sid, _bam, _allbam, _spike, _cond, _time, _rep ->
@@ -497,19 +497,19 @@ workflow TrackTx {
     all_bam
   }
 
-  generate_tracks(
+  generate_coverage_tracks(
     tracks_input_ch,
     genome_fa_ch,
     Channel.value(params.paired_end ? 'true' : 'false'),
     allmap_bam_ch
   )
 
-  bw3p_pair_ch    = generate_tracks.out.bw3p_pair      // PRIMARY/UNIQUE MAPPERS ✓
-  bw5p_pair_ch    = generate_tracks.out.bw5p_pair
-  allmap3p_pair_ch = generate_tracks.out.allmap3p_pair  // MULTIMAPPERS (not for divergent tx)
-  allmap5p_pair_ch = generate_tracks.out.allmap5p_pair
-  tracks_ch       = generate_tracks.out.track_tuple
-  dedup_stats_ch  = generate_tracks.out.dedup_stats
+  bw3p_pair_ch    = generate_coverage_tracks.out.bw3p_pair      // PRIMARY/UNIQUE MAPPERS ✓
+  bw5p_pair_ch    = generate_coverage_tracks.out.bw5p_pair
+  allmap3p_pair_ch = generate_coverage_tracks.out.allmap3p_pair  // MULTIMAPPERS (not for divergent tx)
+  allmap5p_pair_ch = generate_coverage_tracks.out.allmap5p_pair
+  tracks_ch       = generate_coverage_tracks.out.track_tuple
+  dedup_stats_ch  = generate_coverage_tracks.out.dedup_stats
 
   // Monitor track generation
   tracks_ch.subscribe { sid, _fb, _sb, p3, n3, _p5, _n5, _cond, _time, _rep ->
@@ -533,7 +533,7 @@ workflow TrackTx {
   // log.info "─".multiply(80)
   // log.info "STEP 8 | PURPOSE | Read counts for CPM/siCPM normalization"
 
-  counts_tsvs = collect_counts(
+  counts_tsvs = quantify_reads_per_gene(
     aligned_ch.map { sid, filt_bam, all_bam, spike_bam, c, t, r ->
       tuple(sid, filt_bam, all_bam, spike_bam ?: '-', c, t, r)
     }
@@ -596,9 +596,9 @@ workflow TrackTx {
       tuple(sid, p3, n3, p5, n5, ap3, an3, ap5, an5, c, t, r, cm, genes)
     }
 
-  normalize_tracks(norm_input_ch, genome_fa_ch)
+  normalize_coverage_tracks(norm_input_ch, genome_fa_ch)
   
-  norm_tracks_ch  = normalize_tracks.out.norm_tuple
+  norm_tracks_ch  = normalize_coverage_tracks.out.norm_tuple
   norm_factors_ch = norm_tracks_ch.map { sid, p3, n3, nf, c, t, r ->
     tuple(sid, nf, c, t, r)
   }
@@ -643,7 +643,7 @@ workflow TrackTx {
   }
 
   // Pass parameters explicitly for better cache control
-  detect_divergent_tx(
+  detect_divergent_transcription(
     divergent_input_ch,
     Channel.value(params.advanced?.divergent_threshold ?: 'auto'),
     Channel.value(params.advanced?.divergent_sum_thr ?: 'auto'),
@@ -653,7 +653,7 @@ workflow TrackTx {
     Channel.value(params.advanced?.divergent_bin_gap ?: 100)
   )
   
-  divergent_tx_ch = detect_divergent_tx.out.bed
+  divergent_tx_ch = detect_divergent_transcription.out.bed
   
   // Monitor completion with region counts - FIX: Three duplicate _ before!
   divergent_tx_ch.subscribe { sid, bed, _cond, _time, _rep ->
@@ -694,7 +694,7 @@ workflow TrackTx {
       tuple(sid, div_bed, pos3_raw, neg3_raw, file(noBGPosPath), file(noBGNegPath), c, t, r)
     }
 
-  call_functional_regions(
+  assign_signal_to_functional_regions(
     func_input_ch,
     gtf_ch,
     Channel.value(file("${projectDir}/bin/functional_regions.py")),
@@ -703,7 +703,7 @@ workflow TrackTx {
     tes_ch
   )
 
-  functional_regions_ch = call_functional_regions.out.main
+  functional_regions_ch = assign_signal_to_functional_regions.out.main
   
   functional_regions_bed_ch = functional_regions_ch.map { sid, bed, fsum, c, t, r ->
     tuple(sid, bed)
@@ -735,15 +735,15 @@ workflow TrackTx {
   // log.info "STEP 12 | CONFIG | Input: Normalized CPM/siCPM tracks + functional regions"
 
   // Prepare Pol-II inputs (uses normalized CPM/siCPM tracks)
-  // Use BAM from generate_tracks (same BAM as density/tracks; deduped when UMI on)
-  pol_input_ch = generate_tracks.out.bam_for_tracks
+  // Use BAM from generate_coverage_tracks (same BAM as density/tracks; deduped when UMI on)
+  pol_input_ch = generate_coverage_tracks.out.bam_for_tracks
     .map { sid, bam, c, t, r ->
       tuple(sid, tuple(bam, c, t, r))
     }
     .join(functional_regions_bed_ch)
     .join(
       norm_tracks_ch.map { sid, pos3_cpm, neg3_cpm, factors, c, t, r ->
-        // Construct siCPM paths based on directory structure from normalize_tracks
+        // Construct siCPM paths based on directory structure from normalize_coverage_tracks
         def normDir = "${params.output_dir}/05_normalized_tracks/${sid}"
         def pos3_sicpm = file("${normDir}/3p/main/sicpm/pos.bedgraph")
         def neg3_sicpm = file("${normDir}/3p/main/sicpm/neg.bedgraph")
@@ -756,11 +756,11 @@ workflow TrackTx {
       tuple(sid, bam, bed, pos_cpm, neg_cpm, pos_si, neg_si, c, t, r)
     }
 
-  calculate_pol_metrics(pol_input_ch, gtf_ch)
+  calculate_polymerase_occupancy_metrics(pol_input_ch, gtf_ch)
   
-  pol_gene_ch    = calculate_pol_metrics.out.genes
-  pol_density_ch = calculate_pol_metrics.out.density
-  pol_pausing_ch = calculate_pol_metrics.out.pausing
+  pol_gene_ch    = calculate_polymerase_occupancy_metrics.out.genes
+  pol_density_ch = calculate_polymerase_occupancy_metrics.out.density
+  pol_pausing_ch = calculate_polymerase_occupancy_metrics.out.pausing
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 13: Summarize Pol-II Metrics (Cohort-Level)
@@ -813,8 +813,8 @@ workflow TrackTx {
       
       if (clean_lines.size() == 1) {
         error """STEP 13 | ERROR | No valid samples in Pol-II aggregate TSV
-  This usually means no samples reached calculate_pol_metrics. Possible causes:
-  - An upstream process failed (check prepare_input, run_alignment, generate_tracks, normalize_tracks)
+  This usually means no samples reached calculate_polymerase_occupancy_metrics. Possible causes:
+  - An upstream process failed (check preprocess_and_quality_filter_reads, align_reads_to_genome, generate_coverage_tracks, normalize_coverage_tracks)
   - Sample ID mismatch in join operations
   - Run with -resume false to rule out stale cache
   Check .nextflow.log and work/*/ for failed tasks."""
@@ -833,7 +833,7 @@ workflow TrackTx {
     }
   
   // Combine TSV with collected files and pass to process
-  summarize_pol_metrics(samples_tsv, pol_files_ch.collect())
+  summarize_polymerase_metrics(samples_tsv, pol_files_ch.collect())
 
 
 
@@ -858,9 +858,9 @@ workflow TrackTx {
       tuple(sid, bam, dedup_stats, c, t, r)
     }
 
-  qc_pol_tracktx(qc_input_ch)
+  quality_control_aligned_reads(qc_input_ch)
   
-  qc_json_meta_ch = qc_pol_tracktx.out.json_meta
+  qc_json_meta_ch = quality_control_aligned_reads.out.json_meta
 
   // Monitor QC completion
   qc_json_meta_ch.subscribe { sid, _json, _cond, _time, _rep ->
@@ -929,11 +929,10 @@ workflow TrackTx {
     }
   }
 
-  generate_reports(report_input_ch)
+  generate_per_sample_reports(report_input_ch)
   
-  report_json_ch = generate_reports.out[2]
+  report_json_ch = generate_per_sample_reports.out[2]
 
-  // Monitor report generation
   // Monitor report generation
   report_json_ch.subscribe { json_file ->
     // log.info "STEP 15 | COMPLETE | Report generated: ${json_file.name}"
@@ -954,7 +953,7 @@ workflow TrackTx {
   per_sample_reports = report_json_ch
     .toSortedList { a, b -> a.name <=> b.name }
   
-  combine_reports(per_sample_reports)
+  combine_reports_into_cohort(per_sample_reports)
 
 
 

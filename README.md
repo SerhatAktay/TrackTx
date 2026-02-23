@@ -522,7 +522,7 @@ When a process fails, Nextflow prints verbose output. **Look for the TRACKTX ERR
 ═══════════════════════════════════════════════════════════════════════
 TRACKTX ERROR
 ═══════════════════════════════════════════════════════════════════════
-Module:  detect_divergent_tx
+Module:  detect_divergent_transcription
 Problem: Missing Python dependencies (numpy, pandas, scikit-learn, scipy)
 Fix:     pip install numpy pandas scikit-learn scipy | Or use: -profile conda | -profile docker
 ═══════════════════════════════════════════════════════════════════════
@@ -541,10 +541,21 @@ Fix:     pip install numpy pandas scikit-learn scipy | Or use: -profile conda | 
 ```
 
 **Out of memory (exit 137):**
+
+OOM = **RAM exhaustion**, not disk space. Removing `work` and `.nextflow` frees disk space but does not fix OOM.
+
+Common causes when you "have enough space" (disk):
+
+1. **Docker memory limit:** Docker Desktop has its own RAM limit (Settings → Resources → Memory). The pipeline detects *host* RAM and allocates per-task memory accordingly—but containers only see Docker’s limit. If Docker has 8 GB and the pipeline assumes 64 GB, multiple tasks can exceed available RAM.
+   - **Fix:** `./run_pipeline.sh` auto-detects Docker memory when using the docker profile. If OOM persists: `export NXF_HOST_MEM=8` (match Docker limit), or increase Docker memory in Settings.
+2. **WSL2:** WSL reports host RAM, not its own memory limit. Set `NXF_HOST_MEM` to your WSL memory limit (e.g. in `.wslconfig`).
+3. **Parallelism:** Several tasks run at once; total RAM ≈ per-task × forks. If detection is wrong, total can exceed actual RAM.
+4. **Large samples:** Many unaligned reads (e.g. 20M+) need more memory for spike-in alignment.
+
 ```bash
-# Force lower resource usage
-export NXF_HOST_MEM=16  # Limit to 16GB
-export NXF_HOST_CPUS=4  # Limit to 4 CPUs
+# Tell Nextflow the actual available RAM (e.g. Docker or WSL limit)
+export NXF_HOST_MEM=8   # Use 8 if Docker/WSL has 8 GB
+export NXF_HOST_CPUS=4   # Reduce parallelism
 ./run_pipeline.sh
 ```
 
@@ -573,7 +584,7 @@ conda clean --all --yes
 - Use SSD storage for better performance
 - Monitor with `python3 nfmon.py` to see bottlenecks
 
-**OverlappingFileLockException** (e.g. `prepare_input`, `download_gtf`):
+**OverlappingFileLockException** (e.g. `preprocess_and_quality_filter_reads`, `download_genome_annotations`):
 
 Java file-lock conflict. Common causes and fixes:
 
@@ -593,14 +604,14 @@ Java file-lock conflict. Common causes and fixes:
 - Check `bowtie2_spikein.log` in the failed task's work dir for details
 
 **Finished tasks re-run from sample 1 (even with -resume):**
-- Nextflow’s cache depends on input file path, size, and timestamp. NFS/network storage can give inconsistent timestamps → add `prepare_input_lenient_cache: true` to params.yaml or run with `--prepare_input_lenient_cache`.
+- Nextflow’s cache depends on input file path, size, and timestamp. NFS/network storage can give inconsistent timestamps → add `preprocess_reads_lenient_cache: true` to params.yaml or run with `--preprocess_reads_lenient_cache`.
 - Docker `:latest` changes when the image is updated → use a fixed tag (e.g. `tracktx:3.0`) for stable caching.
 - Debug: `nextflow run ... -resume -dump-hashes 2>&1 | grep "cache hash"` and compare between runs.
 
-**prepare_input re-runs after stop/restart:**
+**preprocess_and_quality_filter_reads re-runs after stop/restart:**
 - When you Ctrl+C, running/queued tasks are cancelled and not cached
 - Only completed tasks are reused with `-resume`
-- Let the pipeline finish, or stop when no prepare_input tasks are active
+- Let the pipeline finish, or stop when no preprocess_and_quality_filter_reads tasks are active
 
 ### Getting Help
 

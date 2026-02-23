@@ -1,5 +1,5 @@
 // ============================================================================
-// detect_divergent_tx.nf — Statistical Divergent Transcription Detection
+// detect_divergent_transcription.nf — Statistical Divergent Transcription Detection
 // ============================================================================
 //
 // Purpose:
@@ -80,7 +80,7 @@
 
 nextflow.enable.dsl = 2
 
-process detect_divergent_tx {
+process detect_divergent_transcription {
 
   tag        { sample_id }
   label      'conda'
@@ -227,17 +227,17 @@ process detect_divergent_tx {
 
   # Check Python script exists
   if [[ ! -f "${DETECTOR_SCRIPT}" ]]; then
-    tracktx_error "detect_divergent_tx" "Detector script not found: ${DETECTOR_SCRIPT}" "Ensure bin/detect_divergent_transcription.py exists in the pipeline directory"
+    tracktx_error "detect_divergent_transcription" "Detector script not found: ${DETECTOR_SCRIPT}" "Ensure bin/detect_divergent_transcription.py exists in the pipeline directory"
   fi
   echo "DIVERGENT | VALIDATE | Detector script: ${DETECTOR_SCRIPT}"
 
   # Check input bedGraphs
   if [[ ! -s "${POS_BG}" ]]; then
-    tracktx_error "detect_divergent_tx" "Positive bedGraph missing or empty: ${POS_BG}" "Check that generate_tracks produced 3p.pos.bedgraph for this sample"
+    tracktx_error "detect_divergent_transcription" "Positive bedGraph missing or empty: ${POS_BG}" "Check that generate_coverage_tracks produced 3p.pos.bedgraph for this sample"
   fi
 
   if [[ ! -s "${NEG_BG}" ]]; then
-    tracktx_error "detect_divergent_tx" "Negative bedGraph missing or empty: ${NEG_BG}" "Check that generate_tracks produced 3p.neg.bedgraph for this sample"
+    tracktx_error "detect_divergent_transcription" "Negative bedGraph missing or empty: ${NEG_BG}" "Check that generate_coverage_tracks produced 3p.neg.bedgraph for this sample"
   fi
 
   POS_SIZE=$(stat -c%s "${POS_BG}" 2>/dev/null || stat -f%z "${POS_BG}" 2>/dev/null || echo "unknown")
@@ -274,7 +274,7 @@ process detect_divergent_tx {
   fi
 
   if [[ ${TOOLS_OK} -eq 0 ]]; then
-    tracktx_error "detect_divergent_tx" "Missing Python dependencies (numpy, pandas, scikit-learn, scipy)" "pip install numpy pandas scikit-learn scipy | Or use: -profile conda | -profile docker"
+    tracktx_error "detect_divergent_transcription" "Missing Python dependencies (numpy, pandas, scikit-learn, scipy)" "pip install numpy pandas scikit-learn scipy | Or use: -profile conda | -profile docker"
   fi
   echo "DIVERGENT | VALIDATE | Checking Python dependencies... OK"
 
@@ -331,7 +331,7 @@ process detect_divergent_tx {
   ###########################################################################
 
   if [[ ${DETECT_RC} -ne 0 ]]; then
-    tracktx_error "detect_divergent_tx" "Detector failed with exit code ${DETECT_RC}" "Check divergent.log in work dir for details" ${DETECT_RC}
+    tracktx_error "detect_divergent_transcription" "Detector failed with exit code ${DETECT_RC}" "Check divergent.log in work dir for details" ${DETECT_RC}
   fi
 
   echo "DIVERGENT | STATUS | Detection successful"
@@ -673,7 +673,7 @@ GENERATED
   Pipeline: TrackTx PRO-seq
   Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
   Sample: !{sample_id}
-  Module: detect_divergent_tx (Statistical)
+  Module: detect_divergent_transcription (Statistical)
   Detector: detect_divergent_transcription.py v1.0
 
 ================================================================================
@@ -728,7 +728,7 @@ DOCEOF
   fi
 
   if [[ ${VALIDATION_OK} -eq 0 ]]; then
-    tracktx_error "detect_divergent_tx" "Output validation failed (BED or summary missing/invalid)" "Check divergent.log in work dir for details"
+    tracktx_error "detect_divergent_transcription" "Output validation failed (BED or summary missing/invalid)" "Check divergent.log in work dir for details"
   fi
 
   echo "DIVERGENT | VALIDATE | All outputs validated"

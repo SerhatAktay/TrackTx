@@ -1,5 +1,5 @@
 // ============================================================================
-// combine_reports.nf — Cohort-Level Report Aggregation
+// combine_reports_into_cohort.nf — Cohort-Level Report Aggregation
 // ============================================================================
 //
 // Purpose:
@@ -52,7 +52,7 @@
 
 nextflow.enable.dsl = 2
 
-process combine_reports {
+process combine_reports_into_cohort {
 
   tag        { "cohort" }
   label      'conda'
@@ -151,7 +151,7 @@ process combine_reports {
   echo "COHORT | DISCOVER | JSON files found: ${TOTAL_JSON}"
 
   if [[ ${TOTAL_JSON} -eq 0 ]]; then
-    tracktx_error "combine_reports" "No JSON files found (expected: *.summary.json, *.report.json, or *.json)" "Check generate_reports module outputs"
+    tracktx_error "combine_reports_into_cohort" "No JSON files found (expected: *.summary.json, *.report.json, or *.json)" "Check generate_per_sample_reports module outputs"
   fi
 
   ###########################################################################
@@ -164,13 +164,13 @@ process combine_reports {
 
   for JSON_FILE in "${JSON_FILES[@]}"; do
     if [[ ! -e "${JSON_FILE}" ]]; then
-      tracktx_error "combine_reports" "Missing file: ${JSON_FILE}" "Check generate_reports module outputs"
+      tracktx_error "combine_reports_into_cohort" "Missing file: ${JSON_FILE}" "Check generate_per_sample_reports module outputs"
     fi
     
     FILE_SIZE=$(stat -c%s "${JSON_FILE}" 2>/dev/null || stat -f%z "${JSON_FILE}" 2>/dev/null || echo 0)
     
     if [[ ${FILE_SIZE} -eq 0 ]]; then
-      tracktx_error "combine_reports" "Empty file: ${JSON_FILE}" "Check generate_reports module outputs"
+      tracktx_error "combine_reports_into_cohort" "Empty file: ${JSON_FILE}" "Check generate_per_sample_reports module outputs"
     fi
     
     TOTAL_SIZE=$((TOTAL_SIZE + FILE_SIZE))
@@ -196,7 +196,7 @@ process combine_reports {
 
   # Check combiner script
   if [[ ! -e "${COMBINER_SCRIPT}" ]]; then
-    tracktx_error "combine_reports" "Combiner script not found: ${COMBINER_SCRIPT}" "Ensure bin/combine_reports.py exists"
+    tracktx_error "combine_reports_into_cohort" "Combiner script not found: ${COMBINER_SCRIPT}" "Ensure bin/combine_reports.py exists"
   fi
   echo "COHORT | VALIDATE | Combiner script: ${COMBINER_SCRIPT}"
 
@@ -205,7 +205,7 @@ process combine_reports {
     PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
     echo "COHORT | VALIDATE | Python: ${PYTHON_VERSION}"
   else
-    tracktx_error "combine_reports" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
+    tracktx_error "combine_reports_into_cohort" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
   fi
 
   ###########################################################################
@@ -238,7 +238,7 @@ process combine_reports {
   echo "COHORT | COMBINE | Processing completed in ${COMBINE_TIME}s"
 
   if [[ ${COMBINE_RC} -ne 0 ]]; then
-    tracktx_error "combine_reports" "Combiner failed with exit code ${COMBINE_RC}" "Check combine.log in work dir" ${COMBINE_RC}
+    tracktx_error "combine_reports_into_cohort" "Combiner failed with exit code ${COMBINE_RC}" "Check combine.log in work dir" ${COMBINE_RC}
   fi
 
   ###########################################################################
@@ -250,7 +250,7 @@ process combine_reports {
   # Check required outputs
   for OUTPUT in "${OUT_HTML}" "${OUT_TSV}" "${OUT_JSON}"; do
     if [[ ! -s "${OUTPUT}" ]]; then
-      tracktx_error "combine_reports" "Missing or empty output: ${OUTPUT}" "Check combine.log in work dir"
+      tracktx_error "combine_reports_into_cohort" "Missing or empty output: ${OUTPUT}" "Check combine.log in work dir"
     fi
     OUTPUT_SIZE=$(stat -c%s "${OUTPUT}" 2>/dev/null || stat -f%z "${OUTPUT}" 2>/dev/null || echo "unknown")
     echo "COHORT | VALIDATE | $(basename ${OUTPUT}): ${OUTPUT_SIZE} bytes"
@@ -835,7 +835,7 @@ GENERATED
   Version:  ${PIPELINE_VERSION}
   Date:     $(date -u +"%Y-%m-%d %H:%M:%S UTC")
   Run:      ${RUN_NAME}
-  Module:   15_combine_reports
+  Module:   15_combine_reports_into_cohort
 
 ================================================================================
 DOCEOF

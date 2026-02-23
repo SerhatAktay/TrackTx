@@ -147,6 +147,22 @@ docker_can_run_containers() {
     docker run --rm hello-world >/dev/null 2>&1
 }
 
+# Detect container runtime memory limit (Docker/Podman) in GB
+# Used to set NXF_HOST_MEM so Nextflow allocates correctly inside containers
+detect_container_memory_gb() {
+    local mem_bytes=""
+    if docker_daemon_running; then
+        mem_bytes=$(docker info --format '{{.MemTotal}}' 2>/dev/null)
+    elif has_command podman && podman info >/dev/null 2>&1; then
+        mem_bytes=$(podman info --format '{{.Host.MemTotal}}' 2>/dev/null)
+    fi
+    if [[ -n "$mem_bytes" && "$mem_bytes" =~ ^[0-9]+$ && "$mem_bytes" -gt 0 ]]; then
+        echo $((mem_bytes / 1073741824))
+    else
+        echo ""
+    fi
+}
+
 # Attempt to start Docker (with user interaction)
 docker_start() {
     # Already running
@@ -809,6 +825,18 @@ main() {
     
     success "Profile validated: $PROFILE"
     echo ""
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # DOCKER/PODMAN: Auto-set NXF_HOST_MEM from container limit
+    # Nextflow detects host RAM, but containers see Docker's limit—causing OOM.
+    # ═══════════════════════════════════════════════════════════════════════
+    if [[ -z "${NXF_HOST_MEM:-}" ]] && [[ "$PROFILE" == *docker* || "$PROFILE" == *podman* ]]; then
+        local container_mem=$(detect_container_memory_gb)
+        if [[ -n "$container_mem" && "$container_mem" -ge 2 ]]; then
+            export NXF_HOST_MEM=$container_mem
+            info "Docker/Podman memory limit: ${container_mem} GB → NXF_HOST_MEM=${container_mem}"
+        fi
+    fi
     
     # ═══════════════════════════════════════════════════════════════════════
     # RESUME DETECTION (Updated for UNBOUND variable safety)

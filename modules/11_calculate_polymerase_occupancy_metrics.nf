@@ -1,5 +1,5 @@
 // ============================================================================
-// calculate_pol_metrics.nf — Pol-II Metrics Calculation
+// calculate_polymerase_occupancy_metrics.nf — Polymerase Occupancy Metrics Calculation
 // ============================================================================
 //
 // Purpose:
@@ -57,7 +57,7 @@
 
 nextflow.enable.dsl = 2
 
-process calculate_pol_metrics {
+process calculate_polymerase_occupancy_metrics {
 
   tag        { sid }
   label      'conda'
@@ -201,20 +201,20 @@ process calculate_pol_metrics {
 
   # Check Python script
   if [[ ! -f "${CALC_SCRIPT}" ]]; then
-    tracktx_error "calculate_pol_metrics" "Python script not found: ${CALC_SCRIPT}" "Ensure bin/calculate_pol_metrics.py exists"
+    tracktx_error "calculate_polymerase_occupancy_metrics" "Python script not found: ${CALC_SCRIPT}" "Ensure bin/calculate_pol_metrics.py exists"
   fi
   echo "POL | VALIDATE | Python script: ${CALC_SCRIPT}"
 
   # Check BAM
   if [[ ! -s "${IN_BAM}" ]]; then
-    tracktx_error "calculate_pol_metrics" "BAM file missing or empty: ${IN_BAM}" "Check upstream alignment module"
+    tracktx_error "calculate_polymerase_occupancy_metrics" "BAM file missing or empty: ${IN_BAM}" "Check upstream alignment module"
   fi
   BAM_SIZE=$(stat -c%s "${IN_BAM}" 2>/dev/null || stat -f%z "${IN_BAM}" 2>/dev/null || echo "unknown")
   echo "POL | VALIDATE | BAM: ${BAM_SIZE} bytes"
 
   # Check GTF
   if [[ ! -e "${GTF_FILE}" ]]; then
-    tracktx_error "calculate_pol_metrics" "GTF file missing: ${GTF_FILE}" "Check download_gtf module"
+    tracktx_error "calculate_polymerase_occupancy_metrics" "GTF file missing: ${GTF_FILE}" "Check download_genome_annotations module"
   fi
   GTF_SIZE=$(stat -c%s "${GTF_FILE}" 2>/dev/null || stat -f%z "${GTF_FILE}" 2>/dev/null || echo "unknown")
   GTF_LINES=$(wc -l < "${GTF_FILE}" 2>/dev/null | tr -d ' ' || echo 0)
@@ -223,7 +223,7 @@ process calculate_pol_metrics {
   # Check CPM tracks (required)
   for TRACK in "${POS_CPM}" "${NEG_CPM}"; do
     if [[ ! -e "${TRACK}" ]]; then
-      tracktx_error "calculate_pol_metrics" "Required CPM track missing: ${TRACK}" "Check normalize_tracks module"
+      tracktx_error "calculate_polymerase_occupancy_metrics" "Required CPM track missing: ${TRACK}" "Check normalize_coverage_tracks module"
     fi
     TRACK_SIZE=$(stat -c%s "${TRACK}" 2>/dev/null || stat -f%z "${TRACK}" 2>/dev/null || echo "unknown")
     echo "POL | VALIDATE | $(basename ${TRACK}): ${TRACK_SIZE} bytes"
@@ -253,13 +253,13 @@ process calculate_pol_metrics {
     if command -v ${TOOL} >/dev/null 2>&1; then
       echo "POL | VALIDATE | ${TOOL}: $(which ${TOOL})"
     else
-      tracktx_error "calculate_pol_metrics" "Required tool not found: ${TOOL}" "Install ${TOOL} or use -profile docker"
+      tracktx_error "calculate_polymerase_occupancy_metrics" "Required tool not found: ${TOOL}" "Install ${TOOL} or use -profile docker"
     fi
   done
   if ${PYTHON_CMD} --version >/dev/null 2>&1; then
     echo "POL | VALIDATE | python: $(${PYTHON_CMD} --version 2>&1)"
   else
-    tracktx_error "calculate_pol_metrics" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
+    tracktx_error "calculate_polymerase_occupancy_metrics" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
   fi
 
   ###########################################################################
@@ -484,7 +484,7 @@ process calculate_pol_metrics {
   # Handle failures
   if [[ ${GENES_RC} -ne 0 ]]; then
     if [[ ${FAIL_IF_NO_GENES} -eq 1 ]]; then
-      tracktx_error "calculate_pol_metrics" "Gene metrics calculation failed with exit code ${GENES_RC} (fail_if_no_genes=true)" "Check pol_metrics.log in work dir" ${GENES_RC}
+      tracktx_error "calculate_polymerase_occupancy_metrics" "Gene metrics calculation failed with exit code ${GENES_RC} (fail_if_no_genes=true)" "Check pol_metrics.log in work dir" ${GENES_RC}
     else
       echo "POL | WARNING | Creating empty output files"
     fi
@@ -751,7 +751,7 @@ GENERATED
   Pipeline: TrackTx PRO-seq
   Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
   Sample: !{sid}
-  Module: 11_calculate_pol_metrics
+  Module: 11_calculate_polymerase_occupancy_metrics
 
 ================================================================================
 DOCEOF
@@ -767,7 +767,7 @@ DOCEOF
   # Check required outputs
   for FILE in pol_gene_metrics.tsv pausing_index.tsv pol_density.tsv; do
     if [[ ! -e "${FILE}" ]]; then
-      tracktx_error "calculate_pol_metrics" "Missing output file: ${FILE}" "Check pol_metrics.log in work dir"
+      tracktx_error "calculate_polymerase_occupancy_metrics" "Missing output file: ${FILE}" "Check pol_metrics.log in work dir"
     fi
   done
 

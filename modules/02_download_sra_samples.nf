@@ -1,5 +1,5 @@
 // ============================================================================
-// download_srr.nf — SRA to FASTQ Conversion
+// download_sra_samples.nf — SRA to FASTQ Conversion
 // ============================================================================
 //
 // Purpose:
@@ -44,7 +44,7 @@
 
 nextflow.enable.dsl = 2
 
-process download_srr {
+process download_sra_samples {
 
   tag        { sra_id }
   label      'conda'
@@ -52,8 +52,8 @@ process download_srr {
   conda      (params.conda_sra ?: "${projectDir}/envs/tracktx.yaml")
   
   // NOTE: Raw FASTQ files are NOT published here to save disk space (~100GB+)
-  // They are intermediate files that get processed by prepare_input
-  // Only the final trimmed/processed FASTQs are published by prepare_input
+  // They are intermediate files that get processed by preprocess_and_quality_filter_reads
+  // Only the final trimmed/processed FASTQs are published by preprocess_and_quality_filter_reads
   // Raw files remain in work/ directory for Nextflow caching with -resume
   
   publishDir "${params.output_dir}/01_trimmed_fastq",
@@ -79,7 +79,7 @@ process download_srr {
   // ── Outputs ───────────────────────────────────────────────────────────────
   // We always emit _R1.fastq and _R2.fastq. When compression is on, the script
   // creates symlinks .fastq -> .fastq.gz so downstream receives consistent paths.
-  // NOTE: prepare_input detects gzipped content with .fastq extension and renames
+  // NOTE: preprocess_and_quality_filter_reads detects gzipped content with .fastq extension and renames
   // to .gz so FastQC/cutadapt get correct format (they detect by extension).
   output:
     tuple val(sample_id),
@@ -154,7 +154,7 @@ process download_srr {
   echo "SRR | VALIDATE | Checking required tools..."
 
   if ! command -v fasterq-dump >/dev/null 2>&1; then
-    tracktx_error "download_srr" "fasterq-dump not found in PATH" "Install sra-tools or use -profile docker"
+    tracktx_error "download_sra_samples" "fasterq-dump not found in PATH" "Install sra-tools or use -profile docker"
   fi
   echo "SRR | VALIDATE | fasterq-dump: $(which fasterq-dump)"
 
@@ -281,7 +281,7 @@ process download_srr {
     
     # Validate we got files
     if [[ ! -e "${SRR}_R1.fastq" && ! -e "${SRR}_R1.fastq.gz" ]]; then
-      tracktx_error "download_srr" "Download failed from both NCBI and ENA" "Check SRA accession and network"
+      tracktx_error "download_sra_samples" "Download failed from both NCBI and ENA" "Check SRA accession and network"
     fi
     echo "SRR | CONVERT | Conversion complete"
 
@@ -343,7 +343,7 @@ process download_srr {
 
   # Validate R1 (required)
   if [[ -z "${R1_FILE}" || ! -s "${R1_FILE}" ]]; then
-    tracktx_error "download_srr" "R1 FASTQ file missing or empty" "Check fasterq-dump output"
+    tracktx_error "download_sra_samples" "R1 FASTQ file missing or empty" "Check fasterq-dump output"
   fi
 
   R1_SIZE=$(stat -c%s "${R1_FILE}" 2>/dev/null || stat -f%z "${R1_FILE}" 2>/dev/null || echo "unknown")
@@ -353,7 +353,7 @@ process download_srr {
   if [[ "${R1_FILE}" == *.fastq ]]; then
     FIRST_LINE=$(head -n 1 "${R1_FILE}" 2>/dev/null || echo "")
     if [[ ! "${FIRST_LINE}" =~ ^@ ]]; then
-      tracktx_error "download_srr" "R1 FASTQ header validation failed (first line: ${FIRST_LINE})" "Check SRA data integrity"
+      tracktx_error "download_sra_samples" "R1 FASTQ header validation failed (first line: ${FIRST_LINE})" "Check SRA data integrity"
     fi
     echo "SRR | VALIDATE | R1 FASTQ header looks valid"
   fi
@@ -361,7 +361,7 @@ process download_srr {
   # Validate R2 (if paired-end)
   if [[ "${IS_PE}" == "true" ]]; then
     if [[ -z "${R2_FILE}" || ! -s "${R2_FILE}" ]]; then
-      tracktx_error "download_srr" "Paired-end mode but R2 FASTQ missing or empty" "Check SRA layout and fasterq-dump"
+      tracktx_error "download_sra_samples" "Paired-end mode but R2 FASTQ missing or empty" "Check SRA layout and fasterq-dump"
     fi
 
     R2_SIZE=$(stat -c%s "${R2_FILE}" 2>/dev/null || stat -f%z "${R2_FILE}" 2>/dev/null || echo "unknown")
@@ -371,7 +371,7 @@ process download_srr {
     if [[ "${R2_FILE}" == *.fastq ]]; then
       FIRST_LINE=$(head -n 1 "${R2_FILE}" 2>/dev/null || echo "")
       if [[ ! "${FIRST_LINE}" =~ ^@ ]]; then
-        tracktx_error "download_srr" "R2 FASTQ header validation failed (first line: ${FIRST_LINE})" "Check SRA data integrity"
+        tracktx_error "download_sra_samples" "R2 FASTQ header validation failed (first line: ${FIRST_LINE})" "Check SRA data integrity"
       fi
       echo "SRR | VALIDATE | R2 FASTQ header looks valid"
     fi
@@ -435,7 +435,7 @@ SAMPLE INFORMATION
 PIPELINE INFORMATION
 ────────────────────────────────────────────────────────────────────────────
   Pipeline:     TrackTx PRO-seq Analysis
-  Module:       02_download_srr
+  Module:       02_download_sra_samples
   Threads:      !{task.cpus}
 
 FILES

@@ -185,6 +185,13 @@
       
       <div class="field">
         <label class="checkbox">
+          <input type="checkbox" id="preprocess_reads_lenient_cache">
+          Use lenient cache for preprocess step (NFS/network storage)
+        </label>
+        <p class="help">Set true when running from NFS, SMB, or cloud-synced storage to avoid cache invalidation from inconsistent timestamps.</p>
+      </div>
+      <div class="field">
+        <label class="checkbox">
           <input type="checkbox" id="yaml_comments" checked>
           Add helpful comments to the YAML file
         </label>
@@ -1240,10 +1247,12 @@ function buildYAML(){
   y += `spikein_genome: ${mono(spikeGenome)}\n`;
   y += `spikein_fasta: ${spikeFasta?mono(spikeFasta):'null'}\n\n`;
 
+  const preprocessLenientCache = !!$('#preprocess_reads_lenient_cache')?.checked;
   y += `# Directories\n`;
   y += `assets_dir: ${mono(assetsDir)}\n`;
   y += `genome_cache: ${mono(genomeCache)}\n`;
-  y += `force_rebuild: false\n\n`;
+  y += `force_rebuild: false\n`;
+  y += `preprocess_reads_lenient_cache: ${preprocessLenientCache}  # Set true for NFS/network storage\n\n`;
 
   if(refGenome==='other'){
     y += `# Custom genome annotation\n`;

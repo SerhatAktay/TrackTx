@@ -1,5 +1,5 @@
 // ============================================================================
-// download_gtf.nf — Genome Annotation Download and Processing
+// download_genome_annotations.nf — Genome Annotation Download and Processing
 // ============================================================================
 //
 // Purpose:
@@ -44,7 +44,7 @@
 
 nextflow.enable.dsl = 2
 
-process download_gtf {
+process download_genome_annotations {
 
   tag        { params.reference_genome }
   label      'conda'
@@ -54,9 +54,9 @@ process download_gtf {
   // Persistent storage for caching across runs
   storeDir   "${params.assets_dir ?: "${projectDir}/assets"}/annotation/${params.reference_genome}"
   
-  // Lightweight links in output directory
+  // Use params.publish_mode: 'link' (default) or 'copy' (required for exFAT/USB drives)
   publishDir "${params.output_dir}/00_references/${params.reference_genome}", 
-             mode: 'link', 
+             mode: params.publish_mode, 
              overwrite: true
 
   // ── Outputs ───────────────────────────────────────────────────────────────
@@ -135,7 +135,7 @@ process download_gtf {
 
   # Validate dependencies
   if ! ${PYTHON_CMD} --version >/dev/null 2>&1; then
-    tracktx_error "download_gtf" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker or install Python"
+    tracktx_error "download_genome_annotations" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker or install Python"
   fi
   echo "GTF | CONFIG | Python: $(${PYTHON_CMD} --version)"
 
@@ -208,7 +208,7 @@ process download_gtf {
         fi
         FETCH_SUCCESS=1
       else
-        tracktx_error "download_gtf" "Custom GTF path does not exist: ${CUSTOM_PATH}" "Check --gtf_path parameter"
+        tracktx_error "download_genome_annotations" "Custom GTF path does not exist: ${CUSTOM_PATH}" "Check --gtf_path parameter"
       fi
     fi
 
@@ -222,14 +222,14 @@ process download_gtf {
           FETCH_SUCCESS=1
           echo "GTF | FETCH | Download successful"
         else
-          tracktx_error "download_gtf" "Failed to download from: ${CUSTOM_URL}" "Check --gtf_url and network"
+          tracktx_error "download_genome_annotations" "Failed to download from: ${CUSTOM_URL}" "Check --gtf_url and network"
         fi
       else
         if curl -fsSL --retry 3 --retry-delay 4 "${CUSTOM_URL}" > "${GTF_TEMP}"; then
           FETCH_SUCCESS=1
           echo "GTF | FETCH | Download successful"
         else
-          tracktx_error "download_gtf" "Failed to download from: ${CUSTOM_URL}" "Check --gtf_url and network"
+          tracktx_error "download_genome_annotations" "Failed to download from: ${CUSTOM_URL}" "Check --gtf_url and network"
         fi
       fi
     fi
@@ -258,14 +258,14 @@ process download_gtf {
           FETCH_SUCCESS=1
           echo "GTF | FETCH | HTTPS download successful"
         else
-          tracktx_error "download_gtf" "HTTPS download failed" "Check network and UCSC availability"
+          tracktx_error "download_genome_annotations" "HTTPS download failed" "Check network and UCSC availability"
         fi
       fi
     fi
 
     # Validate download
     if [[ ${FETCH_SUCCESS} -eq 0 || ! -s "${GTF_TEMP}" ]]; then
-      tracktx_error "download_gtf" "Failed to obtain GTF for assembly: ${ASM}" "Tried: local, custom path/URL, UCSC. Check params."
+      tracktx_error "download_genome_annotations" "Failed to obtain GTF for assembly: ${ASM}" "Tried: local, custom path/URL, UCSC. Check params."
     fi
 
     # Validate GTF format (non-fatal warning)
@@ -316,7 +316,7 @@ process download_gtf {
     "${WORK_DIR}/tes.bed"
 
   if [[ $? -ne 0 ]]; then
-    tracktx_error "download_gtf" "Failed to generate gene catalogs" "Check GTF format and Python script"
+    tracktx_error "download_genome_annotations" "Failed to generate gene catalogs" "Check GTF format and Python script"
   fi
 
   # Count entries
@@ -354,7 +354,7 @@ process download_gtf {
   
   for FILE in "${OUT_GTF}" "${OUT_GENES}" "${OUT_TSS}" "${OUT_TES}"; do
     if [[ ! -s "${FILE}" ]]; then
-      tracktx_error "download_gtf" "Missing or empty output: ${FILE}" "Check GTF download and gene catalog script"
+      tracktx_error "download_genome_annotations" "Missing or empty output: ${FILE}" "Check GTF download and gene catalog script"
     fi
   done
 

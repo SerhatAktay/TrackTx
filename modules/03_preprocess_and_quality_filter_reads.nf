@@ -1,5 +1,5 @@
 // ============================================================================
-// prepare_input.nf — FASTQ Preprocessing and Quality Control
+// preprocess_and_quality_filter_reads.nf — FASTQ Preprocessing and Quality Control
 // ============================================================================
 //
 // Purpose:
@@ -61,11 +61,11 @@
 
 nextflow.enable.dsl = 2
 
-process prepare_input {
+process preprocess_and_quality_filter_reads {
 
   tag    { sample_id }
   label  'conda'
-  cache  params.prepare_input_lenient_cache ? 'lenient' : 'deep'
+  cache  params.preprocess_reads_lenient_cache ? 'lenient' : 'deep'
 
   publishDir "${params.output_dir}/01_trimmed_fastq/${sample_id}",
              mode: 'copy',
@@ -229,7 +229,7 @@ process prepare_input {
   echo "PREP | VALIDATE | Checking inputs..."
 
   # Fix: Files may be gzipped but have .fastq extension.
-  # Case 1: Symlink from download_srr (SRR_R1.fastq -> SRR_R1.fastq.gz). Use target, do NOT mv
+  # Case 1: Symlink from download_sra_samples (SRR_R1.fastq -> SRR_R1.fastq.gz). Use target, do NOT mv
   #   (mv would overwrite the real .gz file with the symlink and break it).
   # Case 2: Regular file with .fastq extension but gzip magic bytes. Rename to .gz.
   # IMPORTANT: This function is used with $(fix_gzip_extension "${R1}"). Only the final
@@ -274,19 +274,19 @@ process prepare_input {
   fi
 
   if [[ "${MODE}" != "SE" && "${MODE}" != "PE" ]]; then
-    tracktx_error "prepare_input" "Mode must be SE or PE, got: ${MODE}" "Check data_type parameter"
+    tracktx_error "preprocess_and_quality_filter_reads" "Mode must be SE or PE, got: ${MODE}" "Check data_type parameter"
   fi
 
   if [[ "${MODE}" == "PE" && -z "${R2}" ]]; then
-    tracktx_error "prepare_input" "Paired-end mode but R2 file is missing" "Add file2 to samplesheet for PE samples"
+    tracktx_error "preprocess_and_quality_filter_reads" "Paired-end mode but R2 file is missing" "Add file2 to samplesheet for PE samples"
   fi
 
   if [[ ! -f "${R1}" ]]; then
-    tracktx_error "prepare_input" "R1 file not found: ${R1}" "Check samplesheet file1 paths"
+    tracktx_error "preprocess_and_quality_filter_reads" "R1 file not found: ${R1}" "Check samplesheet file1 paths"
   fi
 
   if [[ "${MODE}" == "PE" && ! -f "${R2}" ]]; then
-    tracktx_error "prepare_input" "R2 file not found: ${R2}" "Check samplesheet file2 paths"
+    tracktx_error "preprocess_and_quality_filter_reads" "R2 file not found: ${R2}" "Check samplesheet file2 paths"
   fi
 
   # Check file sizes

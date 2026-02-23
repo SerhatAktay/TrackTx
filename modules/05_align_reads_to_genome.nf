@@ -1,5 +1,5 @@
 // ============================================================================
-// run_alignment.nf — Bowtie2 Alignment with Spike-in Support
+// align_reads_to_genome.nf — Bowtie2 Alignment with Spike-in Support
 // ============================================================================
 //
 // Purpose:
@@ -34,7 +34,7 @@
 
 nextflow.enable.dsl = 2
 
-process run_alignment {
+process align_reads_to_genome {
 
   // ── Process Configuration ────────────────────────────────────────────────
   tag        { sample_id }
@@ -98,7 +98,7 @@ process run_alignment {
     echo "═══════════════════════════════════════════════════════════════════════" >&2
     exit "\$code"
   }
-  trap 'tracktx_error "run_alignment" "Unexpected process failure" "Check align_reads.log in work dir"' ERR
+  trap 'tracktx_error "align_reads_to_genome" "Unexpected process failure" "Check align_reads.log in work dir"' ERR
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -142,7 +142,7 @@ process run_alignment {
 
   # Validate paired-end configuration
   if [[ "${PAIRED_PARAM}" == "true" && "${IS_PE}" != "true" ]]; then
-    tracktx_error "run_alignment" "params.paired_end=true but R2 missing or empty" "Add file2 column to samplesheet or set paired_end=false"
+    tracktx_error "align_reads_to_genome" "params.paired_end=true but R2 missing or empty" "Add file2 column to samplesheet or set paired_end=false"
   fi
 
   ###########################################################################
@@ -164,14 +164,14 @@ process run_alignment {
 
   for file in "${R1}"; do
     if [[ ! -s "${file}" ]]; then
-      tracktx_error "run_alignment" "Read file missing or empty: ${file}" "Check samplesheet file1 paths"
+      tracktx_error "align_reads_to_genome" "Read file missing or empty: ${file}" "Check samplesheet file1 paths"
     fi
     FILE_SIZE=$(stat -c%s "${file}" 2>/dev/null || stat -f%z "${file}" 2>/dev/null || echo "unknown")
     echo "ALIGN | VALIDATE | R1 size: ${FILE_SIZE} bytes"
   done
 
   if [[ "${IS_PE}" == "true" && ! -s "${R2}" ]]; then
-    tracktx_error "run_alignment" "R2 file missing or empty: ${R2}" "Check samplesheet file2 paths for paired-end samples"
+    tracktx_error "align_reads_to_genome" "R2 file missing or empty: ${R2}" "Check samplesheet file2 paths for paired-end samples"
   fi
   if [[ "${IS_PE}" == "true" ]]; then
     FILE_SIZE=$(stat -c%s "${R2}" 2>/dev/null || stat -f%z "${R2}" 2>/dev/null || echo "unknown")
@@ -181,7 +181,7 @@ process run_alignment {
   # Validate required tools
   for TOOL in bowtie2 samtools gzip; do
     if ! command -v ${TOOL} >/dev/null 2>&1; then
-      tracktx_error "run_alignment" "Required tool not found: ${TOOL}" "Install ${TOOL} or use -profile docker"
+      tracktx_error "align_reads_to_genome" "Required tool not found: ${TOOL}" "Install ${TOOL} or use -profile docker"
     fi
     echo "ALIGN | VALIDATE | ${TOOL}: $(command -v ${TOOL})"
   done
@@ -251,7 +251,7 @@ PYEND
   if [[ -n "${SPIKE_ID}" && "${SPIKE_ID}" != "none" && -n "${SPIKE_INDEX_LIST}" ]]; then
     # shellcheck disable=SC2086
     if ! cp -f ${SPIKE_INDEX_LIST} bt2_index/ 2>/dev/null; then
-      tracktx_error "run_alignment" "Failed to stage spike-in index files" "Check spikein_genome and index paths; SPIKE_INDEX_LIST: ${SPIKE_INDEX_LIST}"
+      tracktx_error "align_reads_to_genome" "Failed to stage spike-in index files" "Check spikein_genome and index paths; SPIKE_INDEX_LIST: ${SPIKE_INDEX_LIST}"
     fi
     SPIKE_IDX="bt2_index/${SPIKE_ID}"
     echo "ALIGN | INDEX | Spike-in index files staged"
@@ -277,7 +277,7 @@ PYEND
       fi
     done
     if [[ ${SPIKE_INDEX_COMPLETE} -eq 0 ]]; then
-      tracktx_error "run_alignment" "Incomplete spike-in index: ${SPIKE_IDX}" "Expected .1.bt2 .2.bt2 .3.bt2 .4.bt2 .rev.1.bt2 .rev.2.bt2"
+      tracktx_error "align_reads_to_genome" "Incomplete spike-in index: ${SPIKE_IDX}" "Expected .1.bt2 .2.bt2 .3.bt2 .4.bt2 .rev.1.bt2 .rev.2.bt2"
     fi
   fi
 
@@ -300,7 +300,7 @@ PYEND
   done
 
   if [[ ${INDEX_COMPLETE} -eq 0 ]]; then
-    tracktx_error "run_alignment" "No complete Bowtie2 index for: ${GENOME_IDX}" "Expected .1.bt2 .2.bt2 .3.bt2 .4.bt2 .rev.1.bt2 .rev.2.bt2"
+    tracktx_error "align_reads_to_genome" "No complete Bowtie2 index for: ${GENOME_IDX}" "Expected .1.bt2 .2.bt2 .3.bt2 .4.bt2 .rev.1.bt2 .rev.2.bt2"
   fi
 
   ###########################################################################
@@ -392,7 +392,7 @@ PYEND
             -U unaligned.fastq \
             2> bowtie2_spikein.log \
     | samtools sort -@ "${SAM_THREADS}" -m 4G -o "${SAMPLE_ID}_spikein.bam"; then
-      tracktx_error "run_alignment" "Spike-in alignment failed" "Check bowtie2_spikein.log in work dir"
+      tracktx_error "align_reads_to_genome" "Spike-in alignment failed" "Check bowtie2_spikein.log in work dir"
     fi
     
     SPIKEIN_SIZE=$(stat -c%s "${SAMPLE_ID}_spikein.bam" 2>/dev/null || stat -f%z "${SAMPLE_ID}_spikein.bam" 2>/dev/null || echo "unknown")
@@ -591,8 +591,8 @@ DOWNSTREAM USAGE
 ────────────────────────────────────────────────────────────────────────────
 
 These BAM files are used by subsequent pipeline modules:
-  1. generate_tracks.nf     — Creates bedGraph/BigWig coverage tracks
-  2. normalize_tracks.nf    — CPM and siCPM normalization
+  1. generate_coverage_tracks.nf — Creates bedGraph/BigWig coverage tracks
+  2. normalize_coverage_tracks.nf — CPM and siCPM normalization
   3. detect_divergent.nf    — Divergent transcription detection
   4. call_regions.nf        — Functional region calling
 
@@ -643,7 +643,7 @@ PARAMETERS USED
 GENERATED
 ────────────────────────────────────────────────────────────────────────────
   Pipeline: TrackTx PRO-seq
-  Module:   05_run_alignment
+  Module:   05_align_reads_to_genome
   Date:     $(date -u +"%Y-%m-%d %H:%M:%S UTC")
   Sample:   !{sample_id}
 
@@ -672,7 +672,7 @@ DOCEOF
     "aligner_summary.tsv"; do
     
     if [[ ! -s "${file}" ]]; then
-      tracktx_error "run_alignment" "Missing or empty output file: ${file}" "Check align_reads.log in work dir"
+      tracktx_error "align_reads_to_genome" "Missing or empty output file: ${file}" "Check align_reads.log in work dir"
     else
       SIZE=$(stat -c%s "${file}" 2>/dev/null || stat -f%z "${file}" 2>/dev/null || echo "unknown")
       echo "ALIGN | VALIDATE | ${file}: ${SIZE} bytes"

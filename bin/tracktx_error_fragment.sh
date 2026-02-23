@@ -8,7 +8,7 @@
 # Usage: tracktx_error "module_name" "problem description" "fix instruction" [exit_code]
 #
 # Example:
-#   tracktx_error "detect_divergent_tx" "Missing Python deps" "pip install numpy pandas"
+#   tracktx_error "detect_divergent_transcription" "Missing Python deps" "pip install numpy pandas"
 #
 # Also use separate stdout/stderr for cleaner Nextflow output:
 #   exec > >(tee -a module.log)

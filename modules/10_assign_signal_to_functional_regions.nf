@@ -1,5 +1,5 @@
 // ============================================================================
-// call_functional_regions.nf — Functional Region Assignment and Quantification
+// assign_signal_to_functional_regions.nf — Functional Region Assignment and Quantification
 // ============================================================================
 //
 // Purpose:
@@ -64,7 +64,7 @@
 
 nextflow.enable.dsl = 2
 
-process call_functional_regions {
+process assign_signal_to_functional_regions {
 
   tag        { sample_id }
   label      'conda'
@@ -225,14 +225,14 @@ process call_functional_regions {
 
   # Check Python script
   if [[ ! -f "${FGR_SCRIPT}" ]]; then
-    tracktx_error "call_functional_regions" "Python script not found: ${FGR_SCRIPT}" "Ensure bin/call_functional_regions.py exists"
+    tracktx_error "assign_signal_to_functional_regions" "Python script not found: ${FGR_SCRIPT}" "Ensure bin/call_functional_regions.py exists"
   fi
   echo "FUNCREGION | VALIDATE | Python script: ${FGR_SCRIPT}"
 
   # Check required input files
   for FILE in "${DIV_BED}" "${POS_BG}" "${NEG_BG}" "${GENES_TSV}" "${TSS_BED}" "${TES_BED}"; do
     if [[ ! -s "${FILE}" ]]; then
-      tracktx_error "call_functional_regions" "Missing or empty input: ${FILE}" "Check upstream modules (detect_divergent_tx, normalize_tracks, download_gtf)"
+      tracktx_error "assign_signal_to_functional_regions" "Missing or empty input: ${FILE}" "Check upstream modules (detect_divergent_transcription, normalize_coverage_tracks, download_genome_annotations)"
     fi
     FILE_SIZE=$(stat -c%s "${FILE}" 2>/dev/null || stat -f%z "${FILE}" 2>/dev/null || echo "unknown")
     echo "FUNCREGION | VALIDATE | $(basename ${FILE}): ${FILE_SIZE} bytes"
@@ -251,7 +251,7 @@ process call_functional_regions {
 
   # Validate tools
   if ! ${PYTHON_CMD} --version >/dev/null 2>&1; then
-    tracktx_error "call_functional_regions" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
+    tracktx_error "assign_signal_to_functional_regions" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
   fi
   PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
   echo "FUNCREGION | VALIDATE | Python: ${PYTHON_VERSION}"
@@ -305,7 +305,7 @@ process call_functional_regions {
 
   # Handle failures
   if [[ ${CALL_RC} -ne 0 ]]; then
-    tracktx_error "call_functional_regions" "Functional region caller failed with exit code ${CALL_RC}" "Check functional_regions.log in work dir" ${CALL_RC}
+    tracktx_error "assign_signal_to_functional_regions" "Functional region caller failed with exit code ${CALL_RC}" "Check functional_regions.log in work dir" ${CALL_RC}
   fi
 
   # Ensure output files exist
@@ -612,7 +612,7 @@ GENERATED
   Pipeline: TrackTx PRO-seq
   Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
   Sample: !{sample_id}
-  Module: 10_call_functional_regions
+  Module: 10_assign_signal_to_functional_regions
 
 ================================================================================
 DOCEOF
@@ -627,12 +627,12 @@ DOCEOF
 
   # Check BED file
   if [[ ! -e functional_regions.bed ]]; then
-    tracktx_error "call_functional_regions" "Output BED file missing" "Check functional_regions.log in work dir"
+    tracktx_error "assign_signal_to_functional_regions" "Output BED file missing" "Check functional_regions.log in work dir"
   fi
 
   # Check summary
   if [[ ! -s functional_regions_summary.tsv ]]; then
-    tracktx_error "call_functional_regions" "Summary file missing or empty" "Check functional_regions.log in work dir"
+    tracktx_error "assign_signal_to_functional_regions" "Summary file missing or empty" "Check functional_regions.log in work dir"
   fi
   SUMMARY_LINES=$(wc -l < functional_regions_summary.tsv | tr -d ' ')
   if [[ ${SUMMARY_LINES} -lt 2 ]]; then

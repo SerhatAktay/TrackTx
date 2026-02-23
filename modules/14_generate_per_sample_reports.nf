@@ -1,5 +1,5 @@
 // ============================================================================
-// generate_reports.nf — Per-Sample Comprehensive Report Generation
+// generate_per_sample_reports.nf — Per-Sample Comprehensive Report Generation
 // ============================================================================
 //
 // Purpose:
@@ -59,7 +59,7 @@
 
 nextflow.enable.dsl = 2
 
-process generate_reports {
+process generate_per_sample_reports {
 
   tag        { sample_id }
   label      'conda'
@@ -194,7 +194,7 @@ process generate_reports {
 
   # Check renderer script
   if [[ ! -e "${RENDER_SCRIPT}" ]]; then
-    tracktx_error "generate_reports" "Renderer script not found: ${RENDER_SCRIPT}" "Ensure bin/render_sample_report.py exists"
+    tracktx_error "generate_per_sample_reports" "Renderer script not found: ${RENDER_SCRIPT}" "Ensure bin/render_sample_report.py exists"
   fi
   echo "REPORT | VALIDATE | Renderer script: ${RENDER_SCRIPT}"
 
@@ -204,7 +204,7 @@ process generate_reports {
     local file="$2"
     
     if [[ ! -s "${file}" ]]; then
-      tracktx_error "generate_reports" "${label} missing or empty: ${file}" "Check upstream modules"
+      tracktx_error "generate_per_sample_reports" "${label} missing or empty: ${file}" "Check upstream modules"
     fi
     FILE_SIZE=$(stat -c%s "${file}" 2>/dev/null || stat -f%z "${file}" 2>/dev/null || echo "unknown")
     FILE_LINES=$(wc -l < "${file}" 2>/dev/null | tr -d ' ' || echo 0)
@@ -231,7 +231,7 @@ process generate_reports {
     PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
     echo "REPORT | VALIDATE | Python: ${PYTHON_VERSION}"
   else
-    tracktx_error "generate_reports" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
+    tracktx_error "generate_per_sample_reports" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
   fi
 
   ###########################################################################
@@ -396,7 +396,7 @@ process generate_reports {
   echo "REPORT | RENDER | Rendering completed in ${RENDER_TIME}s"
 
   if [[ ${RENDER_RC} -ne 0 ]]; then
-    tracktx_error "generate_reports" "Renderer failed with exit code ${RENDER_RC}" "Check report.log in work dir" ${RENDER_RC}
+    tracktx_error "generate_per_sample_reports" "Renderer failed with exit code ${RENDER_RC}" "Check report.log in work dir" ${RENDER_RC}
   fi
 
   ###########################################################################
@@ -408,7 +408,7 @@ process generate_reports {
   # Check required outputs
   for OUTPUT in "${OUT_HTML}" "${OUT_TSV}" "${OUT_JSON}"; do
     if [[ ! -s "${OUTPUT}" ]]; then
-      tracktx_error "generate_reports" "Expected output missing or empty: ${OUTPUT}" "Check report.log in work dir"
+      tracktx_error "generate_per_sample_reports" "Expected output missing or empty: ${OUTPUT}" "Check report.log in work dir"
     fi
     OUTPUT_SIZE=$(stat -c%s "${OUTPUT}" 2>/dev/null || stat -f%z "${OUTPUT}" 2>/dev/null || echo "unknown")
     echo "REPORT | VALIDATE | $(basename ${OUTPUT}): ${OUTPUT_SIZE} bytes"
@@ -696,7 +696,7 @@ GENERATED
   Pipeline: TrackTx PRO-seq
   Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
   Sample: ${SAMPLE_ID}
-  Module: 14_generate_reports
+  Module: 14_generate_per_sample_reports
 
 ================================================================================
 DOCEOF

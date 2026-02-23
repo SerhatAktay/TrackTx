@@ -1,5 +1,5 @@
 // ============================================================================
-// collect_counts.nf — Read Count Collection from BAM Files
+// quantify_reads_per_gene.nf — Read Count Collection from BAM Files
 // ============================================================================
 //
 // Purpose:
@@ -37,7 +37,7 @@
 //   ${params.output_dir}/04_counts/${sample_id}/
 //     ├── ${sample_id}.counts.tsv  — Read counts (TSV format)
 //     ├── README_counts.txt         — Documentation
-//     └── collect_counts.log        — Processing log
+//     └── quantify_reads_per_gene.log — Processing log
 //
 // Output Format (TSV):
 //   sample  main_reads  allmap_reads  spike_reads  replicate  condition  timepoint
@@ -50,7 +50,7 @@
 
 nextflow.enable.dsl = 2
 
-process collect_counts {
+process quantify_reads_per_gene {
 
   tag        { sid }
   label      'conda'
@@ -72,7 +72,7 @@ process collect_counts {
     tuple val(sid), path("${sid}.counts.tsv"), val(cond), val(tp), val(rep),
           emit: counts
     path "README_counts.txt"
-    path "collect_counts.log", emit: log
+    path "quantify_reads_per_gene.log", emit: log
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
@@ -82,8 +82,8 @@ process collect_counts {
   export LC_ALL=C
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a collect_counts.log)
-  exec 2> >(tee -a collect_counts.log >&2)
+  exec > >(tee -a quantify_reads_per_gene.log)
+  exec 2> >(tee -a quantify_reads_per_gene.log >&2)
 
   tracktx_error() {
     local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
@@ -137,7 +137,7 @@ process collect_counts {
   echo "COUNTS | VALIDATE | Checking required tools..."
 
   if ! command -v samtools >/dev/null 2>&1; then
-    tracktx_error "collect_counts" "samtools not found in PATH" "Install samtools or use -profile docker"
+    tracktx_error "quantify_reads_per_gene" "samtools not found in PATH" "Install samtools or use -profile docker"
   fi
   SAMTOOLS_VERSION=$(samtools --version 2>&1 | head -1 || echo "unknown")
   echo "COUNTS | VALIDATE | samtools: ${SAMTOOLS_VERSION}"
@@ -150,7 +150,7 @@ process collect_counts {
 
   # Main BAM is required
   if [[ ! -s "${MAIN_BAM}" ]]; then
-    tracktx_error "collect_counts" "Main BAM missing or empty: ${MAIN_BAM}" "Check run_alignment produced sample.bam"
+    tracktx_error "quantify_reads_per_gene" "Main BAM missing or empty: ${MAIN_BAM}" "Check align_reads_to_genome produced sample.bam"
   fi
 
   MAIN_SIZE=$(stat -c%s "${MAIN_BAM}" 2>/dev/null || stat -f%z "${MAIN_BAM}" 2>/dev/null || echo "unknown")
@@ -182,7 +182,7 @@ process collect_counts {
     local bai="${bam}.bai"
     
     if [[ ! -s "${bam}" ]]; then
-      tracktx_error "collect_counts" "BAM file missing or empty: ${bam}" "Check input BAM paths"
+      tracktx_error "quantify_reads_per_gene" "BAM file missing or empty: ${bam}" "Check input BAM paths"
     fi
     
     if [[ -s "${bai}" ]]; then
@@ -198,10 +198,10 @@ process collect_counts {
         echo "COUNTS | INDEX | Successfully created: ${bai}"
         return 0
       else
-        tracktx_error "collect_counts" "Failed to create index: ${bai}" "Check BAM file integrity"
+        tracktx_error "quantify_reads_per_gene" "Failed to create index: ${bai}" "Check BAM file integrity"
       fi
     else
-      tracktx_error "collect_counts" "Index missing: ${bai}" "Set params.counts_allow_index_build=true to auto-build"
+      tracktx_error "quantify_reads_per_gene" "Index missing: ${bai}" "Set params.counts_allow_index_build=true to auto-build"
     fi
   }
 
@@ -279,7 +279,7 @@ process collect_counts {
     TSV_SIZE=$(stat -c%s "${SAMPLE_ID}.counts.tsv" 2>/dev/null || stat -f%z "${SAMPLE_ID}.counts.tsv" 2>/dev/null || echo "unknown")
     echo "COUNTS | OUTPUT | Created: ${SAMPLE_ID}.counts.tsv (${TSV_SIZE} bytes)"
   else
-    tracktx_error "collect_counts" "Failed to create counts TSV" "Check collect_counts.log in work dir"
+    tracktx_error "quantify_reads_per_gene" "Failed to create counts TSV" "Check quantify_reads_per_gene.log in work dir"
   fi
 
   ###########################################################################
@@ -303,7 +303,7 @@ FILES
 ────────────────────────────────────────────────────────────────────────────
   !{sid}.counts.tsv       — Read counts in TSV format
   README_counts.txt       — This documentation
-  collect_counts.log      — Processing log
+  quantify_reads_per_gene.log — Processing log
 
 OUTPUT FORMAT
 ────────────────────────────────────────────────────────────────────────────
@@ -435,7 +435,7 @@ GENERATED
   Pipeline: TrackTx PRO-seq
   Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
   Sample: !{sid}
-  Module: 07_collect_counts
+  Module: 07_quantify_reads_per_gene
 
 ================================================================================
 DOCEOF
@@ -450,7 +450,7 @@ DOCEOF
 
   # Validate TSV has expected format
   if [[ ! -s "${SAMPLE_ID}.counts.tsv" ]]; then
-    tracktx_error "collect_counts" "Output TSV missing or empty" "Check collect_counts.log in work dir"
+    tracktx_error "quantify_reads_per_gene" "Output TSV missing or empty" "Check quantify_reads_per_gene.log in work dir"
   fi
 
   # Check TSV has 2 lines (header + data)

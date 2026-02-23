@@ -1,5 +1,5 @@
 // ============================================================================
-// qc_pol_tracktx.nf — Per-Sample Quality Control for PRO-seq Data
+// quality_control_aligned_reads.nf — Per-Sample Quality Control for PRO-seq Data
 // ============================================================================
 //
 // Purpose:
@@ -71,7 +71,7 @@
 
 nextflow.enable.dsl = 2
 
-process qc_pol_tracktx {
+process quality_control_aligned_reads {
 
   tag        { sample_id }
   label      'conda'
@@ -171,7 +171,7 @@ process qc_pol_tracktx {
 
   # Check BAM
   if [[ ! -s "\${BAM_FILE}" ]]; then
-    tracktx_error "qc_pol_tracktx" "BAM file missing or empty: \${BAM_FILE}" "Check upstream alignment module"
+    tracktx_error "quality_control_aligned_reads" "BAM file missing or empty: \${BAM_FILE}" "Check align_reads_to_genome module"
   fi
   BAM_SIZE=\$(stat -c%s "\${BAM_FILE}" 2>/dev/null || stat -f%z "\${BAM_FILE}" 2>/dev/null || echo "unknown")
   echo "QC | VALIDATE | BAM: \${BAM_SIZE} bytes"
@@ -198,7 +198,7 @@ process qc_pol_tracktx {
     if command -v \${TOOL} >/dev/null 2>&1; then
       echo "QC | VALIDATE | \${TOOL}: \$(which \${TOOL})"
     else
-      tracktx_error "qc_pol_tracktx" "Required tool not found: \${TOOL}" "Install \${TOOL} or use -profile docker"
+      tracktx_error "quality_control_aligned_reads" "Required tool not found: \${TOOL}" "Install \${TOOL} or use -profile docker"
     fi
   done
 
@@ -775,7 +775,7 @@ GENERATED
   Pipeline: TrackTx PRO-seq
   Date: \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
   Sample: \${SAMPLE_ID}
-  Module: 13_qc_pol_tracktx
+  Module: 13_quality_control_aligned_reads
 
 ================================================================================
 DOCEOF

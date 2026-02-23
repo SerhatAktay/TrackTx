@@ -1,5 +1,5 @@
 // ============================================================================
-// normalize_tracks.nf — Track Normalization (CPM and Spike-in CPM)
+// normalize_coverage_tracks.nf — Track Normalization (CPM and Spike-in CPM)
 // ============================================================================
 //
 // Purpose:
@@ -46,7 +46,7 @@
 //     ├── normalization_factors.tsv
 //     ├── tracks_manifest.tsv
 //     ├── README_normalization.txt
-//     └── normalize_tracks.log
+//     └── normalize_coverage_tracks.log
 //
 // Parameters:
 //   params.norm.emit_bw       : Generate BigWig files (default: true)
@@ -61,7 +61,7 @@
 
 nextflow.enable.dsl = 2
 
-process normalize_tracks {
+process normalize_coverage_tracks {
 
   tag        { sample_id }
   label      'conda'
@@ -114,7 +114,7 @@ process normalize_tracks {
     path "5p/**", optional: true, emit: tree5p
 
     // Log
-    path "normalize_tracks.log", emit: log
+    path "normalize_coverage_tracks.log", emit: log
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
@@ -124,8 +124,8 @@ process normalize_tracks {
   export LC_ALL=C
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a normalize_tracks.log)
-  exec 2> >(tee -a normalize_tracks.log >&2)
+  exec > >(tee -a normalize_coverage_tracks.log)
+  exec 2> >(tee -a normalize_coverage_tracks.log >&2)
 
   tracktx_error() {
     local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
@@ -217,7 +217,7 @@ process normalize_tracks {
 
   # Validate counts master file
   if [[ ! -s "${COUNTS_MASTER}" ]]; then
-    tracktx_error "normalize_tracks" "Counts master file missing or empty: ${COUNTS_MASTER}" "Check collect_counts produced counts TSV"
+    tracktx_error "normalize_coverage_tracks" "Counts master file missing or empty: ${COUNTS_MASTER}" "Check quantify_reads_per_gene produced counts TSV"
   fi
 
   COUNTS_SIZE=$(stat -c%s "${COUNTS_MASTER}" 2>/dev/null || stat -f%z "${COUNTS_MASTER}" 2>/dev/null || echo "unknown")
@@ -247,15 +247,15 @@ process normalize_tracks {
 
   # Validate tools
   if ! ${PYTHON_CMD} --version >/dev/null 2>&1; then
-    tracktx_error "normalize_tracks" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker or install Python"
+    tracktx_error "normalize_coverage_tracks" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker or install Python"
   fi
   echo "NORMALIZE | VALIDATE | python: $(${PYTHON_CMD} --version 2>&1)"
   if ! command -v awk >/dev/null 2>&1; then
-    tracktx_error "normalize_tracks" "Required tool not found: awk" "Use -profile docker"
+    tracktx_error "normalize_coverage_tracks" "Required tool not found: awk" "Use -profile docker"
   fi
   echo "NORMALIZE | VALIDATE | awk: $(which awk)"
   if [[ ${EMIT_BW} -eq 1 ]] && ! command -v bedGraphToBigWig >/dev/null 2>&1; then
-    tracktx_error "normalize_tracks" "bedGraphToBigWig not found (required for BigWig)" "Install UCSC tools or use -profile docker"
+    tracktx_error "normalize_coverage_tracks" "bedGraphToBigWig not found (required for BigWig)" "Install UCSC tools or use -profile docker"
   fi
   if [[ ${EMIT_BW} -eq 1 ]]; then
     echo "NORMALIZE | VALIDATE | bedGraphToBigWig: $(which bedGraphToBigWig)"
@@ -349,7 +349,7 @@ PYSCRIPT
   if awk -v x="${FAC_CPM}" 'BEGIN{exit (x>0?0:1)}'; then
     echo "NORMALIZE | FACTORS | CPM normalization enabled"
   else
-    tracktx_error "normalize_tracks" "Cannot compute CPM (sample reads = 0)" "Check collect_counts output and counts TSV"
+    tracktx_error "normalize_coverage_tracks" "Cannot compute CPM (sample reads = 0)" "Check quantify_reads_per_gene output and counts TSV"
   fi
 
   # Check siCPM availability
@@ -700,7 +700,7 @@ Metadata:
   normalization_factors.tsv — CPM and siCPM scaling factors
   tracks_manifest.tsv       — Complete list of all generated tracks
   README_normalization.txt  — This documentation
-  normalize_tracks.log      — Processing log
+  normalize_coverage_tracks.log      — Processing log
 
 FILE FORMAT
 ────────────────────────────────────────────────────────────────────────────
@@ -710,7 +710,7 @@ FILE FORMAT
 PROCESSING NOTES
 ────────────────────────────────────────────────────────────────────────────
   • Single-pass scaling: CPM and siCPM computed together for efficiency
-  • No coordinate clipping needed (validated by generate_tracks module)
+  • No coordinate clipping needed (validated by generate_coverage_tracks module)
   • Negative strand values preserved from upstream mirroring
   • BigWig timeout: ${TIMEOUT_BW} seconds
   • Optional bedGraph sorting: $([ ${FORCE_SORT} -eq 1 ] && echo "enabled" || echo "disabled")
@@ -780,7 +780,7 @@ GENERATED
   Pipeline: TrackTx PRO-seq
   Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
   Sample: !{sample_id}
-  Module: 08_normalize_tracks
+  Module: 08_normalize_coverage_tracks
 
 ================================================================================
 DOCEOF
@@ -814,7 +814,7 @@ DOCEOF
     "tracks_manifest.tsv"; do
     
     if [[ ! -s "${file}" ]]; then
-      tracktx_error "normalize_tracks" "Missing or empty critical file: ${file}" "Check normalize_tracks.log in work dir"
+      tracktx_error "normalize_coverage_tracks" "Missing or empty critical file: ${file}" "Check normalize_coverage_tracks.log in work dir"
     fi
   done
 

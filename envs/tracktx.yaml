@@ -56,7 +56,7 @@ dependencies:
   - multiqc             # Aggregated QC reporting
   - seqkit              # Fast FASTQ/FASTA utilities
   - seqtk               # FASTQ/FASTA manipulation (reverse-complement for PRO-seq)
-  - sra-tools           # fasterq-dump / prefetch (download_srr module)
+  - sra-tools           # fasterq-dump / prefetch (download_sra_samples module)
 
   # ── Alignment & BAM ops ────────────────────────────────────────────────
   - bowtie2             # Aligner + bowtie2-build (index build step)

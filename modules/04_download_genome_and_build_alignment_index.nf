@@ -1,5 +1,5 @@
 // ============================================================================
-// fetch_and_build_index.nf — Genome Reference and Bowtie2 Index Management
+// download_genome_and_build_alignment_index.nf — Genome Reference and Bowtie2 Index Management
 // ============================================================================
 //
 // Purpose:
@@ -45,7 +45,7 @@
 
 nextflow.enable.dsl = 2
 
-process fetch_and_build_index {
+process download_genome_and_build_alignment_index {
 
   tag        { genome_id }
   label      'conda'
@@ -59,7 +59,7 @@ process fetch_and_build_index {
   // Enable with: --publish_references true
   publishDir(
     path: "${params.output_dir}/00_references/${genome_id}",
-    mode: 'link',
+    mode: params.publish_mode,
     enabled: params.get('publish_references', false),
     saveAs: { filename ->
       def name = filename instanceof Path ? filename.getFileName().toString() : filename.toString()
@@ -152,7 +152,7 @@ process fetch_and_build_index {
 
   for TOOL in bowtie2-build samtools curl tar; do
     if ! command -v ${TOOL} >/dev/null 2>&1; then
-      tracktx_error "fetch_and_build_index" "${TOOL} not found in PATH" "Install ${TOOL} or use -profile docker"
+      tracktx_error "download_genome_and_build_alignment_index" "${TOOL} not found in PATH" "Install ${TOOL} or use -profile docker"
     fi
     echo "INDEX | VALIDATE | ${TOOL}: $(which ${TOOL})"
   done
@@ -378,11 +378,11 @@ process fetch_and_build_index {
 
       # Validate FASTA
       if [[ ! -s "${TEMP_DIR}/${GENOME_ID}.fa" ]]; then
-        tracktx_error "fetch_and_build_index" "FASTA file is empty" "Check UCSC download or custom FASTA"
+        tracktx_error "download_genome_and_build_alignment_index" "FASTA file is empty" "Check UCSC download or custom FASTA"
       fi
 
       if ! grep -q '^>' "${TEMP_DIR}/${GENOME_ID}.fa"; then
-        tracktx_error "fetch_and_build_index" "File does not appear to be valid FASTA format" "Check FASTA file format"
+        tracktx_error "download_genome_and_build_alignment_index" "File does not appear to be valid FASTA format" "Check FASTA file format"
       fi
 
       # Count sequences
@@ -474,7 +474,7 @@ process fetch_and_build_index {
       # Verify index is complete
       if ! has_complete_index "${INDEX_PREFIX}" "bt2" && \
          ! has_complete_index "${INDEX_PREFIX}" "bt2l"; then
-        tracktx_error "fetch_and_build_index" "Index build incomplete, missing shards" "Check disk space and bowtie2-build logs"
+        tracktx_error "download_genome_and_build_alignment_index" "Index build incomplete, missing shards" "Check disk space and bowtie2-build logs"
       fi
 
       echo "INDEX | BUILD | Index verification passed"
@@ -603,7 +603,7 @@ DOCEOF
   # Check reference files
   for file in "${GENOME_ID}.fa" "${GENOME_ID}.fa.fai" "${GENOME_ID}.genome.sizes"; do
     if [[ ! -s "${file}" ]]; then
-      tracktx_error "fetch_and_build_index" "Missing or empty: ${file}" "Check index build logs"
+      tracktx_error "download_genome_and_build_alignment_index" "Missing or empty: ${file}" "Check index build logs"
     fi
   done
 
@@ -618,7 +618,7 @@ DOCEOF
   fi
 
   if [[ ${INDEX_VALID} -eq 0 ]]; then
-    tracktx_error "fetch_and_build_index" "Incomplete index in output directory" "Expected .1.bt2 .2.bt2 .3.bt2 .4.bt2 .rev.1.bt2 .rev.2.bt2"
+    tracktx_error "download_genome_and_build_alignment_index" "Incomplete index in output directory" "Expected .1.bt2 .2.bt2 .3.bt2 .4.bt2 .rev.1.bt2 .rev.2.bt2"
   fi
 
   echo "INDEX | VALIDATE | All files validated successfully"

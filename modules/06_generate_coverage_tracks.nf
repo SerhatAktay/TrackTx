@@ -1,5 +1,5 @@
 // ============================================================================
-// generate_tracks.nf — Strand-Specific Coverage Track Generation
+// generate_coverage_tracks.nf — Strand-Specific Coverage Track Generation
 // ============================================================================
 //
 // Purpose:
@@ -53,7 +53,7 @@
 
 nextflow.enable.dsl = 2
 
-process generate_tracks {
+process generate_coverage_tracks {
 
   tag        { sample_id }
   label      'conda'
@@ -161,7 +161,7 @@ process generate_tracks {
     echo "═══════════════════════════════════════════════════════════════════════" >&2
     exit "\$code"
   }
-  trap 'tracktx_error "generate_tracks" "Unexpected process failure" "Check tracks.log in work dir"' ERR
+  trap 'tracktx_error "generate_coverage_tracks" "Unexpected process failure" "Check tracks.log in work dir"' ERR
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -205,13 +205,13 @@ process generate_tracks {
 
   # Validate input BAMs
   if [[ ! -s "${MAIN_BAM}" ]]; then
-    tracktx_error "generate_tracks" "Main BAM missing or empty: ${MAIN_BAM}" "Check run_alignment produced sample.bam"
+    tracktx_error "generate_coverage_tracks" "Main BAM missing or empty: ${MAIN_BAM}" "Check align_reads_to_genome produced sample.bam"
   fi
   MAIN_SIZE=$(stat -c%s "${MAIN_BAM}" 2>/dev/null || stat -f%z "${MAIN_BAM}" 2>/dev/null || echo "unknown")
   echo "TRACKS | VALIDATE | Main BAM: ${MAIN_SIZE} bytes"
 
   if [[ ! -s "${ALLMAP_BAM}" ]]; then
-    tracktx_error "generate_tracks" "AllMap BAM missing or empty: ${ALLMAP_BAM}" "Check run_alignment produced sample_allMap.bam"
+    tracktx_error "generate_coverage_tracks" "AllMap BAM missing or empty: ${ALLMAP_BAM}" "Check align_reads_to_genome produced sample_allMap.bam"
   fi
   ALLMAP_SIZE=$(stat -c%s "${ALLMAP_BAM}" 2>/dev/null || stat -f%z "${ALLMAP_BAM}" 2>/dev/null || echo "unknown")
   echo "TRACKS | VALIDATE | AllMap BAM: ${ALLMAP_SIZE} bytes"
@@ -219,7 +219,7 @@ process generate_tracks {
   # Validate required tools
   for TOOL in samtools bedtools bedGraphToBigWig; do
     if ! command -v ${TOOL} >/dev/null 2>&1; then
-      tracktx_error "generate_tracks" "Required tool not found: ${TOOL}" "Install ${TOOL} or use -profile docker"
+      tracktx_error "generate_coverage_tracks" "Required tool not found: ${TOOL}" "Install ${TOOL} or use -profile docker"
     fi
     echo "TRACKS | VALIDATE | ${TOOL}: $(command -v ${TOOL})"
   done
@@ -477,7 +477,7 @@ process generate_tracks {
     > genome.sizes
 
   if [[ ! -s genome.sizes ]]; then
-    tracktx_error "generate_tracks" "Failed to extract chromosome sizes from BAM header" "Check BAM file integrity"
+    tracktx_error "generate_coverage_tracks" "Failed to extract chromosome sizes from BAM header" "Check BAM file integrity"
   fi
 
   CHR_COUNT=$(wc -l < genome.sizes | tr -d ' ')
@@ -500,13 +500,13 @@ process generate_tracks {
   # Main BAM
   echo "TRACKS | 3P | Processing main BAM..."
   if ! generate_coverage "${INPUT_BAM}" "3" "3p/${SAMPLE_ID}.3p"; then
-    tracktx_error "generate_tracks" "Failed to generate 3' coverage from main BAM" "Check tracks.log in work dir"
+    tracktx_error "generate_coverage_tracks" "Failed to generate 3' coverage from main BAM" "Check tracks.log in work dir"
   fi
 
   # AllMap BAM
   echo "TRACKS | 3P | Processing allMap BAM..."
   if ! generate_coverage "${ALLMAP_BAM}" "3" "3p/${SAMPLE_ID}.allMap.3p"; then
-    tracktx_error "generate_tracks" "Failed to generate 3' coverage from allMap BAM" "Check tracks.log in work dir"
+    tracktx_error "generate_coverage_tracks" "Failed to generate 3' coverage from allMap BAM" "Check tracks.log in work dir"
   fi
 
   echo "TRACKS | 3P | 3' end coverage complete"
@@ -522,13 +522,13 @@ process generate_tracks {
   # Main BAM
   echo "TRACKS | 5P | Processing main BAM..."
   if ! generate_coverage "${INPUT_BAM}" "5" "5p/${SAMPLE_ID}.5p"; then
-    tracktx_error "generate_tracks" "Failed to generate 5' coverage from main BAM" "Check tracks.log in work dir"
+    tracktx_error "generate_coverage_tracks" "Failed to generate 5' coverage from main BAM" "Check tracks.log in work dir"
   fi
 
   # AllMap BAM
   echo "TRACKS | 5P | Processing allMap BAM..."
   if ! generate_coverage "${ALLMAP_BAM}" "5" "5p/${SAMPLE_ID}.allMap.5p"; then
-    tracktx_error "generate_tracks" "Failed to generate 5' coverage from allMap BAM" "Check tracks.log in work dir"
+    tracktx_error "generate_coverage_tracks" "Failed to generate 5' coverage from allMap BAM" "Check tracks.log in work dir"
   fi
 
   echo "TRACKS | 5P | 5' end coverage complete"
@@ -715,7 +715,7 @@ PARAMETERS USED
 GENERATED
 ────────────────────────────────────────────────────────────────────────────
   Pipeline: TrackTx PRO-seq
-  Module:   06_generate_tracks
+  Module:   06_generate_coverage_tracks
   Date:     $(date -u +"%Y-%m-%d %H:%M:%S UTC")
   Sample:   !{sample_id}
 
@@ -755,7 +755,7 @@ DOCEOF
     "3p/${SAMPLE_ID}.allMap.3p.neg.bw"; do
     
     if [[ ! -s "${file}" ]]; then
-      tracktx_error "generate_tracks" "Missing or empty critical file: ${file}" "Check tracks.log in work dir"
+      tracktx_error "generate_coverage_tracks" "Missing or empty critical file: ${file}" "Check tracks.log in work dir"
     else
       FILE_SIZE=$(stat -c%s "${file}" 2>/dev/null || stat -f%z "${file}" 2>/dev/null || echo "unknown")
       echo "TRACKS | VALIDATE | ${file}: ${FILE_SIZE} bytes"
@@ -774,7 +774,7 @@ DOCEOF
     "5p/${SAMPLE_ID}.allMap.5p.neg.bw"; do
     
     if [[ ! -f "${file}" ]]; then
-      tracktx_error "generate_tracks" "Missing file: ${file}" "Check tracks.log in work dir"
+      tracktx_error "generate_coverage_tracks" "Missing file: ${file}" "Check tracks.log in work dir"
     fi
   done
 

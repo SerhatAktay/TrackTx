@@ -1,5 +1,5 @@
 // ============================================================================
-// summarize_pol_metrics.nf — Cohort-Level Pol-II Metrics Aggregation
+// summarize_polymerase_metrics.nf — Cohort-Level Polymerase Metrics Aggregation
 // ============================================================================
 //
 // Purpose:
@@ -58,7 +58,7 @@
 
 nextflow.enable.dsl = 2
 
-process summarize_pol_metrics {
+process summarize_polymerase_metrics {
 
   tag        'pol-aggregate'
   label      'conda'
@@ -210,13 +210,13 @@ CONTRASTEOF
 
   # Check Python script
   if [[ ! -f "${AGGREGATOR_SCRIPT}" ]]; then
-    tracktx_error "summarize_pol_metrics" "Aggregator script not found: ${AGGREGATOR_SCRIPT}" "Ensure bin/compare_pol_metrics.py exists"
+    tracktx_error "summarize_polymerase_metrics" "Aggregator script not found: ${AGGREGATOR_SCRIPT}" "Ensure bin/compare_pol_metrics.py exists"
   fi
   echo "AGGREGATE | VALIDATE | Aggregator script: ${AGGREGATOR_SCRIPT}"
 
   # Check samples manifest
   if [[ ! -s "${SAMPLES_TSV}" ]]; then
-    tracktx_error "summarize_pol_metrics" "Samples manifest missing or empty: ${SAMPLES_TSV}" "Check samples manifest input"
+    tracktx_error "summarize_polymerase_metrics" "Samples manifest missing or empty: ${SAMPLES_TSV}" "Check samples manifest input"
   fi
   SAMPLES_SIZE=$(stat -c%s "${SAMPLES_TSV}" 2>/dev/null || stat -f%z "${SAMPLES_TSV}" 2>/dev/null || echo "unknown")
   SAMPLES_LINES=$(wc -l < "${SAMPLES_TSV}" | tr -d ' ')
@@ -227,7 +227,7 @@ CONTRASTEOF
     PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
     echo "AGGREGATE | VALIDATE | Python: ${PYTHON_VERSION}"
   else
-    tracktx_error "summarize_pol_metrics" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
+    tracktx_error "summarize_polymerase_metrics" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
   fi
 
   ###########################################################################
@@ -245,7 +245,7 @@ CONTRASTEOF
   EXPECTED_HEADER_NORM=$(echo "${EXPECTED_HEADER}" | awk '{$1=$1};1')
 
   if [[ "${ACTUAL_HEADER}" != "${EXPECTED_HEADER_NORM}" ]]; then
-    tracktx_error "summarize_pol_metrics" "Invalid manifest header (expected: ${EXPECTED_HEADER}, got: ${ACTUAL_HEADER})" "Fix samples manifest format"
+    tracktx_error "summarize_polymerase_metrics" "Invalid manifest header (expected: ${EXPECTED_HEADER}, got: ${ACTUAL_HEADER})" "Fix samples manifest format"
   fi
 
   echo "AGGREGATE | VALIDATE | Manifest header: OK"
@@ -347,7 +347,7 @@ CONTRASTEOF
 
   # Handle failures
   if [[ ${AGG_RC} -ne 0 ]]; then
-    tracktx_error "summarize_pol_metrics" "Aggregation failed with exit code ${AGG_RC}" "Check aggregate.log in work dir" ${AGG_RC}
+    tracktx_error "summarize_polymerase_metrics" "Aggregation failed with exit code ${AGG_RC}" "Check aggregate.log in work dir" ${AGG_RC}
   fi
 
   ###########################################################################
@@ -358,7 +358,7 @@ CONTRASTEOF
 
   # Check merged table
   if [[ ! -s pol_gene_metrics_merged.tsv ]]; then
-    tracktx_error "summarize_pol_metrics" "Merged table missing or empty" "Check aggregate.log in work dir"
+    tracktx_error "summarize_polymerase_metrics" "Merged table missing or empty" "Check aggregate.log in work dir"
   fi
   MERGED_SIZE=$(stat -c%s pol_gene_metrics_merged.tsv 2>/dev/null || stat -f%z pol_gene_metrics_merged.tsv 2>/dev/null || echo "unknown")
   MERGED_LINES=$(wc -l < pol_gene_metrics_merged.tsv | tr -d ' ')
@@ -654,7 +654,7 @@ GENERATED
 ────────────────────────────────────────────────────────────────────────────
   Pipeline: TrackTx PRO-seq
   Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Module: 12_summarize_pol_metrics
+  Module: 12_summarize_polymerase_metrics
   Samples: ${SAMPLE_COUNT}
 
 ================================================================================
