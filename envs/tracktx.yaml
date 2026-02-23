@@ -95,6 +95,10 @@ dependencies:
   # ── Pip-only packages (if needed in future) ───────────────────────────
   # - pip:
 
+  # ── Optional: nfmon enhanced UI ───────────────────────────────────────
+  - rich                # For nfmon.py: better layout, colors, live updates
+  # Without rich: nfmon falls back to basic curses. Install: conda install rich
+
   # ── Optional (uncomment if you want local testing of docs rendering) ───
   # - jupyter
   # - ipykernel

@@ -1687,8 +1687,10 @@ class TUI:
         total = C["running"] + C["queued"] + C["done"] + C["failed"] + C["cached"] + C["killed"]
 
         # Header (compact)
+        rn = (self.w.meta.run_name or "").strip()
+        run_label = rn[:18] if rn and rn != "?" else "nf-monitor"
         cores_str = f" C{int(cores_in_use)}/{self.w.ncpu}" if self.w.ncpu > 0 else ""
-        self._add(0, 0, f"nf-monitor {self.w.meta.run_name[:18]} {time.strftime('%H:%M:%S')}", curses.color_pair(1) | curses.A_BOLD)
+        self._add(0, 0, f"{run_label} {time.strftime('%H:%M:%S')}", curses.color_pair(1) | curses.A_BOLD)
         self._add(1, 0, f"[{sec2hms(now)}] CPU:{self.w.cpu_pct}% MEM:{self.w.mem_pct}% LOAD:{self.w.load_1}{cores_str} | {C['running']} run {C['done']} done {C['failed']} fail")
         eta = predict_completion_eta(self.w)
         if eta:
@@ -1751,7 +1753,15 @@ class TUI:
         # ─── Draw Details Pane ───
         if details_h > 0:
             target_t = run[self.sel] if run and self.sel < len(run) else None
-            self.draw_details_pane(target_t, header_h + list_h, maxy, maxx)
+            # Reserve last row for keys hint
+            details_h = maxy - (header_h + list_h) - 1
+            if details_h > 0:
+                self.draw_details_pane(target_t, header_h + list_h, maxy - 1, maxx)
+
+        # Keys hint at bottom (compact but informative)
+        if maxy > 0:
+            hint = " j/k=up-down  t=trends  e=export  q=quit "
+            self._add(maxy - 1, 0, hint[:maxx], curses.A_DIM)
 
         self.s.refresh()
 
@@ -2146,7 +2156,7 @@ def main():
                     hdr.append(f"\nFilter: {filter_state['proc']}", style="yellow")
                 sort_indicator = f" • Sort: {filter_state.get('sort', 'default')}" if filter_state.get('sort') != 'default' else ""
                 hdr.append(f"\n[dim]j/k nav  f filter  s sort  a all-logs  q quit{sort_indicator}" + (" [yellow]ALL LOGS[/yellow]" if getattr(a, 'all_logs', False) else "") + "[/dim]")
-                header_panel = Panel(hdr, title="nf-monitor", border_style="cyan")
+                header_panel = Panel(hdr, title="nf-monitor", border_style="cyan", padding=(0, 1))
 
                 # pipeline progress bar (cumulative; cap at 100 so it doesn't jump)
                 total_so_far = C.get('cum_done',0)+C.get('cum_cached',0)+C.get('cum_failed',0)+C.get('cum_killed',0)+C['running']+C['queued']
@@ -2159,7 +2169,7 @@ def main():
 
                 # running table
                 rt_title = "Running (all logs)" if getattr(a, 'all_logs', False) else "Running (j/k to focus)"
-                rt = Table(title=rt_title, expand=True)
+                rt = Table(title=rt_title, expand=True, padding=(0, 0), show_edge=True)
                 rt.add_column("Module", ratio=2); rt.add_column("Sample", ratio=2); rt.add_column("id"); rt.add_column("PID"); rt.add_column("CPU"); rt.add_column("CPUS"); rt.add_column("RSS"); rt.add_column("Age"); rt.add_column("Stage", ratio=2); rt.add_column("CPU hist")
                 # ensure labels from FS if missing
                 for t in run:
@@ -2215,7 +2225,7 @@ def main():
 
                 # live log tail panel(s) - dynamically sized based on available space
                 # Calculate how much space we have (will be computed below alongside layout)
-                log_panel = Panel(Text("No running tasks", style="yellow"), title="Live log", border_style="blue")
+                log_panel = Panel(Text("No running tasks", style="yellow"), title="Log", border_style="blue", padding=(0, 1))
 
                 # queued table
                 # remove queued table
@@ -2223,12 +2233,28 @@ def main():
 
                 # errors panel
                 err_txt = Text("✓ none", style="green") if not w.recent_errors else Text("\n".join(list(w.recent_errors)[-3:]), style="red")
-                err_panel = Panel(err_txt, title="Recent errors", border_style="red")
+                err_panel = Panel(err_txt, title="Errors", border_style="red", padding=(0, 1))
 
-                # help - compact single line so it doesn't eat screen space
+                # help - extensive for novices
                 help_txt = Text()
-                help_txt.append("j/k nav  f filter  s sort  a all-logs  q quit", style="dim")
-                help_panel = Panel(help_txt, title="Keys", border_style="dim")
+                help_txt.append("NAVIGATION\n", style="bold cyan")
+                help_txt.append("  j  or  Down  ", style="yellow")
+                help_txt.append("Move down to next running task\n", style="dim")
+                help_txt.append("  k  or  Up    ", style="yellow")
+                help_txt.append("Move up to previous task\n", style="dim")
+                help_txt.append("FILTER & SORT\n", style="bold cyan")
+                help_txt.append("  f  ", style="yellow")
+                help_txt.append("Filter by process: show only one module at a time (cycle through)\n", style="dim")
+                help_txt.append("  s  ", style="yellow")
+                help_txt.append("Sort: default → by CPU% → by memory → by age\n", style="dim")
+                help_txt.append("VIEW\n", style="bold cyan")
+                help_txt.append("  a  ", style="yellow")
+                help_txt.append("Toggle all-logs: show every task's log, or just the focused one\n", style="dim")
+                help_txt.append("QUIT\n", style="bold cyan")
+                help_txt.append("  q  or  Esc  ", style="yellow")
+                help_txt.append("Exit the monitor\n", style="dim")
+                help_txt.append("Columns: Module=process name, Sample=task tag, CPU%=usage, RSS=memory (MB)", style="dim")
+                help_panel = Panel(help_txt, title="Help", border_style="bright_black", padding=(0, 1))
 
                 # Estimate log lines from terminal
                 available_log_lines = max(5, int((term_height - 8) * 0.55))
@@ -2272,7 +2298,7 @@ def main():
                                 text.append("outputs: "+", ".join([f"{n} ({sz})" for n,sz in outs[:2]]))
                             if i < processes_to_show - 1:
                                 text.append("\n", style="dim")
-                        log_panel = Panel(text, title=f"Live logs ({processes_to_show} of {num_processes} tasks)", border_style="blue")
+                        log_panel = Panel(text, title=f"Log ({processes_to_show}/{num_processes})", border_style="blue", padding=(0, 1))
                     else:
                         # single focused log - use ALL available lines
                         if focused["idx"] >= len(run_filtered):
@@ -2293,21 +2319,21 @@ def main():
                             text.append(ln+"\n")
                         if outs:
                             text.append("outputs: "+", ".join([f"{n} ({sz})" for n,sz in outs]))
-                        log_panel = Panel(text, title=f"Live log (task {focused['idx']+1}/{len(run_filtered)})", border_style="blue")
+                        log_panel = Panel(text, title=f"Log ({focused['idx']+1}/{len(run_filtered)})", border_style="blue", padding=(0, 1))
                 
                 layout = Layout()
                 layout.split_column(
                     Layout(header_panel, size=5),
-                    Layout(Panel(prog), size=3),
+                    Layout(Panel(prog, padding=(0, 0)), size=3),
                     Layout(name="body")
                 )
                 layout["body"].split_row(Layout(name="right", ratio=1))
-                # Ratio-based: table 2, log 5, errors 1, help 1 - log gets most space
+                # Ratio-based: table 2, log 5, errors 1, help gets enough for full text
                 layout["right"].split_column(
                     Layout(rt, ratio=2, minimum_size=4),
                     Layout(log_panel, ratio=5, minimum_size=5),
                     Layout(err_panel, ratio=1, minimum_size=2),
-                    Layout(help_panel, ratio=1, minimum_size=2)
+                    Layout(help_panel, ratio=1, minimum_size=14)
                 )
                 return layout
 
@@ -2331,9 +2357,10 @@ def main():
                     time.sleep(0.02)
             stop_keys["stop"] = True
             return
-        except Exception:
-            pass
-    
+        except Exception as e:
+            if not a.simple and isinstance(e, ImportError):
+                print("Tip: pip install rich  for enhanced UI", file=sys.stderr)
+
     # Curses fallback
     curses.wrapper(loop)
 

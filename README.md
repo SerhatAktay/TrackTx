@@ -122,6 +122,13 @@ Watch your pipeline in action with the **live monitor**:
 python3 nfmon.py
 ```
 
+**Install Rich (optional, for enhanced UI):** The monitor works without it (basic curses fallback), but for a better layout, colors, and live updates:
+```bash
+pip install rich
+# or with conda:
+conda install -c conda-forge rich
+```
+
 Features:
 - 📊 Real-time task progress and resource usage
 - 🎯 Live log tailing for active tasks
