@@ -191,14 +191,23 @@ process detect_divergent_tx {
 
   echo "DIVERGENT | VALIDATE | Checking inputs..."
 
-  # Use micromamba run or explicit conda path to ensure correct Python env in container
-  # Fixes: "Missing Python dependencies" when container runs with restricted PATH (e.g. Singularity --cleanenv)
-  if command -v micromamba >/dev/null 2>&1; then
+  # Resolve Python: prefer env with deps (conda/container), fallback to PATH
+  # 1) CONDA_PREFIX: Nextflow conda profile sets this; ensures correct env
+  # 2) micromamba: Docker/Singularity container (mambaorg/micromamba image)
+  # 3) /opt/conda: Container with conda at standard path
+  # 4) python3/python: System or conda-activated PATH
+  if [[ -n "${CONDA_PREFIX:-}" ]] && [[ -x "${CONDA_PREFIX}/bin/python3" ]]; then
+    PYTHON_CMD="${CONDA_PREFIX}/bin/python3"
+  elif [[ -n "${CONDA_PREFIX:-}" ]] && [[ -x "${CONDA_PREFIX}/bin/python" ]]; then
+    PYTHON_CMD="${CONDA_PREFIX}/bin/python"
+  elif command -v micromamba >/dev/null 2>&1; then
     PYTHON_CMD="micromamba run -n base python3"
   elif [[ -x /opt/conda/bin/python3 ]]; then
     PYTHON_CMD="/opt/conda/bin/python3"
-  else
+  elif command -v python3 >/dev/null 2>&1; then
     PYTHON_CMD="python3"
+  else
+    PYTHON_CMD="python"
   fi
 
   # Check Python script exists
@@ -227,28 +236,39 @@ process detect_divergent_tx {
   echo "DIVERGENT | VALIDATE | Positive bedGraph: ${POS_SIZE} bytes (${POS_LINES} lines)"
   echo "DIVERGENT | VALIDATE | Negative bedGraph: ${NEG_SIZE} bytes (${NEG_LINES} lines)"
 
-  # Validate tools and dependencies
-  TOOLS_OK=1
+  # Validate tools and dependencies; try alternative Pythons if first fails
+  TOOLS_OK=0
+  PYTHON_CANDIDATES=("${PYTHON_CMD}")
+  [[ -n "${CONDA_PREFIX:-}" ]] && PYTHON_CANDIDATES+=("${CONDA_PREFIX}/bin/python3" "${CONDA_PREFIX}/bin/python")
+  command -v micromamba >/dev/null 2>&1 && PYTHON_CANDIDATES+=("micromamba run -n base python3")
+  [[ -x /opt/conda/bin/python3 ]] && PYTHON_CANDIDATES+=("/opt/conda/bin/python3")
+  command -v python3 >/dev/null 2>&1 && PYTHON_CANDIDATES+=("python3")
+  command -v python >/dev/null 2>&1 && PYTHON_CANDIDATES+=("python")
+
+  for py in "${PYTHON_CANDIDATES[@]}"; do
+    [[ -z "$py" ]] && continue
+    if $py --version >/dev/null 2>&1; then
+      if $py -c "import numpy, pandas, sklearn.mixture, scipy.stats" 2>/dev/null; then
+        PYTHON_CMD="$py"
+        TOOLS_OK=1
+        break
+      fi
+    fi
+  done
+
   if ${PYTHON_CMD} --version >/dev/null 2>&1; then
     PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
     echo "DIVERGENT | VALIDATE | Python: ${PYTHON_VERSION}"
-    
-    # Check Python dependencies (including sklearn and scipy for GMM)
-    echo "DIVERGENT | VALIDATE | Checking Python dependencies..."
-    ${PYTHON_CMD} -c "import numpy, pandas, sklearn.mixture, scipy.stats" 2>/dev/null || {
-      echo "DIVERGENT | ERROR | Missing Python dependencies (numpy, pandas, scikit-learn, scipy)"
-      echo "DIVERGENT | ERROR | Install with: pip install numpy pandas scikit-learn scipy"
-      TOOLS_OK=0
-    }
-  else
-    echo "DIVERGENT | ERROR | Python not found (tried: ${PYTHON_CMD})"
-    TOOLS_OK=0
   fi
 
   if [[ ${TOOLS_OK} -eq 0 ]]; then
+    echo "DIVERGENT | ERROR | Missing Python dependencies (numpy, pandas, scikit-learn, scipy)"
+    echo "DIVERGENT | ERROR | Install with: pip install -r envs/requirements-divergent.txt"
+    echo "DIVERGENT | ERROR | Or use: -profile conda (uses envs/tracktx.yaml) or -profile docker"
     echo "DIVERGENT | ERROR | Missing required tools or dependencies"
     exit 1
   fi
+  echo "DIVERGENT | VALIDATE | Checking Python dependencies... OK"
 
   ###########################################################################
   # 3) RUN STATISTICAL DIVERGENT TRANSCRIPTION DETECTOR

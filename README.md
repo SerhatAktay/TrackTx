@@ -494,6 +494,17 @@ export NXF_HOST_CPUS=4  # Limit to 4 CPUs
 conda clean --all --yes
 ```
 
+**"Missing Python dependencies" (divergent transcription step):**
+```bash
+# Use Docker (recommended; has all deps pre-installed)
+./run_pipeline.sh -profile docker
+
+# Or use conda profile (creates env from envs/tracktx.yaml)
+./run_pipeline.sh -profile conda
+
+# Or install manually: pip install -r envs/requirements-divergent.txt
+```
+
 **Pipeline seems slow:**
 - First run downloads reference genomes (~10-30 min)
 - Use SSD storage for better performance

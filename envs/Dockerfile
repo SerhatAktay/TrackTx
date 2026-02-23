@@ -38,5 +38,7 @@ LABEL org.opencontainers.image.source="https://github.com/serhataktay/tracktx" \
       org.opencontainers.image.description="Transcription tracking pipeline image (Nextflow)" \
       org.opencontainers.image.licenses="Apache-2.0"
 
-ENTRYPOINT ["/usr/bin/tini","--"]
+# Preserve micromamba entrypoint so conda env is activated at runtime
+# (overriding it with tini alone caused "Missing Python dependencies" in containers)
+ENTRYPOINT ["/usr/local/bin/_entrypoint.sh", "/usr/bin/tini", "--"]
 CMD ["bash"]
