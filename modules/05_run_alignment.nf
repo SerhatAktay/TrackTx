@@ -82,11 +82,23 @@ process run_alignment {
   set -euo pipefail
   export LC_ALL=C
 
-  # Redirect all output to unified log
-  exec > >(tee -a align_reads.log) 2>&1
+  # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
+  exec > >(tee -a align_reads.log)
+  exec 2> >(tee -a align_reads.log >&2)
 
-  # Error trap
-  trap 'echo "ALIGN | ERROR | Process failed at $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >&2; exit 1' ERR
+  tracktx_error() {
+    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
+    echo "" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "TRACKTX ERROR" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "Module:  \${module}" >&2
+    echo "Problem: \${problem}" >&2
+    echo "Fix:     \${fix}" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    exit "\$code"
+  }
+  trap 'tracktx_error "run_alignment" "Unexpected process failure" "Check align_reads.log in work dir"' ERR
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -130,8 +142,7 @@ process run_alignment {
 
   # Validate paired-end configuration
   if [[ "${PAIRED_PARAM}" == "true" && "${IS_PE}" != "true" ]]; then
-    echo "ALIGN | ERROR | params.paired_end=true but R2 missing or empty" >&2
-    exit 1
+    tracktx_error "run_alignment" "params.paired_end=true but R2 missing or empty" "Add file2 column to samplesheet or set paired_end=false"
   fi
 
   ###########################################################################
@@ -153,36 +164,27 @@ process run_alignment {
 
   for file in "${R1}"; do
     if [[ ! -s "${file}" ]]; then
-      echo "ALIGN | ERROR | Read file missing or empty: ${file}"
-      VALIDATION_OK=0
-    else
-      FILE_SIZE=$(stat -c%s "${file}" 2>/dev/null || stat -f%z "${file}" 2>/dev/null || echo "unknown")
-      echo "ALIGN | VALIDATE | R1 size: ${FILE_SIZE} bytes"
+      tracktx_error "run_alignment" "Read file missing or empty: ${file}" "Check samplesheet file1 paths"
     fi
+    FILE_SIZE=$(stat -c%s "${file}" 2>/dev/null || stat -f%z "${file}" 2>/dev/null || echo "unknown")
+    echo "ALIGN | VALIDATE | R1 size: ${FILE_SIZE} bytes"
   done
 
   if [[ "${IS_PE}" == "true" && ! -s "${R2}" ]]; then
-    echo "ALIGN | ERROR | R2 file missing or empty: ${R2}"
-    VALIDATION_OK=0
-  elif [[ "${IS_PE}" == "true" ]]; then
+    tracktx_error "run_alignment" "R2 file missing or empty: ${R2}" "Check samplesheet file2 paths for paired-end samples"
+  fi
+  if [[ "${IS_PE}" == "true" ]]; then
     FILE_SIZE=$(stat -c%s "${R2}" 2>/dev/null || stat -f%z "${R2}" 2>/dev/null || echo "unknown")
     echo "ALIGN | VALIDATE | R2 size: ${FILE_SIZE} bytes"
   fi
 
   # Validate required tools
   for TOOL in bowtie2 samtools gzip; do
-    if command -v ${TOOL} >/dev/null 2>&1; then
-      echo "ALIGN | VALIDATE | ${TOOL}: $(command -v ${TOOL})"
-    else
-      echo "ALIGN | ERROR | Required tool not found: ${TOOL}"
-      VALIDATION_OK=0
+    if ! command -v ${TOOL} >/dev/null 2>&1; then
+      tracktx_error "run_alignment" "Required tool not found: ${TOOL}" "Install ${TOOL} or use -profile docker"
     fi
+    echo "ALIGN | VALIDATE | ${TOOL}: $(command -v ${TOOL})"
   done
-
-  if [[ ${VALIDATION_OK} -eq 0 ]]; then
-    echo "ALIGN | ERROR | Validation failed"
-    exit 1
-  fi
 
   echo "ALIGN | VALIDATE | All checks passed"
 
@@ -249,10 +251,7 @@ PYEND
   if [[ -n "${SPIKE_ID}" && "${SPIKE_ID}" != "none" && -n "${SPIKE_INDEX_LIST}" ]]; then
     # shellcheck disable=SC2086
     if ! cp -f ${SPIKE_INDEX_LIST} bt2_index/ 2>/dev/null; then
-      echo "ALIGN | ERROR | Failed to stage spike-in index files" >&2
-      echo "ALIGN | DEBUG | SPIKE_INDEX_LIST: ${SPIKE_INDEX_LIST}" >&2
-      ls -la bt2_index/ 2>/dev/null || true
-      exit 1
+      tracktx_error "run_alignment" "Failed to stage spike-in index files" "Check spikein_genome and index paths; SPIKE_INDEX_LIST: ${SPIKE_INDEX_LIST}"
     fi
     SPIKE_IDX="bt2_index/${SPIKE_ID}"
     echo "ALIGN | INDEX | Spike-in index files staged"
@@ -278,10 +277,7 @@ PYEND
       fi
     done
     if [[ ${SPIKE_INDEX_COMPLETE} -eq 0 ]]; then
-      echo "ALIGN | ERROR | Incomplete spike-in index: ${SPIKE_IDX}" >&2
-      echo "ALIGN | DEBUG | Files in bt2_index/:" >&2
-      ls -lh bt2_index/ 2>/dev/null || true
-      exit 1
+      tracktx_error "run_alignment" "Incomplete spike-in index: ${SPIKE_IDX}" "Expected .1.bt2 .2.bt2 .3.bt2 .4.bt2 .rev.1.bt2 .rev.2.bt2"
     fi
   fi
 
@@ -304,11 +300,7 @@ PYEND
   done
 
   if [[ ${INDEX_COMPLETE} -eq 0 ]]; then
-    echo "ALIGN | ERROR | No complete Bowtie2 index found for: ${GENOME_IDX}"
-    echo "ALIGN | ERROR | Expected shards: .1.bt2, .2.bt2, .3.bt2, .4.bt2, .rev.1.bt2, .rev.2.bt2"
-    echo "ALIGN | DEBUG | Files present in bt2_index/:"
-    ls -lh bt2_index/ || true
-    exit 1
+    tracktx_error "run_alignment" "No complete Bowtie2 index for: ${GENOME_IDX}" "Expected .1.bt2 .2.bt2 .3.bt2 .4.bt2 .rev.1.bt2 .rev.2.bt2"
   fi
 
   ###########################################################################
@@ -400,10 +392,7 @@ PYEND
             -U unaligned.fastq \
             2> bowtie2_spikein.log \
     | samtools sort -@ "${SAM_THREADS}" -m 4G -o "${SAMPLE_ID}_spikein.bam"; then
-      echo "ALIGN | SPIKEIN | ERROR | Spike-in alignment failed" >&2
-      echo "ALIGN | SPIKEIN | DEBUG | bowtie2_spikein.log:" >&2
-      cat bowtie2_spikein.log 2>/dev/null | tail -100 >&2
-      exit 1
+      tracktx_error "run_alignment" "Spike-in alignment failed" "Check bowtie2_spikein.log in work dir"
     fi
     
     SPIKEIN_SIZE=$(stat -c%s "${SAMPLE_ID}_spikein.bam" 2>/dev/null || stat -f%z "${SAMPLE_ID}_spikein.bam" 2>/dev/null || echo "unknown")
@@ -672,7 +661,6 @@ DOCEOF
   echo "────────────────────────────────────────────────────────────────────────"
 
   # Check critical output files
-  FINAL_OK=1
   for file in \
     "${SAMPLE_ID}_allMap.bam" \
     "${SAMPLE_ID}.bam" \
@@ -684,18 +672,12 @@ DOCEOF
     "aligner_summary.tsv"; do
     
     if [[ ! -s "${file}" ]]; then
-      echo "ALIGN | ERROR | Missing or empty output file: ${file}"
-      FINAL_OK=0
+      tracktx_error "run_alignment" "Missing or empty output file: ${file}" "Check align_reads.log in work dir"
     else
       SIZE=$(stat -c%s "${file}" 2>/dev/null || stat -f%z "${file}" 2>/dev/null || echo "unknown")
       echo "ALIGN | VALIDATE | ${file}: ${SIZE} bytes"
     fi
   done
-
-  if [[ ${FINAL_OK} -eq 0 ]]; then
-    echo "ALIGN | ERROR | Output validation failed"
-    exit 1
-  fi
 
   echo "ALIGN | VALIDATE | All outputs verified"
 

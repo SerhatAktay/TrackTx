@@ -114,8 +114,22 @@ process qc_pol_tracktx {
   set -euo pipefail
   export LC_ALL=C
 
-  # Redirect all output to log file
-  exec > >(tee -a qc.log) 2>&1
+  # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
+  exec > >(tee -a qc.log)
+  exec 2> >(tee -a qc.log >&2)
+
+  tracktx_error() {
+    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
+    echo "" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "TRACKTX ERROR" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "Module:  \${module}" >&2
+    echo "Problem: \${problem}" >&2
+    echo "Fix:     \${fix}" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    exit "\$code"
+  }
 
   TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -155,16 +169,12 @@ process qc_pol_tracktx {
 
   echo "QC | VALIDATE | Checking input files..."
 
-  VALIDATION_OK=1
-
   # Check BAM
   if [[ ! -s "\${BAM_FILE}" ]]; then
-    echo "QC | ERROR | BAM file missing or empty: \${BAM_FILE}"
-    VALIDATION_OK=0
-  else
-    BAM_SIZE=\$(stat -c%s "\${BAM_FILE}" 2>/dev/null || stat -f%z "\${BAM_FILE}" 2>/dev/null || echo "unknown")
-    echo "QC | VALIDATE | BAM: \${BAM_SIZE} bytes"
+    tracktx_error "qc_pol_tracktx" "BAM file missing or empty: \${BAM_FILE}" "Check upstream alignment module"
   fi
+  BAM_SIZE=\$(stat -c%s "\${BAM_FILE}" 2>/dev/null || stat -f%z "\${BAM_FILE}" 2>/dev/null || echo "unknown")
+  echo "QC | VALIDATE | BAM: \${BAM_SIZE} bytes"
 
   # Check if BAM is indexed (create if needed)
   if [[ ! -e "\${BAM_FILE}.bai" ]]; then
@@ -188,15 +198,9 @@ process qc_pol_tracktx {
     if command -v \${TOOL} >/dev/null 2>&1; then
       echo "QC | VALIDATE | \${TOOL}: \$(which \${TOOL})"
     else
-      echo "QC | ERROR | Required tool not found: \${TOOL}"
-      VALIDATION_OK=0
+      tracktx_error "qc_pol_tracktx" "Required tool not found: \${TOOL}" "Install \${TOOL} or use -profile docker"
     fi
   done
-
-  if [[ \${VALIDATION_OK} -eq 0 ]]; then
-    echo "QC | ERROR | Validation failed"
-    exit 1
-  fi
 
   ###########################################################################
   # 3) DETECT SEQUENCING MODE

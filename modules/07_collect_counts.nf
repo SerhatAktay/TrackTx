@@ -81,8 +81,22 @@ process collect_counts {
   set -euo pipefail
   export LC_ALL=C
 
-  # Redirect all output to log file
-  exec > >(tee -a collect_counts.log) 2>&1
+  # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
+  exec > >(tee -a collect_counts.log)
+  exec 2> >(tee -a collect_counts.log >&2)
+
+  tracktx_error() {
+    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
+    echo "" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "TRACKTX ERROR" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "Module:  \${module}" >&2
+    echo "Problem: \${problem}" >&2
+    echo "Fix:     \${fix}" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    exit "\$code"
+  }
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -122,13 +136,11 @@ process collect_counts {
 
   echo "COUNTS | VALIDATE | Checking required tools..."
 
-  if command -v samtools >/dev/null 2>&1; then
-    SAMTOOLS_VERSION=$(samtools --version 2>&1 | head -1 || echo "unknown")
-    echo "COUNTS | VALIDATE | samtools: ${SAMTOOLS_VERSION}"
-  else
-    echo "COUNTS | ERROR | samtools not found in PATH"
-    exit 1
+  if ! command -v samtools >/dev/null 2>&1; then
+    tracktx_error "collect_counts" "samtools not found in PATH" "Install samtools or use -profile docker"
   fi
+  SAMTOOLS_VERSION=$(samtools --version 2>&1 | head -1 || echo "unknown")
+  echo "COUNTS | VALIDATE | samtools: ${SAMTOOLS_VERSION}"
 
   ###########################################################################
   # 3) VALIDATE INPUTS
@@ -138,8 +150,7 @@ process collect_counts {
 
   # Main BAM is required
   if [[ ! -s "${MAIN_BAM}" ]]; then
-    echo "COUNTS | ERROR | Main BAM missing or empty: ${MAIN_BAM}"
-    exit 1
+    tracktx_error "collect_counts" "Main BAM missing or empty: ${MAIN_BAM}" "Check run_alignment produced sample.bam"
   fi
 
   MAIN_SIZE=$(stat -c%s "${MAIN_BAM}" 2>/dev/null || stat -f%z "${MAIN_BAM}" 2>/dev/null || echo "unknown")
@@ -171,8 +182,7 @@ process collect_counts {
     local bai="${bam}.bai"
     
     if [[ ! -s "${bam}" ]]; then
-      echo "COUNTS | ERROR | BAM file missing or empty: ${bam}"
-      return 1
+      tracktx_error "collect_counts" "BAM file missing or empty: ${bam}" "Check input BAM paths"
     fi
     
     if [[ -s "${bai}" ]]; then
@@ -188,13 +198,10 @@ process collect_counts {
         echo "COUNTS | INDEX | Successfully created: ${bai}"
         return 0
       else
-        echo "COUNTS | ERROR | Failed to create index: ${bai}"
-        return 1
+        tracktx_error "collect_counts" "Failed to create index: ${bai}" "Check BAM file integrity"
       fi
     else
-      echo "COUNTS | ERROR | Index missing: ${bai}"
-      echo "COUNTS | ERROR | Set params.counts_allow_index_build=true to auto-build"
-      return 1
+      tracktx_error "collect_counts" "Index missing: ${bai}" "Set params.counts_allow_index_build=true to auto-build"
     fi
   }
 
@@ -272,8 +279,7 @@ process collect_counts {
     TSV_SIZE=$(stat -c%s "${SAMPLE_ID}.counts.tsv" 2>/dev/null || stat -f%z "${SAMPLE_ID}.counts.tsv" 2>/dev/null || echo "unknown")
     echo "COUNTS | OUTPUT | Created: ${SAMPLE_ID}.counts.tsv (${TSV_SIZE} bytes)"
   else
-    echo "COUNTS | ERROR | Failed to create counts TSV"
-    exit 1
+    tracktx_error "collect_counts" "Failed to create counts TSV" "Check collect_counts.log in work dir"
   fi
 
   ###########################################################################
@@ -444,8 +450,7 @@ DOCEOF
 
   # Validate TSV has expected format
   if [[ ! -s "${SAMPLE_ID}.counts.tsv" ]]; then
-    echo "COUNTS | ERROR | Output TSV missing or empty"
-    exit 1
+    tracktx_error "collect_counts" "Output TSV missing or empty" "Check collect_counts.log in work dir"
   fi
 
   # Check TSV has 2 lines (header + data)

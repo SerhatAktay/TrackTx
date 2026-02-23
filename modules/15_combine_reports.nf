@@ -85,8 +85,22 @@ process combine_reports {
   set -euo pipefail
   export LC_ALL=C
 
-  # Redirect all output to log file
-  exec > >(tee -a combine.log) 2>&1
+  # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
+  exec > >(tee -a combine.log)
+  exec 2> >(tee -a combine.log >&2)
+
+  tracktx_error() {
+    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
+    echo "" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "TRACKTX ERROR" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "Module:  \${module}" >&2
+    echo "Problem: \${problem}" >&2
+    echo "Fix:     \${fix}" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    exit "\$code"
+  }
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -137,9 +151,7 @@ process combine_reports {
   echo "COHORT | DISCOVER | JSON files found: ${TOTAL_JSON}"
 
   if [[ ${TOTAL_JSON} -eq 0 ]]; then
-    echo "COHORT | ERROR | No JSON files found"
-    echo "COHORT | ERROR | Expected files: *.summary.json, *.report.json, or *.json"
-    exit 1
+    tracktx_error "combine_reports" "No JSON files found (expected: *.summary.json, *.report.json, or *.json)" "Check generate_reports module outputs"
   fi
 
   ###########################################################################
@@ -148,26 +160,17 @@ process combine_reports {
 
   echo "COHORT | VALIDATE | Checking input files..."
 
-  VALIDATION_OK=1
-  MISSING_COUNT=0
-  EMPTY_COUNT=0
   TOTAL_SIZE=0
 
   for JSON_FILE in "${JSON_FILES[@]}"; do
     if [[ ! -e "${JSON_FILE}" ]]; then
-      echo "COHORT | ERROR | Missing file: ${JSON_FILE}"
-      MISSING_COUNT=$((MISSING_COUNT + 1))
-      VALIDATION_OK=0
-      continue
+      tracktx_error "combine_reports" "Missing file: ${JSON_FILE}" "Check generate_reports module outputs"
     fi
     
     FILE_SIZE=$(stat -c%s "${JSON_FILE}" 2>/dev/null || stat -f%z "${JSON_FILE}" 2>/dev/null || echo 0)
     
     if [[ ${FILE_SIZE} -eq 0 ]]; then
-      echo "COHORT | ERROR | Empty file: ${JSON_FILE}"
-      EMPTY_COUNT=$((EMPTY_COUNT + 1))
-      VALIDATION_OK=0
-      continue
+      tracktx_error "combine_reports" "Empty file: ${JSON_FILE}" "Check generate_reports module outputs"
     fi
     
     TOTAL_SIZE=$((TOTAL_SIZE + FILE_SIZE))
@@ -175,19 +178,6 @@ process combine_reports {
   done
 
   echo "COHORT | VALIDATE | Total input size: ${TOTAL_SIZE} bytes"
-
-  if [[ ${MISSING_COUNT} -gt 0 ]]; then
-    echo "COHORT | ERROR | Missing files: ${MISSING_COUNT}"
-  fi
-
-  if [[ ${EMPTY_COUNT} -gt 0 ]]; then
-    echo "COHORT | ERROR | Empty files: ${EMPTY_COUNT}"
-  fi
-
-  if [[ ${VALIDATION_OK} -eq 0 ]]; then
-    echo "COHORT | ERROR | Validation failed"
-    exit 1
-  fi
 
   ###########################################################################
   # 4) VALIDATE TOOLS
@@ -206,19 +196,16 @@ process combine_reports {
 
   # Check combiner script
   if [[ ! -e "${COMBINER_SCRIPT}" ]]; then
-    echo "COHORT | ERROR | Combiner script not found: ${COMBINER_SCRIPT}"
-    exit 1
-  else
-    echo "COHORT | VALIDATE | Combiner script: ${COMBINER_SCRIPT}"
+    tracktx_error "combine_reports" "Combiner script not found: ${COMBINER_SCRIPT}" "Ensure bin/combine_reports.py exists"
   fi
+  echo "COHORT | VALIDATE | Combiner script: ${COMBINER_SCRIPT}"
 
   # Check Python
   if ${PYTHON_CMD} --version >/dev/null 2>&1; then
     PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
     echo "COHORT | VALIDATE | Python: ${PYTHON_VERSION}"
   else
-    echo "COHORT | ERROR | Python not found (tried: ${PYTHON_CMD})"
-    exit 1
+    tracktx_error "combine_reports" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
   fi
 
   ###########################################################################
@@ -251,8 +238,7 @@ process combine_reports {
   echo "COHORT | COMBINE | Processing completed in ${COMBINE_TIME}s"
 
   if [[ ${COMBINE_RC} -ne 0 ]]; then
-    echo "COHORT | ERROR | Combiner failed with exit code ${COMBINE_RC}"
-    exit 1
+    tracktx_error "combine_reports" "Combiner failed with exit code ${COMBINE_RC}" "Check combine.log in work dir" ${COMBINE_RC}
   fi
 
   ###########################################################################
@@ -261,17 +247,13 @@ process combine_reports {
 
   echo "COHORT | VALIDATE | Checking output files..."
 
-  VALIDATION_OK=1
-
   # Check required outputs
   for OUTPUT in "${OUT_HTML}" "${OUT_TSV}" "${OUT_JSON}"; do
     if [[ ! -s "${OUTPUT}" ]]; then
-      echo "COHORT | ERROR | Missing or empty output: ${OUTPUT}"
-      VALIDATION_OK=0
-    else
-      OUTPUT_SIZE=$(stat -c%s "${OUTPUT}" 2>/dev/null || stat -f%z "${OUTPUT}" 2>/dev/null || echo "unknown")
-      echo "COHORT | VALIDATE | $(basename ${OUTPUT}): ${OUTPUT_SIZE} bytes"
+      tracktx_error "combine_reports" "Missing or empty output: ${OUTPUT}" "Check combine.log in work dir"
     fi
+    OUTPUT_SIZE=$(stat -c%s "${OUTPUT}" 2>/dev/null || stat -f%z "${OUTPUT}" 2>/dev/null || echo "unknown")
+    echo "COHORT | VALIDATE | $(basename ${OUTPUT}): ${OUTPUT_SIZE} bytes"
   done
 
   # Check optional regions file
@@ -281,11 +263,6 @@ process combine_reports {
     echo "COHORT | VALIDATE | Region totals: ${REGIONS_SIZE} bytes (${REGIONS_LINES} lines)"
   else
     echo "COHORT | VALIDATE | Region totals: not generated"
-  fi
-
-  if [[ ${VALIDATION_OK} -eq 0 ]]; then
-    echo "COHORT | ERROR | Output validation failed"
-    exit 1
   fi
 
   ###########################################################################

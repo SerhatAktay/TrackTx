@@ -145,11 +145,23 @@ process generate_tracks {
   set -euo pipefail
   export LC_ALL=C
 
-  # Redirect all output to log file
-  exec > >(tee -a tracks.log) 2>&1
+  # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
+  exec > >(tee -a tracks.log)
+  exec 2> >(tee -a tracks.log >&2)
 
-  # Error trap
-  trap 'echo "TRACKS | ERROR | Process failed at $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >&2; exit 1' ERR
+  tracktx_error() {
+    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
+    echo "" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "TRACKTX ERROR" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "Module:  \${module}" >&2
+    echo "Problem: \${problem}" >&2
+    echo "Fix:     \${fix}" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    exit "\$code"
+  }
+  trap 'tracktx_error "generate_tracks" "Unexpected process failure" "Check tracks.log in work dir"' ERR
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -191,33 +203,25 @@ process generate_tracks {
   echo "TRACKS | VALIDATE | Checking inputs and environment..."
   echo "────────────────────────────────────────────────────────────────────────"
 
-  VALIDATION_OK=1
-
   # Validate input BAMs
   if [[ ! -s "${MAIN_BAM}" ]]; then
-    echo "TRACKS | ERROR | Main BAM file missing or empty: ${MAIN_BAM}"
-    VALIDATION_OK=0
-  else
-    MAIN_SIZE=$(stat -c%s "${MAIN_BAM}" 2>/dev/null || stat -f%z "${MAIN_BAM}" 2>/dev/null || echo "unknown")
-    echo "TRACKS | VALIDATE | Main BAM: ${MAIN_SIZE} bytes"
+    tracktx_error "generate_tracks" "Main BAM missing or empty: ${MAIN_BAM}" "Check run_alignment produced sample.bam"
   fi
+  MAIN_SIZE=$(stat -c%s "${MAIN_BAM}" 2>/dev/null || stat -f%z "${MAIN_BAM}" 2>/dev/null || echo "unknown")
+  echo "TRACKS | VALIDATE | Main BAM: ${MAIN_SIZE} bytes"
 
   if [[ ! -s "${ALLMAP_BAM}" ]]; then
-    echo "TRACKS | ERROR | AllMap BAM file missing or empty: ${ALLMAP_BAM}"
-    VALIDATION_OK=0
-  else
-    ALLMAP_SIZE=$(stat -c%s "${ALLMAP_BAM}" 2>/dev/null || stat -f%z "${ALLMAP_BAM}" 2>/dev/null || echo "unknown")
-    echo "TRACKS | VALIDATE | AllMap BAM: ${ALLMAP_SIZE} bytes"
+    tracktx_error "generate_tracks" "AllMap BAM missing or empty: ${ALLMAP_BAM}" "Check run_alignment produced sample_allMap.bam"
   fi
+  ALLMAP_SIZE=$(stat -c%s "${ALLMAP_BAM}" 2>/dev/null || stat -f%z "${ALLMAP_BAM}" 2>/dev/null || echo "unknown")
+  echo "TRACKS | VALIDATE | AllMap BAM: ${ALLMAP_SIZE} bytes"
 
   # Validate required tools
   for TOOL in samtools bedtools bedGraphToBigWig; do
-    if command -v ${TOOL} >/dev/null 2>&1; then
-      echo "TRACKS | VALIDATE | ${TOOL}: $(command -v ${TOOL})"
-    else
-      echo "TRACKS | ERROR | Required tool not found: ${TOOL}"
-      VALIDATION_OK=0
+    if ! command -v ${TOOL} >/dev/null 2>&1; then
+      tracktx_error "generate_tracks" "Required tool not found: ${TOOL}" "Install ${TOOL} or use -profile docker"
     fi
+    echo "TRACKS | VALIDATE | ${TOOL}: $(command -v ${TOOL})"
   done
 
   # Check for umi_tools if UMI dedup is enabled
@@ -227,11 +231,6 @@ process generate_tracks {
     else
       echo "TRACKS | WARNING | umi_tools not found (will skip deduplication)"
     fi
-  fi
-
-  if [[ ${VALIDATION_OK} -eq 0 ]]; then
-    echo "TRACKS | ERROR | Validation failed"
-    exit 1
   fi
 
   # Validate allMap BAM index (create if missing)
@@ -478,8 +477,7 @@ process generate_tracks {
     > genome.sizes
 
   if [[ ! -s genome.sizes ]]; then
-    echo "TRACKS | ERROR | Failed to extract chromosome sizes from BAM header"
-    exit 1
+    tracktx_error "generate_tracks" "Failed to extract chromosome sizes from BAM header" "Check BAM file integrity"
   fi
 
   CHR_COUNT=$(wc -l < genome.sizes | tr -d ' ')
@@ -502,15 +500,13 @@ process generate_tracks {
   # Main BAM
   echo "TRACKS | 3P | Processing main BAM..."
   if ! generate_coverage "${INPUT_BAM}" "3" "3p/${SAMPLE_ID}.3p"; then
-    echo "TRACKS | ERROR | Failed to generate 3' coverage from main BAM"
-    exit 1
+    tracktx_error "generate_tracks" "Failed to generate 3' coverage from main BAM" "Check tracks.log in work dir"
   fi
 
   # AllMap BAM
   echo "TRACKS | 3P | Processing allMap BAM..."
   if ! generate_coverage "${ALLMAP_BAM}" "3" "3p/${SAMPLE_ID}.allMap.3p"; then
-    echo "TRACKS | ERROR | Failed to generate 3' coverage from allMap BAM"
-    exit 1
+    tracktx_error "generate_tracks" "Failed to generate 3' coverage from allMap BAM" "Check tracks.log in work dir"
   fi
 
   echo "TRACKS | 3P | 3' end coverage complete"
@@ -526,15 +522,13 @@ process generate_tracks {
   # Main BAM
   echo "TRACKS | 5P | Processing main BAM..."
   if ! generate_coverage "${INPUT_BAM}" "5" "5p/${SAMPLE_ID}.5p"; then
-    echo "TRACKS | ERROR | Failed to generate 5' coverage from main BAM"
-    exit 1
+    tracktx_error "generate_tracks" "Failed to generate 5' coverage from main BAM" "Check tracks.log in work dir"
   fi
 
   # AllMap BAM
   echo "TRACKS | 5P | Processing allMap BAM..."
   if ! generate_coverage "${ALLMAP_BAM}" "5" "5p/${SAMPLE_ID}.allMap.5p"; then
-    echo "TRACKS | ERROR | Failed to generate 5' coverage from allMap BAM"
-    exit 1
+    tracktx_error "generate_tracks" "Failed to generate 5' coverage from allMap BAM" "Check tracks.log in work dir"
   fi
 
   echo "TRACKS | 5P | 5' end coverage complete"
@@ -750,7 +744,6 @@ DOCEOF
   echo "TRACKS | VALIDATE | BigWig files: ${BW_COUNT}/${EXPECTED_BW}"
 
   # Check critical 3' files (must be non-empty)
-  CRITICAL_OK=1
   for file in \
     "3p/${SAMPLE_ID}.3p.pos.bedgraph" \
     "3p/${SAMPLE_ID}.3p.neg.bedgraph" \
@@ -762,8 +755,7 @@ DOCEOF
     "3p/${SAMPLE_ID}.allMap.3p.neg.bw"; do
     
     if [[ ! -s "${file}" ]]; then
-      echo "TRACKS | ERROR | Missing or empty critical file: ${file}"
-      CRITICAL_OK=0
+      tracktx_error "generate_tracks" "Missing or empty critical file: ${file}" "Check tracks.log in work dir"
     else
       FILE_SIZE=$(stat -c%s "${file}" 2>/dev/null || stat -f%z "${file}" 2>/dev/null || echo "unknown")
       echo "TRACKS | VALIDATE | ${file}: ${FILE_SIZE} bytes"
@@ -782,15 +774,10 @@ DOCEOF
     "5p/${SAMPLE_ID}.allMap.5p.neg.bw"; do
     
     if [[ ! -f "${file}" ]]; then
-      echo "TRACKS | ERROR | Missing file: ${file}"
-      CRITICAL_OK=0
+      tracktx_error "generate_tracks" "Missing file: ${file}" "Check tracks.log in work dir"
     fi
   done
 
-  if [[ ${CRITICAL_OK} -eq 0 ]]; then
-    echo "TRACKS | ERROR | Validation failed"
-    exit 1
-  fi
 
   echo "TRACKS | VALIDATE | All required files present"
 

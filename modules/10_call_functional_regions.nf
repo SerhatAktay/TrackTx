@@ -107,8 +107,22 @@ process call_functional_regions {
   set -euo pipefail
   export LC_ALL=C
 
-  # Redirect all output to log file
-  exec > >(tee -a functional_regions.log) 2>&1
+  # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
+  exec > >(tee -a functional_regions.log)
+  exec 2> >(tee -a functional_regions.log >&2)
+
+  tracktx_error() {
+    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
+    echo "" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "TRACKTX ERROR" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "Module:  \${module}" >&2
+    echo "Problem: \${problem}" >&2
+    echo "Fix:     \${fix}" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    exit "\$code"
+  }
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -209,25 +223,19 @@ process call_functional_regions {
     PYTHON_CMD="python3"
   fi
 
-  VALIDATION_OK=1
-
   # Check Python script
   if [[ ! -f "${FGR_SCRIPT}" ]]; then
-    echo "FUNCREGION | ERROR | Python script not found: ${FGR_SCRIPT}"
-    VALIDATION_OK=0
-  else
-    echo "FUNCREGION | VALIDATE | Python script: ${FGR_SCRIPT}"
+    tracktx_error "call_functional_regions" "Python script not found: ${FGR_SCRIPT}" "Ensure bin/call_functional_regions.py exists"
   fi
+  echo "FUNCREGION | VALIDATE | Python script: ${FGR_SCRIPT}"
 
   # Check required input files
   for FILE in "${DIV_BED}" "${POS_BG}" "${NEG_BG}" "${GENES_TSV}" "${TSS_BED}" "${TES_BED}"; do
     if [[ ! -s "${FILE}" ]]; then
-      echo "FUNCREGION | ERROR | Missing or empty input: ${FILE}"
-      VALIDATION_OK=0
-    else
-      FILE_SIZE=$(stat -c%s "${FILE}" 2>/dev/null || stat -f%z "${FILE}" 2>/dev/null || echo "unknown")
-      echo "FUNCREGION | VALIDATE | $(basename ${FILE}): ${FILE_SIZE} bytes"
+      tracktx_error "call_functional_regions" "Missing or empty input: ${FILE}" "Check upstream modules (detect_divergent_tx, normalize_tracks, download_gtf)"
     fi
+    FILE_SIZE=$(stat -c%s "${FILE}" 2>/dev/null || stat -f%z "${FILE}" 2>/dev/null || echo "unknown")
+    echo "FUNCREGION | VALIDATE | $(basename ${FILE}): ${FILE_SIZE} bytes"
   done
 
   # Count input features
@@ -242,18 +250,11 @@ process call_functional_regions {
   echo "FUNCREGION | VALIDATE | TES sites: ${TES_COUNT}"
 
   # Validate tools
-  if ${PYTHON_CMD} --version >/dev/null 2>&1; then
-    PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
-    echo "FUNCREGION | VALIDATE | Python: ${PYTHON_VERSION}"
-  else
-    echo "FUNCREGION | ERROR | Python not found (tried: ${PYTHON_CMD})"
-    VALIDATION_OK=0
+  if ! ${PYTHON_CMD} --version >/dev/null 2>&1; then
+    tracktx_error "call_functional_regions" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
   fi
-
-  if [[ ${VALIDATION_OK} -eq 0 ]]; then
-    echo "FUNCREGION | ERROR | Validation failed"
-    exit 1
-  fi
+  PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
+  echo "FUNCREGION | VALIDATE | Python: ${PYTHON_VERSION}"
 
   ###########################################################################
   # 3) RUN FUNCTIONAL REGION CALLER
@@ -302,24 +303,9 @@ process call_functional_regions {
 
   echo "FUNCREGION | CALL | Processing completed in ${CALL_TIME}s"
 
-  # Handle failures gracefully
+  # Handle failures
   if [[ ${CALL_RC} -ne 0 ]]; then
-    echo "FUNCREGION | ERROR | Functional region caller failed with exit code ${CALL_RC}"
-    echo "FUNCREGION | ERROR | Creating empty output files"
-    
-    : > functional_regions.bed
-    
-    cat > functional_regions_summary.tsv <<SUMMARYEOF
-region  signal  region_count
-promoter  0.0 0
-gene_body 0.0 0
-cps 0.0 0
-enhancer  0.0 0
-termination_window  0.0 0
-non_localized 0.0 0
-SUMMARYEOF
-    
-    exit 1
+    tracktx_error "call_functional_regions" "Functional region caller failed with exit code ${CALL_RC}" "Check functional_regions.log in work dir" ${CALL_RC}
   fi
 
   # Ensure output files exist
@@ -639,24 +625,18 @@ DOCEOF
 
   echo "FUNCREGION | VALIDATE | Validating outputs..."
 
-  VALIDATION_OK=1
-
   # Check BED file
   if [[ ! -e functional_regions.bed ]]; then
-    echo "FUNCREGION | ERROR | Output BED file missing"
-    VALIDATION_OK=0
+    tracktx_error "call_functional_regions" "Output BED file missing" "Check functional_regions.log in work dir"
   fi
 
   # Check summary
   if [[ ! -s functional_regions_summary.tsv ]]; then
-    echo "FUNCREGION | ERROR | Summary file missing or empty"
-    VALIDATION_OK=0
-  else
-    # Validate summary format
-    SUMMARY_LINES=$(wc -l < functional_regions_summary.tsv | tr -d ' ')
-    if [[ ${SUMMARY_LINES} -lt 2 ]]; then
-      echo "FUNCREGION | WARNING | Summary has fewer than expected lines"
-    fi
+    tracktx_error "call_functional_regions" "Summary file missing or empty" "Check functional_regions.log in work dir"
+  fi
+  SUMMARY_LINES=$(wc -l < functional_regions_summary.tsv | tr -d ' ')
+  if [[ ${SUMMARY_LINES} -lt 2 ]]; then
+    echo "FUNCREGION | WARNING | Summary has fewer than expected lines"
   fi
 
   # Validate BED format if non-empty
@@ -668,11 +648,6 @@ DOCEOF
         echo "FUNCREGION | WARNING | BED file has ${COL_COUNT} columns, expected at least 6"
       fi
     fi
-  fi
-
-  if [[ ${VALIDATION_OK} -eq 0 ]]; then
-    echo "FUNCREGION | ERROR | Validation failed"
-    exit 1
   fi
 
   echo "FUNCREGION | VALIDATE | All outputs validated"

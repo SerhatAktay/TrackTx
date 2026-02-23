@@ -108,8 +108,22 @@ process generate_reports {
   set -eo pipefail
   export LC_ALL=C
 
-  # Redirect all output to log file
-  exec > >(tee -a "!{sample_id}.report.log") 2>&1
+  # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
+  exec > >(tee -a "!{sample_id}.report.log")
+  exec 2> >(tee -a "!{sample_id}.report.log" >&2)
+
+  tracktx_error() {
+    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
+    echo "" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "TRACKTX ERROR" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "Module:  \${module}" >&2
+    echo "Problem: \${problem}" >&2
+    echo "Fix:     \${fix}" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    exit "\$code"
+  }
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -178,15 +192,11 @@ process generate_reports {
     PYTHON_CMD="python3"
   fi
 
-  VALIDATION_OK=1
-
   # Check renderer script
   if [[ ! -e "${RENDER_SCRIPT}" ]]; then
-    echo "REPORT | ERROR | Renderer script not found: ${RENDER_SCRIPT}"
-    VALIDATION_OK=0
-  else
-    echo "REPORT | VALIDATE | Renderer script: ${RENDER_SCRIPT}"
+    tracktx_error "generate_reports" "Renderer script not found: ${RENDER_SCRIPT}" "Ensure bin/render_sample_report.py exists"
   fi
+  echo "REPORT | VALIDATE | Renderer script: ${RENDER_SCRIPT}"
 
   # Check core input files
   validate_file() {
@@ -194,15 +204,11 @@ process generate_reports {
     local file="$2"
     
     if [[ ! -s "${file}" ]]; then
-      echo "REPORT | ERROR | ${label} missing or empty: ${file}"
-      VALIDATION_OK=0
-      return 1
-    else
-      FILE_SIZE=$(stat -c%s "${file}" 2>/dev/null || stat -f%z "${file}" 2>/dev/null || echo "unknown")
-      FILE_LINES=$(wc -l < "${file}" 2>/dev/null | tr -d ' ' || echo 0)
-      echo "REPORT | VALIDATE | ${label}: ${FILE_SIZE} bytes (${FILE_LINES} lines)"
-      return 0
+      tracktx_error "generate_reports" "${label} missing or empty: ${file}" "Check upstream modules"
     fi
+    FILE_SIZE=$(stat -c%s "${file}" 2>/dev/null || stat -f%z "${file}" 2>/dev/null || echo "unknown")
+    FILE_LINES=$(wc -l < "${file}" 2>/dev/null | tr -d ' ' || echo 0)
+    echo "REPORT | VALIDATE | ${label}: ${FILE_SIZE} bytes (${FILE_LINES} lines)"
   }
 
   validate_file "Divergent bed" "${DIV_BED}"
@@ -225,13 +231,7 @@ process generate_reports {
     PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
     echo "REPORT | VALIDATE | Python: ${PYTHON_VERSION}"
   else
-    echo "REPORT | ERROR | Python not found (tried: ${PYTHON_CMD})"
-    VALIDATION_OK=0
-  fi
-
-  if [[ ${VALIDATION_OK} -eq 0 ]]; then
-    echo "REPORT | ERROR | Validation failed"
-    exit 1
+    tracktx_error "generate_reports" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
   fi
 
   ###########################################################################
@@ -396,8 +396,7 @@ process generate_reports {
   echo "REPORT | RENDER | Rendering completed in ${RENDER_TIME}s"
 
   if [[ ${RENDER_RC} -ne 0 ]]; then
-    echo "REPORT | ERROR | Renderer failed with exit code ${RENDER_RC}"
-    exit 1
+    tracktx_error "generate_reports" "Renderer failed with exit code ${RENDER_RC}" "Check report.log in work dir" ${RENDER_RC}
   fi
 
   ###########################################################################
@@ -406,17 +405,13 @@ process generate_reports {
 
   echo "REPORT | VALIDATE | Checking output files..."
 
-  VALIDATION_OK=1
-
   # Check required outputs
   for OUTPUT in "${OUT_HTML}" "${OUT_TSV}" "${OUT_JSON}"; do
     if [[ ! -s "${OUTPUT}" ]]; then
-      echo "REPORT | ERROR | Expected output missing or empty: ${OUTPUT}"
-      VALIDATION_OK=0
-    else
-      OUTPUT_SIZE=$(stat -c%s "${OUTPUT}" 2>/dev/null || stat -f%z "${OUTPUT}" 2>/dev/null || echo "unknown")
-      echo "REPORT | VALIDATE | $(basename ${OUTPUT}): ${OUTPUT_SIZE} bytes"
+      tracktx_error "generate_reports" "Expected output missing or empty: ${OUTPUT}" "Check report.log in work dir"
     fi
+    OUTPUT_SIZE=$(stat -c%s "${OUTPUT}" 2>/dev/null || stat -f%z "${OUTPUT}" 2>/dev/null || echo "unknown")
+    echo "REPORT | VALIDATE | $(basename ${OUTPUT}): ${OUTPUT_SIZE} bytes"
   done
 
   # Check plots file
@@ -451,11 +446,6 @@ process generate_reports {
 PLACEHOLDER
       echo "REPORT | VALIDATE | Created plots placeholder"
     fi
-  fi
-
-  if [[ ${VALIDATION_OK} -eq 0 ]]; then
-    echo "REPORT | ERROR | Output validation failed"
-    exit 1
   fi
 
   ###########################################################################

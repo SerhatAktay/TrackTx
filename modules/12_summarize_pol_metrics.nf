@@ -91,8 +91,22 @@ process summarize_pol_metrics {
   set -euo pipefail
   export LC_ALL=C
 
-  # Redirect all output to log file
-  exec > >(tee -a aggregate.log) 2>&1
+  # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
+  exec > >(tee -a aggregate.log)
+  exec 2> >(tee -a aggregate.log >&2)
+
+  tracktx_error() {
+    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
+    echo "" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "TRACKTX ERROR" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "Module:  \${module}" >&2
+    echo "Problem: \${problem}" >&2
+    echo "Fix:     \${fix}" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    exit "\$code"
+  }
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -194,38 +208,26 @@ CONTRASTEOF
     PYTHON_CMD="python3"
   fi
 
-  VALIDATION_OK=1
-
   # Check Python script
   if [[ ! -f "${AGGREGATOR_SCRIPT}" ]]; then
-    echo "AGGREGATE | ERROR | Aggregator script not found: ${AGGREGATOR_SCRIPT}"
-    VALIDATION_OK=0
-  else
-    echo "AGGREGATE | VALIDATE | Aggregator script: ${AGGREGATOR_SCRIPT}"
+    tracktx_error "summarize_pol_metrics" "Aggregator script not found: ${AGGREGATOR_SCRIPT}" "Ensure bin/compare_pol_metrics.py exists"
   fi
+  echo "AGGREGATE | VALIDATE | Aggregator script: ${AGGREGATOR_SCRIPT}"
 
   # Check samples manifest
   if [[ ! -s "${SAMPLES_TSV}" ]]; then
-    echo "AGGREGATE | ERROR | Samples manifest missing or empty: ${SAMPLES_TSV}"
-    VALIDATION_OK=0
-  else
-    SAMPLES_SIZE=$(stat -c%s "${SAMPLES_TSV}" 2>/dev/null || stat -f%z "${SAMPLES_TSV}" 2>/dev/null || echo "unknown")
-    SAMPLES_LINES=$(wc -l < "${SAMPLES_TSV}" | tr -d ' ')
-    echo "AGGREGATE | VALIDATE | Samples manifest: ${SAMPLES_SIZE} bytes (${SAMPLES_LINES} lines)"
+    tracktx_error "summarize_pol_metrics" "Samples manifest missing or empty: ${SAMPLES_TSV}" "Check samples manifest input"
   fi
+  SAMPLES_SIZE=$(stat -c%s "${SAMPLES_TSV}" 2>/dev/null || stat -f%z "${SAMPLES_TSV}" 2>/dev/null || echo "unknown")
+  SAMPLES_LINES=$(wc -l < "${SAMPLES_TSV}" | tr -d ' ')
+  echo "AGGREGATE | VALIDATE | Samples manifest: ${SAMPLES_SIZE} bytes (${SAMPLES_LINES} lines)"
 
   # Validate tools
   if ${PYTHON_CMD} --version >/dev/null 2>&1; then
     PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
     echo "AGGREGATE | VALIDATE | Python: ${PYTHON_VERSION}"
   else
-    echo "AGGREGATE | ERROR | Python not found (tried: ${PYTHON_CMD})"
-    VALIDATION_OK=0
-  fi
-
-  if [[ ${VALIDATION_OK} -eq 0 ]]; then
-    echo "AGGREGATE | ERROR | Validation failed"
-    exit 1
+    tracktx_error "summarize_pol_metrics" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
   fi
 
   ###########################################################################
@@ -243,10 +245,7 @@ CONTRASTEOF
   EXPECTED_HEADER_NORM=$(echo "${EXPECTED_HEADER}" | awk '{$1=$1};1')
 
   if [[ "${ACTUAL_HEADER}" != "${EXPECTED_HEADER_NORM}" ]]; then
-    echo "AGGREGATE | ERROR | Invalid manifest header"
-    echo "AGGREGATE | ERROR | Expected: ${EXPECTED_HEADER}"
-    echo "AGGREGATE | ERROR | Got: ${ACTUAL_HEADER}"
-    exit 1
+    tracktx_error "summarize_pol_metrics" "Invalid manifest header (expected: ${EXPECTED_HEADER}, got: ${ACTUAL_HEADER})" "Fix samples manifest format"
   fi
 
   echo "AGGREGATE | VALIDATE | Manifest header: OK"
@@ -348,8 +347,7 @@ CONTRASTEOF
 
   # Handle failures
   if [[ ${AGG_RC} -ne 0 ]]; then
-    echo "AGGREGATE | ERROR | Aggregation failed with exit code ${AGG_RC}"
-    exit 1
+    tracktx_error "summarize_pol_metrics" "Aggregation failed with exit code ${AGG_RC}" "Check aggregate.log in work dir" ${AGG_RC}
   fi
 
   ###########################################################################
@@ -358,18 +356,14 @@ CONTRASTEOF
 
   echo "AGGREGATE | VALIDATE | Checking outputs..."
 
-  VALIDATION_OK=1
-
   # Check merged table
   if [[ ! -s pol_gene_metrics_merged.tsv ]]; then
-    echo "AGGREGATE | ERROR | Merged table missing or empty"
-    VALIDATION_OK=0
-  else
-    MERGED_SIZE=$(stat -c%s pol_gene_metrics_merged.tsv 2>/dev/null || stat -f%z pol_gene_metrics_merged.tsv 2>/dev/null || echo "unknown")
-    MERGED_LINES=$(wc -l < pol_gene_metrics_merged.tsv | tr -d ' ')
-    MERGED_GENES=$((MERGED_LINES - 1))  # Exclude header
-    echo "AGGREGATE | VALIDATE | Merged table: ${MERGED_SIZE} bytes (${MERGED_GENES} genes)"
+    tracktx_error "summarize_pol_metrics" "Merged table missing or empty" "Check aggregate.log in work dir"
   fi
+  MERGED_SIZE=$(stat -c%s pol_gene_metrics_merged.tsv 2>/dev/null || stat -f%z pol_gene_metrics_merged.tsv 2>/dev/null || echo "unknown")
+  MERGED_LINES=$(wc -l < pol_gene_metrics_merged.tsv | tr -d ' ')
+  MERGED_GENES=$((MERGED_LINES - 1))  # Exclude header
+  echo "AGGREGATE | VALIDATE | Merged table: ${MERGED_SIZE} bytes (${MERGED_GENES} genes)"
 
   # Check contrasts table if expected
   if [[ ${CONTRAST_COUNT} -gt 0 ]]; then
@@ -393,11 +387,6 @@ CONTRASTEOF
         rmdir plots 2>/dev/null || true
       fi
     fi
-  fi
-
-  if [[ ${VALIDATION_OK} -eq 0 ]]; then
-    echo "AGGREGATE | ERROR | Output validation failed"
-    exit 1
   fi
 
   ###########################################################################

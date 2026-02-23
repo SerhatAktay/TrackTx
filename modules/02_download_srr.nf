@@ -98,6 +98,19 @@ process download_srr {
   set -euo pipefail
   export LC_ALL=C
 
+  tracktx_error() {
+    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
+    echo "" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "TRACKTX ERROR" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "Module:  \${module}" >&2
+    echo "Problem: \${problem}" >&2
+    echo "Fix:     \${fix}" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    exit "\$code"
+  }
+
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
   echo "SRR | START | sample=!{sample_id} | accession=!{sra_id} | ts=${TIMESTAMP}"
@@ -141,8 +154,7 @@ process download_srr {
   echo "SRR | VALIDATE | Checking required tools..."
 
   if ! command -v fasterq-dump >/dev/null 2>&1; then
-    echo "SRR | ERROR | fasterq-dump not found in PATH"
-    exit 1
+    tracktx_error "download_srr" "fasterq-dump not found in PATH" "Install sra-tools or use -profile docker"
   fi
   echo "SRR | VALIDATE | fasterq-dump: $(which fasterq-dump)"
 
@@ -269,8 +281,7 @@ process download_srr {
     
     # Validate we got files
     if [[ ! -e "${SRR}_R1.fastq" && ! -e "${SRR}_R1.fastq.gz" ]]; then
-      echo "SRR | ERROR | Download failed from both NCBI and ENA"
-      exit 1
+      tracktx_error "download_srr" "Download failed from both NCBI and ENA" "Check SRA accession and network"
     fi
     echo "SRR | CONVERT | Conversion complete"
 
@@ -332,8 +343,7 @@ process download_srr {
 
   # Validate R1 (required)
   if [[ -z "${R1_FILE}" || ! -s "${R1_FILE}" ]]; then
-    echo "SRR | ERROR | R1 FASTQ file missing or empty"
-    exit 1
+    tracktx_error "download_srr" "R1 FASTQ file missing or empty" "Check fasterq-dump output"
   fi
 
   R1_SIZE=$(stat -c%s "${R1_FILE}" 2>/dev/null || stat -f%z "${R1_FILE}" 2>/dev/null || echo "unknown")
@@ -343,9 +353,7 @@ process download_srr {
   if [[ "${R1_FILE}" == *.fastq ]]; then
     FIRST_LINE=$(head -n 1 "${R1_FILE}" 2>/dev/null || echo "")
     if [[ ! "${FIRST_LINE}" =~ ^@ ]]; then
-      echo "SRR | ERROR | R1 FASTQ header validation failed"
-      echo "SRR | ERROR | First line does not start with '@': ${FIRST_LINE}"
-      exit 1
+      tracktx_error "download_srr" "R1 FASTQ header validation failed (first line: ${FIRST_LINE})" "Check SRA data integrity"
     fi
     echo "SRR | VALIDATE | R1 FASTQ header looks valid"
   fi
@@ -353,8 +361,7 @@ process download_srr {
   # Validate R2 (if paired-end)
   if [[ "${IS_PE}" == "true" ]]; then
     if [[ -z "${R2_FILE}" || ! -s "${R2_FILE}" ]]; then
-      echo "SRR | ERROR | Paired-end mode but R2 FASTQ missing or empty"
-      exit 1
+      tracktx_error "download_srr" "Paired-end mode but R2 FASTQ missing or empty" "Check SRA layout and fasterq-dump"
     fi
 
     R2_SIZE=$(stat -c%s "${R2_FILE}" 2>/dev/null || stat -f%z "${R2_FILE}" 2>/dev/null || echo "unknown")
@@ -364,9 +371,7 @@ process download_srr {
     if [[ "${R2_FILE}" == *.fastq ]]; then
       FIRST_LINE=$(head -n 1 "${R2_FILE}" 2>/dev/null || echo "")
       if [[ ! "${FIRST_LINE}" =~ ^@ ]]; then
-        echo "SRR | ERROR | R2 FASTQ header validation failed"
-        echo "SRR | ERROR | First line does not start with '@': ${FIRST_LINE}"
-        exit 1
+        tracktx_error "download_srr" "R2 FASTQ header validation failed (first line: ${FIRST_LINE})" "Check SRA data integrity"
       fi
       echo "SRR | VALIDATE | R2 FASTQ header looks valid"
     fi

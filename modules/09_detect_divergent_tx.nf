@@ -125,11 +125,26 @@ process detect_divergent_tx {
   set -eu
   export LC_ALL=C
 
-  # Redirect all output to log file
-  exec > >(tee -a divergent.log) 2>&1
+  # Stdout → log + terminal; stderr → log + terminal (kept separate for Nextflow "Command error")
+  exec > >(tee -a divergent.log)
+  exec 2> >(tee -a divergent.log >&2)
   
   # Trap SIGPIPE to avoid exit code 141
   trap '' PIPE
+
+  # Standardized error reporting (surfaces clearly in Nextflow "Command error")
+  tracktx_error() {
+    local module="$1" problem="$2" fix="$3" code="${4:-1}"
+    echo "" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "TRACKTX ERROR" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "Module:  \${module}" >&2
+    echo "Problem: \${problem}" >&2
+    echo "Fix:     \${fix}" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    exit "\$code"
+  }
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -212,20 +227,17 @@ process detect_divergent_tx {
 
   # Check Python script exists
   if [[ ! -f "${DETECTOR_SCRIPT}" ]]; then
-    echo "DIVERGENT | ERROR | Detector script not found: ${DETECTOR_SCRIPT}"
-    exit 1
+    tracktx_error "detect_divergent_tx" "Detector script not found: ${DETECTOR_SCRIPT}" "Ensure bin/detect_divergent_transcription.py exists in the pipeline directory"
   fi
   echo "DIVERGENT | VALIDATE | Detector script: ${DETECTOR_SCRIPT}"
 
   # Check input bedGraphs
   if [[ ! -s "${POS_BG}" ]]; then
-    echo "DIVERGENT | ERROR | Positive bedGraph missing or empty: ${POS_BG}"
-    exit 1
+    tracktx_error "detect_divergent_tx" "Positive bedGraph missing or empty: ${POS_BG}" "Check that generate_tracks produced 3p.pos.bedgraph for this sample"
   fi
 
   if [[ ! -s "${NEG_BG}" ]]; then
-    echo "DIVERGENT | ERROR | Negative bedGraph missing or empty: ${NEG_BG}"
-    exit 1
+    tracktx_error "detect_divergent_tx" "Negative bedGraph missing or empty: ${NEG_BG}" "Check that generate_tracks produced 3p.neg.bedgraph for this sample"
   fi
 
   POS_SIZE=$(stat -c%s "${POS_BG}" 2>/dev/null || stat -f%z "${POS_BG}" 2>/dev/null || echo "unknown")
@@ -262,11 +274,7 @@ process detect_divergent_tx {
   fi
 
   if [[ ${TOOLS_OK} -eq 0 ]]; then
-    echo "DIVERGENT | ERROR | Missing Python dependencies (numpy, pandas, scikit-learn, scipy)"
-    echo "DIVERGENT | ERROR | Install with: pip install -r envs/requirements-divergent.txt"
-    echo "DIVERGENT | ERROR | Or use: -profile conda (uses envs/tracktx.yaml) or -profile docker"
-    echo "DIVERGENT | ERROR | Missing required tools or dependencies"
-    exit 1
+    tracktx_error "detect_divergent_tx" "Missing Python dependencies (numpy, pandas, scikit-learn, scipy)" "pip install numpy pandas scikit-learn scipy | Or use: -profile conda | -profile docker"
   fi
   echo "DIVERGENT | VALIDATE | Checking Python dependencies... OK"
 
@@ -323,9 +331,7 @@ process detect_divergent_tx {
   ###########################################################################
 
   if [[ ${DETECT_RC} -ne 0 ]]; then
-    echo "DIVERGENT | ERROR | Detector failed with exit code ${DETECT_RC}"
-    echo "DIVERGENT | ERROR | Check logs above for details"
-    exit ${DETECT_RC}
+    tracktx_error "detect_divergent_tx" "Detector failed with exit code ${DETECT_RC}" "Check divergent.log in work dir for details" ${DETECT_RC}
   fi
 
   echo "DIVERGENT | STATUS | Detection successful"
@@ -722,8 +728,7 @@ DOCEOF
   fi
 
   if [[ ${VALIDATION_OK} -eq 0 ]]; then
-    echo "DIVERGENT | ERROR | Validation failed"
-    exit 1
+    tracktx_error "detect_divergent_tx" "Output validation failed (BED or summary missing/invalid)" "Check divergent.log in work dir for details"
   fi
 
   echo "DIVERGENT | VALIDATE | All outputs validated"

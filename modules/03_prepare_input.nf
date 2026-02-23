@@ -119,8 +119,22 @@ process prepare_input {
   set -euo pipefail
   export LC_ALL=C
 
-  # Redirect all output to log file
-  exec > >(tee -a preprocess_reads.log) 2>&1
+  # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
+  exec > >(tee -a preprocess_reads.log)
+  exec 2> >(tee -a preprocess_reads.log >&2)
+
+  tracktx_error() {
+    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
+    echo "" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "TRACKTX ERROR" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "Module:  \${module}" >&2
+    echo "Problem: \${problem}" >&2
+    echo "Fix:     \${fix}" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    exit "\$code"
+  }
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -260,23 +274,19 @@ process prepare_input {
   fi
 
   if [[ "${MODE}" != "SE" && "${MODE}" != "PE" ]]; then
-    echo "PREP | ERROR | Mode must be SE or PE, got: ${MODE}"
-    exit 1
+    tracktx_error "prepare_input" "Mode must be SE or PE, got: ${MODE}" "Check data_type parameter"
   fi
 
   if [[ "${MODE}" == "PE" && -z "${R2}" ]]; then
-    echo "PREP | ERROR | Paired-end mode but R2 file is missing"
-    exit 1
+    tracktx_error "prepare_input" "Paired-end mode but R2 file is missing" "Add file2 to samplesheet for PE samples"
   fi
 
   if [[ ! -f "${R1}" ]]; then
-    echo "PREP | ERROR | R1 file not found: ${R1}"
-    exit 1
+    tracktx_error "prepare_input" "R1 file not found: ${R1}" "Check samplesheet file1 paths"
   fi
 
   if [[ "${MODE}" == "PE" && ! -f "${R2}" ]]; then
-    echo "PREP | ERROR | R2 file not found: ${R2}"
-    exit 1
+    tracktx_error "prepare_input" "R2 file not found: ${R2}" "Check samplesheet file2 paths"
   fi
 
   # Check file sizes

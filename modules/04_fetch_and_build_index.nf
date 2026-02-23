@@ -90,6 +90,19 @@ process fetch_and_build_index {
   set -euo pipefail
   export LC_ALL=C
 
+  tracktx_error() {
+    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
+    echo "" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "TRACKTX ERROR" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "Module:  \${module}" >&2
+    echo "Problem: \${problem}" >&2
+    echo "Fix:     \${fix}" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    exit "\$code"
+  }
+
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
   echo "INDEX | START | genome=!{genome_id} | source=!{source} | ts=${TIMESTAMP}"
@@ -137,20 +150,12 @@ process fetch_and_build_index {
 
   echo "INDEX | VALIDATE | Checking required tools..."
 
-  TOOLS_OK=1
   for TOOL in bowtie2-build samtools curl tar; do
-    if command -v ${TOOL} >/dev/null 2>&1; then
-      echo "INDEX | VALIDATE | ${TOOL}: $(which ${TOOL})"
-    else
-      echo "INDEX | ERROR | ${TOOL} not found in PATH"
-      TOOLS_OK=0
+    if ! command -v ${TOOL} >/dev/null 2>&1; then
+      tracktx_error "fetch_and_build_index" "${TOOL} not found in PATH" "Install ${TOOL} or use -profile docker"
     fi
+    echo "INDEX | VALIDATE | ${TOOL}: $(which ${TOOL})"
   done
-
-  if [[ ${TOOLS_OK} -eq 0 ]]; then
-    echo "INDEX | ERROR | Missing required tools"
-    exit 1
-  fi
 
   ###########################################################################
   # 3) HELPER FUNCTIONS
@@ -373,13 +378,11 @@ process fetch_and_build_index {
 
       # Validate FASTA
       if [[ ! -s "${TEMP_DIR}/${GENOME_ID}.fa" ]]; then
-        echo "INDEX | ERROR | FASTA file is empty"
-        exit 1
+        tracktx_error "fetch_and_build_index" "FASTA file is empty" "Check UCSC download or custom FASTA"
       fi
 
       if ! grep -q '^>' "${TEMP_DIR}/${GENOME_ID}.fa"; then
-        echo "INDEX | ERROR | File does not appear to be valid FASTA format"
-        exit 1
+        tracktx_error "fetch_and_build_index" "File does not appear to be valid FASTA format" "Check FASTA file format"
       fi
 
       # Count sequences
@@ -471,9 +474,7 @@ process fetch_and_build_index {
       # Verify index is complete
       if ! has_complete_index "${INDEX_PREFIX}" "bt2" && \
          ! has_complete_index "${INDEX_PREFIX}" "bt2l"; then
-        echo "INDEX | ERROR | Index build incomplete, missing shards"
-        ls -lh "${INDEX_PREFIX}".*.bt2* 2>/dev/null || true
-        exit 1
+        tracktx_error "fetch_and_build_index" "Index build incomplete, missing shards" "Check disk space and bowtie2-build logs"
       fi
 
       echo "INDEX | BUILD | Index verification passed"
@@ -599,13 +600,10 @@ DOCEOF
 
   echo "INDEX | VALIDATE | Final validation..."
 
-  ALL_VALID=1
-
   # Check reference files
   for file in "${GENOME_ID}.fa" "${GENOME_ID}.fa.fai" "${GENOME_ID}.genome.sizes"; do
     if [[ ! -s "${file}" ]]; then
-      echo "INDEX | ERROR | Missing or empty: ${file}"
-      ALL_VALID=0
+      tracktx_error "fetch_and_build_index" "Missing or empty: ${file}" "Check index build logs"
     fi
   done
 
@@ -620,13 +618,7 @@ DOCEOF
   fi
 
   if [[ ${INDEX_VALID} -eq 0 ]]; then
-    echo "INDEX | ERROR | Incomplete index in output directory"
-    ALL_VALID=0
-  fi
-
-  if [[ ${ALL_VALID} -eq 0 ]]; then
-    echo "INDEX | ERROR | Validation failed"
-    exit 1
+    tracktx_error "fetch_and_build_index" "Incomplete index in output directory" "Expected .1.bt2 .2.bt2 .3.bt2 .4.bt2 .rev.1.bt2 .rev.2.bt2"
   fi
 
   echo "INDEX | VALIDATE | All files validated successfully"

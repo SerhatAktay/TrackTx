@@ -105,8 +105,22 @@ process calculate_pol_metrics {
   export BLIS_NUM_THREADS=1
   export NUMEXPR_NUM_THREADS=1
 
-  # Redirect all output to log file
-  exec > >(tee -a pol_metrics.log) 2>&1
+  # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
+  exec > >(tee -a pol_metrics.log)
+  exec 2> >(tee -a pol_metrics.log >&2)
+
+  tracktx_error() {
+    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
+    echo "" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "TRACKTX ERROR" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "Module:  \${module}" >&2
+    echo "Problem: \${problem}" >&2
+    echo "Fix:     \${fix}" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    exit "\$code"
+  }
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -185,44 +199,34 @@ process calculate_pol_metrics {
     PYTHON_CMD="python3"
   fi
 
-  VALIDATION_OK=1
-
   # Check Python script
   if [[ ! -f "${CALC_SCRIPT}" ]]; then
-    echo "POL | ERROR | Python script not found: ${CALC_SCRIPT}"
-    VALIDATION_OK=0
-  else
-    echo "POL | VALIDATE | Python script: ${CALC_SCRIPT}"
+    tracktx_error "calculate_pol_metrics" "Python script not found: ${CALC_SCRIPT}" "Ensure bin/calculate_pol_metrics.py exists"
   fi
+  echo "POL | VALIDATE | Python script: ${CALC_SCRIPT}"
 
   # Check BAM
   if [[ ! -s "${IN_BAM}" ]]; then
-    echo "POL | ERROR | BAM file missing or empty: ${IN_BAM}"
-    VALIDATION_OK=0
-  else
-    BAM_SIZE=$(stat -c%s "${IN_BAM}" 2>/dev/null || stat -f%z "${IN_BAM}" 2>/dev/null || echo "unknown")
-    echo "POL | VALIDATE | BAM: ${BAM_SIZE} bytes"
+    tracktx_error "calculate_pol_metrics" "BAM file missing or empty: ${IN_BAM}" "Check upstream alignment module"
   fi
+  BAM_SIZE=$(stat -c%s "${IN_BAM}" 2>/dev/null || stat -f%z "${IN_BAM}" 2>/dev/null || echo "unknown")
+  echo "POL | VALIDATE | BAM: ${BAM_SIZE} bytes"
 
   # Check GTF
   if [[ ! -e "${GTF_FILE}" ]]; then
-    echo "POL | ERROR | GTF file missing: ${GTF_FILE}"
-    VALIDATION_OK=0
-  else
-    GTF_SIZE=$(stat -c%s "${GTF_FILE}" 2>/dev/null || stat -f%z "${GTF_FILE}" 2>/dev/null || echo "unknown")
-    GTF_LINES=$(wc -l < "${GTF_FILE}" 2>/dev/null | tr -d ' ' || echo 0)
-    echo "POL | VALIDATE | GTF: ${GTF_SIZE} bytes (${GTF_LINES} lines)"
+    tracktx_error "calculate_pol_metrics" "GTF file missing: ${GTF_FILE}" "Check download_gtf module"
   fi
+  GTF_SIZE=$(stat -c%s "${GTF_FILE}" 2>/dev/null || stat -f%z "${GTF_FILE}" 2>/dev/null || echo "unknown")
+  GTF_LINES=$(wc -l < "${GTF_FILE}" 2>/dev/null | tr -d ' ' || echo 0)
+  echo "POL | VALIDATE | GTF: ${GTF_SIZE} bytes (${GTF_LINES} lines)"
 
   # Check CPM tracks (required)
   for TRACK in "${POS_CPM}" "${NEG_CPM}"; do
     if [[ ! -e "${TRACK}" ]]; then
-      echo "POL | ERROR | Required CPM track missing: ${TRACK}"
-      VALIDATION_OK=0
-    else
-      TRACK_SIZE=$(stat -c%s "${TRACK}" 2>/dev/null || stat -f%z "${TRACK}" 2>/dev/null || echo "unknown")
-      echo "POL | VALIDATE | $(basename ${TRACK}): ${TRACK_SIZE} bytes"
+      tracktx_error "calculate_pol_metrics" "Required CPM track missing: ${TRACK}" "Check normalize_tracks module"
     fi
+    TRACK_SIZE=$(stat -c%s "${TRACK}" 2>/dev/null || stat -f%z "${TRACK}" 2>/dev/null || echo "unknown")
+    echo "POL | VALIDATE | $(basename ${TRACK}): ${TRACK_SIZE} bytes"
   done
 
   # Check siCPM tracks (optional)
@@ -249,20 +253,13 @@ process calculate_pol_metrics {
     if command -v ${TOOL} >/dev/null 2>&1; then
       echo "POL | VALIDATE | ${TOOL}: $(which ${TOOL})"
     else
-      echo "POL | ERROR | Required tool not found: ${TOOL}"
-      VALIDATION_OK=0
+      tracktx_error "calculate_pol_metrics" "Required tool not found: ${TOOL}" "Install ${TOOL} or use -profile docker"
     fi
   done
   if ${PYTHON_CMD} --version >/dev/null 2>&1; then
     echo "POL | VALIDATE | python: $(${PYTHON_CMD} --version 2>&1)"
   else
-    echo "POL | ERROR | Python not found (tried: ${PYTHON_CMD})"
-    VALIDATION_OK=0
-  fi
-
-  if [[ ${VALIDATION_OK} -eq 0 ]]; then
-    echo "POL | ERROR | Validation failed"
-    exit 1
+    tracktx_error "calculate_pol_metrics" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
   fi
 
   ###########################################################################
@@ -486,11 +483,8 @@ process calculate_pol_metrics {
 
   # Handle failures
   if [[ ${GENES_RC} -ne 0 ]]; then
-    echo "POL | ERROR | Gene metrics calculation failed with exit code ${GENES_RC}"
-    
     if [[ ${FAIL_IF_NO_GENES} -eq 1 ]]; then
-      echo "POL | ERROR | fail_if_no_genes=true, exiting"
-      exit 1
+      tracktx_error "calculate_pol_metrics" "Gene metrics calculation failed with exit code ${GENES_RC} (fail_if_no_genes=true)" "Check pol_metrics.log in work dir" ${GENES_RC}
     else
       echo "POL | WARNING | Creating empty output files"
     fi
@@ -770,13 +764,10 @@ DOCEOF
 
   echo "POL | VALIDATE | Validating outputs..."
 
-  VALIDATION_OK=1
-
   # Check required outputs
   for FILE in pol_gene_metrics.tsv pausing_index.tsv pol_density.tsv; do
     if [[ ! -e "${FILE}" ]]; then
-      echo "POL | ERROR | Missing output file: ${FILE}"
-      VALIDATION_OK=0
+      tracktx_error "calculate_pol_metrics" "Missing output file: ${FILE}" "Check pol_metrics.log in work dir"
     fi
   done
 
@@ -800,11 +791,6 @@ DOCEOF
     if [[ ${DENSITY_COLS} -ne 6 ]]; then
       echo "POL | WARNING | Density has ${DENSITY_COLS} columns, expected 6"
     fi
-  fi
-
-  if [[ ${VALIDATION_OK} -eq 0 ]]; then
-    echo "POL | ERROR | Validation failed"
-    exit 1
   fi
 
   echo "POL | VALIDATE | All outputs validated"

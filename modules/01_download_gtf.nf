@@ -73,6 +73,19 @@ process download_gtf {
   set -euo pipefail
   export LC_ALL=C
 
+  tracktx_error() {
+    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
+    echo "" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "TRACKTX ERROR" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "Module:  \${module}" >&2
+    echo "Problem: \${problem}" >&2
+    echo "Fix:     \${fix}" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    exit "\$code"
+  }
+
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
   echo "GTF | START | genome=!{params.reference_genome} | ts=${TIMESTAMP}"
@@ -122,8 +135,7 @@ process download_gtf {
 
   # Validate dependencies
   if ! ${PYTHON_CMD} --version >/dev/null 2>&1; then
-    echo "GTF | ERROR | Python not found (tried: ${PYTHON_CMD})"
-    exit 1
+    tracktx_error "download_gtf" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker or install Python"
   fi
   echo "GTF | CONFIG | Python: $(${PYTHON_CMD} --version)"
 
@@ -196,8 +208,7 @@ process download_gtf {
         fi
         FETCH_SUCCESS=1
       else
-        echo "GTF | ERROR | Custom GTF path does not exist: ${CUSTOM_PATH}"
-        exit 1
+        tracktx_error "download_gtf" "Custom GTF path does not exist: ${CUSTOM_PATH}" "Check --gtf_path parameter"
       fi
     fi
 
@@ -211,14 +222,14 @@ process download_gtf {
           FETCH_SUCCESS=1
           echo "GTF | FETCH | Download successful"
         else
-          echo "GTF | ERROR | Failed to download from: ${CUSTOM_URL}"
+          tracktx_error "download_gtf" "Failed to download from: ${CUSTOM_URL}" "Check --gtf_url and network"
         fi
       else
         if curl -fsSL --retry 3 --retry-delay 4 "${CUSTOM_URL}" > "${GTF_TEMP}"; then
           FETCH_SUCCESS=1
           echo "GTF | FETCH | Download successful"
         else
-          echo "GTF | ERROR | Failed to download from: ${CUSTOM_URL}"
+          tracktx_error "download_gtf" "Failed to download from: ${CUSTOM_URL}" "Check --gtf_url and network"
         fi
       fi
     fi
@@ -247,16 +258,14 @@ process download_gtf {
           FETCH_SUCCESS=1
           echo "GTF | FETCH | HTTPS download successful"
         else
-          echo "GTF | ERROR | HTTPS download failed"
+          tracktx_error "download_gtf" "HTTPS download failed" "Check network and UCSC availability"
         fi
       fi
     fi
 
     # Validate download
     if [[ ${FETCH_SUCCESS} -eq 0 || ! -s "${GTF_TEMP}" ]]; then
-      echo "GTF | ERROR | Failed to obtain GTF for assembly: ${ASM}"
-      echo "GTF | ERROR | Tried: local file, custom path/URL, UCSC"
-      exit 1
+      tracktx_error "download_gtf" "Failed to obtain GTF for assembly: ${ASM}" "Tried: local, custom path/URL, UCSC. Check params."
     fi
 
     # Validate GTF format (non-fatal warning)
@@ -307,8 +316,7 @@ process download_gtf {
     "${WORK_DIR}/tes.bed"
 
   if [[ $? -ne 0 ]]; then
-    echo "GTF | ERROR | Failed to generate gene catalogs"
-    exit 1
+    tracktx_error "download_gtf" "Failed to generate gene catalogs" "Check GTF format and Python script"
   fi
 
   # Count entries
@@ -344,18 +352,11 @@ process download_gtf {
 
   echo "GTF | VALIDATE | Checking all output files..."
   
-  ALL_VALID=1
   for FILE in "${OUT_GTF}" "${OUT_GENES}" "${OUT_TSS}" "${OUT_TES}"; do
     if [[ ! -s "${FILE}" ]]; then
-      echo "GTF | ERROR | Missing or empty output: ${FILE}"
-      ALL_VALID=0
+      tracktx_error "download_gtf" "Missing or empty output: ${FILE}" "Check GTF download and gene catalog script"
     fi
   done
-
-  if [[ ${ALL_VALID} -eq 0 ]]; then
-    echo "GTF | ERROR | Not all expected outputs were created"
-    exit 1
-  fi
 
   # Report final file sizes
   echo "────────────────────────────────────────────────────────────────────────"

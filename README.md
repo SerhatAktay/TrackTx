@@ -197,6 +197,51 @@ conda --version    # If using Conda
 
 ---
 
+### Windows (WSL)
+
+On Windows, use **WSL2** (Windows Subsystem for Linux) with Ubuntu. This gives you a Linux environment where the pipeline runs natively.
+
+**Step 1: Install WSL with Ubuntu**
+```powershell
+wsl --install -d Ubuntu
+```
+Restart if prompted. After reboot, Ubuntu will open; complete the initial setup (username, password).
+
+**Step 2: Install dependencies and Nextflow** (run inside WSL/Ubuntu)
+```bash
+sudo apt update
+sudo apt install -y openjdk-17-jdk curl
+
+cd ~
+curl -s https://get.nextflow.io | bash
+chmod +x nextflow
+sudo mv nextflow /usr/local/bin/
+```
+
+**Step 3: Install Docker Desktop**
+- Download from [docker.com](https://www.docker.com/products/docker-desktop/)
+- During setup, enable **“Use the WSL 2 based engine”**
+- Start Docker Desktop and ensure it shows “Running”
+
+**Step 4: Clone and run**
+```bash
+cd /mnt/c/Users/YourUsername   # Replace with your Windows username; or use ~ for home
+git clone https://github.com/serhataktay/tracktx.git
+cd tracktx
+./run_pipeline.sh
+```
+*Tip:* In WSL, `C:\Users\YourName` is `/mnt/c/Users/YourName`. Store data on the Linux filesystem (`~` or `/home/you`) for better performance than `/mnt/c`.
+
+**Verify everything works:**
+```bash
+nextflow -version
+docker --version
+docker run --rm hello-world
+java -version
+```
+
+---
+
 ### Option 1: Docker (Recommended for Novices)
 
 Docker packages everything needed—no manual tool installation.
@@ -469,6 +514,24 @@ This automatically:
 
 ## 🔧 Troubleshooting
 
+### Reading Error Messages
+
+When a process fails, Nextflow prints verbose output. **Look for the TRACKTX ERROR block** — it summarizes the problem and fix:
+
+```
+═══════════════════════════════════════════════════════════════════════
+TRACKTX ERROR
+═══════════════════════════════════════════════════════════════════════
+Module:  detect_divergent_tx
+Problem: Missing Python dependencies (numpy, pandas, scikit-learn, scipy)
+Fix:     pip install numpy pandas scikit-learn scipy | Or use: -profile conda | -profile docker
+═══════════════════════════════════════════════════════════════════════
+```
+
+- **Quick find:** `grep -A 6 "TRACKTX ERROR"` in the output
+- **Full log:** Check the `.log` file in the work dir (shown at the end of the error)
+- **Resume:** Add `-resume` to continue after fixing the issue
+
 ### Common Issues
 
 **Docker not running:**
@@ -510,11 +573,20 @@ conda clean --all --yes
 - Use SSD storage for better performance
 - Monitor with `python3 nfmon.py` to see bottlenecks
 
-**OverlappingFileLockException (download_gtf):**
-- Project on NFS/network drive/iCloud → run with `-w /tmp/nextflow-work` (or set `NXF_WORK`)
-- Upgrade Nextflow to ≥24.04.0 (pipeline requires it; 21.04.3 has locking bugs)
-- Don’t run multiple pipelines from the same directory
+**OverlappingFileLockException** (e.g. `prepare_input`, `download_gtf`):
 
+Java file-lock conflict. Common causes and fixes:
+
+1. **Multiple runs from same directory:** Only one Nextflow run per directory at a time. Stop other runs or use a separate project copy.
+2. **Stale lock from previous run:** If you used Ctrl+Z or killed the process uncleanly:
+   ```bash
+   rm -rf work .nextflow
+   ./run_pipeline.sh
+   ```
+3. **USB drive with exFAT/FAT32 (macOS):** Known Java bug (JDK-8205404)—exFAT and FAT32 do not support file locking. **Fix:** Either put the work dir on internal disk (`export NXF_WORK=/tmp/nextflow-work`), or reformat the USB drive to **APFS** or **Mac OS Extended** (Disk Utility → Erase → Format). On Linux, use **ext4**.
+4. **NFS / network / cloud-synced storage:** File locking is unreliable on NFS, SMB, iCloud, Dropbox. Set work dir to internal disk or a USB drive formatted as APFS/ext4: `export NXF_WORK=/tmp/nextflow-work` or `export NXF_WORK=/Volumes/MySSD/nextflow-work` (macOS, SSD must be APFS/HFS+).
+5. **Conda profile:** Multiple tasks can contend on the conda cache. Try `./run_pipeline.sh -profile docker`, or set `export NXF_CONDA_CACHEDIR=/tmp/conda-$USER-$$` before running.
+6. **Upgrade Nextflow:** Pipeline requires ≥24.04.0; older versions have locking issues.
 **Spike-in alignment fails (sample-specific):**
 - Samples with many unaligned reads (e.g. 20M+) need more memory for spike-in alignment
 - Increase Docker memory (Settings → Resources) or system RAM

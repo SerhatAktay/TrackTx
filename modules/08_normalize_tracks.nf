@@ -123,8 +123,22 @@ process normalize_tracks {
   set -euo pipefail
   export LC_ALL=C
 
-  # Redirect all output to log file
-  exec > >(tee -a normalize_tracks.log) 2>&1
+  # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
+  exec > >(tee -a normalize_tracks.log)
+  exec 2> >(tee -a normalize_tracks.log >&2)
+
+  tracktx_error() {
+    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
+    echo "" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "TRACKTX ERROR" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    echo "Module:  \${module}" >&2
+    echo "Problem: \${problem}" >&2
+    echo "Fix:     \${fix}" >&2
+    echo "═══════════════════════════════════════════════════════════════════════" >&2
+    exit "\$code"
+  }
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -203,10 +217,7 @@ process normalize_tracks {
 
   # Validate counts master file
   if [[ ! -s "${COUNTS_MASTER}" ]]; then
-    echo "NORMALIZE | ERROR | Counts master file missing or empty: ${COUNTS_MASTER}"
-    echo "NORMALIZE | ERROR | Working directory: $(pwd)"
-    ls -la . 2>/dev/null || true
-    exit 1
+    tracktx_error "normalize_tracks" "Counts master file missing or empty: ${COUNTS_MASTER}" "Check collect_counts produced counts TSV"
   fi
 
   COUNTS_SIZE=$(stat -c%s "${COUNTS_MASTER}" 2>/dev/null || stat -f%z "${COUNTS_MASTER}" 2>/dev/null || echo "unknown")
@@ -235,32 +246,19 @@ process normalize_tracks {
   fi
 
   # Validate tools
-  TOOLS_OK=1
-  if ${PYTHON_CMD} --version >/dev/null 2>&1; then
-    echo "NORMALIZE | VALIDATE | python: $(${PYTHON_CMD} --version 2>&1)"
-  else
-    echo "NORMALIZE | ERROR | Python not found (tried: ${PYTHON_CMD})"
-    TOOLS_OK=0
+  if ! ${PYTHON_CMD} --version >/dev/null 2>&1; then
+    tracktx_error "normalize_tracks" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker or install Python"
   fi
-  if command -v awk >/dev/null 2>&1; then
-    echo "NORMALIZE | VALIDATE | awk: $(which awk)"
-  else
-    echo "NORMALIZE | ERROR | Required tool not found: awk"
-    TOOLS_OK=0
+  echo "NORMALIZE | VALIDATE | python: $(${PYTHON_CMD} --version 2>&1)"
+  if ! command -v awk >/dev/null 2>&1; then
+    tracktx_error "normalize_tracks" "Required tool not found: awk" "Use -profile docker"
   fi
-
+  echo "NORMALIZE | VALIDATE | awk: $(which awk)"
+  if [[ ${EMIT_BW} -eq 1 ]] && ! command -v bedGraphToBigWig >/dev/null 2>&1; then
+    tracktx_error "normalize_tracks" "bedGraphToBigWig not found (required for BigWig)" "Install UCSC tools or use -profile docker"
+  fi
   if [[ ${EMIT_BW} -eq 1 ]]; then
-    if command -v bedGraphToBigWig >/dev/null 2>&1; then
-      echo "NORMALIZE | VALIDATE | bedGraphToBigWig: $(which bedGraphToBigWig)"
-    else
-      echo "NORMALIZE | ERROR | bedGraphToBigWig not found (required for BigWig generation)"
-      TOOLS_OK=0
-    fi
-  fi
-
-  if [[ ${TOOLS_OK} -eq 0 ]]; then
-    echo "NORMALIZE | ERROR | Missing required tools"
-    exit 1
+    echo "NORMALIZE | VALIDATE | bedGraphToBigWig: $(which bedGraphToBigWig)"
   fi
 
   ###########################################################################
@@ -351,8 +349,7 @@ PYSCRIPT
   if awk -v x="${FAC_CPM}" 'BEGIN{exit (x>0?0:1)}'; then
     echo "NORMALIZE | FACTORS | CPM normalization enabled"
   else
-    echo "NORMALIZE | ERROR | Cannot compute CPM (sample reads = 0)"
-    exit 1
+    tracktx_error "normalize_tracks" "Cannot compute CPM (sample reads = 0)" "Check collect_counts output and counts TSV"
   fi
 
   # Check siCPM availability
@@ -810,7 +807,6 @@ DOCEOF
   echo "NORMALIZE | VALIDATE | Manifest entries: ${MANIFEST_LINES}"
 
   # Check critical files exist
-  CRITICAL_OK=1
   for file in \
     "3p/${SAMPLE_ID}.3p.pos.cpm.bedgraph" \
     "3p/${SAMPLE_ID}.3p.neg.cpm.bedgraph" \
@@ -818,15 +814,10 @@ DOCEOF
     "tracks_manifest.tsv"; do
     
     if [[ ! -s "${file}" ]]; then
-      echo "NORMALIZE | ERROR | Missing or empty critical file: ${file}"
-      CRITICAL_OK=0
+      tracktx_error "normalize_tracks" "Missing or empty critical file: ${file}" "Check normalize_tracks.log in work dir"
     fi
   done
 
-  if [[ ${CRITICAL_OK} -eq 0 ]]; then
-    echo "NORMALIZE | ERROR | Validation failed"
-    exit 1
-  fi
 
   echo "NORMALIZE | VALIDATE | All critical files present"
 
