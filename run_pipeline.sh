@@ -846,7 +846,23 @@ main() {
             info "Docker/Podman memory limit: ${container_mem} GB → NXF_HOST_MEM=${container_mem}"
         fi
     fi
-    
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # DOCKER/PODMAN: Pull latest image so git pull → fresh image
+    # Ensures users get the updated container after pulling pipeline changes.
+    # Set TRACKTX_SKIP_PULL=1 to skip (e.g. offline, slow network).
+    # ═══════════════════════════════════════════════════════════════════════
+    TRACKTX_IMAGE="ghcr.io/serhataktay/tracktx:latest"
+    if [[ "${TRACKTX_SKIP_PULL:-0}" -eq 0 ]]; then
+        if [[ "$PROFILE" == *docker* ]] && has_command docker; then
+            info "Pulling latest Docker image: ${TRACKTX_IMAGE}"
+            docker pull "$TRACKTX_IMAGE" || warning "Could not pull (will use cached if available)"
+        elif [[ "$PROFILE" == *podman* ]] && has_command podman; then
+            info "Pulling latest Podman image: ${TRACKTX_IMAGE}"
+            podman pull "$TRACKTX_IMAGE" || warning "Could not pull (will use cached if available)"
+        fi
+    fi
+
     # ═══════════════════════════════════════════════════════════════════════
     # RESUME DETECTION (Updated for UNBOUND variable safety)
     # ═══════════════════════════════════════════════════════════════════════

@@ -90,6 +90,8 @@ process summarize_polymerase_metrics {
   #!/usr/bin/env bash
   set -euo pipefail
   export LC_ALL=C
+  # Matplotlib font cache: use TMPDIR (fast local disk) so tasks don't stall on "building font cache"
+  export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
   exec > >(tee -a aggregate.log)

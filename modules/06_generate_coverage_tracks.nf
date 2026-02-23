@@ -144,6 +144,8 @@ process generate_coverage_tracks {
   #!/usr/bin/env bash
   set -euo pipefail
   export LC_ALL=C
+  # umi_tools imports matplotlib; avoid font-cache stall when UMI dedup is enabled
+  export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
   exec > >(tee -a tracks.log)

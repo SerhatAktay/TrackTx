@@ -273,6 +273,8 @@ cd tracktx
 
 The script auto-detects Docker and runs the pipeline. First run will download the container image (~2–5 min).
 
+**Updating after git pull:** When you `git pull` and run again, `run_pipeline.sh` automatically pulls the latest Docker image so pipeline and container stay in sync. To skip the pull (e.g. offline): `TRACKTX_SKIP_PULL=1 ./run_pipeline.sh`
+
 ---
 
 ### Option 2: Conda
@@ -618,6 +620,11 @@ Java file-lock conflict. Common causes and fixes:
 4. **NFS / network / cloud-synced storage:** File locking is unreliable on NFS, SMB, iCloud, Dropbox. Set work dir to internal disk or a USB drive formatted as APFS/ext4: `export NXF_WORK=/tmp/nextflow-work` or `export NXF_WORK=/Volumes/MySSD/nextflow-work` (macOS, SSD must be APFS/HFS+).
 5. **Conda profile:** Multiple tasks can contend on the conda cache. Try `./run_pipeline.sh -profile docker`, or set `export NXF_CONDA_CACHEDIR=/tmp/conda-$USER-$$` before running.
 6. **Upgrade Nextflow:** Pipeline requires ≥24.04.0; older versions have locking issues.
+
+**"matplotlib is building a font cache" seems stuck:**
+- Matplotlib scans system fonts on first import (30s–2min). **umi_tools** (preprocess, coverage) and report/aggregate tasks use it.
+- **Docker:** The image pre-builds the cache; pull the latest and rebuild if needed.
+- **Conda:** `MPLCONFIGDIR` is set to `$TMPDIR` in affected modules. Ensure `TMPDIR` points to local disk (not NFS).
 **Spike-in alignment fails (sample-specific):**
 - Samples with many unaligned reads (e.g. 20M+) need more memory for spike-in alignment
 - Increase Docker memory (Settings → Resources) or system RAM

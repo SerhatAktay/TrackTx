@@ -107,6 +107,8 @@ process generate_per_sample_reports {
   # NOTE: Using -e (not -u) because track links may be empty strings
   set -eo pipefail
   export LC_ALL=C
+  # Matplotlib font cache: use TMPDIR so tasks don't stall on "building font cache"
+  export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
   exec > >(tee -a "!{sample_id}.report.log")

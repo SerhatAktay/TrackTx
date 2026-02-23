@@ -22,6 +22,9 @@ RUN micromamba run -n base pip install --no-cache-dir numpy pandas scikit-learn 
 RUN micromamba run -n base python -c "import numpy, pandas, sklearn.mixture, scipy.stats" || \
     (echo "ERROR: Divergent detector Python deps (numpy, pandas, scikit-learn, scipy) failed" && exit 1)
 
+# Pre-build matplotlib font cache so tasks don't stall on "building font cache"
+RUN micromamba run -n base python -c "import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot; matplotlib.pyplot.figure(); matplotlib.pyplot.close('all')" 2>/dev/null || true
+
 # (Optional) small OS tools that don’t exist in Conda packages
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \

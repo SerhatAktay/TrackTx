@@ -118,6 +118,8 @@ process preprocess_and_quality_filter_reads {
   #!/usr/bin/env bash
   set -euo pipefail
   export LC_ALL=C
+  # umi_tools imports matplotlib; avoid font-cache stall
+  export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
   exec > >(tee -a preprocess_reads.log)
