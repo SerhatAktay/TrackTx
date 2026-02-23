@@ -105,13 +105,14 @@ That's it! The script will:
 **Advanced options:**
 ```bash
 ./run_pipeline.sh --help                 # See all options
-./run_pipeline.sh --fast                 # ⚡ Performance mode (external drives)
+./run_pipeline.sh --fast                 # ⚡ Performance mode (needs ~20GB local)
+./run_pipeline.sh --exfat                # exFAT/USB fix (no local space needed)
 ./run_pipeline.sh -profile docker        # Force specific profile
 ./run_pipeline.sh --resume               # Resume previous run
 ./run_pipeline.sh --output_dir my_run    # Custom output directory
 ```
 
-**💡 Running from external storage?** Use the `--fast` flag for 2–3× speedup when working from external or slower disks.
+**💡 Running from external storage?** Use `--fast` for 2–3× speedup (needs ~20GB free on internal disk). No local space? Use `--exfat` to fix publish errors.
 
 ### 3️⃣ Monitor Progress (Real-time)
 
@@ -499,10 +500,12 @@ The pipeline **auto-detects** your environment, but you can force a specific pro
 ```
 
 This automatically:
-- ✅ Uses internal storage for work directory (~5-10x faster I/O)
+- ✅ Uses internal storage for work directory (~5-10x faster I/O) — **requires ~20GB free on internal disk**
 - ✅ Disables scratch space (reduces file copying)
 - ✅ Increases task parallelism
 - ✅ Optimizes resource allocation
+
+**No local space?** Use `--exfat` instead — fixes publish errors without moving the work directory.
 
 ### Expected Performance
 
@@ -583,6 +586,16 @@ conda clean --all --yes
 - First run downloads reference genomes (~10-30 min)
 - Use SSD storage for better performance
 - Monitor with `python3 nfmon.py` to see bottlenecks
+
+**"Failed to publish file [link]"** (external drive / exFAT):
+
+Hard links don't work on exFAT (common on USB drives). Fix:
+
+```bash
+./run_pipeline.sh --exfat                 # No local space needed; keeps work on external drive
+# Or, if you have ~20GB free on internal disk:
+./run_pipeline.sh --fast                 # Faster + includes exFAT fix
+```
 
 **OverlappingFileLockException** (e.g. `preprocess_and_quality_filter_reads`, `download_genome_annotations`):
 

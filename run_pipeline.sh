@@ -597,7 +597,8 @@ OPTIONS:
     --params-file FILE             Parameters YAML (default: params.yaml)
     --output_dir DIR               Override output directory (from params.yaml)
     --resume                       Resume previous run
-    --fast, --performance          ⚡ Enable performance mode (for external drives)
+    --fast, --performance          ⚡ Performance mode (work dir on local disk, needs ~20GB free)
+    --exfat                        📁 exFAT/USB drive fix (no local space needed)
     --no-auto-resume               Disable auto-resume detection
     --no-clear                     Keep terminal history visible
     --clear-delay SEC              Seconds before starting (default: 30, press Enter to skip)
@@ -608,11 +609,14 @@ OPTIONS:
 
 PERFORMANCE MODE (--fast):
     Optimizes pipeline for external storage (USB SSD, NAS):
-    • Disables scratch space (reduces I/O)
-    • Increases parallel task limit
-    • Uses fast work directory (~/tmp/tracktx_work)
-    ⚠️  Recommended when running from external drives
+    • Uses fast work directory (~/tmp/tracktx_work) — needs ~20GB free on internal disk
+    • Disables scratch space, increases parallelism
     📊 Expected speedup: 2-3x faster execution
+
+EXFAT/USB FIX (--exfat):
+    For exFAT or USB drives when you have NO local space:
+    • Fixes "Failed to publish file [link]" error
+    • Keeps work directory on your external drive
 
 PROFILES:
     docker         🐳 Containers via Docker (recommended for desktops)
@@ -697,6 +701,7 @@ main() {
     local WANT_PROMPT_RESUME=1
     local SHOW_SYSTEM_INFO_ONLY=0
     local PERFORMANCE_MODE=0
+    local COPY_MODE=0
     local EXTRA_ARGS=()
     
     while [[ $# -gt 0 ]]; do
@@ -755,6 +760,10 @@ main() {
                 ;;
             --fast|--performance)
                 PERFORMANCE_MODE=1
+                shift
+                ;;
+            --exfat)
+                COPY_MODE=1
                 shift
                 ;;
             *)
@@ -915,7 +924,12 @@ main() {
     # Add performance optimizations
     if [[ $PERFORMANCE_MODE -eq 1 ]]; then
         CMD+=(-work-dir "$FAST_WORK_DIR")
+        CMD+=(--publish_mode copy)  # Hard links fail on exFAT when work dir is on different volume
         [[ -f "performance.config" ]] && CMD+=(-c performance.config)
+    fi
+    # exFAT/USB fix only (no work dir change - for users without local space)
+    if [[ $COPY_MODE -eq 1 ]]; then
+        CMD+=(--publish_mode copy)
     fi
 
     
@@ -945,6 +959,9 @@ main() {
     [[ -n "$RESUME" ]] && echo -e "  Mode:         ${BOLD}Resume${NC}"
     if [[ $PERFORMANCE_MODE -eq 1 ]]; then
         echo -e "  Performance:  ${BOLD}${GREEN}⚡ FAST MODE${NC} (work: $FAST_WORK_DIR)"
+    fi
+    if [[ $COPY_MODE -eq 1 ]]; then
+        echo -e "  exFAT fix:    ${BOLD}enabled${NC}"
     fi
     separator
     
