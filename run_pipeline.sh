@@ -852,7 +852,7 @@ main() {
     # Ensures users get the updated container after pulling pipeline changes.
     # Set TRACKTX_SKIP_PULL=1 to skip (e.g. offline, slow network).
     # ═══════════════════════════════════════════════════════════════════════
-    TRACKTX_IMAGE="ghcr.io/serhataktay/tracktx:latest"
+    TRACKTX_IMAGE="ghcr.io/serhataktay/tracktx:3.0"
     if [[ "${TRACKTX_SKIP_PULL:-0}" -eq 0 ]]; then
         if [[ "$PROFILE" == *docker* ]] && has_command docker; then
             info "Pulling latest Docker image: ${TRACKTX_IMAGE}"

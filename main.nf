@@ -105,6 +105,7 @@ if (params.help) {
     --genome_fasta <FASTA>        Custom genome (if reference_genome=other)
     --spikein_fasta <FASTA>       Custom spike-in (if spikein_genome=other)
     --debug                       Enable debug logging
+    --verbose                     Enable step-by-step progress logging
   
   Profiles:
     -profile docker               Use Docker containers
@@ -184,7 +185,7 @@ if (dataRows.isEmpty()) {
   error "PIPELINE | ERROR | Samplesheet has no data rows. Expected format: sample,condition,timepoint,replicate,file1,file2"
 }
 
-// log.info "PIPELINE | VALIDATE | Parameter validation complete"
+if (params.verbose) log.info "PIPELINE | VALIDATE | Parameter validation complete"
 
 // ============================================================================
 // MODULE IMPORTS
@@ -209,7 +210,7 @@ include { quality_control_aligned_reads                          } from "${MOD}/
 include { generate_per_sample_reports                            } from "${MOD}/14_generate_per_sample_reports.nf"
 include { combine_reports_into_cohort                            } from "${MOD}/15_combine_reports_into_cohort.nf"
 
-// log.info "PIPELINE | IMPORT | All modules loaded successfully"
+if (params.verbose) log.info "PIPELINE | IMPORT | All modules loaded successfully"
 
 // Resolve local FASTQ path: use as-is if absolute, else relative to projectDir
 def resolveLocalPath(path) {
@@ -225,17 +226,21 @@ def resolveLocalPath(path) {
 
 workflow TrackTx {
 
-  // log.info "════════════════════════════════════════════════════════════════════════"
-  // log.info "WORKFLOW | Starting TrackTx Analysis"
-  // log.info "════════════════════════════════════════════════════════════════════════"
+  if (params.verbose) {
+    log.info "════════════════════════════════════════════════════════════════════════"
+    log.info "WORKFLOW | Starting TrackTx Analysis"
+    log.info "════════════════════════════════════════════════════════════════════════"
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 1: Download Annotations
   // ══════════════════════════════════════════════════════════════════════════
   
-  // log.info "─".multiply(80)
-  // log.info "STEP 1 | Download Genome Annotations"
-  // log.info "─".multiply(80)
+  if (params.verbose) {
+    log.info "─".multiply(80)
+    log.info "STEP 1 | Download Genome Annotations"
+    log.info "─".multiply(80)
+  }
   
   download_genome_annotations()
   
@@ -250,10 +255,12 @@ workflow TrackTx {
   // STEP 2: Parse Samplesheet
   // ══════════════════════════════════════════════════════════════════════════
   
-  // log.info "─".multiply(80)
-  // log.info "STEP 2 | Parse Samplesheet"
-  // log.info "─".multiply(80)
-  // log.info "STEP 2 | INPUT | File: ${params.samplesheet}"
+  if (params.verbose) {
+    log.info "─".multiply(80)
+    log.info "STEP 2 | Parse Samplesheet"
+    log.info "─".multiply(80)
+    log.info "STEP 2 | INPUT | File: ${params.samplesheet}"
+  }
 
   // Use .tap() to duplicate channel for counting without consuming it
   samples_ch = Channel
@@ -295,7 +302,7 @@ workflow TrackTx {
     if (count == 0) {
       error "PIPELINE | ERROR | No samples parsed from samplesheet. Check column names (sample, file1), delimiter (comma), and encoding (UTF-8)."
     }
-    // log.info "STEP 2 | COMPLETE | Loaded ${count} samples from samplesheet"
+    if (params.verbose) log.info "STEP 2 | COMPLETE | Loaded ${count} samples from samplesheet"
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -305,9 +312,11 @@ workflow TrackTx {
   prepared_input_ch = null
   
   if (params.sample_source == 'srr') {
-    // log.info "─".multiply(80)
-    // log.info "STEP 3 | Download SRR Data from NCBI"
-    // log.info "─".multiply(80)
+    if (params.verbose) {
+      log.info "─".multiply(80)
+      log.info "STEP 3 | Download SRR Data from NCBI"
+      log.info "─".multiply(80)
+    }
     
     // Explicitly evaluate parameter to avoid closure comparison issues
     def isPairedEnd = params.paired_end ? true : false
@@ -324,15 +333,17 @@ workflow TrackTx {
     
     // Monitor downloads
     prepared_input_ch.subscribe { sid, _reads, _cond, _time, _rep ->
-      // log.info "STEP 3 | DOWNLOAD | ${sid} complete"
+      if (params.verbose) log.info "STEP 3 | DOWNLOAD | ${sid} complete"
     }
     
 
     
   } else {
-    // log.info "─".multiply(80)
-    // log.info "STEP 3 | Using Local FASTQ Files"
-    // log.info "─".multiply(80)
+    if (params.verbose) {
+      log.info "─".multiply(80)
+      log.info "STEP 3 | Using Local FASTQ Files"
+      log.info "─".multiply(80)
+    }
     prepared_input_ch = samples_ch
 
   }
@@ -341,11 +352,13 @@ workflow TrackTx {
   // STEP 4: Prepare and Clean Input Reads
   // ══════════════════════════════════════════════════════════════════════════
   
-  // log.info "─".multiply(80)
-  // log.info "STEP 4 | Preprocess Input Reads"
-  // log.info "─".multiply(80)
-  // log.info "STEP 4 | CONFIG | Mode: ${params.paired_end ? 'Paired-end' : 'Single-end'}"
-  // log.info "STEP 4 | CONFIG | Trimming and quality filtering enabled"
+  if (params.verbose) {
+    log.info "─".multiply(80)
+    log.info "STEP 4 | Preprocess Input Reads"
+    log.info "─".multiply(80)
+    log.info "STEP 4 | CONFIG | Mode: ${params.paired_end ? 'Paired-end' : 'Single-end'}"
+    log.info "STEP 4 | CONFIG | Trimming and quality filtering enabled"
+  }
   
   (clean_fastq_ch, fastqc_ch) = preprocess_and_quality_filter_reads(
     prepared_input_ch,
@@ -354,7 +367,7 @@ workflow TrackTx {
 
   // Monitor preprocessing - FIX: _r used twice before!
   clean_fastq_ch.subscribe { sid, _r1, _r2opt, _cond, _time, _rep ->
-    // log.info "STEP 4 | CLEAN | ${sid} preprocessing complete"
+    if (params.verbose) log.info "STEP 4 | CLEAN | ${sid} preprocessing complete"
   }
 
   // Create sentinel files for SE mode (R2 placeholder)
@@ -393,16 +406,18 @@ workflow TrackTx {
   // STEP 5: Build Genome Indices
   // ══════════════════════════════════════════════════════════════════════════
   
-  // log.info "─".multiply(80)
-  // log.info "STEP 5 | Build Bowtie2 Indices"
-  // log.info "─".multiply(80)
+  if (params.verbose) {
+    log.info "─".multiply(80)
+    log.info "STEP 5 | Build Bowtie2 Indices"
+    log.info "─".multiply(80)
+  }
 
   // Primary genome
   reference_fa = params.reference_genome == 'other'
     ? file(params.genome_fasta)
     : file("${projectDir}/genomes/${params.reference_genome}.fa")
 
-  // log.info "STEP 5 | INDEX | Primary genome: ${params.reference_genome}"
+  if (params.verbose) log.info "STEP 5 | INDEX | Primary genome: ${params.reference_genome}"
 
   build_index(
     Channel.value(tuple(
@@ -415,14 +430,14 @@ workflow TrackTx {
   ref_meta_ch = build_index.out.ref_meta
   ref_idx_ch  = build_index.out.index_files
 
-  // log.info "STEP 5 | INDEX | Primary genome index built"
+  if (params.verbose) log.info "STEP 5 | INDEX | Primary genome index built"
 
   // Spike-in genome (optional)
   spike_meta_ch = Channel.empty()
   spike_idx_ch  = Channel.empty()
   
   if (params.spikein_genome && params.spikein_genome != 'None') {
-    // log.info "STEP 5 | INDEX | Spike-in genome: ${params.spikein_genome}"
+    if (params.verbose) log.info "STEP 5 | INDEX | Spike-in genome: ${params.spikein_genome}"
     
     spike_fa = params.spikein_genome == 'other'
       ? file(params.spikein_fasta)
@@ -439,9 +454,9 @@ workflow TrackTx {
     spike_meta_ch = spike_index.out.ref_meta
     spike_idx_ch  = spike_index.out.index_files
     
-    // log.info "STEP 5 | INDEX | Spike-in index built"
+    if (params.verbose) log.info "STEP 5 | INDEX | Spike-in index built"
   } else {
-    // log.info "STEP 5 | INDEX | No spike-in genome specified (skipping)"
+    if (params.verbose) log.info "STEP 5 | INDEX | No spike-in genome specified (skipping)"
   }
 
 
@@ -450,11 +465,13 @@ workflow TrackTx {
   // STEP 6: Alignment
   // ══════════════════════════════════════════════════════════════════════════
   
-  // log.info "─".multiply(80)
-  // log.info "STEP 6 | Align Reads with Bowtie2"
-  // log.info "─".multiply(80)
-  // log.info "STEP 6 | CONFIG | Aligner: Bowtie2"
-  // log.info "STEP 6 | CONFIG | Mode: ${params.paired_end ? 'Paired-end' : 'Single-end'}"
+  if (params.verbose) {
+    log.info "─".multiply(80)
+    log.info "STEP 6 | Align Reads with Bowtie2"
+    log.info "─".multiply(80)
+    log.info "STEP 6 | CONFIG | Aligner: Bowtie2"
+    log.info "STEP 6 | CONFIG | Mode: ${params.paired_end ? 'Paired-end' : 'Single-end'}"
+  }
 
   align_reads_to_genome(
     clean_fastq_with_r2,
@@ -469,7 +486,7 @@ workflow TrackTx {
   
   // Monitor alignments
   aligned_ch.subscribe { sid, _bam, _allbam, _spike, _cond, _time, _rep ->
-    // log.info "STEP 6 | ALIGN | ${sid} alignment complete"
+    if (params.verbose) log.info "STEP 6 | ALIGN | ${sid} alignment complete"
   }
   
   // aligned_ch: (sample_id, sample.bam, sample_allMap.bam, spikein.bam, condition, timepoint, replicate)
@@ -480,12 +497,14 @@ workflow TrackTx {
   // STEP 7: Generate Coverage Tracks
   // ══════════════════════════════════════════════════════════════════════════
   
-  // log.info "─".multiply(80)
-  // log.info "STEP 7 | Generate Coverage Tracks"
-  // log.info "─".multiply(80)
-  // log.info "STEP 7 | CONFIG | Formats: bedGraph, BigWig"
-  // log.info "STEP 7 | CONFIG | Orientations: 3' end (primary), 5' end (optional)"
-  // log.info "STEP 7 | CONFIG | Strands: Positive, Negative (separate)"
+  if (params.verbose) {
+    log.info "─".multiply(80)
+    log.info "STEP 7 | Generate Coverage Tracks"
+    log.info "─".multiply(80)
+    log.info "STEP 7 | CONFIG | Formats: bedGraph, BigWig"
+    log.info "STEP 7 | CONFIG | Orientations: 3' end (primary), 5' end (optional)"
+    log.info "STEP 7 | CONFIG | Strands: Positive, Negative (separate)"
+  }
 
   genome_fa_ch = ref_meta_ch.map { id, prov, fa -> fa }
 
@@ -513,7 +532,7 @@ workflow TrackTx {
 
   // Monitor track generation
   tracks_ch.subscribe { sid, _fb, _sb, p3, n3, _p5, _n5, _cond, _time, _rep ->
-    // log.info "STEP 7 | TRACKS | ${sid} → 3' tracks generated"
+    if (params.verbose) log.info "STEP 7 | TRACKS | ${sid} → 3' tracks generated"
   }
 
   if (params.debug) {
@@ -528,10 +547,12 @@ workflow TrackTx {
   // STEP 8: Collect Read Counts
   // ══════════════════════════════════════════════════════════════════════════
   
-  // log.info "─".multiply(80)
-  // log.info "STEP 8 | Collect Read Counts"
-  // log.info "─".multiply(80)
-  // log.info "STEP 8 | PURPOSE | Read counts for CPM/siCPM normalization"
+  if (params.verbose) {
+    log.info "─".multiply(80)
+    log.info "STEP 8 | Collect Read Counts"
+    log.info "─".multiply(80)
+    log.info "STEP 8 | PURPOSE | Read counts for CPM/siCPM normalization"
+  }
 
   counts_tsvs = quantify_reads_per_gene(
     aligned_ch.map { sid, filt_bam, all_bam, spike_bam, c, t, r ->
@@ -549,18 +570,20 @@ workflow TrackTx {
     )
 
   counts_master.subscribe {
-    // log.info "STEP 8 | COMPLETE | Master counts file: ${it}"
+    if (params.verbose) log.info "STEP 8 | COMPLETE | Master counts file: ${it}"
   }
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 9: Normalize Tracks
   // ══════════════════════════════════════════════════════════════════════════
   
-  // log.info "─".multiply(80)
-  // log.info "STEP 9 | Normalize Tracks"
-  // log.info "─".multiply(80)
-  // log.info "STEP 9 | CONFIG | Methods: CPM (counts per million), siCPM (spike-in CPM)"
-  // log.info "STEP 9 | CONFIG | Tracks: 3' primary, 3' allMap"
+  if (params.verbose) {
+    log.info "─".multiply(80)
+    log.info "STEP 9 | Normalize Tracks"
+    log.info "─".multiply(80)
+    log.info "STEP 9 | CONFIG | Methods: CPM (counts per million), siCPM (spike-in CPM)"
+    log.info "STEP 9 | CONFIG | Tracks: 3' primary, 3' allMap"
+  }
 
   // Prepare inputs - remove redundant metadata from joins for clarity
   // NOTE: Must wrap paths with file() to ensure proper staging when using path() inputs
@@ -605,7 +628,7 @@ workflow TrackTx {
 
   // Monitor normalization
   norm_tracks_ch.subscribe { sid, _p3, _n3, _nf, _cond, _time, _rep ->
-    // log.info "STEP 9 | NORMALIZE | ${sid} normalization complete"
+    if (params.verbose) log.info "STEP 9 | NORMALIZE | ${sid} normalization complete"
   }
 
 
@@ -614,14 +637,16 @@ workflow TrackTx {
   // STEP 10: Detect Divergent Transcription
   // ══════════════════════════════════════════════════════════════════════════
   
-  // log.info "═".multiply(80)
-  // log.info "STEP 10 | Detect Divergent Transcription"
-  // log.info "═".multiply(80)
-  // log.info "STEP 10 | CONFIG | Algorithm: Edge-to-edge distance with overlap awareness"
-  // log.info "STEP 10 | CONFIG | Default window: 500bp (edge-to-edge gap, not center-to-center)"
-  // log.info "STEP 10 | CONFIG | Track source: PRIMARY/UNIQUE mappers (filtered BAM)"
-  // log.info "STEP 10 | CONFIG | NOT using allMap (multimapper) tracks"
-  // log.info "STEP 10 | CONFIG | Pairing logic: Overlapping peaks always paired, then gap ≤ window"
+  if (params.verbose) {
+    log.info "═".multiply(80)
+    log.info "STEP 10 | Detect Divergent Transcription"
+    log.info "═".multiply(80)
+    log.info "STEP 10 | CONFIG | Algorithm: Edge-to-edge distance with overlap awareness"
+    log.info "STEP 10 | CONFIG | Default window: 500bp (edge-to-edge gap, not center-to-center)"
+    log.info "STEP 10 | CONFIG | Track source: PRIMARY/UNIQUE mappers (filtered BAM)"
+    log.info "STEP 10 | CONFIG | NOT using allMap (multimapper) tracks"
+    log.info "STEP 10 | CONFIG | Pairing logic: Overlapping peaks always paired, then gap ≤ window"
+  }
 
   // CRITICAL FIX: Use filtered/primary tracks (unique mappers), NOT allMap
   // 
@@ -639,7 +664,7 @@ workflow TrackTx {
   
   // Add progress monitoring
   divergent_input_ch.subscribe { sid, _pos, _neg, _cond, _time, _rep ->
-    // log.info "STEP 10 | INPUT | Sample ready for detection: ${sid}"
+    if (params.verbose) log.info "STEP 10 | INPUT | Sample ready for detection: ${sid}"
   }
 
   // Pass parameters explicitly for better cache control
@@ -661,7 +686,7 @@ workflow TrackTx {
     if (file(bed).exists() && file(bed).size() > 0) {
       count = file(bed).readLines().findAll { !it.startsWith('#') }.size()
     }
-    // log.info "STEP 10 | COMPLETE | ${sid} → ${count} divergent regions detected"
+    if (params.verbose) log.info "STEP 10 | COMPLETE | ${sid} → ${count} divergent regions detected"
   }
 
 
@@ -670,11 +695,13 @@ workflow TrackTx {
   // STEP 11: Call Functional Regions
   // ══════════════════════════════════════════════════════════════════════════
   
-  // log.info "─".multiply(80)
-  // log.info "STEP 11 | Call Functional Regions"
-  // log.info "─".multiply(80)
-  // log.info "STEP 11 | CONFIG | Input: Divergent transcription regions + RAW tracks"
-  // log.info "STEP 11 | CONFIG | Output: Promoter, enhancer, gene body annotations"
+  if (params.verbose) {
+    log.info "─".multiply(80)
+    log.info "STEP 11 | Call Functional Regions"
+    log.info "─".multiply(80)
+    log.info "STEP 11 | CONFIG | Input: Divergent transcription regions + RAW tracks"
+    log.info "STEP 11 | CONFIG | Output: Promoter, enhancer, gene body annotations"
+  }
 
   // IMPORTANT: Use RAW bedGraphs (not normalized) as per original pipeline design
   func_input_ch = divergent_tx_ch
@@ -719,7 +746,7 @@ workflow TrackTx {
     if (file(bed).exists() && file(bed).size() > 0) {
       count = file(bed).readLines().findAll { !it.startsWith('#') }.size()
     }
-    // log.info "STEP 11 | COMPLETE | ${sid} → ${count} functional regions annotated"
+    if (params.verbose) log.info "STEP 11 | COMPLETE | ${sid} → ${count} functional regions annotated"
   }
 
 
@@ -728,11 +755,13 @@ workflow TrackTx {
   // STEP 12: Calculate Pol-II Metrics
   // ══════════════════════════════════════════════════════════════════════════
   
-  // log.info "─".multiply(80)
-  // log.info "STEP 12 | Calculate Pol-II Metrics"
-  // log.info "─".multiply(80)
-  // log.info "STEP 12 | CONFIG | Metrics: Density, pausing index, traveling ratio"
-  // log.info "STEP 12 | CONFIG | Input: Normalized CPM/siCPM tracks + functional regions"
+  if (params.verbose) {
+    log.info "─".multiply(80)
+    log.info "STEP 12 | Calculate Pol-II Metrics"
+    log.info "─".multiply(80)
+    log.info "STEP 12 | CONFIG | Metrics: Density, pausing index, traveling ratio"
+    log.info "STEP 12 | CONFIG | Input: Normalized CPM/siCPM tracks + functional regions"
+  }
 
   // Prepare Pol-II inputs (uses normalized CPM/siCPM tracks)
   // Use BAM from generate_coverage_tracks (same BAM as density/tracks; deduped when UMI on)
@@ -745,8 +774,8 @@ workflow TrackTx {
       norm_tracks_ch.map { sid, pos3_cpm, neg3_cpm, factors, c, t, r ->
         // Construct siCPM paths based on directory structure from normalize_coverage_tracks
         def normDir = "${params.output_dir}/05_normalized_tracks/${sid}"
-        def pos3_sicpm = file("${normDir}/3p/main/sicpm/pos.bedgraph")
-        def neg3_sicpm = file("${normDir}/3p/main/sicpm/neg.bedgraph")
+        def pos3_sicpm = file("${normDir}/3p/${sid}.3p.pos.sicpm.bedgraph")
+        def neg3_sicpm = file("${normDir}/3p/${sid}.3p.neg.sicpm.bedgraph")
         tuple(sid, tuple(pos3_cpm, neg3_cpm, pos3_sicpm, neg3_sicpm))
       }
     )
@@ -766,10 +795,12 @@ workflow TrackTx {
   // STEP 13: Summarize Pol-II Metrics (Cohort-Level)
   // ══════════════════════════════════════════════════════════════════════════
   
-  // log.info "─".multiply(80)
-  // log.info "STEP 13 | Summarize Pol-II Metrics"
-  // log.info "─".multiply(80)
-  // log.info "STEP 13 | PURPOSE | Cohort-level aggregation and visualization"
+  if (params.verbose) {
+    log.info "─".multiply(80)
+    log.info "STEP 13 | Summarize Pol-II Metrics"
+    log.info "─".multiply(80)
+    log.info "STEP 13 | PURPOSE | Cohort-level aggregation and visualization"
+  }
 
   // Sort once and reuse to avoid channel exhaustion
   pol_sorted = pol_gene_ch
@@ -821,7 +852,7 @@ workflow TrackTx {
       }
       
       tsv_file.text = clean_lines.join('\n') + '\n'
-      // log.info "STEP 13 | INPUT | Samples TSV prepared: ${clean_lines.size() - 1} samples"
+      if (params.verbose) log.info "STEP 13 | INPUT | Samples TSV prepared: ${clean_lines.size() - 1} samples"
       tsv_file
     }
 
@@ -841,10 +872,12 @@ workflow TrackTx {
   // STEP 14: Quality Control
   // ══════════════════════════════════════════════════════════════════════════
   
-  // log.info "─".multiply(80)
-  // log.info "STEP 14 | Quality Control Analysis"
-  // log.info "─".multiply(80)
-  // log.info "STEP 14 | CONFIG | Metrics: Mapping rates, strand bias, coverage depth"
+  if (params.verbose) {
+    log.info "─".multiply(80)
+    log.info "STEP 14 | Quality Control Analysis"
+    log.info "─".multiply(80)
+    log.info "STEP 14 | CONFIG | Metrics: Mapping rates, strand bias, coverage depth"
+  }
 
   qc_input_ch = aligned_ch
     .map { sid, bam, all, spike, c, t, r ->
@@ -864,7 +897,7 @@ workflow TrackTx {
 
   // Monitor QC completion
   qc_json_meta_ch.subscribe { sid, _json, _cond, _time, _rep ->
-    // log.info "STEP 14 | COMPLETE | ${sid} QC analysis finished"
+    if (params.verbose) log.info "STEP 14 | COMPLETE | ${sid} QC analysis finished"
   }
 
 
@@ -873,10 +906,12 @@ workflow TrackTx {
   // STEP 15: Generate Per-Sample Reports
   // ══════════════════════════════════════════════════════════════════════════
   
-  // log.info "─".multiply(80)
-  // log.info "STEP 15 | Generate Per-Sample Reports"
-  // log.info "─".multiply(80)
-  // log.info "STEP 15 | CONFIG | Format: HTML with embedded plots"
+  if (params.verbose) {
+    log.info "─".multiply(80)
+    log.info "STEP 15 | Generate Per-Sample Reports"
+    log.info "─".multiply(80)
+    log.info "STEP 15 | CONFIG | Format: HTML with embedded plots"
+  }
 
   // Helper function to resolve file paths safely
   def resolvePath = { String path ->
@@ -903,10 +938,10 @@ workflow TrackTx {
       def normDir = "${params.output_dir}/05_normalized_tracks/${sid}"
       def tracksDir = "${params.output_dir}/03_genome_tracks/${sid}"
       
-      def bw_pos3 = resolvePath("${normDir}/3p/main/cpm/pos.bw")
-      def bw_neg3 = resolvePath("${normDir}/3p/main/cpm/neg.bw")
-      def bw_allmap_pos3 = resolvePath("${normDir}/3p/allMap/cpm/pos.bw")
-      def bw_allmap_neg3 = resolvePath("${normDir}/3p/allMap/cpm/neg.bw")
+      def bw_pos3 = resolvePath("${normDir}/3p/${sid}.3p.pos.cpm.bw")
+      def bw_neg3 = resolvePath("${normDir}/3p/${sid}.3p.neg.cpm.bw")
+      def bw_allmap_pos3 = resolvePath("${normDir}/3p/${sid}.allMap.3p.pos.cpm.bw")
+      def bw_allmap_neg3 = resolvePath("${normDir}/3p/${sid}.allMap.3p.neg.cpm.bw")
       
       def raw_allmap_pos3 = resolvePath("${tracksDir}/3p/${sid}.allMap.3p.pos.bedgraph")
       def raw_allmap_neg3 = resolvePath("${tracksDir}/3p/${sid}.allMap.3p.neg.bedgraph")
@@ -935,7 +970,7 @@ workflow TrackTx {
 
   // Monitor report generation
   report_json_ch.subscribe { json_file ->
-    // log.info "STEP 15 | COMPLETE | Report generated: ${json_file.name}"
+    if (params.verbose) log.info "STEP 15 | COMPLETE | Report generated: ${json_file.name}"
   }
 
 
@@ -944,10 +979,12 @@ workflow TrackTx {
   // STEP 16: Combine Reports
   // ══════════════════════════════════════════════════════════════════════════
   
-  // log.info "─".multiply(80)
-  // log.info "STEP 16 | Combine Reports"
-  // log.info "─".multiply(80)
-  // log.info "STEP 16 | PURPOSE | Generate cohort-level summary report"
+  if (params.verbose) {
+    log.info "─".multiply(80)
+    log.info "STEP 16 | Combine Reports"
+    log.info "─".multiply(80)
+    log.info "STEP 16 | PURPOSE | Generate cohort-level summary report"
+  }
 
   // Collect reports and stage with sequential names to avoid collisions
   per_sample_reports = report_json_ch
@@ -963,18 +1000,20 @@ workflow TrackTx {
   
   def TIMESTAMP_END = new Date().format("yyyy-MM-dd HH:mm:ss")
   
-  // log.info "═".multiply(80)
-  // log.info "PIPELINE COMPLETE | TrackTx Analysis Finished Successfully"
-  // log.info "═".multiply(80)
-  // log.info "Started:   ${TIMESTAMP_START}"
-  // log.info "Finished:  ${TIMESTAMP_END}"
-  // log.info "Results:   ${params.output_dir}"
-  // log.info "═".multiply(80)
-  // log.info ""
-  // log.info "Next Steps:"
-  // log.info "  • Review QC reports in: ${params.output_dir}/10_qc/"
-  // log.info "  • Check HTML reports in: ${params.output_dir}/11_reports/"
-  // log.info "  • Examine divergent transcription in: ${params.output_dir}/06_divergent_tx/"
-  // log.info "  • Analyze Pol-II metrics in: ${params.output_dir}/08_pol_metrics/"
-  // log.info "═".multiply(80)
+  if (params.verbose) {
+    log.info "═".multiply(80)
+    log.info "PIPELINE COMPLETE | TrackTx Analysis Finished Successfully"
+    log.info "═".multiply(80)
+    log.info "Started:   ${TIMESTAMP_START}"
+    log.info "Finished:  ${TIMESTAMP_END}"
+    log.info "Results:   ${params.output_dir}"
+    log.info "═".multiply(80)
+    log.info ""
+    log.info "Next Steps:"
+    log.info "  • Review QC reports in: ${params.output_dir}/10_qc/"
+    log.info "  • Check HTML reports in: ${params.output_dir}/11_reports/"
+    log.info "  • Examine divergent transcription in: ${params.output_dir}/06_divergent_tx/"
+    log.info "  • Analyze Pol-II metrics in: ${params.output_dir}/08_pol_metrics/"
+    log.info "═".multiply(80)
+  }
 }
