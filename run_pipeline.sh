@@ -46,8 +46,15 @@ warning() { echo -e "${YELLOW}[⚠]${NC} $1"; }
 error()   { echo -e "${RED}[✗]${NC} $1"; }
 header()  { echo -e "${BOLD}${CYAN}$1${NC}"; }
 
-separator() {
-    echo "═══════════════════════════════════════════════════════════════════════════"
+# Uniform 71-char separator for all banners
+SEP="═══════════════════════════════════════════════════════════════════════════"
+separator() { echo "$SEP"; }
+
+# Section header: separator + title + separator (uniform block style)
+section_header() {
+    separator
+    header "$1"
+    separator
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -143,8 +150,33 @@ docker_daemon_running() {
 }
 
 # Check if Docker can actually run containers (catches file-sharing, permission issues)
+# Uses 60s timeout to avoid hanging on slow pulls or exFAT/external drives
 docker_can_run_containers() {
-    docker run --rm hello-world >/dev/null 2>&1
+    local timeout_cmd=""
+    if has_command timeout; then
+        timeout_cmd="timeout 60s"
+    elif has_command gtimeout; then
+        timeout_cmd="gtimeout 60s"
+    fi
+    if [[ -n "$timeout_cmd" ]]; then
+        $timeout_cmd docker run --rm hello-world >/dev/null 2>&1
+    else
+        # No timeout available (e.g. macOS without coreutils) - run in background with kill
+        docker run --rm hello-world >/dev/null 2>&1 &
+        local pid=$!
+        local i=0
+        while kill -0 "$pid" 2>/dev/null && [[ $i -lt 60 ]]; do
+            sleep 1
+            ((i++)) || true
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            return 1
+        fi
+        wait "$pid" 2>/dev/null
+        return $?
+    fi
 }
 
 # Detect container runtime memory limit (Docker/Podman) in GB
@@ -315,9 +347,7 @@ show_system_info() {
     local mem_gb=$(detect_memory_gb)
     local system_type=$(categorize_system)
     
-    separator
-    header "System Information"
-    separator
+    section_header "System Information"
     echo "  CPUs:        ${cpus} cores"
     echo "  Memory:      ${mem_gb} GB"
     echo "  Category:    ${system_type}"
@@ -366,50 +396,50 @@ describe_profile() {
     
     case "$profile" in
         docker)
-            echo -e "🐳 ${BOLD}Docker${NC} - Containerized (recommended for desktops)"
-            echo "   Requirements: Docker installed and running"
-            echo "   Benefits: Reproducible, no dependency management"
-            echo "   Best for: Mac, Linux desktop/workstation"
+            echo -e "  🐳 ${BOLD}Docker${NC} - Containerized (recommended for desktops)"
+            echo "     Requirements: Docker installed and running"
+            echo "     Benefits: Reproducible, no dependency management"
+            echo "     Best for: Mac, Linux desktop/workstation"
             ;;
         conda)
             local variant=$(detect_conda_variant)
-            echo -e "🐍 ${BOLD}Conda${NC} - Environment management (${variant})"
-            echo "   Requirements: conda/mamba/micromamba installed"
-            echo "   Benefits: Works on most Linux systems, no containers"
-            echo "   Best for: Linux workstation, standard servers"
+            echo -e "  🐍 ${BOLD}Conda${NC} - Environment management (${variant})"
+            echo "     Requirements: conda/mamba/micromamba installed"
+            echo "     Benefits: Works on most Linux systems, no containers"
+            echo "     Best for: Linux workstation, standard servers"
             ;;
         conda_server)
-            echo -e "🐍 ${BOLD}Conda Server${NC} - Network-storage-safe conda"
-            echo "   Requirements: conda/mamba/micromamba installed"
-            echo "   Benefits: Handles NFS, network storage, HPC filesystems"
-            echo "   Best for: HPC servers, problematic storage systems"
+            echo -e "  🐍 ${BOLD}Conda Server${NC} - Network-storage-safe conda"
+            echo "     Requirements: conda/mamba/micromamba installed"
+            echo "     Benefits: Handles NFS, network storage, HPC filesystems"
+            echo "     Best for: HPC servers, problematic storage systems"
             ;;
         singularity|apptainer)
-            echo -e "📦 ${BOLD}Singularity/Apptainer${NC} - HPC containers"
-            echo "   Requirements: Singularity or Apptainer installed"
-            echo "   Benefits: Container reproducibility on HPC"
-            echo "   Best for: HPC clusters without Docker"
+            echo -e "  📦 ${BOLD}Singularity/Apptainer${NC} - HPC containers"
+            echo "     Requirements: Singularity or Apptainer installed"
+            echo "     Benefits: Container reproducibility on HPC"
+            echo "     Best for: HPC clusters without Docker"
             ;;
         slurm,*)
-            echo -e "🖥️  ${BOLD}Slurm + ${profile#slurm,}${NC} - HPC scheduler + containers"
-            echo "   Requirements: Slurm access + ${profile#slurm,}"
-            echo "   Benefits: Automatic job submission, resource management"
-            echo "   Best for: University/research HPC clusters"
+            echo -e "  🖥️  ${BOLD}Slurm + ${profile#slurm,}${NC} - HPC scheduler + containers"
+            echo "     Requirements: Slurm access + ${profile#slurm,}"
+            echo "     Benefits: Automatic job submission, resource management"
+            echo "     Best for: University/research HPC clusters"
             ;;
         podman)
-            echo -e "🐋 ${BOLD}Podman${NC} - Rootless containers"
-            echo "   Requirements: Podman installed"
-            echo "   Benefits: Like Docker but rootless"
-            echo "   Best for: Systems where Docker requires root"
+            echo -e "  🐋 ${BOLD}Podman${NC} - Rootless containers"
+            echo "     Requirements: Podman installed"
+            echo "     Benefits: Like Docker but rootless"
+            echo "     Best for: Systems where Docker requires root"
             ;;
         local)
-            echo -e "🖥️  ${BOLD}Local${NC} - System-installed tools"
-            echo "   Requirements: All tools manually installed (bowtie2, samtools, etc.)"
-            echo "   Benefits: No overhead, direct tool control"
-            echo "   Best for: Development, testing, custom setups"
+            echo -e "  🖥️  ${BOLD}Local${NC} - System-installed tools"
+            echo "     Requirements: All tools manually installed (bowtie2, samtools, etc.)"
+            echo "     Benefits: No overhead, direct tool control"
+            echo "     Best for: Development, testing, custom setups"
             ;;
         *)
-            echo "Custom profile: $profile"
+            echo "  Custom profile: $profile"
             ;;
     esac
 }
@@ -451,13 +481,17 @@ validate_profile() {
                 return 1
             fi
             # Verify Docker can run containers (catches file-sharing issues on Mac)
-            if [[ ${SKIP_DOCKER_RUN_TEST:-0} -eq 0 ]] && ! docker_can_run_containers; then
-                error "Docker daemon responds but cannot run containers"
-                info "Common causes:"
-                info "  • Mac: Docker Desktop → Settings → Resources → File Sharing (add your project path)"
-                info "  • External drive: Try running from internal drive, or use: -profile conda"
-                info "  • Permissions: Ensure your user is in the 'docker' group (Linux)"
-                return 1
+            if [[ ${SKIP_DOCKER_RUN_TEST:-0} -eq 0 ]]; then
+                info "Verifying Docker can run containers..."
+                if ! docker_can_run_containers; then
+                    error "Docker daemon responds but cannot run containers"
+                    info "Common causes:"
+                    info "  • Mac: Docker Desktop → Settings → Resources → File Sharing (add your project path)"
+                    info "  • External drive: Try running from internal drive, or use: -profile conda"
+                    info "  • Permissions: Ensure your user is in the 'docker' group (Linux)"
+                    info "  • Skip this check: SKIP_DOCKER_RUN_TEST=1 ./run_pipeline.sh"
+                    return 1
+                fi
             fi
             ;;
         conda|conda_server)
@@ -561,7 +595,7 @@ check_input_files() {
         error "Sample sheet is empty (no samples after header)"
         return 1
     fi
-    info "  Samples: ${n_samples}"
+    info "Samples: ${n_samples}"
     
     if [[ -f "$params_file" ]]; then
         success "Parameters: $params_file"
@@ -778,9 +812,7 @@ main() {
     # ═══════════════════════════════════════════════════════════════════════
     
     echo ""
-    separator
-    header "  TrackTx Pipeline — Nascent RNA Analysis"
-    separator
+    section_header "TrackTx Pipeline — PRO-seq Nascent RNA Analysis"
     echo ""
     
     # Show system info if requested
@@ -793,8 +825,7 @@ main() {
     # PRE-FLIGHT CHECKS
     # ═══════════════════════════════════════════════════════════════════════
     
-    header "Pre-Flight Checks"
-    separator
+    section_header "Pre-Flight Checks"
     
     check_nextflow || exit 1
     check_write_permissions || exit 1
@@ -814,8 +845,7 @@ main() {
     # PROFILE DETECTION & VALIDATION
     # ═══════════════════════════════════════════════════════════════════════
     
-    header "Profile Selection"
-    separator
+    section_header "Profile Selection"
     
     if [[ -z "$PROFILE" ]]; then
         PROFILE=$(detect_best_profile)
@@ -955,9 +985,7 @@ main() {
     # EXECUTION SUMMARY
     # ═══════════════════════════════════════════════════════════════════════
     
-    separator
-    header "Execution Plan"
-    separator
+    section_header "Execution Plan"
     echo -e "  Profile:      ${BOLD}$PROFILE${NC}"
     echo "  Sample sheet: $SAMPLESHEET"
     if [[ -f "$PARAMS_FILE" ]]; then
