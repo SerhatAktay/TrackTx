@@ -185,6 +185,41 @@ if (dataRows.isEmpty()) {
   error "PIPELINE | ERROR | Samplesheet has no data rows. Expected format: sample,condition,timepoint,replicate,file1,file2"
 }
 
+// Fail-fast: validate input files exist for local samples (prevents silent skip → confusing Step 13 error)
+if (params.sample_source != 'srr') {
+  def header = samplesheetLines[0]?.split(',')?.collect { it.trim() }
+  def sampleIdx = header?.findIndexOf { it?.toLowerCase() == 'sample' }
+  def file1Idx = header?.findIndexOf { it?.toLowerCase() == 'file1' }
+  def file2Idx = header?.findIndexOf { it?.toLowerCase() == 'file2' }
+  if (sampleIdx != null && sampleIdx >= 0 && file1Idx != null && file1Idx >= 0) {
+    def missing = []
+    dataRows.eachWithIndex { line, i ->
+      def cols = line.split(',', -1).collect { it?.trim() }
+      def sample = cols.size() > sampleIdx ? cols[sampleIdx] : ''
+      def resolve = { String p ->
+        if (!p?.trim()) return null
+        def s = p.trim()
+        def f = new File(s)
+        return f.isAbsolute() ? f : new File(projectDir.toString(), s)
+      }
+      def f1 = cols.size() > file1Idx ? resolve(cols[file1Idx]) : null
+      def f2 = (params.paired_end && file2Idx != null && file2Idx >= 0 && cols.size() > file2Idx) ? resolve(cols[file2Idx]) : null
+      if (f1 && !f1.exists()) missing << "${sample}: file1 not found: ${f1}"
+      if (f2 && !f2.exists()) missing << "${sample}: file2 not found: ${f2}"
+    }
+    if (!missing.isEmpty()) {
+      error """PIPELINE | ERROR | Input files not found (${missing.size()} issue(s)).
+  Fix paths in samplesheet or ensure files exist before running.
+
+  Missing/not found:
+  ${missing.take(10).join('\n  ')}${missing.size() > 10 ? '\n  ... and ' + (missing.size() - 10) + ' more' : ''}
+
+  Expected format: sample,condition,timepoint,replicate,file1,file2
+  Paths are relative to: ${projectDir}"""
+    }
+  }
+}
+
 if (params.verbose) log.info "PIPELINE | VALIDATE | Parameter validation complete"
 
 // ============================================================================
@@ -383,6 +418,8 @@ workflow TrackTx {
   def noBG5pNegPath = "${assetsDir}/EMPTY_5P_NEG.bedgraph"
   def noBGAm5pPosPath = "${assetsDir}/EMPTY_AM5P_POS.bedgraph"
   def noBGAm5pNegPath = "${assetsDir}/EMPTY_AM5P_NEG.bedgraph"
+  // Placeholder for align when no spike-in (avoids Channel.empty() causing 0 invocations)
+  def noSpikeFaPath = "${assetsDir}/EMPTY_SPIKE.fa"
   
   // Create all placeholder files if they don't exist
   [noR2Path, noBGPath, noBGPosPath, noBGNegPath, 
@@ -390,6 +427,9 @@ workflow TrackTx {
     if (!new File(path).exists()) {
       new File(path).text = ''
     }
+  }
+  if (!new File(noSpikeFaPath).exists()) {
+    new File(noSpikeFaPath).text = ">none\nN\n"
   }
 
   // Ensure R2 is always present (use sentinel for SE)
@@ -433,8 +473,11 @@ workflow TrackTx {
   if (params.verbose) log.info "STEP 5 | INDEX | Primary genome index built"
 
   // Spike-in genome (optional)
-  spike_meta_ch = Channel.empty()
-  spike_idx_ch  = Channel.empty()
+  // CRITICAL: When no spike-in, use placeholder channels (not Channel.empty()) so align_reads
+  // receives one value per input and runs. Empty channels cause 0 invocations → downstream fails at Step 13.
+  def noSpikeFa = file(noSpikeFaPath)
+  spike_meta_ch = Channel.value(tuple('none', 'none', noSpikeFa))
+  spike_idx_ch  = Channel.value(noSpikeFa)
   
   if (params.spikein_genome && params.spikein_genome != 'None') {
     if (params.verbose) log.info "STEP 5 | INDEX | Spike-in genome: ${params.spikein_genome}"
@@ -456,7 +499,7 @@ workflow TrackTx {
     
     if (params.verbose) log.info "STEP 5 | INDEX | Spike-in index built"
   } else {
-    if (params.verbose) log.info "STEP 5 | INDEX | No spike-in genome specified (skipping)"
+    if (params.verbose) log.info "STEP 5 | INDEX | No spike-in genome specified (using placeholder)"
   }
 
 
@@ -832,22 +875,29 @@ workflow TrackTx {
       def lines = clean_text.readLines()
       def header = 'sample_id\tcondition\ttimepoint\treplicate\tfile'
       def clean_lines = [header]
+      def rejected = []
       
       lines.drop(1).each { line ->
         if (line.trim() && line != header) {
           def cols = line.split('\t', -1)
           if (cols.size() == 5 && cols[4] && cols[4] != 'file') {
             clean_lines << line
+          } else {
+            rejected << "cols=${cols.size()} file_col='${cols.size() > 4 ? cols[4] : 'N/A'}' | ${line.take(80)}..."
           }
         }
       }
       
       if (clean_lines.size() == 1) {
+        def rawCount = lines.size() - 1
+        def rejectMsg = rejected ? "\n  Rejected rows (first 5): ${rejected.take(5).join('\n  ')}" : ''
         error """STEP 13 | ERROR | No valid samples in Pol-II aggregate TSV
+  Raw data rows: ${rawCount} | Valid after parse: ${clean_lines.size() - 1}${rejectMsg}
   This usually means no samples reached calculate_polymerase_occupancy_metrics. Possible causes:
   - An upstream process failed (check preprocess_and_quality_filter_reads, align_reads_to_genome, generate_coverage_tracks, normalize_coverage_tracks)
-  - Sample ID mismatch in join operations
-  - Run with -resume false to rule out stale cache
+  - Sample ID mismatch in join operations (pol_input joins bam_for_tracks + functional_regions + norm_tracks)
+  - Pipeline was interrupted before any sample completed calculate_polymerase_occupancy_metrics
+  - Run with -resume to continue from last successful run, or -resume false to rule out stale cache
   Check .nextflow.log and work/*/ for failed tasks."""
       }
       
