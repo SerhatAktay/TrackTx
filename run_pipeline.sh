@@ -114,21 +114,29 @@ detect_hpc() {
 }
 
 # Check if path is on network storage (NFS, SMB, etc.)
+# Uses timeout to avoid hanging on stale/slow NFS mounts
 is_network_storage() {
     local path="${1:-.}"
     
-    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        # Check mount type
-        local mount_point=$(df "$path" 2>/dev/null | tail -1 | awk '{print $1}')
-        local fs_type=$(df -T "$path" 2>/dev/null | tail -1 | awk '{print $2}')
-        
-        case "$fs_type" in
-            nfs|nfs4|cifs|smb|smbfs|afs|gpfs|lustre|beegfs)
-                return 0
-                ;;
-        esac
+    if [[ "$OSTYPE" != "linux-gnu"* ]]; then
+        return 1
     fi
     
+    local df_cmd=""
+    if has_command timeout; then
+        df_cmd="timeout 3s df"
+    elif has_command gtimeout; then
+        df_cmd="gtimeout 3s df"
+    else
+        df_cmd="df"
+    fi
+    
+    local fs_type=$($df_cmd -T "$path" 2>/dev/null | tail -1 | awk '{print $2}')
+    case "$fs_type" in
+        nfs|nfs4|cifs|smb|smbfs|afs|gpfs|lustre|beegfs)
+            return 0
+            ;;
+    esac
     return 1
 }
 
@@ -137,15 +145,31 @@ is_network_storage() {
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Check if Docker daemon is running (silent check)
+# Uses timeout to avoid hanging when Docker is slow/starting (common on macOS)
 docker_daemon_running() {
     if ! has_command docker; then
         return 1
     fi
-    # macOS doesn't have 'timeout' by default; use it only if available
     if has_command timeout; then
         timeout 5s docker info >/dev/null 2>&1
+    elif has_command gtimeout; then
+        gtimeout 5s docker info >/dev/null 2>&1
     else
-        docker info >/dev/null 2>&1
+        # macOS: no timeout by default; use background process to avoid indefinite hang
+        docker info >/dev/null 2>&1 &
+        local pid=$!
+        local i=0
+        while kill -0 "$pid" 2>/dev/null && [[ $i -lt 5 ]]; do
+            sleep 1
+            ((i++)) || true
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            return 1
+        fi
+        wait "$pid" 2>/dev/null
+        return $?
     fi
 }
 
@@ -481,15 +505,16 @@ validate_profile() {
                 return 1
             fi
             # Verify Docker can run containers (catches file-sharing issues on Mac)
-            if [[ ${SKIP_DOCKER_RUN_TEST:-0} -eq 0 ]]; then
-                info "Verifying Docker can run containers..."
+            # Skipped by default: hello-world test can hang 60s+ on external drives
+            if [[ ${SKIP_DOCKER_RUN_TEST:-1} -eq 0 ]]; then
+                info "Verifying Docker can run containers (may take up to 60s)..."
                 if ! docker_can_run_containers; then
                     error "Docker daemon responds but cannot run containers"
                     info "Common causes:"
                     info "  • Mac: Docker Desktop → Settings → Resources → File Sharing (add your project path)"
                     info "  • External drive: Try running from internal drive, or use: -profile conda"
                     info "  • Permissions: Ensure your user is in the 'docker' group (Linux)"
-                    info "  • Skip this check: SKIP_DOCKER_RUN_TEST=1 ./run_pipeline.sh"
+                    info "  • Skip this check: SKIP_DOCKER_RUN_TEST=1 (default: skipped)"
                     return 1
                 fi
             fi
@@ -546,14 +571,48 @@ check_nextflow() {
 
 check_disk_space() {
     local required_gb=20  # Minimum recommended
+    local df_out=""
+    
+    # Use timeout to avoid hang on external/slow drives (df can block indefinitely)
+    local df_tmp=$(mktemp 2>/dev/null || echo "/tmp/tracktx_df_$$")
+    local df_args="."
+    [[ "$OSTYPE" != "darwin"* ]] && df_args="-BG ."
+    
+    if has_command timeout; then
+        df_out=$(timeout 5s df $df_args 2>/dev/null | tail -1)
+    elif has_command gtimeout; then
+        df_out=$(gtimeout 5s df $df_args 2>/dev/null | tail -1)
+    else
+        # macOS: no timeout; run in background and kill if slow
+        df $df_args 2>/dev/null > "$df_tmp" &
+        local pid=$!
+        local i=0
+        while kill -0 "$pid" 2>/dev/null && [[ $i -lt 5 ]]; do
+            sleep 1
+            ((i++)) || true
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            df_out=""
+        else
+            wait "$pid" 2>/dev/null
+            df_out=$(tail -1 "$df_tmp" 2>/dev/null)
+        fi
+        rm -f "$df_tmp" 2>/dev/null
+    fi
     
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        # macOS: df output in 512-byte blocks by default, convert to GB
-        local avail_blocks=$(df . | tail -1 | awk '{print $4}')
+        local avail_blocks=$(echo "$df_out" | awk '{print $4}')
         local avail_gb=$((avail_blocks / 2097152))  # 512-byte blocks to GB
     else
-        # Linux: use -BG for GB output
-        local avail_gb=$(df -BG . | tail -1 | awk '{print $4}' | sed 's/G//')
+        local avail_gb=$(echo "$df_out" | awk '{print $4}' | sed 's/G//')
+    fi
+    
+    # Fallback if df failed or timed out
+    avail_gb=${avail_gb:-0}
+    if [[ ! "$avail_gb" =~ ^[0-9]+$ ]]; then
+        avail_gb=0
     fi
     
     if [[ $avail_gb -lt $required_gb ]]; then
