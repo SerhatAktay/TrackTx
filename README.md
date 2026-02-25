@@ -105,13 +105,13 @@ That's it! The script will:
 **Advanced options:**
 ```bash
 ./run_pipeline.sh --help                 # See all options
-./run_pipeline.sh --external-drive       # When running from USB/exFAT/NAS
+./run_pipeline.sh                       # All files in project dir
 ./run_pipeline.sh -profile docker        # Force specific profile
 ./run_pipeline.sh --resume               # Resume previous run
 ./run_pipeline.sh --output_dir my_run    # Custom output directory
 ```
 
-**💡 Running from USB/exFAT/NAS?** Use `--external-drive` so work and results stay on your project directory (fixes publish errors).
+**💡 All files in project dir by default.** Use `--external-drive` only when project is on exFAT/USB — then cache (~1–2 GB) goes to local, work and results stay on project.
 
 ### 3️⃣ Monitor Progress (Real-time)
 
@@ -615,7 +615,7 @@ Java file-lock conflict. Common causes and fixes:
    rm -rf work .nextflow
    ./run_pipeline.sh
    ```
-3. **USB drive with exFAT/FAT32 (macOS):** Known Java bug (JDK-8205404)—exFAT and FAT32 do not support file locking. **Fix:** Either put the work dir on internal disk (`export NXF_WORK=/tmp/nextflow-work`), or reformat the USB drive to **APFS** or **Mac OS Extended** (Disk Utility → Erase → Format). On Linux, use **ext4**.
+3. **USB drive with exFAT/FAT32 (macOS) / OverlappingFileLockException:** exFAT and FAT32 do not support file locking. **Fix:** Use `./run_pipeline.sh --external-drive` — it puts only the cache (~1–2 GB) on `~/tmp/tracktx_cache` (local); work and results stay on your project. Or reformat the USB to **APFS** or **Mac OS Extended**.
 4. **NFS / network / cloud-synced storage:** File locking is unreliable on NFS, SMB, iCloud, Dropbox. Set work dir to internal disk or a USB drive formatted as APFS/ext4: `export NXF_WORK=/tmp/nextflow-work` or `export NXF_WORK=/Volumes/MySSD/nextflow-work` (macOS, SSD must be APFS/HFS+).
 5. **Conda profile:** Multiple tasks can contend on the conda cache. Try `./run_pipeline.sh -profile docker`, or set `export NXF_CONDA_CACHEDIR=/tmp/conda-$USER-$$` before running.
 6. **Upgrade Nextflow:** Pipeline requires ≥24.04.0; older versions have locking issues.

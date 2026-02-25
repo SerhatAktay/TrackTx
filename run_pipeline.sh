@@ -13,7 +13,7 @@
 #
 # USAGE:
 #   ./run_pipeline.sh                    # Auto-detect everything
-#   ./run_pipeline.sh --external-drive  # When running from USB/exFAT/NAS
+#   ./run_pipeline.sh --external-drive   # When project is on exFAT/USB
 #   ./run_pipeline.sh -profile docker    # Force specific profile
 #   ./run_pipeline.sh --help             # Show full help
 #
@@ -669,7 +669,7 @@ OPTIONS:
     --params-file FILE             Parameters YAML (default: params.yaml)
     --output_dir DIR               Override output directory (from params.yaml)
     --resume                       Resume previous run
-    --external-drive               📁 When running from USB/exFAT/NAS (everything stays on project dir)
+    --external-drive               📁 Use when project is on exFAT/USB (cache on local, rest on project)
     --no-auto-resume               Disable auto-resume detection
     --no-clear                     Keep terminal history visible
     --clear-delay SEC              Seconds before starting (default: 30, press Enter to skip)
@@ -679,9 +679,10 @@ OPTIONS:
     --show-system-info             Display system resources and exit
 
 EXTERNAL DRIVE MODE (--external-drive):
-    For USB, exFAT, or network drives — everything stays on your project directory:
+    For USB, exFAT, or network drives:
     • Fixes "Failed to publish file [link]" error (uses copy instead of hard links)
-    • Work dir and results stay on project dir (no local space needed)
+    • Fixes OverlappingFileLockException (cache on ~/tmp/tracktx_cache, ~1–2 GB local)
+    • Work and results stay on project dir (no local space needed for data)
     • Disables scratch space, increases parallelism for slow I/O
 
 PROFILES:
@@ -971,10 +972,15 @@ main() {
     
     # ═══════════════════════════════════════════════════════════════════════
     # EXTERNAL DRIVE MODE SETUP
+    # exFAT/USB/NFS lack file locking — Nextflow cache needs it; work dir does not.
+    # Only redirect cache to local (~1–2 GB). Work stays on project dir (external).
     # ═══════════════════════════════════════════════════════════════════════
     
     if [[ $EXTERNAL_DRIVE_MODE -eq 1 ]]; then
-        success "External drive mode: work and results will stay on project directory"
+        local TRACKTX_CACHE="${HOME}/tmp/tracktx_cache"
+        mkdir -p "$TRACKTX_CACHE"
+        export NXF_CACHE_DIR="$TRACKTX_CACHE"
+        success "External drive mode: cache on local (~1–2 GB), work and results on project dir"
     fi
     
     # ═══════════════════════════════════════════════════════════════════════
@@ -996,7 +1002,7 @@ main() {
     [[ -n "$RESUME" ]] && CMD+=("$RESUME")
     [[ -n "$DRY_RUN" ]] && CMD+=("$DRY_RUN")
     
-    # External drive mode: publish_mode copy (hard links fail on exFAT/USB), everything stays on project dir
+    # External drive mode: publish_mode copy, cache on local only, performance config
     if [[ $EXTERNAL_DRIVE_MODE -eq 1 ]]; then
         CMD+=(--publish_mode copy)
         [[ -f "performance.config" ]] && CMD+=(-c performance.config)
@@ -1026,7 +1032,7 @@ main() {
     fi
     [[ -n "$RESUME" ]] && echo -e "  Mode:         ${BOLD}Resume${NC}"
     if [[ $EXTERNAL_DRIVE_MODE -eq 1 ]]; then
-        echo -e "  External drive: ${BOLD}${GREEN}enabled${NC} (work + results on project dir)"
+        echo -e "  External drive: ${BOLD}${GREEN}enabled${NC} (cache: ~/tmp/tracktx_cache, work/results: project dir)"
     fi
     separator
     
