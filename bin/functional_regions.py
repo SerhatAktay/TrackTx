@@ -17,6 +17,10 @@
 #   v9.0: Used -s flag on removal steps (wrong!)
 #   v9.1: Unstranded removal like old script (correct!)
 # 
+# Overlapping genes: When multiple genes overlap (nested, convergent), a read in the
+#   overlap zone is assigned to the first matching region in the sequential order.
+#   No prioritization by expression or gene type; first match wins.
+#
 # Assignment logic:
 #   1. Divergent sites overlapping gene promoters → Active Promoters
 #   2. Divergent sites NOT overlapping → Enhancers
@@ -272,27 +276,26 @@ def find_active_promoters_and_enhancers(all_genes: list, dt_bed: str) -> tuple[l
     3. DT sites NOT overlapping → Enhancers
     4. Return active genes (for creating gene-based regions later)
     """
-    # Create promoter regions for ALL genes (TSS ±500bp like old pipeline)
-    # This is ONLY for identifying active genes, not for read assignment
-    promoter_regions_500bp = OUT / "all_promoter_regions_TSS_pm500.bed"
-    with open(promoter_regions_500bp, "w") as f:
+    # Create promoter regions for ALL genes (TSS ±tss_active_pm for active gene detection)
+    pm = args.tss_active_pm
+    promoter_regions_bed = OUT / f"all_promoter_regions_TSS_pm{pm}.bed"
+    with open(promoter_regions_bed, "w") as f:
         for gene in all_genes:
-            # Fixed ±500bp window for active gene detection
-            prom_start = gene['TSS'] - 500
-            prom_end = gene['TSS'] + 500
+            prom_start = gene['TSS'] - pm
+            prom_end = gene['TSS'] + pm
             prom_start, prom_end = clamp(prom_start, prom_end)
             f.write(f"{gene['chrom']}\t{prom_start}\t{prom_end}\t{gene['gname']}\t.\t{gene['strand']}\n")
     
-    sort_bed(str(promoter_regions_500bp))
+    sort_bed(str(promoter_regions_bed))
     
-    # Identify which genes have DT sites at their promoters (TSS ±500bp)
+    # Identify which genes have DT sites at their promoters (TSS ±tss_active_pm)
     genes_with_promoters_bed = OUT / "genes_with_active_promoters.bed"
-    run([BT, "intersect", "-u", "-wa", "-a", str(promoter_regions_500bp), "-b", dt_bed], 
+    run([BT, "intersect", "-u", "-wa", "-a", str(promoter_regions_bed), "-b", dt_bed], 
         str(genes_with_promoters_bed))
     
     # DT sites NOT overlapping gene promoters = Enhancers
     enhancers_bed = OUT / "enhancers.bed"
-    run([BT, "intersect", "-v", "-a", dt_bed, "-b", str(promoter_regions_500bp)], 
+    run([BT, "intersect", "-v", "-a", dt_bed, "-b", str(promoter_regions_bed)], 
         str(enhancers_bed))
     
     # Read active gene names from the intersection
@@ -312,7 +315,7 @@ def find_active_promoters_and_enhancers(all_genes: list, dt_bed: str) -> tuple[l
     n_dt_at_promoters = wc_effective_lines(str(genes_with_promoters_bed))
     n_enhancers = wc_effective_lines(str(enhancers_bed))
     
-    log(f"INFO  Found {n_dt_at_promoters} genes with DT sites at promoters (TSS ±500bp)")
+    log(f"INFO  Found {n_dt_at_promoters} genes with DT sites at promoters (TSS ±{pm}bp)")
     log(f"INFO  Found {n_enhancers} DT sites NOT at promoters (enhancers)")
     log(f"INFO  Active genes: {len(active_genes)} (out of {len(all_genes)} total)")
     
@@ -714,7 +717,7 @@ def main():
     active_genes, genes_with_promoters_bed, enhancers_bed = find_active_promoters_and_enhancers(all_genes, args.divergent)
     
     if not active_genes:
-        log("WARNING: No active genes found (DT sites ∩ TSS ±500bp); continuing with enhancers and non-localized only")
+        log(f"WARNING: No active genes found (DT sites ∩ TSS ±{args.tss_active_pm}bp); continuing with enhancers and non-localized only")
 
     # Write gene-based coordinate files for ALL functional regions (including promoter)
     coord_files = write_coordinate_files(active_genes)

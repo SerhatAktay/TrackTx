@@ -57,7 +57,7 @@
 //   min_signal          : Minimum signal threshold (default: 0.0)
 //   allow_unstranded    : Allow unstranded genes (default: true)
 //   count_mode          : "signal" or "event" (default: "signal")
-//   tss_active_pm       : TSS active window ±bp (default: 600 bp)
+//   tss_active_pm       : TSS active window ±bp (default: 500 bp)
 //   div_fallback_enable : Enable fallback for active genes (default: false)
 //
 // ============================================================================
@@ -154,7 +154,7 @@ process assign_signal_to_functional_regions {
   DIV_INNER=!{params.functional_regions?.div_inner ?: 250}
   DIV_OUTER=!{params.functional_regions?.div_outer ?: 750}
   TW_LENGTH=!{params.functional_regions?.tw_length ?: 10000}
-  TSS_ACTIVE_PM=!{params.functional_regions?.tss_active_pm ?: 600}
+  TSS_ACTIVE_PM=!{params.functional_regions?.tss_active_pm ?: 500}
   ACTIVE_SLOP=!{params.functional_regions?.active_slop ?: 0}
 
   # Signal parameters
@@ -571,12 +571,12 @@ PARAMETER TUNING
 ────────────────────────────────────────────────────────────────────────────
 
 More sensitive active gene detection:
-  • Increase tss_active_pm (e.g., 1000)
+  • Increase tss_active_pm (e.g., 600 or 1000)
   • Enable div_fallback_enable
   • Increase div_fallback_threshold (e.g., 0.5)
 
 More specific active gene detection:
-  • Decrease tss_active_pm (e.g., 300)
+  • Decrease tss_active_pm (e.g., 300 or 400)
   • Disable div_fallback_enable
   • Increase min_signal
 

@@ -462,6 +462,7 @@ process combine_reports_into_cohort {
 
       <div class="section">
         <h2>Pipeline Reports</h2>
+        <p style="font-size:0.9rem;color:var(--muted);margin-bottom:1rem;">Optional: generated with -with-report, -with-timeline, -with-dag. Links may 404 if not used.</p>
         <div class="link-grid">
           <a href="NF_REPORT_REL" class="link-card">
             <h3>📈 Execution Report</h3>
@@ -548,7 +549,7 @@ LANDINGEOF
 
   echo "COHORT | README | Creating documentation..."
 
-  cat > "${OUT_README}" <<'DOCEOF'
+  cat > "${OUT_README}" <<DOCEOF
 ================================================================================
 COHORT-LEVEL REPORT AGGREGATION
 ================================================================================

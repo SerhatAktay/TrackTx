@@ -353,7 +353,51 @@
                 </optgroup>
               </select>
             </div>
-            <p class="help">For common genomes, the pipeline auto-downloads annotations from Ensembl.</p>
+            <p class="help">For common genomes, the pipeline auto-downloads annotations. Choose source below.</p>
+          </div>
+
+          <!-- Annotation options (for non-custom genomes) -->
+          <div id="annotationOptionsBlock" class="mt-4">
+            <div class="section-header">Annotation Source & Options</div>
+            <div class="help-box mb-3">
+              <strong>Affects divergent read assignment:</strong> Gene annotations define TSS/TES and promoter regions.
+              If divergent reads are not assigned to genes, try a different annotation source or check chromosome naming.
+            </div>
+            <div class="columns">
+              <div class="column">
+                <div class="field">
+                  <label class="label">Annotation Source</label>
+                  <div class="select">
+                    <select id="annotation_source">
+                      <option value="refseq" selected>RefSeq (UCSC) — default</option>
+                      <option value="ensembl">Ensembl — more comprehensive</option>
+                      <option value="gencode">GENCODE — preferred for human/mouse</option>
+                    </select>
+                  </div>
+                  <p class="help">RefSeq: UCSC. Ensembl/GENCODE: better TSS for some genes.</p>
+                </div>
+              </div>
+              <div class="column">
+                <div class="field">
+                  <label class="label">Exclude Biotypes</label>
+                  <input class="input" id="annotation_exclude_biotypes" placeholder="rRNA,tRNA (leave empty for all)">
+                  <p class="help">Exclude genes by biotype (e.g. rRNA). Comma-separated.</p>
+                </div>
+              </div>
+              <div class="column">
+                <div class="field">
+                  <label class="label">Chromosome Naming</label>
+                  <div class="select">
+                    <select id="annotation_chr_naming">
+                      <option value="none" selected>None — use as-is</option>
+                      <option value="add">Add chr prefix (Ensembl→UCSC)</option>
+                      <option value="remove">Remove chr prefix (UCSC→Ensembl)</option>
+                    </select>
+                  </div>
+                  <p class="help">Match GTF chr names to alignment.</p>
+                </div>
+              </div>
+            </div>
           </div>
           
           <div id="refGenomeUpload" style="display:none" class="mt-3">
@@ -657,6 +701,22 @@
         values from your data's background distribution. No manual tuning needed!
       </div>
       
+      <div class="field mb-4">
+        <label class="label">Quick preset (optional)</label>
+        <div class="select">
+          <select id="div_preset">
+            <option value="">— Custom / manual —</option>
+            <option value="default">Default — General-purpose, balanced</option>
+            <option value="enhancer">Enhancer-focused — Require symmetrical bidirectional signal</option>
+            <option value="promoter">Promoter-focused — Allow stronger directional signal</option>
+            <option value="max_sensitivity">Maximum sensitivity — Most permissive, maximum sites</option>
+          </select>
+        </div>
+        <p class="help">
+          Choose a preset to pre-fill parameters for your use case. You can still adjust any value manually below.
+        </p>
+      </div>
+      
       <div class="columns">
         <div class="column">
           <div class="field">
@@ -664,7 +724,7 @@
             <input class="input small-input" id="div_thr" value="auto" placeholder="auto or number">
             <p class="help">
               <strong>Per-bin signal minimum.</strong><br>
-              • <code>auto</code> = 95th percentile of background (recommended)<br>
+              • <code>auto</code> = percentile of background (see Calibration below)<br>
               • Or specify a number (e.g., 1.0, 2.0)
             </p>
           </div>
@@ -675,7 +735,7 @@
             <input class="input small-input" id="div_sum" value="auto" placeholder="auto or number">
             <p class="help">
               <strong>Minimum total signal for peaks.</strong><br>
-              • <code>auto</code> = 10× threshold (recommended)<br>
+              • <code>auto</code> = threshold × multiplier (see Calibration below)<br>
               • Or specify a number (e.g., 5.0, 10.0)
             </p>
           </div>
@@ -721,9 +781,43 @@
             <input class="input small-input" id="div_bal" type="number" step="0.05" min="0" max="1" value="0">
             <p class="help">
               <strong>Minimum balance between strand signals.</strong><br>
-              • 0.0 = no filter (max sensitivity, recommended)<br>
-              • 0.3-0.5 = require balanced signals
+              • 0.0 = no filter (max sensitivity)<br>
+              • 0.3-0.5 = require balanced signals (enhancer-like)
             </p>
+          </div>
+        </div>
+      </div>
+      
+      <div class="columns mt-3">
+        <div class="column">
+          <div class="field">
+            <label class="label">Calibration Percentile</label>
+            <input class="input small-input" id="div_cal_pct" type="number" step="5" min="50" max="99" value="75">
+            <p class="help">Percentile for auto threshold. Lower = more sites (70–75 typical).</p>
+          </div>
+        </div>
+        <div class="column">
+          <div class="field">
+            <label class="label">Calibration Sum Multiplier</label>
+            <input class="input small-input" id="div_cal_mult" type="number" step="0.5" min="1" max="20" value="3">
+            <p class="help">sum_thr = threshold × N. Lower = stricter (fewer sites).</p>
+          </div>
+        </div>
+        <div class="column">
+          <div class="field">
+            <label class="label">Merge Gap (bp)</label>
+            <input class="input small-input" id="div_merge_gap" type="number" min="0" value="500">
+            <p class="help">Merge overlapping regions within N bp. 0 = disabled.</p>
+          </div>
+        </div>
+        <div class="column">
+          <div class="field">
+            <label class="label">Use Lower Background</label>
+            <label class="checkbox mt-2">
+              <input type="checkbox" id="div_cal_bg_lower">
+              Sample lower 50% of bins for threshold
+            </label>
+            <p class="help">Avoids inflating threshold from hotspots.</p>
           </div>
         </div>
         <div class="column">
@@ -783,6 +877,13 @@
             <label class="label">Termination Window (bp)</label>
             <input class="input small-input" id="tw_length" type="number" value="5000">
             <p class="help">Region after gene end to capture termination. Common: 5,000-10,000 bp.</p>
+          </div>
+        </div>
+        <div class="column">
+          <div class="field">
+            <label class="label">TSS Active Window (bp)</label>
+            <input class="input small-input" id="tss_active_pm" type="number" value="500">
+            <p class="help">TSS ± N bp for active gene detection (DT overlap). Affects divergent assignment.</p>
           </div>
         </div>
         <div class="column">
@@ -970,6 +1071,7 @@ function toggleOtherGenomeUpload(kind){
     const show = ($('#ref_genome').value === 'other');
     toggleBlock('refGenomeUpload', show);
     toggleBlock('gtfBlock', show);
+    toggleBlock('annotationOptionsBlock', !show);
   } else if(kind==='spike'){
     toggleBlock('spikeGenomeUpload', $('#spike_genome').value === 'other');
   }
@@ -1188,6 +1290,10 @@ function buildYAML(){
     nt_window:  parseInt($('#div_win').value||'1000',10),
     bin_gap:    parseInt($('#div_bin_gap').value||'100',10),
     balance:    parseFloat($('#div_bal').value||'0') || 0,
+    cal_pct:    parseFloat($('#div_cal_pct').value||'75') || 75,
+    cal_mult:   parseFloat($('#div_cal_mult').value||'3') || 3,
+    merge_gap:  parseInt($('#div_merge_gap').value||'500',10) || 500,
+    cal_bg_lower: !!$('#div_cal_bg_lower').checked,
     qc:         !!$('#div_qc').checked
   };
 
@@ -1195,9 +1301,12 @@ function buildYAML(){
   const fgr = {
     prom_up:         parseInt($('#prom_up').value||'500',10),
     prom_down:       parseInt($('#prom_down').value||'250',10),
+    div_inner:       250,
+    div_outer:       750,
     gb_start_offset: parseInt($('#gb_start_offset').value||'2000',10),
     cps_offset:      parseInt($('#cps_offset').value||'50',10),
     tw_length:       parseInt($('#tw_length').value||'5000',10),
+    tss_active_pm:   parseInt($('#tss_active_pm').value||'500',10),
     merge_gap:       parseInt($('#merge_gap').value||'50',10),
     qc:              !!$('#fgr_qc').checked
   };
@@ -1263,6 +1372,14 @@ function buildYAML(){
     y += `gtf_url: ""\n\n`;
   }
 
+  const annotationSource = $('#annotation_source')?.value || 'refseq';
+  const annotationExclude = $('#annotation_exclude_biotypes')?.value?.trim() || '';
+  const annotationChr = $('#annotation_chr_naming')?.value || 'none';
+  y += `# Annotation options (affects divergent read assignment)\n`;
+  y += `annotation_source: ${mono(annotationSource)}\n`;
+  y += `annotation_exclude_biotypes: ${mono(annotationExclude)}\n`;
+  y += `annotation_chr_naming: ${mono(annotationChr)}\n\n`;
+
   y += `# Adapter trimming\n`;
   y += `adapter_trimming:\n`;
   y += `  enabled: ${trimOn}\n`;
@@ -1310,9 +1427,13 @@ function buildYAML(){
   y += `  cutadapt_extra: ${mono(cutadaptExtra)}\n`;
   y += `  bowtie2_extra: ${mono(bowtie2Extra)}\n`;
   y += `  # Divergent transcription (statistical with GMM + FDR)\n`;
-  y += `  divergent_threshold: ${div.threshold === 'auto' ? 'auto' : div.threshold}  # auto = 95th percentile\n`;
-  y += `  divergent_sum_thr: ${div.sum_thr === 'auto' ? 'auto' : div.sum_thr}      # auto = 10x threshold\n`;
+  y += `  divergent_threshold: ${div.threshold === 'auto' ? 'auto' : div.threshold}  # auto = ${div.cal_pct}th percentile\n`;
+  y += `  divergent_sum_thr: ${div.sum_thr === 'auto' ? 'auto' : div.sum_thr}      # auto = ${div.cal_mult}x threshold\n`;
   y += `  divergent_fdr: ${div.fdr}          # False discovery rate\n`;
+  y += `  divergent_calibration_percentile: ${div.cal_pct}   # Targets 50-100K sites\n`;
+  y += `  divergent_calibration_sum_multiplier: ${div.cal_mult}\n`;
+  y += `  divergent_calibration_background_lower: ${div.cal_bg_lower}\n`;
+  y += `  divergent_merge_gap: ${div.merge_gap}    # Merge overlapping regions (bp)\n`;
   y += `  divergent_nt_window: ${div.nt_window}     # Pairing window (bp)\n`;
   y += `  divergent_bin_gap: ${div.bin_gap}        # Bin merge gap (bp)\n`;
   y += `  divergent_balance: ${div.balance}        # Balance ratio (0 = max sensitivity)\n`;
@@ -1399,6 +1520,43 @@ function copyYAML(){
   });
 }
 
+/* ====================== Divergent Presets ====================== */
+const DIV_PRESETS = {
+  default: {
+    thr: 'auto', sum: 'auto', fdr: 0.05, nt_window: 1000, bin_gap: 100,
+    balance: 0, cal_pct: 75, cal_mult: 3, merge_gap: 500, cal_bg_lower: false
+  },
+  enhancer: {
+    thr: 'auto', sum: 'auto', fdr: 0.05, nt_window: 1000, bin_gap: 100,
+    balance: 0.4, cal_pct: 72, cal_mult: 3, merge_gap: 500, cal_bg_lower: false
+  },
+  promoter: {
+    thr: 'auto', sum: 'auto', fdr: 0.05, nt_window: 1000, bin_gap: 100,
+    balance: 0, cal_pct: 75, cal_mult: 3, merge_gap: 500, cal_bg_lower: false
+  },
+  max_sensitivity: {
+    thr: 'auto', sum: 'auto', fdr: 0.08, nt_window: 1200, bin_gap: 150,
+    balance: 0, cal_pct: 70, cal_mult: 3, merge_gap: 500, cal_bg_lower: true
+  }
+};
+
+function applyDivPreset(){
+  const preset = $('#div_preset').value;
+  if(!preset || !DIV_PRESETS[preset]) return;
+  const p = DIV_PRESETS[preset];
+  $('#div_thr').value = p.thr;
+  $('#div_sum').value = p.sum;
+  $('#div_fdr').value = p.fdr;
+  $('#div_win').value = p.nt_window;
+  $('#div_bin_gap').value = p.bin_gap;
+  $('#div_bal').value = p.balance;
+  $('#div_cal_pct').value = p.cal_pct;
+  $('#div_cal_mult').value = p.cal_mult;
+  $('#div_merge_gap').value = p.merge_gap;
+  $('#div_cal_bg_lower').checked = p.cal_bg_lower;
+  fillPreview();
+}
+
 /* ====================== Init ====================== */
 function init(){
   addSampleUI();
@@ -1409,6 +1567,7 @@ function init(){
   toggleAdapterFields();
   toggleSraOptions();
   setAdapterPreset();
+  $('#div_preset').addEventListener('change', applyDivPreset);
 }
 init();
 </script>

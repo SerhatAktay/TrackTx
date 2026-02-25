@@ -456,7 +456,7 @@ PLACEHOLDER
 
   echo "REPORT | README | Creating documentation..."
 
-  cat > "${OUT_README}" <<'DOCEOF'
+  cat > "${OUT_README}" <<DOCEOF
 ================================================================================
 PER-SAMPLE REPORT — !{sample_id}
 ================================================================================

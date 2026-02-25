@@ -397,6 +397,14 @@ show_system_info() {
 describe_profile() {
     local profile="$1"
     
+    # Composite with performance (e.g., docker,performance from --external-drive)
+    if [[ "$profile" == *",performance" ]]; then
+        local base="${profile%,performance}"
+        describe_profile "$base"
+        echo "     + performance profile (scratch off, publish copy, increased parallelism)"
+        return
+    fi
+    
     case "$profile" in
         docker)
             echo -e "  🐳 ${BOLD}Docker${NC} - Containerized (recommended for desktops)"
@@ -450,13 +458,18 @@ describe_profile() {
 validate_profile() {
     local profile="$1"
     
-    # Handle composite profiles (e.g., slurm,singularity)
+    # Handle composite profiles (e.g., slurm,singularity or docker,performance)
     if [[ "$profile" == *","* ]]; then
-        local scheduler="${profile%%,*}"
-        local container="${profile#*,}"
+        local first="${profile%%,*}"
+        local second="${profile#*,}"
         
-        # Validate scheduler
-        case "$scheduler" in
+        # performance is additive (used with docker/conda via --external-drive); validate base only
+        if [[ "$second" == "performance" ]]; then
+            return $(validate_profile "$first")
+        fi
+        
+        # Scheduler,container pattern (e.g., slurm,singularity)
+        case "$first" in
             slurm)
                 if ! has_command sbatch; then
                     error "Slurm requested but sbatch not found"
@@ -471,8 +484,7 @@ validate_profile() {
                 ;;
         esac
         
-        # Validate container
-        return $(validate_profile "$container")
+        return $(validate_profile "$second")
     fi
     
     # Validate single profiles
@@ -645,6 +657,51 @@ check_input_files() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
+# MONITOR LAUNCH (new terminal)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Launch nfmon.py in a new terminal window. Returns 0 on success.
+launch_monitor_in_new_terminal() {
+    local project_dir="$1"
+    local trace_path="$2"
+    
+    # Only in interactive mode with display
+    [[ ! -t 0 ]] && return 1
+    [[ -z "${DISPLAY:-}" && "$OSTYPE" != "darwin"* ]] && return 1
+    
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS: Terminal.app (escape quotes for AppleScript)
+        if [[ -d "/Applications/Utilities/Terminal.app" ]] || [[ -d "/System/Applications/Utilities/Terminal.app" ]]; then
+            local monitor_cmd="cd \"$project_dir\" && python3 nfmon.py --trace \"$trace_path\""
+            local escaped_cmd="${monitor_cmd//\"/\\\\\"}"
+            osascript -e "tell application \"Terminal\" to do script \"$escaped_cmd\"" 2>/dev/null && return 0
+        fi
+    elif [[ -n "${DISPLAY:-}" ]]; then
+        # Linux: use env vars to avoid quoting issues with paths
+        if has_command gnome-terminal; then
+            TRACKTX_MONITOR_DIR="$project_dir" TRACKTX_MONITOR_TRACE="$trace_path" \
+                gnome-terminal -- bash -c 'cd "$TRACKTX_MONITOR_DIR" && python3 nfmon.py --trace "$TRACKTX_MONITOR_TRACE"; exec bash'
+            return 0
+        fi
+        if has_command xterm; then
+            TRACKTX_MONITOR_DIR="$project_dir" TRACKTX_MONITOR_TRACE="$trace_path" \
+                xterm -e 'bash -c "cd \"$TRACKTX_MONITOR_DIR\" && python3 nfmon.py --trace \"$TRACKTX_MONITOR_TRACE\"; exec bash"'
+            return 0
+        fi
+        if has_command konsole; then
+            konsole -e "bash -c 'cd \"$project_dir\" && python3 nfmon.py --trace \"$trace_path\"; exec bash'"
+            return 0
+        fi
+        if has_command xfce4-terminal; then
+            xfce4-terminal -e "bash -c 'cd \"$project_dir\" && python3 nfmon.py --trace \"$trace_path\"; exec bash'"
+            return 0
+        fi
+    fi
+    
+    return 1
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
 # HELP & USAGE
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -653,6 +710,13 @@ show_help() {
 ═══════════════════════════════════════════════════════════════════════════
 TrackTx Pipeline Runner
 ═══════════════════════════════════════════════════════════════════════════
+
+GETTING STARTED (First time?):
+    1. Generate config:  Open TrackTx_config_generator.html in your browser
+    2. Download:         Save params.yaml and samplesheet.csv to this folder
+    3. Run:              ./run_pipeline.sh
+   That's it! The script auto-detects Docker/Conda and runs the pipeline.
+   Optionally say yes when asked to open live monitoring in a second terminal.
 
 QUICK START:
     ./run_pipeline.sh                    # Auto-detect & run
@@ -663,26 +727,38 @@ USAGE:
     ./run_pipeline.sh [OPTIONS]
 
 OPTIONS:
-    -h, --help                      Show this help message
-    -profile PROFILE               Force execution profile
+  Input & output:
     --samplesheet FILE             Sample sheet CSV (default: samplesheet.csv)
     --params-file FILE             Parameters YAML (default: params.yaml)
     --output_dir DIR               Override output directory (from params.yaml)
-    --resume                       Resume previous run
-    --external-drive               📁 Use when project is on exFAT/USB (cache on local, rest on project)
-    --no-auto-resume               Disable auto-resume detection
-    --no-clear                     Keep terminal history visible
-    --clear-delay SEC              Seconds before starting (default: 30, press Enter to skip)
-    --skip-countdown               Start immediately without countdown
-    --no-docker-prompt             Skip Docker auto-start prompt
-    --dry-run                      Show command without executing
-    --show-system-info             Display system resources and exit
+    --output-dir DIR               Same as --output_dir
+
+  Execution:
+    -profile PROFILE               Force profile: docker, conda, conda_server, singularity,
+                                   slurm,singularity, podman, local
+    --resume                       Resume from last run (reuse completed tasks)
+    --external-drive               Use when project is on exFAT/USB/NAS (fixes publish errors)
+
+  Prompts & timing:
+    --skip-countdown               Start immediately (no countdown)
+    --clear-delay SEC              Countdown seconds before start (default: 30)
+    --no-clear                     Keep terminal history (no clear screen)
+    --no-auto-resume               Don't auto-detect or prompt for resume
+    --no-docker-prompt             Don't prompt to start Docker if not running
+    --no-monitor-prompt            Don't prompt to open monitoring in new terminal
+
+  Other:
+    -h, --help                     Show this help message
+    --dry-run                      Preview command without executing
+    --show-system-info             Show CPU, memory, and exit
+
+  Extra args after options are passed to Nextflow (e.g. --reference_genome hg38)
 
 EXTERNAL DRIVE MODE (--external-drive):
     For USB, exFAT, or network drives:
     • Fixes "Failed to publish file [link]" error (uses copy instead of hard links)
-    • Fixes OverlappingFileLockException (cache on ~/tmp/tracktx_cache, ~1–2 GB local)
-    • Work and results stay on project dir (no local space needed for data)
+    • Fixes OverlappingFileLockException (cache, temp, work on local ~/tmp/tracktx_*)
+    • Results stay on project dir; work dir ~10–50 GB on local (exFAT lacks file locking)
     • Disables scratch space, increases parallelism for slow I/O
 
 PROFILES:
@@ -709,29 +785,42 @@ FEATURES:
     • Universal compatibility (laptop → HPC)
 
 EXAMPLES:
-    # Auto-detect environment (recommended)
+    # Basic usage
     ./run_pipeline.sh
-
-    # Desktop with Docker
     ./run_pipeline.sh -profile docker
-
-    # Workstation with Conda
     ./run_pipeline.sh -profile conda
 
-    # HPC with Slurm + Singularity
-    ./run_pipeline.sh -profile slurm,singularity
+    # Custom input files
+    ./run_pipeline.sh --samplesheet my_samples.csv
+    ./run_pipeline.sh --params-file my_params.yaml
+    ./run_pipeline.sh --samplesheet data.csv --params-file config.yaml
 
-    # Server with problematic network storage
+    # Output and resume
+    ./run_pipeline.sh --output_dir my_results
+    ./run_pipeline.sh --resume
+    ./run_pipeline.sh --output_dir run2 --resume
+
+    # USB/exFAT/external drive
+    ./run_pipeline.sh --external-drive
+
+    # Skip prompts and countdown
+    ./run_pipeline.sh --skip-countdown
+    ./run_pipeline.sh --no-monitor-prompt --skip-countdown
+    ./run_pipeline.sh --no-auto-resume
+
+    # HPC and servers
+    ./run_pipeline.sh -profile slurm,singularity
     ./run_pipeline.sh -profile conda_server
 
-    # Custom parameters
-    ./run_pipeline.sh --params-file my_config.yaml
-
-    # Resume previous run
-    ./run_pipeline.sh --resume
-
-    # Dry run to preview command
+    # Preview and info
     ./run_pipeline.sh --dry-run
+    ./run_pipeline.sh --show-system-info
+
+ENVIRONMENT VARIABLES:
+    TRACKTX_SKIP_PULL=1           Skip Docker image pull (offline, slow network)
+    NXF_HOST_MEM=N                Tell Nextflow available RAM in GB (e.g. Docker limit)
+    NXF_HOST_CPUS=N               Tell Nextflow available CPUs
+    NXF_WORK=DIR                  Override work directory
 
 TROUBLESHOOTING:
     No Docker?     Use: -profile conda
@@ -739,12 +828,12 @@ TROUBLESHOOTING:
     HPC cluster?   Use: -profile slurm,singularity
     Permissions?   Check: ls -la . && touch test.txt
     Mac M1/M2/M3?  Use multi-arch image (see envs/tracktx.yaml build instructions)
-    External drive? Try -profile conda or run from internal drive if Docker fails
+    External drive? Use: --external-drive or -profile conda
     Skip Docker test?  SKIP_DOCKER_RUN_TEST=1 ./run_pipeline.sh
 
 MORE HELP:
-    GitHub: https://github.com/SerhatAktay/TrackTx
-    Docs:   https://tracktx.readthedocs.io
+    GitHub: https://github.com/serhataktay/tracktx
+    Issues: https://github.com/serhataktay/tracktx/issues
 
 ═══════════════════════════════════════════════════════════════════════════
 EOF
@@ -765,9 +854,11 @@ main() {
     local NO_CLEAR=0
     local CLEAR_DELAY=30
     local NO_DOCKER_PROMPT=0
+    local NO_MONITOR_PROMPT=0
     local WANT_PROMPT_RESUME=1
     local SHOW_SYSTEM_INFO_ONLY=0
     local EXTERNAL_DRIVE_MODE=0
+    local OUTPUT_DIR_OVERRIDE=""
     local EXTRA_ARGS=()
     
     while [[ $# -gt 0 ]]; do
@@ -819,6 +910,14 @@ main() {
             --no-docker-prompt)
                 NO_DOCKER_PROMPT=1
                 shift
+                ;;
+            --no-monitor-prompt)
+                NO_MONITOR_PROMPT=1
+                shift
+                ;;
+            --output_dir|--output-dir)
+                OUTPUT_DIR_OVERRIDE="$2"
+                shift 2
                 ;;
             --show-system-info)
                 SHOW_SYSTEM_INFO_ONLY=1
@@ -896,6 +995,7 @@ main() {
     # ═══════════════════════════════════════════════════════════════════════
     # NXF_TEMP: Use project dir for Nextflow staging (avoids filling boot drive
     # when project/work are on USB or external drive; Nextflow defaults to /var/folders)
+    # NOTE: In --external-drive mode this is overridden to local (exFAT lacks file locking)
     # ═══════════════════════════════════════════════════════════════════════
     if [[ -z "${NXF_TEMP:-}" ]]; then
         export NXF_TEMP="$(pwd)/.nxf_temp"
@@ -954,9 +1054,16 @@ main() {
 
     #---
 
-    # Auto-detect resume
+    # Auto-detect resume (check trace in output_dir when known)
     if [[ $NO_AUTO_RESUME -eq 0 && -z "$RESUME" ]]; then
-        if [[ -d .nextflow || -f .nextflow.log || -f results/trace/trace.txt ]]; then
+        local trace_path="results/trace/trace.txt"
+        if [[ -n "$OUTPUT_DIR_OVERRIDE" ]]; then
+            trace_path="${OUTPUT_DIR_OVERRIDE}/trace/trace.txt"
+        elif [[ -f "$PARAMS_FILE" ]]; then
+            local out_from_params=$(grep '^output_dir:' "$PARAMS_FILE" 2>/dev/null | sed 's/output_dir: *//;s/["'\'']//g' || echo "")
+            [[ -n "$out_from_params" ]] && trace_path="${out_from_params}/trace/trace.txt"
+        fi
+        if [[ -d .nextflow || -f .nextflow.log || -f "$trace_path" ]]; then
             if [[ $WANT_PROMPT_RESUME -eq 1 && -t 0 ]]; then
                 echo -n "Found previous run. Resume? [Y/n]: "
                 read -r -t 30 ANSWER || ANSWER="y"
@@ -972,20 +1079,29 @@ main() {
     
     # ═══════════════════════════════════════════════════════════════════════
     # EXTERNAL DRIVE MODE SETUP
-    # exFAT/USB/NFS lack file locking — Nextflow cache needs it; work dir does not.
-    # Only redirect cache to local (~1–2 GB). Work stays on project dir (external).
+    # exFAT/USB/NFS lack file locking. Nextflow cache, temp, and work dir all need it.
+    # Redirect ALL lock-using dirs to local. Results stay on project dir (external).
     # ═══════════════════════════════════════════════════════════════════════
     
     if [[ $EXTERNAL_DRIVE_MODE -eq 1 ]]; then
         local TRACKTX_CACHE="${HOME}/tmp/tracktx_cache"
-        mkdir -p "$TRACKTX_CACHE"
+        local proj_name=$(basename "$(pwd)" 2>/dev/null | sed 's/[^a-zA-Z0-9_.-]/_/g')
+        proj_name=${proj_name:-default}
+        local TRACKTX_WORK="${HOME}/tmp/tracktx_work/${proj_name}"
+        mkdir -p "$TRACKTX_CACHE" "$TRACKTX_WORK"
         export NXF_CACHE_DIR="$TRACKTX_CACHE"
-        success "External drive mode: cache on local (~1–2 GB), work and results on project dir"
+        export NXF_TEMP="${TRACKTX_CACHE}/.nxf_temp"
+        mkdir -p "$NXF_TEMP"
+        export NXF_WORK="$TRACKTX_WORK"
+        success "External drive mode: cache, temp, work on local (~10–50 GB); results on project dir"
     fi
     
     # ═══════════════════════════════════════════════════════════════════════
     # BUILD COMMAND
     # ═══════════════════════════════════════════════════════════════════════
+    
+    # External drive mode: append performance profile (scratch off, publish_mode copy)
+    [[ $EXTERNAL_DRIVE_MODE -eq 1 ]] && PROFILE="${PROFILE},performance"
     
     CMD=(
         nextflow run main.nf
@@ -999,14 +1115,9 @@ main() {
     # Execution reports (trace, timeline, DAG) will be in ${output_dir}/trace/
     
     [[ -f "$PARAMS_FILE" ]] && CMD+=(-params-file "$PARAMS_FILE")
+    [[ -n "$OUTPUT_DIR_OVERRIDE" ]] && CMD+=(--output_dir "$OUTPUT_DIR_OVERRIDE")
     [[ -n "$RESUME" ]] && CMD+=("$RESUME")
     [[ -n "$DRY_RUN" ]] && CMD+=("$DRY_RUN")
-    
-    # External drive mode: publish_mode copy, cache on local only, performance config
-    if [[ $EXTERNAL_DRIVE_MODE -eq 1 ]]; then
-        CMD+=(--publish_mode copy)
-        [[ -f "performance.config" ]] && CMD+=(-c performance.config)
-    fi
 
     
     [[ ${#EXTRA_ARGS[@]} -gt 0 ]] && CMD+=("${EXTRA_ARGS[@]}")
@@ -1018,9 +1129,10 @@ main() {
     section_header "Execution Plan"
     echo -e "  Profile:      ${BOLD}$PROFILE${NC}"
     echo "  Sample sheet: $SAMPLESHEET"
-    if [[ -f "$PARAMS_FILE" ]]; then
-        echo "  Parameters:   $PARAMS_FILE"
-        # Extract output_dir from params.yaml if present
+    [[ -f "$PARAMS_FILE" ]] && echo "  Parameters:   $PARAMS_FILE"
+    if [[ -n "$OUTPUT_DIR_OVERRIDE" ]]; then
+        echo "  Output:       ${OUTPUT_DIR_OVERRIDE} (from --output_dir)"
+    elif [[ -f "$PARAMS_FILE" ]]; then
         local OUTPUT_FROM_PARAMS=$(grep '^output_dir:' "$PARAMS_FILE" 2>/dev/null | sed 's/output_dir: *//;s/["'\'']//g' || echo "")
         if [[ -n "$OUTPUT_FROM_PARAMS" ]]; then
             echo "  Output:       ${OUTPUT_FROM_PARAMS}"
@@ -1032,7 +1144,7 @@ main() {
     fi
     [[ -n "$RESUME" ]] && echo -e "  Mode:         ${BOLD}Resume${NC}"
     if [[ $EXTERNAL_DRIVE_MODE -eq 1 ]]; then
-        echo -e "  External drive: ${BOLD}${GREEN}enabled${NC} (cache: ~/tmp/tracktx_cache, work/results: project dir)"
+        echo -e "  External drive: ${BOLD}${GREEN}enabled${NC} (cache/temp/work: local; results: project dir)"
     fi
     separator
     
@@ -1051,6 +1163,31 @@ main() {
     info "Full command:"
     echo "  ${CMD[*]}"
     echo ""
+    
+    # Optional: launch monitoring tool in new terminal
+    if [[ ${NO_MONITOR_PROMPT:-0} -eq 0 && -t 0 ]] && [[ -f "nfmon.py" ]]; then
+        local trace_path="results/trace/trace.txt"
+        if [[ -n "$OUTPUT_DIR_OVERRIDE" ]]; then
+            trace_path="${OUTPUT_DIR_OVERRIDE}/trace/trace.txt"
+        elif [[ -f "$PARAMS_FILE" ]]; then
+            local out_from_params=$(grep '^output_dir:' "$PARAMS_FILE" 2>/dev/null | sed 's/output_dir: *//;s/["'\'']//g' || echo "")
+            [[ -n "$out_from_params" ]] && trace_path="${out_from_params}/trace/trace.txt"
+        fi
+        echo ""
+        echo -n "Open live monitoring in a new terminal? [y/N]: "
+        read -r -t 15 ANSWER || ANSWER="n"
+        case "${ANSWER:-n}" in
+            [Yy]*)
+                local proj_dir="$(pwd)"
+                if launch_monitor_in_new_terminal "$proj_dir" "$trace_path"; then
+                    success "Monitoring opened in new terminal"
+                else
+                    info "Could not open new terminal. Run manually: python3 nfmon.py"
+                fi
+                ;;
+        esac
+        echo ""
+    fi
     
     # Optional terminal clear with countdown
     if [[ $NO_CLEAR -eq 0 ]]; then
