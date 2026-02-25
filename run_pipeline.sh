@@ -145,32 +145,11 @@ is_network_storage() {
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Check if Docker daemon is running (silent check)
-# Uses timeout to avoid hanging when Docker is slow/starting (common on macOS)
 docker_daemon_running() {
     if ! has_command docker; then
         return 1
     fi
-    if has_command timeout; then
-        timeout 5s docker info >/dev/null 2>&1
-    elif has_command gtimeout; then
-        gtimeout 5s docker info >/dev/null 2>&1
-    else
-        # macOS: no timeout by default; use background process to avoid indefinite hang
-        docker info >/dev/null 2>&1 &
-        local pid=$!
-        local i=0
-        while kill -0 "$pid" 2>/dev/null && [[ $i -lt 5 ]]; do
-            sleep 1
-            ((i++)) || true
-        done
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null
-            wait "$pid" 2>/dev/null
-            return 1
-        fi
-        wait "$pid" 2>/dev/null
-        return $?
-    fi
+    docker info >/dev/null 2>&1
 }
 
 # Check if Docker can actually run containers (catches file-sharing, permission issues)
