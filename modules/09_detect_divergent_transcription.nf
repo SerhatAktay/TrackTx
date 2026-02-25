@@ -87,7 +87,7 @@ process detect_divergent_transcription {
   cache      'deep'
 
   publishDir "${params.output_dir}/06_divergent_tx/${sample_id}",
-             mode: 'copy',
+             mode: params.publish_mode,
              overwrite: true
 
   conda (params.conda_divergent ?: "${projectDir}/envs/tracktx.yaml")

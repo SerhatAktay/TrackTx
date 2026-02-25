@@ -66,7 +66,7 @@ process generate_per_sample_reports {
   cache      'deep'
 
   publishDir "${params.output_dir}/11_reports/samples/${sample_id}",
-             mode: 'copy',
+             mode: params.publish_mode,
              overwrite: true
 
   conda (params.conda_pol ?: "${projectDir}/envs/tracktx.yaml")

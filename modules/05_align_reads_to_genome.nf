@@ -42,7 +42,7 @@ process align_reads_to_genome {
   cache      'deep'  // Ignore resource allocation changes for better caching
 
   publishDir "${params.output_dir}/02_alignments/${sample_id}",
-             mode: 'copy',
+             mode: params.publish_mode,
              overwrite: true
 
   // ── Inputs ───────────────────────────────────────────────────────────────

@@ -64,7 +64,7 @@ process calculate_polymerase_occupancy_metrics {
   cache      'deep'
 
   publishDir "${params.output_dir}/08_pol_metrics/${sid}",
-             mode: 'copy',
+             mode: params.publish_mode,
              overwrite: true
 
   conda (params.conda_pol ?: "${projectDir}/envs/tracktx.yaml")

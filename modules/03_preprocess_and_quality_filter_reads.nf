@@ -68,7 +68,7 @@ process preprocess_and_quality_filter_reads {
   cache  params.preprocess_reads_lenient_cache ? 'lenient' : 'deep'
 
   publishDir "${params.output_dir}/01_trimmed_fastq/${sample_id}",
-             mode: 'copy',
+             mode: params.publish_mode,
              overwrite: true,
              saveAs: { filename ->
                def name = filename instanceof Path ? filename.getFileName().toString() : filename.toString()

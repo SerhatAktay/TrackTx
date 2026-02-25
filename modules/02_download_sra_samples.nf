@@ -57,7 +57,7 @@ process download_sra_samples {
   // Raw files remain in work/ directory for Nextflow caching with -resume
   
   publishDir "${params.output_dir}/01_trimmed_fastq",
-             mode: 'copy',
+             mode: params.publish_mode,
              overwrite: true,
              saveAs: { filename ->
                // Only publish checksums and README, NOT the raw FASTQ files

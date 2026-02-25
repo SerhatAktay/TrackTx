@@ -71,7 +71,7 @@ process assign_signal_to_functional_regions {
   cache      'deep'
 
   publishDir "${params.output_dir}/07_functional_regions/${sample_id}",
-             mode: 'copy',
+             mode: params.publish_mode,
              overwrite: true
 
   conda (params.conda_fgr ?: "${projectDir}/envs/tracktx.yaml")

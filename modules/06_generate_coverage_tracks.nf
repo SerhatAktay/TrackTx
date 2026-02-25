@@ -60,7 +60,7 @@ process generate_coverage_tracks {
   cache      'deep'
 
   publishDir "${params.output_dir}/03_genome_tracks/${sample_id}",
-             mode: 'copy',
+             mode: params.publish_mode,
              overwrite: true,
              saveAs: { filename ->
                def name = filename instanceof Path ? filename.getFileName().toString() : filename.toString()

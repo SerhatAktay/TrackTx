@@ -65,7 +65,7 @@ process summarize_polymerase_metrics {
   cache      'deep'
 
   publishDir "${params.output_dir}/09_pol_aggregate",
-             mode: 'copy',
+             mode: params.publish_mode,
              overwrite: true
 
   conda (params.conda_pol ?: "${projectDir}/envs/tracktx.yaml")

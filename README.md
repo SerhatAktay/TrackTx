@@ -105,14 +105,13 @@ That's it! The script will:
 **Advanced options:**
 ```bash
 ./run_pipeline.sh --help                 # See all options
-./run_pipeline.sh --fast                 # ⚡ Performance mode (needs ~20GB local)
-./run_pipeline.sh --exfat                # exFAT/USB fix (no local space needed)
+./run_pipeline.sh --external-drive       # When running from USB/exFAT/NAS
 ./run_pipeline.sh -profile docker        # Force specific profile
 ./run_pipeline.sh --resume               # Resume previous run
 ./run_pipeline.sh --output_dir my_run    # Custom output directory
 ```
 
-**💡 Running from external storage?** Use `--fast` for 2–3× speedup (needs ~20GB free on internal disk). No local space? Use `--exfat` to fix publish errors.
+**💡 Running from USB/exFAT/NAS?** Use `--external-drive` so work and results stay on your project directory (fixes publish errors).
 
 ### 3️⃣ Monitor Progress (Real-time)
 
@@ -500,21 +499,21 @@ The pipeline **auto-detects** your environment, but you can force a specific pro
 
 ### Pipeline Too Slow? Try These Fixes
 
-**Problem**: Pipeline running unreasonably slow on external drives (USB SSD, NAS, network storage)?
+**Problem**: Pipeline running from USB/exFAT/NAS, or getting "Failed to publish file [link]" errors?
 
-**Solution**: Use **Performance Mode** for instant 2-3x speedup:
+**Solution**: Use **external drive mode** for correct behavior:
 
 ```bash
-./run_pipeline.sh --fast
+./run_pipeline.sh --external-drive
 ```
 
 This automatically:
-- ✅ Uses internal storage for work directory (~5-10x faster I/O) — **requires ~20GB free on internal disk**
-- ✅ Disables scratch space (reduces file copying)
-- ✅ Increases task parallelism
-- ✅ Optimizes resource allocation
+- ✅ Keeps work and results on your project directory (no local space needed)
+- ✅ Fixes publish errors (uses copy instead of hard links)
+- ✅ Disables scratch space (reduces file copying on slow storage)
+- ✅ Increases task parallelism for better I/O utilization
 
-**No local space?** Use `--exfat` instead — fixes publish errors without moving the work directory.
+**Everything on external:** `--external-drive` keeps work and results on your project directory (no local space needed).
 
 ### Expected Performance
 
@@ -601,9 +600,9 @@ conda clean --all --yes
 Hard links don't work on exFAT (common on USB drives). Fix:
 
 ```bash
-./run_pipeline.sh --exfat                 # No local space needed; keeps work on external drive
+./run_pipeline.sh --external-drive        # Everything on external; fixes publish errors
 # Or, if you have ~20GB free on internal disk:
-./run_pipeline.sh --fast                 # Faster + includes exFAT fix
+./run_pipeline.sh --external-drive        # Everything on external; fixes publish errors
 ```
 
 **OverlappingFileLockException** (e.g. `preprocess_and_quality_filter_reads`, `download_genome_annotations`):

@@ -57,7 +57,7 @@ process quantify_reads_per_gene {
   cache      'deep'
 
   publishDir "${params.output_dir}/04_counts/${sid}",
-             mode: 'copy',
+             mode: params.publish_mode,
              overwrite: true
 
   conda (params.conda_pol ?: "${projectDir}/envs/tracktx.yaml")

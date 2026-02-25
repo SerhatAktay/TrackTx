@@ -78,7 +78,7 @@ process quality_control_aligned_reads {
   cache      'deep'
 
   publishDir "${params.output_dir}/10_qc/${sample_id}",
-             mode: 'copy',
+             mode: params.publish_mode,
              overwrite: true
 
   conda (params.conda_pol ?: "${projectDir}/envs/tracktx.yaml")

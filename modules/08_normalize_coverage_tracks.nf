@@ -68,7 +68,7 @@ process normalize_coverage_tracks {
   cache      'deep'
 
   publishDir "${params.output_dir}/05_normalized_tracks/${sample_id}",
-             mode: 'copy',
+             mode: params.publish_mode,
              overwrite: true
 
   conda (params.conda_norm ?: "${projectDir}/envs/tracktx.yaml")

@@ -59,7 +59,7 @@ process combine_reports_into_cohort {
   cache      'deep'
 
   publishDir "${params.output_dir}/11_reports/cohort",
-             mode: 'copy',
+             mode: params.publish_mode,
              overwrite: true
 
   conda (params.conda_pol ?: "${projectDir}/envs/tracktx.yaml")
