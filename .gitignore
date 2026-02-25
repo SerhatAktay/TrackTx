@@ -3,6 +3,7 @@
 work/
 .nextflow/
 .nextflow.log*
+.nxf_temp/
 
 # Local run outputs
 results*/

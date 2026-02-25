@@ -866,6 +866,15 @@ main() {
     echo ""
     
     # ═══════════════════════════════════════════════════════════════════════
+    # NXF_TEMP: Use project dir for Nextflow staging (avoids filling boot drive
+    # when project/work are on USB or external drive; Nextflow defaults to /var/folders)
+    # ═══════════════════════════════════════════════════════════════════════
+    if [[ -z "${NXF_TEMP:-}" ]]; then
+        export NXF_TEMP="$(pwd)/.nxf_temp"
+        mkdir -p "$NXF_TEMP"
+    fi
+
+    # ═══════════════════════════════════════════════════════════════════════
     # DOCKER/PODMAN: Auto-set NXF_HOST_MEM from container limit
     # Nextflow detects host RAM, but containers see Docker's limit—causing OOM.
     # ═══════════════════════════════════════════════════════════════════════

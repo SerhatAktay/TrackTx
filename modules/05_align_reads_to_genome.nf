@@ -249,9 +249,19 @@ PYEND
   SPIKE_INDEX_LIST='!{(spike_bt2 instanceof List) ? spike_bt2.collect{it.toString()}.join(' ') : spike_bt2.toString()}'
   SPIKE_IDX=""
   if [[ -n "${SPIKE_ID}" && "${SPIKE_ID}" != "none" && -n "${SPIKE_INDEX_LIST}" ]]; then
+    # Verify all spike-in index files exist before copying (helps diagnose staging/disk-space issues)
+    MISSING=""
+    for f in ${SPIKE_INDEX_LIST}; do
+      [[ -s "${f}" ]] || MISSING="${MISSING}${MISSING:+ }${f}"
+    done
+    if [[ -n "${MISSING}" ]]; then
+      tracktx_error "align_reads_to_genome" "Spike-in index files missing or empty (staging may have failed)" \
+        "Files: ${MISSING}. If you see 'No space left on device', free disk space on system drive or set NXF_TEMP to a directory with space (e.g. NXF_TEMP=\$(pwd)/.nxf_temp nextflow run ...)"
+    fi
     # shellcheck disable=SC2086
-    if ! cp -f ${SPIKE_INDEX_LIST} bt2_index/ 2>/dev/null; then
-      tracktx_error "align_reads_to_genome" "Failed to stage spike-in index files" "Check spikein_genome and index paths; SPIKE_INDEX_LIST: ${SPIKE_INDEX_LIST}"
+    if ! cp -f ${SPIKE_INDEX_LIST} bt2_index/; then
+      tracktx_error "align_reads_to_genome" "Failed to copy spike-in index files to bt2_index/" \
+        "Check disk space. Set NXF_TEMP to a directory with space if system temp is full. SPIKE_INDEX_LIST: ${SPIKE_INDEX_LIST}"
     fi
     SPIKE_IDX="bt2_index/${SPIKE_ID}"
     echo "ALIGN | INDEX | Spike-in index files staged"
