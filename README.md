@@ -18,6 +18,7 @@
 
 - [🎉 What's New in v3.0](#-whats-new-in-v30)
 - [⚡ Quick Start](#-quick-start)
+- [🧪 Testing the Pipeline](#-testing-the-pipeline)
 - [📊 What Does TrackTx Do?](#-what-does-tracktx-do)
 - [🔧 Installation](#-installation)
 - [📁 Input Files](#-input-files)
@@ -142,6 +143,57 @@ python3 nfmon.py --all-logs                      # See all task logs
 python3 nfmon.py --oneshot                       # Quick snapshot
 python3 nfmon.py --oneshot --json status.json    # Export JSON
 ```
+
+---
+
+## 🧪 Testing the Pipeline
+
+Want to verify the pipeline works before running your own data? Use the bundled test setup with readymade samplesheets, params, and a script that downloads small test datasets.
+
+### Step 1: Download test data
+
+Run the download script to fetch and subset public PRO-seq data (~10% of reads, ~100–200 MB per test):
+
+```bash
+# Single-end (1 sample, ~2 min)
+./scripts/download_and_subset_test_data.sh SE
+
+# Paired-end (1 sample, ~3 min)
+./scripts/download_and_subset_test_data.sh PE
+
+# Both SE and PE
+./scripts/download_and_subset_test_data.sh all
+```
+
+**With Docker** (same image as the pipeline; no local curl/gzip needed):
+
+```bash
+./scripts/download_and_subset_test_data.sh --docker SE
+./scripts/download_and_subset_test_data.sh --docker PE
+./scripts/download_and_subset_test_data.sh --docker all
+```
+
+The script downloads from ENA, subsets to 10%, and removes the full files. Outputs go to `test_SE/test_data/` and `test_PE/test_data/`.
+
+### Step 2: Run the pipeline with the readymade configs
+
+**Single-end test:**
+```bash
+./run_pipeline.sh \
+  --samplesheet test_SE/samplesheet_SE.csv \
+  --params-file test_SE/params_SE.yaml \
+  --output_dir ./results_test_SE
+```
+
+**Paired-end test:**
+```bash
+./run_pipeline.sh \
+  --samplesheet test_PE/samplesheet_PE.csv \
+  --params-file test_PE/params_PE.yaml \
+  --output_dir ./results_test_PE
+```
+
+Both configs use `sample_source: "local"` and point to the subset FASTQs. See `test_SE/README.md` and `test_PE/README.md` for dataset details.
 
 ---
 

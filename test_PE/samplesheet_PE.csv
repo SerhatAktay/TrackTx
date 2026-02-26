@@ -1,0 +1,2 @@
+sample,condition,timepoint,replicate,file1,file2
+K562_uC0_rep1,control,0,1,test_PE/test_data/K562_uC0_rep1_R1.fastq.gz,test_PE/test_data/K562_uC0_rep1_R2.fastq.gz

@@ -519,14 +519,16 @@ process quality_control_aligned_reads {
   # 9.5) OPTIONAL QC FAILURE THRESHOLDS
   ###########################################################################
 
-  if [[ -n "\${FAIL_MAP_RATE}" && "\${FAIL_MAP_RATE}" =~ ^[0-9]+\.?[0-9]*\$ ]]; then
+  RE_NUM='^[0-9]+\\.?[0-9]*\$'
+  RE_FRAC='^0?\\.?[0-9]+\\.?[0-9]*\$'
+  if [[ -n "\${FAIL_MAP_RATE}" && "\${FAIL_MAP_RATE}" =~ \$RE_NUM ]]; then
     MAP_INT=\${MAP_PERCENT%.*}
     if [[ \${MAP_INT:-0} -lt \${FAIL_MAP_RATE%.*} ]]; then
       tracktx_error "quality_control_aligned_reads" "Mapping rate \${MAP_PERCENT}% below threshold \${FAIL_MAP_RATE}%" "Improve library/alignment or set params.qc.fail_map_rate_below = null to disable" 2
     fi
   fi
 
-  if [[ -n "\${FAIL_STRAND}" && "\${FAIL_STRAND}" =~ ^0?\.?[0-9]+\.?[0-9]*\$ ]]; then
+  if [[ -n "\${FAIL_STRAND}" && "\${FAIL_STRAND}" =~ \$RE_FRAC ]]; then
     MINUS_FRAC=\$(awk -v f=\${PLUS_FRAC} 'BEGIN{printf "%.4f", 1-f}')
     STRAND_MIN=\$(awk -v p=\${PLUS_FRAC} -v m=\${MINUS_FRAC} 'BEGIN{print (p+0<m+0)?p:m}')
     if awk -v s=\${STRAND_MIN} -v t=\${FAIL_STRAND} 'BEGIN{exit (s+0 < t+0)?0:1}'; then
