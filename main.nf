@@ -718,14 +718,14 @@ workflow TrackTx {
     divergent_input_ch,
     Channel.value(params.advanced?.divergent_threshold ?: 'auto'),
     Channel.value(params.advanced?.divergent_sum_thr ?: 'auto'),
-    Channel.value(params.advanced?.divergent_fdr ?: 0.05),
+    Channel.value(params.advanced?.divergent_fdr ?: 0.08),
     Channel.value(params.advanced?.divergent_nt_window ?: 1000),
     Channel.value(params.advanced?.divergent_balance ?: 0.0),
     Channel.value(params.advanced?.divergent_bin_gap ?: 100),
-    Channel.value(params.advanced?.divergent_calibration_percentile ?: 75.0),
-    Channel.value(params.advanced?.divergent_calibration_sum_multiplier ?: 3.0),
+    Channel.value(params.advanced?.divergent_calibration_percentile ?: 65.0),
+    Channel.value(params.advanced?.divergent_calibration_sum_multiplier ?: 1.5),
     Channel.value(params.advanced?.divergent_calibration_background_lower ?: false),
-    Channel.value(params.advanced?.divergent_merge_gap ?: 500)
+    Channel.value(params.advanced?.divergent_merge_gap ?: 150)
   )
   
   divergent_tx_ch = detect_divergent_transcription.out.bed

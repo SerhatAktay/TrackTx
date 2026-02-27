@@ -67,9 +67,9 @@
 // Parameters (params.advanced.*):
 //   divergent_threshold    : Per-bin signal threshold (default: auto)
 //   divergent_sum_thr      : Minimum peak total signal (default: auto)
-//   divergent_fdr          : False discovery rate threshold (default: 0.05)
-//   divergent_calibration_percentile : Percentile for auto threshold (default: 75)
-//   divergent_calibration_sum_multiplier : sum_thr = threshold * N (default: 3)
+//   divergent_fdr          : False discovery rate threshold (default: 0.08)
+//   divergent_calibration_percentile : Percentile for auto threshold (default: 65)
+//   divergent_calibration_sum_multiplier : sum_thr = threshold * N (default: 1.5)
 //   divergent_calibration_background_lower : Use lower 50% bins (default: false)
 //   divergent_merge_gap    : Merge overlapping regions within N bp (default: 500)
 //   divergent_nt_window     : Max edge-to-edge gap for pairing (default: 1000bp)

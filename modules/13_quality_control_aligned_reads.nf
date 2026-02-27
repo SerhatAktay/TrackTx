@@ -543,13 +543,13 @@ process quality_control_aligned_reads {
 
   echo "QC | OUTPUT | Writing JSON summary..."
 
-  # Build optional median_fragment_length (proper JSON escaping)
+  # Build optional median_fragment_length (single-quote literal avoids shell eating the key quotes)
   EXTRA_JSON=""
   if [[ \${IS_PAIRED} -eq 1 ]]; then
     if [[ -n "\${MEDIAN_FRAG}" && "\${MEDIAN_FRAG}" != "NA" ]]; then
-      EXTRA_JSON=", \"median_fragment_length\": \${MEDIAN_FRAG}"
+      EXTRA_JSON=', "median_fragment_length": '\${MEDIAN_FRAG}
     else
-      EXTRA_JSON=", \"median_fragment_length\": null"
+      EXTRA_JSON=', "median_fragment_length": null'
     fi
   fi
 

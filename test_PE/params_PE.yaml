@@ -101,11 +101,11 @@ advanced:
   bowtie2_extra: ""
   divergent_threshold: auto
   divergent_sum_thr: auto
-  divergent_fdr: 0.05
-  divergent_calibration_percentile: 75
-  divergent_calibration_sum_multiplier: 3
+  divergent_fdr: 0.08
+  divergent_calibration_percentile: 65
+  divergent_calibration_sum_multiplier: 1.5
   divergent_calibration_background_lower: 0.01
-  divergent_merge_gap: 500
+  divergent_merge_gap: 150
   divergent_nt_window: 1000
   divergent_bin_gap: 100
   divergent_balance: 0.0

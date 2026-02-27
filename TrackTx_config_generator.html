@@ -382,42 +382,23 @@
             <div class="section-header">Annotation Source & Options</div>
             <div class="help-box mb-3">
               <strong>Affects divergent read assignment:</strong> Gene annotations define TSS/TES and promoter regions.
-              If divergent reads are not assigned to genes, try a different annotation source or check chromosome naming.
+              If divergent reads are not assigned to genes, try a different annotation source.
             </div>
-            <div class="columns">
-              <div class="column">
-                <div class="field">
-                  <label class="label">Annotation Source</label>
-                  <div class="select">
-                    <select id="annotation_source">
-                      <option value="refseq" selected>RefSeq (UCSC) — default</option>
-                      <option value="ensembl">Ensembl — more comprehensive</option>
-                      <option value="gencode">GENCODE — preferred for human/mouse</option>
-                    </select>
-                  </div>
-                  <p class="help">RefSeq: UCSC. Ensembl/GENCODE: better TSS for some genes.</p>
-                </div>
+            <div class="field">
+              <label class="label">Annotation Source</label>
+              <div class="select" style="max-width: 320px;">
+                <select id="annotation_source">
+                  <option value="refseq" selected>RefSeq (UCSC) — default, matches UCSC genomes</option>
+                  <option value="ensembl">Ensembl — more comprehensive</option>
+                  <option value="gencode">GENCODE — preferred for human/mouse</option>
+                </select>
               </div>
-              <div class="column">
-                <div class="field">
-                  <label class="label">Exclude Biotypes</label>
-                  <input class="input" id="annotation_exclude_biotypes" placeholder="rRNA,tRNA (leave empty for all)">
-                  <p class="help">Exclude genes by biotype (e.g. rRNA). Comma-separated.</p>
-                </div>
-              </div>
-              <div class="column">
-                <div class="field">
-                  <label class="label">Chromosome Naming</label>
-                  <div class="select">
-                    <select id="annotation_chr_naming">
-                      <option value="none" selected>None — use as-is</option>
-                      <option value="add">Add chr prefix (Ensembl→UCSC)</option>
-                      <option value="remove">Remove chr prefix (UCSC→Ensembl)</option>
-                    </select>
-                  </div>
-                  <p class="help">Match GTF chr names to alignment.</p>
-                </div>
-              </div>
+              <p class="help">RefSeq: UCSC annotations. Ensembl/GENCODE: better TSS for some genes. Chromosome naming is auto-configured.</p>
+            </div>
+            <div class="field mt-3">
+              <label class="label">Exclude Biotypes</label>
+              <input class="input" id="annotation_exclude_biotypes" placeholder="rRNA,tRNA (leave empty for all)" style="max-width: 320px;">
+              <p class="help">Exclude genes by biotype (e.g. rRNA). Comma-separated. Leave empty for all.</p>
             </div>
           </div>
           
@@ -764,12 +745,12 @@
         <div class="column">
           <div class="field">
             <label class="label">FDR (False Discovery Rate)</label>
-            <input class="input small-input" id="div_fdr" type="number" step="0.01" min="0.001" max="0.5" value="0.05">
+            <input class="input small-input" id="div_fdr" type="number" step="0.01" min="0.001" max="0.5" value="0.08">
             <p class="help">
               <strong>Statistical stringency.</strong><br>
-              • 0.05 = 5% expected false positives (standard)<br>
-              • Lower (0.01) = fewer, higher-confidence regions<br>
-              • Higher (0.10) = more sensitive, more regions
+              • 0.08 = recommended default (sensitive, but controlled)<br>
+              • 0.05 = more conservative (fewer regions)<br>
+              • 0.10 = maximum sensitivity (more regions, more FP)
             </p>
           </div>
         </div>
@@ -813,22 +794,22 @@
         <div class="column">
           <div class="field">
             <label class="label">Calibration Percentile</label>
-            <input class="input small-input" id="div_cal_pct" type="number" step="5" min="50" max="99" value="75">
-            <p class="help">Percentile for auto threshold. Lower = more sites (70–75 typical).</p>
+            <input class="input small-input" id="div_cal_pct" type="number" step="5" min="50" max="99" value="65">
+            <p class="help">Percentile for auto threshold. Lower = more sites (65–75 typical; 65 recommended).</p>
           </div>
         </div>
         <div class="column">
           <div class="field">
             <label class="label">Calibration Sum Multiplier</label>
-            <input class="input small-input" id="div_cal_mult" type="number" step="0.5" min="1" max="20" value="3">
-            <p class="help">sum_thr = threshold × N. Lower = stricter (fewer sites).</p>
+            <input class="input small-input" id="div_cal_mult" type="number" step="0.5" min="1" max="20" value="1.5">
+            <p class="help">sum_thr = threshold × N. Lower = more sensitive (more sites).</p>
           </div>
         </div>
         <div class="column">
           <div class="field">
             <label class="label">Merge Gap (bp)</label>
-            <input class="input small-input" id="div_merge_gap" type="number" min="0" value="500">
-            <p class="help">Merge overlapping regions within N bp. 0 = disabled.</p>
+            <input class="input small-input" id="div_merge_gap" type="number" min="0" value="150">
+            <p class="help">Merge overlapping regions within N bp. 0 = disabled (150–500 typical).</p>
           </div>
         </div>
         <div class="column">
@@ -1096,6 +1077,9 @@
         <button class="button is-primary is-large" onclick="downloadZip()">
           📦 Download ZIP (params.yaml + samplesheet.csv)
         </button>
+        <button class="button is-info is-large" onclick="saveZipToLocation()" title="Pick where to save the ZIP (e.g. same folder as this config)">
+          📁 Save ZIP to…
+        </button>
         <button class="button is-light" onclick="fillPreview()">
           👁️ Preview YAML
         </button>
@@ -1103,6 +1087,7 @@
           📋 Copy YAML to Clipboard
         </button>
       </div>
+      <p class="help mt-2">Use <strong>Save ZIP to…</strong> to pick where to save the ZIP (e.g. same folder as this config). If you get "system files" errors, choose a subfolder (e.g. <code class="mono">Downloads/TrackTx</code>) instead of Downloads itself.</p>
       
       <div class="mt-4">
         <h3 class="subtitle is-6">YAML Preview</h3>
@@ -1453,11 +1438,12 @@ function buildYAML(){
 
   const annotationSource = $('#annotation_source')?.value || 'refseq';
   const annotationExclude = $('#annotation_exclude_biotypes')?.value?.trim() || '';
-  const annotationChr = $('#annotation_chr_naming')?.value || 'none';
+  // Auto: Ensembl uses chr names without prefix; UCSC genomes use chr1. So add prefix for Ensembl.
+  const annotationChr = annotationSource === 'ensembl' ? 'add' : 'none';
   y += `# Annotation options (affects divergent read assignment)\n`;
   y += `annotation_source: ${mono(annotationSource)}\n`;
   y += `annotation_exclude_biotypes: ${mono(annotationExclude)}\n`;
-  y += `annotation_chr_naming: ${mono(annotationChr)}\n\n`;
+  y += `annotation_chr_naming: ${mono(annotationChr)}  # auto: ensembl→add, refseq/gencode→none\n\n`;
 
   y += `# Adapter trimming\n`;
   y += `adapter_trimming:\n`;
@@ -1597,6 +1583,52 @@ async function downloadZip(){
   URL.revokeObjectURL(url);
 }
 
+async function saveZipToLocation(){
+  const boxes = $$('#samplesContainer .sample-box');
+  if(boxes.length === 0){
+    alert('⚠️ Add at least one sample before saving.');
+    return;
+  }
+  const hasData = boxes.some(b => {
+    const src = source();
+    if(src === 'local') return !!b.querySelector('.rep-file1')?.value?.trim();
+    return !!b.querySelector('.rep-srr')?.value?.trim();
+  });
+  if(!hasData && !confirm('No sample data (SRR IDs or file paths) entered. Save anyway?')) return;
+
+  if($('#ref_genome').value === 'other' && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
+    alert('⚠️ Custom genome requires a GTF file. Provide gtf_path or gtf_url before running the pipeline.');
+  }
+
+  if(!('showSaveFilePicker' in window)){
+    alert('Your browser does not support picking a save location. Use "Download ZIP" instead.');
+    return;
+  }
+
+  try {
+    const handle = await window.showSaveFilePicker({
+      suggestedName: 'TrackTx_Config.zip',
+      types: [{ description: 'ZIP archive', accept: { 'application/zip': ['.zip'] } }]
+    });
+    const zip = new JSZip();
+    zip.file('params.yaml', buildYAML());
+    zip.file($('#samplesheet_name').value || 'samplesheet.csv', buildCSV());
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const writable = await handle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    alert('✅ ZIP saved to the selected location.');
+  } catch (err) {
+    if(err.name === 'AbortError') return;
+    const msg = (err.message || err).toString();
+    if(/system files|restricted|blocked/i.test(msg)){
+      alert('Your browser blocks saving to that folder (e.g. Downloads, Desktop). Try a subfolder instead (e.g. Downloads/TrackTx) or use "Download ZIP".');
+    } else {
+      alert('Could not save: ' + msg);
+    }
+  }
+}
+
 function copyYAML(){
   const y = buildYAML();
   navigator.clipboard.writeText(y).then(()=>{
@@ -1607,8 +1639,8 @@ function copyYAML(){
 /* ====================== Divergent Presets ====================== */
 const DIV_PRESETS = {
   default: {
-    thr: 'auto', sum: 'auto', fdr: 0.05, nt_window: 1000, bin_gap: 100,
-    balance: 0, cal_pct: 75, cal_mult: 3, merge_gap: 500, cal_bg_lower: false
+    thr: 'auto', sum: 'auto', fdr: 0.08, nt_window: 1000, bin_gap: 100,
+    balance: 0, cal_pct: 65, cal_mult: 1.5, merge_gap: 150, cal_bg_lower: false
   },
   enhancer: {
     thr: 'auto', sum: 'auto', fdr: 0.05, nt_window: 1000, bin_gap: 100,

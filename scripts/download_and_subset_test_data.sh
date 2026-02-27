@@ -2,12 +2,13 @@
 # =============================================================================
 # download_and_subset_test_data.sh — Download SRA FASTQs and subset to 10%
 # =============================================================================
-# Creates small test datasets for test_SE and test_PE. Deletes full files after
+# Creates a small paired-end test dataset for test_PE. Deletes full files after
 # subsetting to save space. Ships with the pipeline for easy testing.
 #
 # Usage:
-#   ./scripts/download_and_subset_test_data.sh [SE|PE|all]
-#   ./scripts/download_and_subset_test_data.sh --docker [SE|PE|all]
+#   ./scripts/download_and_subset_test_data.sh
+#   ./scripts/download_and_subset_test_data.sh PE
+#   ./scripts/download_and_subset_test_data.sh --docker
 #
 # Options:
 #   --docker   Run inside TrackTx Docker image (same as pipeline)
@@ -33,11 +34,6 @@ FRACTION=10   # percent of reads to keep
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJECT_DIR}"
-
-# SE: GSE127844 K562
-SE_SRR="SRR8669162"
-SE_SAMPLE="K562_control_rep1"
-SE_OUT_DIR="test_SE/test_data"
 
 # PE: GSE154746 K562
 PE_SRR="SRR12267707"
@@ -134,44 +130,6 @@ subset_fastq() {
 }
 
 # -----------------------------------------------------------------------------
-# Process SE
-# -----------------------------------------------------------------------------
-do_se() {
-  echo ""
-  echo "=== test_SE: ${SE_SRR} (${SE_SAMPLE}) ==="
-  mkdir -p "${SE_OUT_DIR}"
-  local r1_full r1_sub
-  r1_full="${SE_OUT_DIR}/${SE_SRR}_R1.fastq.gz"
-  r1_sub="${SE_OUT_DIR}/${SE_SAMPLE}_R1.fastq.gz"
-  if [[ -f "${r1_sub}" ]]; then
-    echo "  Subset already exists: ${r1_sub}"
-    return 0
-  fi
-  if [[ ! -f "${r1_full}" ]]; then
-    # Try ENA first (often has .gz directly)
-    if ! download_ena "${SE_SRR}" "${SE_OUT_DIR}"; then
-      echo "  ENA failed, trying fasterq-dump..."
-      if ! download_fasterq "${SE_SRR}" "${SE_OUT_DIR}"; then
-        echo "ERROR: Download failed. Install sra-tools (conda install -c bioconda sra-tools)"
-        return 1
-      fi
-    fi
-    # Find R1 (ENA may use .fastq.gz, _1.fastq.gz; fasterq-dump uses _R1.fastq)
-    if [[ -f "${SE_OUT_DIR}/${SE_SRR}.fastq.gz" ]]; then
-      r1_full="${SE_OUT_DIR}/${SE_SRR}.fastq.gz"
-    elif [[ -f "${SE_OUT_DIR}/${SE_SRR}_1.fastq.gz" ]]; then
-      r1_full="${SE_OUT_DIR}/${SE_SRR}_1.fastq.gz"
-    elif [[ -f "${SE_OUT_DIR}/${SE_SRR}_R1.fastq" ]]; then
-      gzip -c "${SE_OUT_DIR}/${SE_SRR}_R1.fastq" > "${r1_full}"
-      rm -f "${SE_OUT_DIR}/${SE_SRR}_R1.fastq"
-    fi
-  fi
-  subset_fastq "${r1_full}" "${r1_sub}" "${FRACTION}"
-  rm -f "${r1_full}"
-  echo "  Done: ${r1_sub} (removed full file to save space)"
-}
-
-# -----------------------------------------------------------------------------
 # Process PE
 # -----------------------------------------------------------------------------
 do_pe() {
@@ -229,24 +187,19 @@ do_pe() {
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
-MODE="${1:-all}"
-echo "TrackTx test data: download + subset to ${FRACTION}%"
+MODE="${1:-PE}"
+echo "TrackTx test data (PE): download + subset to ${FRACTION}%"
 case "${MODE}" in
-  SE|se)  do_se ;;
-  PE|pe)  do_pe ;;
-  all)    do_se; do_pe ;;
+  PE|pe|'')  do_pe ;;
   -h|--help)
-    echo "Usage: $0 [--docker] [SE|PE|all]"
+    echo "Usage: $0 [--docker] [PE]"
     echo "  --docker  Run inside TrackTx Docker image"
-    echo "  SE        Single-end test data only"
-    echo "  PE        Paired-end test data only"
-    echo "  all       Both (default)"
+    echo "  PE        Paired-end test data only (default)"
     exit 0 ;;
   *)
-    echo "Usage: $0 [--docker] [SE|PE|all]"
+    echo "Usage: $0 [--docker] [PE]"
     exit 1 ;;
 esac
 echo ""
 echo "Done. Run pipeline with:"
-echo "  SE: ./run_pipeline.sh --samplesheet test_SE/samplesheet_SE.csv --params-file test_SE/params_SE.yaml --output_dir ./results_test_SE"
-echo "  PE: ./run_pipeline.sh --samplesheet test_PE/samplesheet_PE.csv --params-file test_PE/params_PE.yaml --output_dir ./results_test_PE"
+echo "  ./run_pipeline.sh --samplesheet test_PE/samplesheet_PE.csv --params-file test_PE/params_PE.yaml --output_dir ./results_test_PE"

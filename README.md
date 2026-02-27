@@ -122,6 +122,8 @@ Watch your pipeline in action with the **live monitor**:
 python3 nfmon.py
 ```
 
+**Custom output dir?** nfmon auto-detects trace files in `results/` and `results_*/` (e.g. `results_test_PE3/trace/trace.txt`). To force a path: `python3 nfmon.py --trace results_test_PE3/trace/trace.txt`
+
 **Install Rich (optional, for enhanced UI):** The monitor works without it (basic curses fallback), but for a better layout, colors, and live updates:
 ```bash
 pip install rich
@@ -150,42 +152,25 @@ python3 nfmon.py --oneshot --json status.json    # Export JSON
 
 Want to verify the pipeline works before running your own data? Use the bundled test setup with readymade samplesheets, params, and a script that downloads small test datasets.
 
-### Step 1: Download test data
+### Step 1: Download test data (PE only)
 
-Run the download script to fetch and subset public PRO-seq data (~10% of reads, ~100–200 MB per test):
+Run the download script to fetch and subset public PRO-seq data (~10% of reads, ~100–200 MB for the test):
 
 ```bash
-# Single-end (1 sample, ~2 min)
-./scripts/download_and_subset_test_data.sh SE
-
 # Paired-end (1 sample, ~3 min)
-./scripts/download_and_subset_test_data.sh PE
-
-# Both SE and PE
-./scripts/download_and_subset_test_data.sh all
+./scripts/download_and_subset_test_data.sh
 ```
 
 **With Docker** (same image as the pipeline; no local curl/gzip needed):
 
 ```bash
-./scripts/download_and_subset_test_data.sh --docker SE
-./scripts/download_and_subset_test_data.sh --docker PE
-./scripts/download_and_subset_test_data.sh --docker all
+./scripts/download_and_subset_test_data.sh --docker
 ```
 
-The script downloads from ENA, subsets to 10%, and removes the full files. Outputs go to `test_SE/test_data/` and `test_PE/test_data/`.
+The script downloads from ENA, subsets to 10%, and removes the full files. Outputs go to `test_PE/test_data/`.
 
-### Step 2: Run the pipeline with the readymade configs
+### Step 2: Run the pipeline with the readymade config
 
-**Single-end test:**
-```bash
-./run_pipeline.sh \
-  --samplesheet test_SE/samplesheet_SE.csv \
-  --params-file test_SE/params_SE.yaml \
-  --output_dir ./results_test_SE
-```
-
-**Paired-end test:**
 ```bash
 ./run_pipeline.sh \
   --samplesheet test_PE/samplesheet_PE.csv \
@@ -193,7 +178,7 @@ The script downloads from ENA, subsets to 10%, and removes the full files. Outpu
   --output_dir ./results_test_PE
 ```
 
-Both configs use `sample_source: "local"` and point to the subset FASTQs. See `test_SE/README.md` and `test_PE/README.md` for dataset details.
+The config uses `sample_source: "local"` and points to the subset FASTQs. See `test_PE/README.md` for dataset details.
 
 ---
 
@@ -430,15 +415,15 @@ umi:
 
 # Advanced: Divergent Transcription (Statistical)
 advanced:
-  divergent_threshold: auto    # auto = 75th percentile, or specify float
-  divergent_sum_thr: auto     # auto = 3x threshold, or specify float
-  divergent_fdr: 0.05         # False discovery rate (0.01-0.10)
-  divergent_calibration_percentile: 75   # More permissive (targets 50-100K sites)
-  divergent_calibration_sum_multiplier: 3
-  divergent_merge_gap: 500    # Merge overlapping regions (bp); 0=disabled
-  divergent_nt_window: 1000   # Max pairing distance (bp)
-  divergent_balance: 0.0      # Balance ratio (0 = max sensitivity)
-  divergent_qc: true          # Generate QC reports
+  divergent_threshold: auto    # auto = 65th percentile, or specify float
+  divergent_sum_thr: auto      # auto = 1.5x threshold, or specify float
+  divergent_fdr: 0.08          # False discovery rate (0.01-0.10)
+  divergent_calibration_percentile: 65   # Recommended (targets ~50-150K sites)
+  divergent_calibration_sum_multiplier: 1.5
+  divergent_merge_gap: 150     # Merge overlapping regions (bp); 0=disabled
+  divergent_nt_window: 1000    # Max pairing distance (bp)
+  divergent_balance: 0.0       # Balance ratio (0 = max sensitivity)
+  divergent_qc: true           # Generate QC reports
 
 # Functional regions (affects divergent read assignment)
 functional_regions:
