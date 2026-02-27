@@ -8,7 +8,7 @@
 [![Docker](https://img.shields.io/badge/docker-supported-0db7ed.svg)](https://www.docker.com/)
 [![Conda](https://img.shields.io/badge/conda-supported-green.svg)](https://conda.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-3.0-blue.svg)](https://github.com/serhataktay/tracktx/releases)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/serhataktay/tracktx/releases/tag/v1.2.0)
 
 </div>
 
@@ -16,7 +16,7 @@
 
 ## 📚 Contents
 
-- [🎉 What's New in v3.0](#-whats-new-in-v30)
+- [🎉 What's New in v1.2.0](#-whats-new-in-v120)
 - [⚡ Quick Start](#-quick-start)
 - [🧪 Testing the Pipeline](#-testing-the-pipeline)
 - [📊 What Does TrackTx Do?](#-what-does-tracktx-do)
@@ -33,7 +33,7 @@
 
 ---
 
-## 🎉 What's New in v3.0
+## 🎉 What's New in v1.2.0
 
 ### 🔬 Statistical Divergent Transcription Detection
 - **Gaussian Mixture Models (GMM)** with FDR control for high-confidence region calling
