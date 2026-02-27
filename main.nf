@@ -71,6 +71,9 @@ params.qc.enabled = params.qc.enabled != null ? params.qc.enabled : true
 params.qc.mapq = params.qc.mapq ?: 10
 params.qc.dedup = params.qc.dedup != null ? params.qc.dedup : true
 params.qc.depth_max_cov = params.qc.depth_max_cov ?: 0
+// Optional fail thresholds: fail process if metric below value (null = do not fail)
+params.qc.fail_map_rate_below = params.qc.fail_map_rate_below  // e.g. 50 to fail if mapping rate < 50%
+params.qc.fail_strand_min = params.qc.fail_strand_min           // e.g. 0.30 to fail if either strand < 30%
 
 // Polymerase aggregate parameters (used by summarize_polymerase_metrics module)
 params.pol = params.pol instanceof Map ? params.pol : [:]
@@ -715,10 +718,14 @@ workflow TrackTx {
     divergent_input_ch,
     Channel.value(params.advanced?.divergent_threshold ?: 'auto'),
     Channel.value(params.advanced?.divergent_sum_thr ?: 'auto'),
-    Channel.value(params.advanced?.divergent_fdr ?: 0.05),
+    Channel.value(params.advanced?.divergent_fdr ?: 0.08),
     Channel.value(params.advanced?.divergent_nt_window ?: 1000),
     Channel.value(params.advanced?.divergent_balance ?: 0.0),
-    Channel.value(params.advanced?.divergent_bin_gap ?: 100)
+    Channel.value(params.advanced?.divergent_bin_gap ?: 100),
+    Channel.value(params.advanced?.divergent_calibration_percentile ?: 65.0),
+    Channel.value(params.advanced?.divergent_calibration_sum_multiplier ?: 1.5),
+    Channel.value(params.advanced?.divergent_calibration_background_lower ?: false),
+    Channel.value(params.advanced?.divergent_merge_gap ?: 150)
   )
   
   divergent_tx_ch = detect_divergent_transcription.out.bed

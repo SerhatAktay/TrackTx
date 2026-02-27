@@ -1,4 +1,5 @@
 # Minimal, reproducible image built from the unified envs/tracktx.yaml
+# Base: micromamba 1.5.x (stable); newer 2.x available at mambaorg/micromamba
 FROM mambaorg/micromamba:1.5.10-jammy
 
 ARG MAMBA_DOCKERFILE_ACTIVATE=1

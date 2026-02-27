@@ -94,7 +94,7 @@ process summarize_polymerase_metrics {
   export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a aggregate.log)
+  exec > aggregate.log
   exec 2> >(tee -a aggregate.log >&2)
 
   tracktx_error() {
@@ -109,6 +109,7 @@ process summarize_polymerase_metrics {
     echo "═══════════════════════════════════════════════════════════════════════" >&2
     exit "\$code"
   }
+  trap 'tracktx_error "summarize_polymerase_metrics" "Unexpected process failure" "Check aggregate.log in work dir"' ERR
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -252,33 +253,34 @@ CONTRASTEOF
 
   echo "AGGREGATE | VALIDATE | Manifest header: OK"
 
-  # Validate each data row
+  # Validate each data row (use process substitution so loop runs in main shell)
   SAMPLE_COUNT=0
   INVALID_ROWS=0
 
-  tail -n +2 "${SAMPLES_TSV}" | while IFS=$'\t' read -r SAMPLE_ID CONDITION TIMEPOINT REPLICATE FILE; do
+  while IFS=$'\t' read -r SAMPLE_ID CONDITION TIMEPOINT REPLICATE FILE; do
     SAMPLE_COUNT=$((SAMPLE_COUNT + 1))
-    
+
     # Check field count
     if [[ -z "${SAMPLE_ID}" || -z "${CONDITION}" || -z "${TIMEPOINT}" || -z "${REPLICATE}" || -z "${FILE}" ]]; then
       echo "AGGREGATE | WARNING | Row ${SAMPLE_COUNT}: incomplete fields"
       INVALID_ROWS=$((INVALID_ROWS + 1))
       continue
     fi
-    
+
     # Check file exists
     if [[ ! -s "${FILE}" ]]; then
       echo "AGGREGATE | WARNING | Row ${SAMPLE_COUNT}: file missing or empty: ${FILE}"
       INVALID_ROWS=$((INVALID_ROWS + 1))
     fi
-  done
+  done < <(tail -n +2 "${SAMPLES_TSV}")
 
-  # Count samples (excluding header)
-  SAMPLE_COUNT=$((SAMPLES_LINES - 1))
   echo "AGGREGATE | VALIDATE | Samples: ${SAMPLE_COUNT}"
 
   if [[ ${INVALID_ROWS} -gt 0 ]]; then
     echo "AGGREGATE | WARNING | ${INVALID_ROWS} rows with issues"
+    if [[ ${INVALID_ROWS} -ge ${SAMPLE_COUNT} && ${SAMPLE_COUNT} -gt 0 ]]; then
+      tracktx_error "summarize_polymerase_metrics" "All ${SAMPLE_COUNT} manifest rows are invalid (missing files or incomplete fields)" "Fix samples manifest and ensure metric files exist"
+    fi
   fi
 
   ###########################################################################
@@ -416,9 +418,9 @@ CONTRASTEOF
     CONTRAST_GENES=$(tail -n +2 pol_gene_metrics_contrasts.tsv | wc -l | tr -d ' ')
     echo "AGGREGATE | RESULTS | Contrasts: ${CONTRAST_GENES} genes analyzed"
     
-    # Count significant genes if possible (log2FC and padj columns)
+    # Count significant genes: log2FC col 9, padj col 11
     SIG_COUNT=$(tail -n +2 pol_gene_metrics_contrasts.tsv | \
-                awk -F'\t' 'NF>=6 && $5!="NA" && $6!="NA" && ($5>1 || $5<-1) && $6<0.05' | \
+                awk -F'\t' 'NF>=11 && $9!="" && $9!="NA" && $11!="" && $11!="NA" && ($9+0>1 || $9+0<-1) && $11+0<0.05 && $11+0>0' | \
                 wc -l | tr -d ' ' || echo "NA")
     
     if [[ "${SIG_COUNT}" != "NA" ]]; then

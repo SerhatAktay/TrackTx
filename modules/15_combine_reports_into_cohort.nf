@@ -86,7 +86,7 @@ process combine_reports_into_cohort {
   export LC_ALL=C
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a combine.log)
+  exec > combine.log
   exec 2> >(tee -a combine.log >&2)
 
   tracktx_error() {
@@ -101,6 +101,7 @@ process combine_reports_into_cohort {
     echo "═══════════════════════════════════════════════════════════════════════" >&2
     exit "\$code"
   }
+  trap 'tracktx_error "combine_reports_into_cohort" "Unexpected process failure" "Check combine.log in work dir"' ERR
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -462,6 +463,7 @@ process combine_reports_into_cohort {
 
       <div class="section">
         <h2>Pipeline Reports</h2>
+        <p style="font-size:0.9rem;color:var(--muted);margin-bottom:1rem;">Optional: generated with -with-report, -with-timeline, -with-dag. Links may 404 if not used.</p>
         <div class="link-grid">
           <a href="NF_REPORT_REL" class="link-card">
             <h3>📈 Execution Report</h3>
@@ -548,7 +550,7 @@ LANDINGEOF
 
   echo "COHORT | README | Creating documentation..."
 
-  cat > "${OUT_README}" <<'DOCEOF'
+  cat > "${OUT_README}" <<DOCEOF
 ================================================================================
 COHORT-LEVEL REPORT AGGREGATION
 ================================================================================
@@ -738,7 +740,7 @@ TSV Export:
   treatment <- subset(cohort, condition == "treatment")
   
   # Calculate statistics
-  mean(cohort$map_rate_percent)
+  mean(cohort\\$map_rate_percent)
   
   # Load in Python
   import pandas as pd

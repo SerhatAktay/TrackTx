@@ -1186,7 +1186,7 @@ def generate_html_report(
         <li>Divergent TX: <code>{{output_dir}}/06_divergent_tx/&lt;sample&gt;/divergent_transcription.bed</code></li>
         <li>Functional regions: <code>{{output_dir}}/07_functional_regions/&lt;sample&gt;/functional_regions.bed</code></li>
         <li>Pol II metrics: <code>{{output_dir}}/08_pol_metrics/&lt;sample&gt;/*.tsv</code></li>
-        <li>QC stats: <code>{{output_dir}}/10_qc/&lt;sample&gt;/qc_summary.json</code></li>
+        <li>QC stats: <code>{{output_dir}}/10_qc/&lt;sample&gt;/qc_pol.json</code></li>
       </ul>
     </div>
   </section>
@@ -1304,9 +1304,16 @@ def main():
         if not json_data:
             skipped_files.append(filepath)
             continue
-        
+
+        # Schema version check
+        schema = json_data.get("schema_version", "unknown")
+        if schema not in ("1.0", "1.0.0", "unknown"):
+            log_warning(f"Unexpected schema version '{schema}' in {filepath}")
+
         fallback_name = Path(filepath).stem.split(".")[0]
         sample = normalize_sample_data(json_data, fallback_name)
+        if sample and sample.get("sample_id") == fallback_name and fallback_name.startswith("report_"):
+            log_warning(f"Sample ID from fallback: {fallback_name} (JSON missing sample field)")
         
         if sample:
             samples.append(sample)
@@ -1324,6 +1331,14 @@ def main():
     if not samples:
         log_error("No valid samples loaded")
         return 3
+
+    # Sort by experimental design (condition, timepoint, replicate, sample_id)
+    samples.sort(key=lambda s: (
+        str(s.get("condition", "")),
+        str(s.get("timepoint", "")),
+        str(s.get("replicate", "")),
+        str(s.get("sample_id", "")),
+    ))
     
     # Aggregate region data
     log("═" * 70, "")
@@ -2521,8 +2536,9 @@ def main():
                 }
                 
                 const depthTitle = row.input_reads_source === 'fallback_functional' ? 'Estimated (functional reads)' : row.input_reads_source === 'fallback_dedup' ? 'Estimated (dedup reads)' : '';
+                const reportUrl = '../samples/' + encodeURIComponent(row.sample_id) + '/' + encodeURIComponent(row.sample_id) + '.report.html';
                 return `<tr>
-                    <td><strong>${row.sample_id}</strong></td>
+                    <td><strong><a href="${reportUrl}" target="_blank">${row.sample_id}</a></strong></td>
                     <td>${row.condition || '-'}</td>
                     <td>${row.timepoint || '-'}</td>
                     <td>${row.replicate || '-'}</td>

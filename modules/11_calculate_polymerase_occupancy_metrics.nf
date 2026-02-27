@@ -106,7 +106,7 @@ process calculate_polymerase_occupancy_metrics {
   export NUMEXPR_NUM_THREADS=1
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a pol_metrics.log)
+  exec > pol_metrics.log
   exec 2> >(tee -a pol_metrics.log >&2)
 
   tracktx_error() {
@@ -121,6 +121,7 @@ process calculate_polymerase_occupancy_metrics {
     echo "═══════════════════════════════════════════════════════════════════════" >&2
     exit "\$code"
   }
+  trap 'tracktx_error "calculate_polymerase_occupancy_metrics" "Unexpected process failure" "Check pol_metrics.log in work dir"' ERR
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -492,8 +493,8 @@ process calculate_polymerase_occupancy_metrics {
 
   # Ensure output files exist
   if [[ ! -s pol_gene_metrics.tsv ]]; then
-    cat > pol_gene_metrics.tsv <<GENESEOF
-gene_id gene_name chrom strand  tss_bp  tss_lo  tss_hi  tss_width body_lo body_hi body_len  tss_count tss_cpm tss_density_per_bp  body_count  body_cpm  body_density_per_bp pi_raw  pi_len_norm is_truncated
+    cat > pol_gene_metrics.tsv <<'GENESEOF'
+gene_id	gene_name	chrom	strand	tss_lo	tss_hi	tss_width	body_lo	body_hi	body_len	tss_count	tss_cpm	tss_density_per_bp	body_count	body_cpm	body_density_per_bp	pi_raw	pi_len_norm	is_truncated
 GENESEOF
   fi
 

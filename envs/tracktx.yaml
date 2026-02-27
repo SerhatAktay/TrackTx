@@ -3,22 +3,22 @@
 # Keep this single source of truth to avoid drift between Docker and Conda.
 #
 # ── Container usage ─────────────────────────────────────────────────────────
-# Recommended: use the prebuilt image
-#   docker pull ghcr.io/serhataktay/tracktx:latest
+# Recommended: use the prebuilt image (use fixed tag for reproducibility)
+#   docker pull ghcr.io/serhataktay/tracktx:3.0
 #   nextflow run . -entry TrackTx -profile docker
 #
 # Podman (rootless):
-#   podman pull ghcr.io/serhataktay/tracktx:latest
+#   podman pull ghcr.io/serhataktay/tracktx:3.0
 #   nextflow run . -entry TrackTx -profile podman
 #
 # HPC without Docker? Apptainer/Singularity:
 #   nextflow run . -entry TrackTx -profile singularity
 #
 # Build locally (optional, from repo root):
-#   docker build -t ghcr.io/serhataktay/tracktx:latest -f envs/Dockerfile .
+#   docker build -t ghcr.io/serhataktay/tracktx:3.0 -f envs/Dockerfile .
 #   # multi-arch (Intel + Apple Silicon); requires: docker buildx create --use
 #   docker buildx build --platform linux/amd64,linux/arm64 \
-#     -t ghcr.io/serhataktay/tracktx:latest -f envs/Dockerfile . --push
+#     -t ghcr.io/serhataktay/tracktx:3.0 -f envs/Dockerfile . --push
 # ────────────────────────────────────────────────────────────────────────────
 
 name: tracktx
@@ -70,10 +70,9 @@ dependencies:
 
   # ── Python bio/IO libs ─────────────────────────────────────────────────
   - pysam               # BAM/SAM access in Python (qc & metrics)
-  - pybigwig            # Read/write BigWig
+  - pybigwig            # BigWig read/write (optional; used by some tools)
   - pybedtools          # BEDTools bindings (optional convenience)
-  - biopython           # General bio parsing
-  - jinja2              # HTML templating in combine_reports.py
+  - biopython           # General bio parsing (optional)
 
   # ── Data science stack ─────────────────────────────────────────────────
   - numpy>=1.26
@@ -85,8 +84,8 @@ dependencies:
 
   # ── Plotting (used in reports/QC) ──────────────────────────────────────
   - matplotlib
-  - seaborn
-  - plotly
+  - seaborn             # Optional: enhanced plots
+  - plotly               # Optional: interactive plots
 
   # ── UMI / trimming ─────────────────────────────────────────────────────
   - cutadapt

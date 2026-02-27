@@ -111,7 +111,7 @@ process generate_per_sample_reports {
   export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a "!{sample_id}.report.log")
+  exec > "!{sample_id}.report.log"
   exec 2> >(tee -a "!{sample_id}.report.log" >&2)
 
   tracktx_error() {
@@ -126,6 +126,7 @@ process generate_per_sample_reports {
     echo "═══════════════════════════════════════════════════════════════════════" >&2
     exit "\$code"
   }
+  trap 'tracktx_error "generate_per_sample_reports" "Unexpected process failure" "Check *.report.log in work dir"' ERR
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -456,7 +457,7 @@ PLACEHOLDER
 
   echo "REPORT | README | Creating documentation..."
 
-  cat > "${OUT_README}" <<'DOCEOF'
+  cat > "${OUT_README}" <<DOCEOF
 ================================================================================
 PER-SAMPLE REPORT — !{sample_id}
 ================================================================================
@@ -503,15 +504,12 @@ REPORT FILES
       • JSON Schema compliant
   
   ${OUT_PLOTS}
-    $([ ${ENABLE_PLOTS} -eq 1 ] && cat <<PLOTINFO
-Supplementary plots page with:
+    $([ ${ENABLE_PLOTS} -eq 1 ] && echo "Supplementary plots page with:
       • Functional region composition pie chart
       • Pausing index distribution histogram
       • QC metrics summary plots
       • Base64-encoded inline images
-      • No external dependencies
-PLOTINFO
-|| echo "Placeholder (plots disabled)")
+      • No external dependencies" || echo "Placeholder (plots disabled)")
   
   ${OUT_README}
     This documentation file

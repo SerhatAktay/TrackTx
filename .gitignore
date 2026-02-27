@@ -7,6 +7,8 @@ work/
 
 # Local run outputs
 results*/
+test_PE/test_data/
+dev_full_PE/data/
 Vihervaara_2021/
 DM_2023/
 MEFs*/

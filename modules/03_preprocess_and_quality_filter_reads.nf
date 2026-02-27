@@ -71,6 +71,7 @@ process preprocess_and_quality_filter_reads {
              mode: params.publish_mode,
              overwrite: true,
              saveAs: { filename ->
+               if (params.publish_trimmed_fastq == false) return null  // Skip entire folder to save ~900 MB/sample
                def name = filename instanceof Path ? filename.getFileName().toString() : filename.toString()
                // Only publish processed outputs, NOT the raw input FASTQ files
                // This prevents duplicating large raw FASTQ files in the results folder
@@ -122,7 +123,7 @@ process preprocess_and_quality_filter_reads {
   export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a preprocess_reads.log)
+  exec > preprocess_reads.log
   exec 2> >(tee -a preprocess_reads.log >&2)
 
   tracktx_error() {
@@ -137,6 +138,7 @@ process preprocess_and_quality_filter_reads {
     echo "═══════════════════════════════════════════════════════════════════════" >&2
     exit "\$code"
   }
+  trap 'tracktx_error "preprocess_and_quality_filter_reads" "Unexpected process failure" "Check preprocess_reads.log in work dir"' ERR
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"

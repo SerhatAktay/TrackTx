@@ -82,7 +82,7 @@ process quantify_reads_per_gene {
   export LC_ALL=C
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a quantify_reads_per_gene.log)
+  exec > quantify_reads_per_gene.log
   exec 2> >(tee -a quantify_reads_per_gene.log >&2)
 
   tracktx_error() {
@@ -97,6 +97,7 @@ process quantify_reads_per_gene {
     echo "═══════════════════════════════════════════════════════════════════════" >&2
     exit "\$code"
   }
+  trap 'tracktx_error "quantify_reads_per_gene" "Unexpected process failure" "Check quantify_reads_per_gene.log in work dir"' ERR
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"

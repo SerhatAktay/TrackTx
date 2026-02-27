@@ -797,7 +797,7 @@ def main():
             # Create empty outputs
             log_warning("Creating empty output files")
             Path(args.out_pausing).write_text(
-                "gene_id\tchrom\tstrand\ttss_count\tgene_body_count\tpausing_index\tis_truncated\n"
+                "gene_id\tchrom\tstrand\ttss_count\tgene_body_count\tpi_raw\tpi_len_norm\tis_truncated\n"
             )
             Path(args.out_genes).write_text(
                 "gene_id\tgene_name\tchrom\tstrand\ttss_lo\ttss_hi\ttss_width\t"

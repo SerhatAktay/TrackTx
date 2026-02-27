@@ -16,9 +16,9 @@
 //
 // Algorithm Overview:
 //   1. Load strand-specific bedGraphs (pos/neg)
-//   2. Auto-calibrate thresholds from background distribution
-//      - threshold = 95th percentile of background
-//      - sum_thr = 10x threshold
+//   2. Auto-calibrate thresholds (targets 50-100K sites for mammalian genomes)
+//      - threshold = 75th percentile (more permissive than 95th)
+//      - sum_thr = 3x threshold (allows narrower peaks)
 //   3. Call peak blocks on each strand (threshold + merge)
 //   4. Pair peaks using relaxed initial criteria
 //      - Distance window (default 1000bp)
@@ -32,7 +32,8 @@
 //      - Identify "positive" (true divergent TX) component
 //      - Compute posterior probabilities
 //   7. Apply FDR control to filter regions
-//   8. Output high-confidence divergent transcription sites
+//   8. Merge overlapping regions (reduces redundancy from one-to-many pairing)
+//   9. Output high-confidence divergent transcription sites
 //
 // Key Differences from earlier threshold-based approach:
 //   • Uses statistics instead of hard thresholds
@@ -64,12 +65,16 @@
 //   Column 5: confidence_score — Posterior probability from GMM (0-1)
 //
 // Parameters (params.advanced.*):
-//   divergent_threshold    : Per-bin signal threshold (default: auto-calibrate)
-//   divergent_sum_thr      : Minimum peak total signal (default: auto-calibrate)
-//   divergent_fdr          : False discovery rate threshold (default: 0.05)
-//   divergent_nt_window    : Max edge-to-edge gap for pairing (default: 1000bp)
+//   divergent_threshold    : Per-bin signal threshold (default: auto)
+//   divergent_sum_thr      : Minimum peak total signal (default: auto)
+//   divergent_fdr          : False discovery rate threshold (default: 0.08)
+//   divergent_calibration_percentile : Percentile for auto threshold (default: 65)
+//   divergent_calibration_sum_multiplier : sum_thr = threshold * N (default: 1.5)
+//   divergent_calibration_background_lower : Use lower 50% bins (default: false)
+//   divergent_merge_gap    : Merge overlapping regions within N bp (default: 500)
+//   divergent_nt_window     : Max edge-to-edge gap for pairing (default: 1000bp)
 //   divergent_balance      : Min balance ratio for initial pairing (default: 0.0)
-//   divergent_bin_gap      : Max gap within peaks (default: 100bp)
+//   divergent_bin_gap       : Max gap within peaks (default: 100bp)
 //
 // Dependencies:
 //   • Python 3.7+
@@ -105,6 +110,10 @@ process detect_divergent_transcription {
     val nt_window
     val balance
     val bin_gap
+    val calibration_percentile
+    val calibration_sum_multiplier
+    val calibration_background_lower
+    val merge_gap
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:
@@ -126,11 +135,12 @@ process detect_divergent_transcription {
   export LC_ALL=C
 
   # Stdout → log + terminal; stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a divergent.log)
+  exec > divergent.log
   exec 2> >(tee -a divergent.log >&2)
   
   # Trap SIGPIPE to avoid exit code 141
   trap '' PIPE
+  trap 'tracktx_error "detect_divergent_transcription" "Unexpected process failure" "Check divergent.log in work dir"' ERR
 
   # Standardized error reporting (surfaces clearly in Nextflow "Command error")
   tracktx_error() {
@@ -173,6 +183,10 @@ process detect_divergent_transcription {
   NT_WINDOW=!{nt_window}
   BALANCE=!{balance}
   BIN_GAP=!{bin_gap}
+  CAL_PERCENTILE=!{calibration_percentile}
+  CAL_SUM_MULT=!{calibration_sum_multiplier}
+  CAL_BG_LOWER=!{calibration_background_lower}
+  MERGE_GAP=!{merge_gap}
 
   # Feature flags
   DO_QC=$([[ "!{params.advanced?.divergent_qc}" == "false" ]] && echo 0 || echo 1)
@@ -187,8 +201,9 @@ process detect_divergent_transcription {
   echo ""
   echo "DIVERGENT | CONFIG | Detection Parameters (statistical):"
   echo "DIVERGENT | CONFIG |   Algorithm: Gaussian Mixture Model with FDR control"
-  echo "DIVERGENT | CONFIG |   Threshold: ${THRESHOLD} (auto = 95th percentile)"
-  echo "DIVERGENT | CONFIG |   Sum threshold: ${SUM_THR} (auto = 10x threshold)"
+  echo "DIVERGENT | CONFIG |   Threshold: ${THRESHOLD} (auto = ${CAL_PERCENTILE}th percentile)"
+  echo "DIVERGENT | CONFIG |   Sum threshold: ${SUM_THR} (auto = ${CAL_SUM_MULT}x threshold)"
+  echo "DIVERGENT | CONFIG |   Merge gap: ${MERGE_GAP} bp (0=disabled)"
   echo "DIVERGENT | CONFIG |   FDR threshold: ${FDR}"
   echo "DIVERGENT | CONFIG |   Pairing window: ${NT_WINDOW} bp"
   echo "DIVERGENT | CONFIG |   Balance filter: ${BALANCE} (0.0 = disabled for max sensitivity)"
@@ -300,6 +315,9 @@ process detect_divergent_transcription {
   QC_ARG=""
   [[ ${DO_QC} -eq 0 ]] && QC_ARG="--no-report"
 
+  CAL_BG_ARG=""
+  [[ "${CAL_BG_LOWER}" == "true" ]] && CAL_BG_ARG="--calibration-background-lower"
+
   # Run detector (capture exit code)
   DETECT_START=$(date +%s)
   set +e
@@ -312,10 +330,14 @@ process detect_divergent_transcription {
     --nt-window    "${NT_WINDOW}" \
     --balance      "${BALANCE}" \
     --bin-gap      "${BIN_GAP}" \
+    --calibration-percentile "${CAL_PERCENTILE}" \
+    --calibration-sum-multiplier "${CAL_SUM_MULT}" \
+    --merge-gap    "${MERGE_GAP}" \
     --ncores       "${THREADS}" \
     --write-summary "divergent_summary.tsv" \
     ${THRESHOLD_ARG} \
     ${SUM_THR_ARG} \
+    ${CAL_BG_ARG} \
     ${QC_ARG}
   
   DETECT_RC=$?

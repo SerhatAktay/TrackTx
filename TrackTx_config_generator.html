@@ -98,6 +98,27 @@
     .columns {
       margin-bottom: 1rem;
     }
+    
+    /* Space section: savings badges */
+    .space-badge {
+      display: inline-block;
+      font-size: 0.8rem;
+      font-weight: 600;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      background: #e8f4f8;
+      color: #0a6b8a;
+      margin-left: 0.5rem;
+    }
+    .space-row {
+      padding: 1rem 1.25rem;
+      border: 1px solid #eee;
+      border-radius: 8px;
+      margin-bottom: 0.75rem;
+      background: #fafafa;
+    }
+    .space-row label { margin: 0; display: block; }
+    .space-row .help { margin-top: 0.35rem; margin-bottom: 0; }
   </style>
 </head>
 <body>
@@ -353,7 +374,32 @@
                 </optgroup>
               </select>
             </div>
-            <p class="help">For common genomes, the pipeline auto-downloads annotations from Ensembl.</p>
+            <p class="help">For common genomes, the pipeline auto-downloads annotations. Choose source below.</p>
+          </div>
+
+          <!-- Annotation options (for non-custom genomes) -->
+          <div id="annotationOptionsBlock" class="mt-4">
+            <div class="section-header">Annotation Source & Options</div>
+            <div class="help-box mb-3">
+              <strong>Affects divergent read assignment:</strong> Gene annotations define TSS/TES and promoter regions.
+              If divergent reads are not assigned to genes, try a different annotation source.
+            </div>
+            <div class="field">
+              <label class="label">Annotation Source</label>
+              <div class="select" style="max-width: 320px;">
+                <select id="annotation_source">
+                  <option value="refseq" selected>RefSeq (UCSC) — default, matches UCSC genomes</option>
+                  <option value="ensembl">Ensembl — more comprehensive</option>
+                  <option value="gencode">GENCODE — preferred for human/mouse</option>
+                </select>
+              </div>
+              <p class="help">RefSeq: UCSC annotations. Ensembl/GENCODE: better TSS for some genes. Chromosome naming is auto-configured.</p>
+            </div>
+            <div class="field mt-3">
+              <label class="label">Exclude Biotypes</label>
+              <input class="input" id="annotation_exclude_biotypes" placeholder="rRNA,tRNA (leave empty for all)" style="max-width: 320px;">
+              <p class="help">Exclude genes by biotype (e.g. rRNA). Comma-separated. Leave empty for all.</p>
+            </div>
           </div>
           
           <div id="refGenomeUpload" style="display:none" class="mt-3">
@@ -657,6 +703,22 @@
         values from your data's background distribution. No manual tuning needed!
       </div>
       
+      <div class="field mb-4">
+        <label class="label">Quick preset (optional)</label>
+        <div class="select">
+          <select id="div_preset">
+            <option value="">— Custom / manual —</option>
+            <option value="default">Default — General-purpose, balanced</option>
+            <option value="enhancer">Enhancer-focused — Require symmetrical bidirectional signal</option>
+            <option value="promoter">Promoter-focused — Allow stronger directional signal</option>
+            <option value="max_sensitivity">Maximum sensitivity — Most permissive, maximum sites</option>
+          </select>
+        </div>
+        <p class="help">
+          Choose a preset to pre-fill parameters for your use case. You can still adjust any value manually below.
+        </p>
+      </div>
+      
       <div class="columns">
         <div class="column">
           <div class="field">
@@ -664,7 +726,7 @@
             <input class="input small-input" id="div_thr" value="auto" placeholder="auto or number">
             <p class="help">
               <strong>Per-bin signal minimum.</strong><br>
-              • <code>auto</code> = 95th percentile of background (recommended)<br>
+              • <code>auto</code> = percentile of background (see Calibration below)<br>
               • Or specify a number (e.g., 1.0, 2.0)
             </p>
           </div>
@@ -675,7 +737,7 @@
             <input class="input small-input" id="div_sum" value="auto" placeholder="auto or number">
             <p class="help">
               <strong>Minimum total signal for peaks.</strong><br>
-              • <code>auto</code> = 10× threshold (recommended)<br>
+              • <code>auto</code> = threshold × multiplier (see Calibration below)<br>
               • Or specify a number (e.g., 5.0, 10.0)
             </p>
           </div>
@@ -683,12 +745,12 @@
         <div class="column">
           <div class="field">
             <label class="label">FDR (False Discovery Rate)</label>
-            <input class="input small-input" id="div_fdr" type="number" step="0.01" min="0.001" max="0.5" value="0.05">
+            <input class="input small-input" id="div_fdr" type="number" step="0.01" min="0.001" max="0.5" value="0.08">
             <p class="help">
               <strong>Statistical stringency.</strong><br>
-              • 0.05 = 5% expected false positives (standard)<br>
-              • Lower (0.01) = fewer, higher-confidence regions<br>
-              • Higher (0.10) = more sensitive, more regions
+              • 0.08 = recommended default (sensitive, but controlled)<br>
+              • 0.05 = more conservative (fewer regions)<br>
+              • 0.10 = maximum sensitivity (more regions, more FP)
             </p>
           </div>
         </div>
@@ -721,9 +783,43 @@
             <input class="input small-input" id="div_bal" type="number" step="0.05" min="0" max="1" value="0">
             <p class="help">
               <strong>Minimum balance between strand signals.</strong><br>
-              • 0.0 = no filter (max sensitivity, recommended)<br>
-              • 0.3-0.5 = require balanced signals
+              • 0.0 = no filter (max sensitivity)<br>
+              • 0.3-0.5 = require balanced signals (enhancer-like)
             </p>
+          </div>
+        </div>
+      </div>
+      
+      <div class="columns mt-3">
+        <div class="column">
+          <div class="field">
+            <label class="label">Calibration Percentile</label>
+            <input class="input small-input" id="div_cal_pct" type="number" step="5" min="50" max="99" value="65">
+            <p class="help">Percentile for auto threshold. Lower = more sites (65–75 typical; 65 recommended).</p>
+          </div>
+        </div>
+        <div class="column">
+          <div class="field">
+            <label class="label">Calibration Sum Multiplier</label>
+            <input class="input small-input" id="div_cal_mult" type="number" step="0.5" min="1" max="20" value="1.5">
+            <p class="help">sum_thr = threshold × N. Lower = more sensitive (more sites).</p>
+          </div>
+        </div>
+        <div class="column">
+          <div class="field">
+            <label class="label">Merge Gap (bp)</label>
+            <input class="input small-input" id="div_merge_gap" type="number" min="0" value="150">
+            <p class="help">Merge overlapping regions within N bp. 0 = disabled (150–500 typical).</p>
+          </div>
+        </div>
+        <div class="column">
+          <div class="field">
+            <label class="label">Use Lower Background</label>
+            <label class="checkbox mt-2">
+              <input type="checkbox" id="div_cal_bg_lower">
+              Sample lower 50% of bins for threshold
+            </label>
+            <p class="help">Avoids inflating threshold from hotspots.</p>
           </div>
         </div>
         <div class="column">
@@ -787,6 +883,13 @@
         </div>
         <div class="column">
           <div class="field">
+            <label class="label">TSS Active Window (bp)</label>
+            <input class="input small-input" id="tss_active_pm" type="number" value="500">
+            <p class="help">TSS ± N bp for active gene detection (DT overlap). Affects divergent assignment.</p>
+          </div>
+        </div>
+        <div class="column">
+          <div class="field">
             <label class="label">Merge Gap (bp)</label>
             <input class="input small-input" id="merge_gap" type="number" value="50">
             <p class="help">Max gap to merge nearby features. Common: 50-100 bp.</p>
@@ -833,19 +936,13 @@
           </label>
           <p class="help">Only works if you selected a spike-in genome and have proper controls.</p>
         </div>
-        <div class="column">
-          <label class="checkbox">
-            <input type="checkbox" id="outputRawTracks" checked>
-            <strong>Keep raw (unnormalized) tracks</strong>
-          </label>
-          <p class="help">Recommended. Uncheck to save disk space.</p>
-        </div>
       </div>
+      <p class="help is-dim">Raw tracks, allMap, 5′: see <strong>Storage / Space</strong> section below.</p>
       
       <div class="section-header mt-4">Track Formats</div>
       <div class="help-box mb-3">
         <strong>BigWig (.bw):</strong> Compressed binary format, fast loading in genome browsers (recommended).<br>
-        <strong>BedGraph (.bedgraph):</strong> Text format, larger files but human-readable.
+        <strong>BedGraph (.bedgraph):</strong> Text format, larger files but human-readable. Toggle in <strong>Space</strong> section below.
       </div>
       
       <div class="columns">
@@ -855,13 +952,6 @@
             <strong>BigWig format</strong> (recommended)
           </label>
           <p class="help">Compressed, fast loading in UCSC/IGV genome browsers.</p>
-        </div>
-        <div class="column">
-          <label class="checkbox">
-            <input type="checkbox" id="trackBedGraph" checked>
-            <strong>BedGraph format</strong>
-          </label>
-          <p class="help">Text format, useful for custom processing or debugging. Uncheck to save disk space.</p>
         </div>
       </div>
       
@@ -879,12 +969,6 @@
             Emit siCPM (if factors available)
           </label>
         </div>
-        <div class="column">
-          <label class="checkbox">
-            <input type="checkbox" id="normEmitAllMap" checked>
-            Emit allMap (multimapper) tracks
-          </label>
-        </div>
       </div>
       
       <div class="columns mt-3">
@@ -893,7 +977,7 @@
             <input type="checkbox" id="normForce5p">
             Force 5′ track generation (otherwise automatic)
           </label>
-          <p class="help">PRO-seq primarily uses 3' signal. 5' is optional.</p>
+          <p class="help">PRO-seq primarily uses 3' signal. 5' toggle in Space section below.</p>
         </div>
         <div class="column is-half">
           <label class="checkbox">
@@ -906,15 +990,95 @@
     </div>
 
     <!-- ================================================================ -->
-    <!-- STEP 8: BUILD & DOWNLOAD -->
+    <!-- STEP 8: STORAGE / SPACE -->
     <!-- ================================================================ -->
     <div class="box">
-      <h2 class="subtitle is-4"><span class="step">8</span> Build & Download</h2>
+      <h2 class="subtitle is-4"><span class="step">8</span> Storage / Space</h2>
+      <p class="mb-4">Control which outputs are published to save disk space. Uncheck options below to reduce footprint. Defaults keep everything for reproducibility and downstream use.</p>
+      
+      <div class="help-box mb-4">
+        <strong>How it works:</strong> Checked = publish (default). Unchecked = skip publishing to results. The pipeline still runs; only the copy to the results folder is skipped. Files remain in the work directory until you run <code class="mono">nextflow clean -f</code>.
+      </div>
+      
+      <div class="section-header">Publish Options</div>
+      
+      <div class="space-row">
+        <label class="checkbox">
+          <input type="checkbox" id="publishTrimmedFastq" checked>
+          <strong>Trimmed FASTQ</strong> <span class="space-badge">~900 MB per sample</span>
+        </label>
+        <p class="help">Publish <code class="mono">01_trimmed_fastq/</code> — cleaned reads after cutadapt/UMI. Uncheck to skip.</p>
+      </div>
+      
+      <div class="space-row">
+        <label class="checkbox">
+          <input type="checkbox" id="publishReferencesGtf" checked>
+          <strong>Reference GTF</strong> <span class="space-badge">~790 MB (one-time)</span>
+        </label>
+        <p class="help">Publish full GTF in <code class="mono">00_references/</code>. genes.tsv, tss.bed, tes.bed (~8 MB) are always kept. Uncheck to skip GTF only.</p>
+      </div>
+      
+      <div class="space-row">
+        <label class="checkbox">
+          <input type="checkbox" id="publishAlignments" checked>
+          <strong>Alignments (BAM)</strong> <span class="space-badge">~270 MB per sample</span>
+        </label>
+        <p class="help">Publish <code class="mono">02_alignments/</code> — BAM files. Uncheck to skip. Downstream steps still run.</p>
+      </div>
+      
+      <div class="space-row">
+        <label class="checkbox">
+          <input type="checkbox" id="trackBedGraph" checked>
+          <strong>BedGraph tracks</strong> <span class="space-badge">~100 MB</span>
+        </label>
+        <p class="help">Publish bedGraph files in <code class="mono">03_genome_tracks/</code> and <code class="mono">05_normalized_tracks/</code>. BigWigs are always published. Uncheck if BigWigs are sufficient.</p>
+      </div>
+      
+      <div class="space-row">
+        <label class="checkbox">
+          <input type="checkbox" id="outputRawTracks" checked>
+          <strong>Raw (unnormalized) tracks</strong> <span class="space-badge">~150 MB</span>
+        </label>
+        <p class="help">Publish <code class="mono">03_genome_tracks/</code> — raw coverage before CPM/siCPM. Normalized tracks in <code class="mono">05_normalized_tracks/</code> always published. Uncheck to skip raw.</p>
+      </div>
+      
+      <div class="section-header mt-4">Track Generation Options</div>
+      <p class="help mb-3">Uncheck to skip generating these track types. Saves compute and storage.</p>
+      
+      <div class="space-row">
+        <label class="checkbox">
+          <input type="checkbox" id="normEmitAllMap" checked>
+          <strong>allMap (multimapper) tracks</strong> <span class="space-badge">~50 MB</span>
+        </label>
+        <p class="help">Generate allMap tracks in 03 and 05. Main BAM tracks (unique mappers) always kept. Uncheck to skip multimapper tracks.</p>
+      </div>
+      
+      <div class="space-row">
+        <label class="checkbox">
+          <input type="checkbox" id="emit5pTracks" checked>
+          <strong>5′ end tracks</strong> <span class="space-badge">~75 MB</span>
+        </label>
+        <p class="help">Generate 5′ coverage tracks. PRO-seq primarily uses 3′. Uncheck to skip 5′ tracks (3′ always kept).</p>
+      </div>
+      
+      <p class="mt-4 is-dim" style="font-size: 0.9rem;">
+        <strong>Tip:</strong> Unchecking all publish options saves ~2.2 GB for a typical single-sample run. Use <code class="mono">genome_cache</code> on shared storage to avoid duplicating references across projects.
+      </p>
+    </div>
+
+    <!-- ================================================================ -->
+    <!-- STEP 9: BUILD & DOWNLOAD -->
+    <!-- ================================================================ -->
+    <div class="box">
+      <h2 class="subtitle is-4"><span class="step">9</span> Build & Download</h2>
       <p class="mb-4">Generate your configuration files and download them as a ZIP package.</p>
       
       <div class="buttons">
         <button class="button is-primary is-large" onclick="downloadZip()">
           📦 Download ZIP (params.yaml + samplesheet.csv)
+        </button>
+        <button class="button is-info is-large" onclick="saveZipToLocation()" title="Pick where to save the ZIP (e.g. same folder as this config)">
+          📁 Save ZIP to…
         </button>
         <button class="button is-light" onclick="fillPreview()">
           👁️ Preview YAML
@@ -923,6 +1087,7 @@
           📋 Copy YAML to Clipboard
         </button>
       </div>
+      <p class="help mt-2">Use <strong>Save ZIP to…</strong> to pick where to save the ZIP (e.g. same folder as this config). If you get "system files" errors, choose a subfolder (e.g. <code class="mono">Downloads/TrackTx</code>) instead of Downloads itself.</p>
       
       <div class="mt-4">
         <h3 class="subtitle is-6">YAML Preview</h3>
@@ -970,6 +1135,7 @@ function toggleOtherGenomeUpload(kind){
     const show = ($('#ref_genome').value === 'other');
     toggleBlock('refGenomeUpload', show);
     toggleBlock('gtfBlock', show);
+    toggleBlock('annotationOptionsBlock', !show);
   } else if(kind==='spike'){
     toggleBlock('spikeGenomeUpload', $('#spike_genome').value === 'other');
   }
@@ -1188,6 +1354,10 @@ function buildYAML(){
     nt_window:  parseInt($('#div_win').value||'1000',10),
     bin_gap:    parseInt($('#div_bin_gap').value||'100',10),
     balance:    parseFloat($('#div_bal').value||'0') || 0,
+    cal_pct:    parseFloat($('#div_cal_pct').value||'75') || 75,
+    cal_mult:   parseFloat($('#div_cal_mult').value||'3') || 3,
+    merge_gap:  parseInt($('#div_merge_gap').value||'500',10) || 500,
+    cal_bg_lower: !!$('#div_cal_bg_lower').checked,
     qc:         !!$('#div_qc').checked
   };
 
@@ -1195,9 +1365,12 @@ function buildYAML(){
   const fgr = {
     prom_up:         parseInt($('#prom_up').value||'500',10),
     prom_down:       parseInt($('#prom_down').value||'250',10),
+    div_inner:       250,
+    div_outer:       750,
     gb_start_offset: parseInt($('#gb_start_offset').value||'2000',10),
     cps_offset:      parseInt($('#cps_offset').value||'50',10),
     tw_length:       parseInt($('#tw_length').value||'5000',10),
+    tss_active_pm:   parseInt($('#tss_active_pm').value||'500',10),
     merge_gap:       parseInt($('#merge_gap').value||'50',10),
     qc:              !!$('#fgr_qc').checked
   };
@@ -1263,6 +1436,15 @@ function buildYAML(){
     y += `gtf_url: ""\n\n`;
   }
 
+  const annotationSource = $('#annotation_source')?.value || 'refseq';
+  const annotationExclude = $('#annotation_exclude_biotypes')?.value?.trim() || '';
+  // Auto: Ensembl uses chr names without prefix; UCSC genomes use chr1. So add prefix for Ensembl.
+  const annotationChr = annotationSource === 'ensembl' ? 'add' : 'none';
+  y += `# Annotation options (affects divergent read assignment)\n`;
+  y += `annotation_source: ${mono(annotationSource)}\n`;
+  y += `annotation_exclude_biotypes: ${mono(annotationExclude)}\n`;
+  y += `annotation_chr_naming: ${mono(annotationChr)}  # auto: ensembl→add, refseq/gencode→none\n\n`;
+
   y += `# Adapter trimming\n`;
   y += `adapter_trimming:\n`;
   y += `  enabled: ${trimOn}\n`;
@@ -1296,12 +1478,17 @@ function buildYAML(){
   y += `  bigwig: ${out.bigwig}\n`;
   y += `  bedgraph: ${out.bedgraph}\n\n`;
 
+  y += `# Storage\n`;
+  y += `publish_trimmed_fastq: ${$('#publishTrimmedFastq').checked}   # false saves ~900 MB/sample\n`;
+  y += `publish_references_gtf: ${$('#publishReferencesGtf').checked}   # false saves ~790 MB (genes/tss/tes kept)\n`;
+  y += `publish_alignments: ${$('#publishAlignments').checked}   # false saves ~270 MB/sample\n\n`;
+
   y += `# Normalization options\n`;
   y += `norm:\n`;
   y += `  emit_bw: ${normEmitBW}\n`;
   y += `  emit_sicpm: ${normEmitSiCPM}\n`;
   y += `  emit_allmap: ${normEmitAllMap}\n`;
-  y += `  emit_5p: ${normForce5p ? 'true' : 'null'}\n\n`;
+  y += `  emit_5p: ${!$('#emit5pTracks').checked ? 'false' : (normForce5p ? 'true' : 'null')}   # false = skip 5' tracks\n\n`;
 
   y += `force_sort_bedgraph: ${forceSortBg}\n\n`;
 
@@ -1310,9 +1497,13 @@ function buildYAML(){
   y += `  cutadapt_extra: ${mono(cutadaptExtra)}\n`;
   y += `  bowtie2_extra: ${mono(bowtie2Extra)}\n`;
   y += `  # Divergent transcription (statistical with GMM + FDR)\n`;
-  y += `  divergent_threshold: ${div.threshold === 'auto' ? 'auto' : div.threshold}  # auto = 95th percentile\n`;
-  y += `  divergent_sum_thr: ${div.sum_thr === 'auto' ? 'auto' : div.sum_thr}      # auto = 10x threshold\n`;
+  y += `  divergent_threshold: ${div.threshold === 'auto' ? 'auto' : div.threshold}  # auto = ${div.cal_pct}th percentile\n`;
+  y += `  divergent_sum_thr: ${div.sum_thr === 'auto' ? 'auto' : div.sum_thr}      # auto = ${div.cal_mult}x threshold\n`;
   y += `  divergent_fdr: ${div.fdr}          # False discovery rate\n`;
+  y += `  divergent_calibration_percentile: ${div.cal_pct}   # Targets 50-100K sites\n`;
+  y += `  divergent_calibration_sum_multiplier: ${div.cal_mult}\n`;
+  y += `  divergent_calibration_background_lower: ${div.cal_bg_lower}\n`;
+  y += `  divergent_merge_gap: ${div.merge_gap}    # Merge overlapping regions (bp)\n`;
   y += `  divergent_nt_window: ${div.nt_window}     # Pairing window (bp)\n`;
   y += `  divergent_bin_gap: ${div.bin_gap}        # Bin merge gap (bp)\n`;
   y += `  divergent_balance: ${div.balance}        # Balance ratio (0 = max sensitivity)\n`;
@@ -1392,11 +1583,94 @@ async function downloadZip(){
   URL.revokeObjectURL(url);
 }
 
+async function saveZipToLocation(){
+  const boxes = $$('#samplesContainer .sample-box');
+  if(boxes.length === 0){
+    alert('⚠️ Add at least one sample before saving.');
+    return;
+  }
+  const hasData = boxes.some(b => {
+    const src = source();
+    if(src === 'local') return !!b.querySelector('.rep-file1')?.value?.trim();
+    return !!b.querySelector('.rep-srr')?.value?.trim();
+  });
+  if(!hasData && !confirm('No sample data (SRR IDs or file paths) entered. Save anyway?')) return;
+
+  if($('#ref_genome').value === 'other' && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
+    alert('⚠️ Custom genome requires a GTF file. Provide gtf_path or gtf_url before running the pipeline.');
+  }
+
+  if(!('showSaveFilePicker' in window)){
+    alert('Your browser does not support picking a save location. Use "Download ZIP" instead.');
+    return;
+  }
+
+  try {
+    const handle = await window.showSaveFilePicker({
+      suggestedName: 'TrackTx_Config.zip',
+      types: [{ description: 'ZIP archive', accept: { 'application/zip': ['.zip'] } }]
+    });
+    const zip = new JSZip();
+    zip.file('params.yaml', buildYAML());
+    zip.file($('#samplesheet_name').value || 'samplesheet.csv', buildCSV());
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const writable = await handle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    alert('✅ ZIP saved to the selected location.');
+  } catch (err) {
+    if(err.name === 'AbortError') return;
+    const msg = (err.message || err).toString();
+    if(/system files|restricted|blocked/i.test(msg)){
+      alert('Your browser blocks saving to that folder (e.g. Downloads, Desktop). Try a subfolder instead (e.g. Downloads/TrackTx) or use "Download ZIP".');
+    } else {
+      alert('Could not save: ' + msg);
+    }
+  }
+}
+
 function copyYAML(){
   const y = buildYAML();
   navigator.clipboard.writeText(y).then(()=>{
     alert('✅ YAML copied to clipboard!');
   });
+}
+
+/* ====================== Divergent Presets ====================== */
+const DIV_PRESETS = {
+  default: {
+    thr: 'auto', sum: 'auto', fdr: 0.08, nt_window: 1000, bin_gap: 100,
+    balance: 0, cal_pct: 65, cal_mult: 1.5, merge_gap: 150, cal_bg_lower: false
+  },
+  enhancer: {
+    thr: 'auto', sum: 'auto', fdr: 0.05, nt_window: 1000, bin_gap: 100,
+    balance: 0.4, cal_pct: 72, cal_mult: 3, merge_gap: 500, cal_bg_lower: false
+  },
+  promoter: {
+    thr: 'auto', sum: 'auto', fdr: 0.05, nt_window: 1000, bin_gap: 100,
+    balance: 0, cal_pct: 75, cal_mult: 3, merge_gap: 500, cal_bg_lower: false
+  },
+  max_sensitivity: {
+    thr: 'auto', sum: 'auto', fdr: 0.08, nt_window: 1200, bin_gap: 150,
+    balance: 0, cal_pct: 70, cal_mult: 3, merge_gap: 500, cal_bg_lower: true
+  }
+};
+
+function applyDivPreset(){
+  const preset = $('#div_preset').value;
+  if(!preset || !DIV_PRESETS[preset]) return;
+  const p = DIV_PRESETS[preset];
+  $('#div_thr').value = p.thr;
+  $('#div_sum').value = p.sum;
+  $('#div_fdr').value = p.fdr;
+  $('#div_win').value = p.nt_window;
+  $('#div_bin_gap').value = p.bin_gap;
+  $('#div_bal').value = p.balance;
+  $('#div_cal_pct').value = p.cal_pct;
+  $('#div_cal_mult').value = p.cal_mult;
+  $('#div_merge_gap').value = p.merge_gap;
+  $('#div_cal_bg_lower').checked = p.cal_bg_lower;
+  fillPreview();
 }
 
 /* ====================== Init ====================== */
@@ -1409,6 +1683,7 @@ function init(){
   toggleAdapterFields();
   toggleSraOptions();
   setAdapterPreset();
+  $('#div_preset').addEventListener('change', applyDivPreset);
 }
 init();
 </script>

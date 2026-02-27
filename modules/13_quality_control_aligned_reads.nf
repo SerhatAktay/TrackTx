@@ -58,8 +58,10 @@
 //     └── qc.log                   — Processing log
 //
 // Parameters (params.qc.*):
-//   mapq  : Minimum MAPQ threshold (default: 10)
-//   dedup : Remove duplicates (default: true)
+//   mapq                : Minimum MAPQ threshold (default: 10)
+//   dedup               : Remove duplicates (default: true)
+//   fail_map_rate_below  : Fail if mapping rate < value (default: null, disabled)
+//   fail_strand_min     : Fail if either strand fraction < value (default: null, disabled)
 //
 // Expected Values (PRO-seq):
 //   • Mapping rate: >70%
@@ -108,14 +110,16 @@ process quality_control_aligned_reads {
   def mapq_thr = params.qc?.mapq ?: 10
   def dedup_flag = (params.qc?.dedup == null || params.qc.dedup) ? '-F 0x400' : ''
   def dedup_enabled = (params.qc?.dedup == null || params.qc.dedup)
-  
+  def fail_map_rate = params.qc?.fail_map_rate_below
+  def fail_strand = params.qc?.fail_strand_min
+
   """
   #!/usr/bin/env bash
   set -euo pipefail
   export LC_ALL=C
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a qc.log)
+  exec > qc.log
   exec 2> >(tee -a qc.log >&2)
 
   tracktx_error() {
@@ -130,6 +134,7 @@ process quality_control_aligned_reads {
     echo "═══════════════════════════════════════════════════════════════════════" >&2
     exit "\$code"
   }
+  trap 'tracktx_error "quality_control_aligned_reads" "Unexpected process failure" "Check qc.log in work dir"' ERR
 
   TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -151,6 +156,8 @@ process quality_control_aligned_reads {
   MAPQ_THRESHOLD=${mapq_thr}
   DEDUP_ENABLED=${dedup_enabled}
   DEDUP_FLAG="${dedup_flag}"
+  FAIL_MAP_RATE="${fail_map_rate}"
+  FAIL_STRAND="${fail_strand}"
 
   echo "QC | CONFIG | Sample ID: \${SAMPLE_ID}"
   echo "QC | CONFIG | Condition: \${CONDITION}"
@@ -325,29 +332,31 @@ process quality_control_aligned_reads {
   if [[ \${IS_PAIRED} -eq 1 ]]; then
     echo "QC | FRAGMENT | Extracting insert size distribution..."
     
-    # Use samtools stats to get insert size distribution
-    samtools stats -F 0x904 -q \${MAPQ_THRESHOLD} ${dedup_flag} "\${BAM_FILE}" | \
-      awk '/^IS/ {print \$2 "\\t" \$3}' > frag_tmp.tsv || true
-    
+    # Use samtools stats to get insert size distribution (IS lines: length, count)
+    samtools stats -F 0x904 -q \${MAPQ_THRESHOLD} ${dedup_flag} "\${BAM_FILE}" 2>/dev/null | \
+      awk '/^IS[[:space:]]/ && NF>=3 && \$2+0==\$2 && \$3+0==\$3 {print \$2 "\\t" \$3}' > frag_tmp.tsv || true
+
     if [[ -s frag_tmp.tsv ]]; then
       echo -e "fragment_length\\tcount" > qc_fragment_length.tsv
       cat frag_tmp.tsv >> qc_fragment_length.tsv
       rm -f frag_tmp.tsv
-      
+
       FRAG_COUNT=\$(tail -n +2 qc_fragment_length.tsv | wc -l | tr -d ' ')
       echo "QC | FRAGMENT | Insert sizes: \${FRAG_COUNT} bins"
-      
-      # Calculate median and mean if possible
+
+      # Calculate median (expand counts, sort, take middle)
       MEDIAN_FRAG=\$(tail -n +2 qc_fragment_length.tsv | \
-                     awk '{for(i=0;i<\$2;i++)print \$1}' | \
+                     awk '\$1+0==\$1 && \$2+0==\$2 && \$2>0 {for(i=0;i<\$2;i++)print \$1}' | \
                      sort -n | \
-                     awk '{a[NR]=\$1} END{print (NR%2==1)?a[(NR+1)/2]:(a[NR/2]+a[NR/2+1])/2}' || echo "NA")
-      
-      if [[ "\${MEDIAN_FRAG}" != "NA" ]]; then
+                     awk '{a[NR]=\$1} END{print (NR>0 && NR%2==1)?a[(NR+1)/2]:(NR>0?(a[NR/2]+a[NR/2+1])/2:"NA")}' || echo "NA")
+
+      if [[ "\${MEDIAN_FRAG}" != "NA" && "\${MEDIAN_FRAG}" != "" ]]; then
         echo "QC | FRAGMENT | Median insert size: \${MEDIAN_FRAG} bp"
+      else
+        echo "QC | FRAGMENT | Median insert size: not available"
       fi
     else
-      echo "QC | FRAGMENT | No fragment length data available"
+      echo "QC | FRAGMENT | No fragment length data available (IS section empty or invalid)"
       echo -e "fragment_length\\tcount" > qc_fragment_length.tsv
     fi
   else
@@ -367,12 +376,17 @@ process quality_control_aligned_reads {
 
   COV_START=\$(date +%s)
 
-  # Use samtools coverage for fast per-chromosome coverage
-  samtools coverage "\${BAM_FILE}" | \
-    awk 'NR>1 {
-      sum_cov += \$7
-      sum_depth += \$7 * (\$3 - \$2)
-      sum_len += (\$3 - \$2)
+  # Use samtools coverage with MAPQ filter to match other QC stats
+  # Note: samtools coverage uses -q for MAPQ; --ff for excl-flags (default excludes DUP)
+  samtools coverage -q \${MAPQ_THRESHOLD} "\${BAM_FILE}" 2>/dev/null | \
+    awk 'NR==1 {
+      for (i=1;i<=NF;i++) if (\$i=="meandepth") { col=i; break }
+      if (col=="") col=7
+      next
+    }
+    NR>1 && NF>=col && \$col+0==\$col {
+      len = (\$3-\$2)
+      if (len>0) { sum_depth += \$col * len; sum_len += len }
     }
     END {
       mean_depth = (sum_len > 0 ? sum_depth / sum_len : 0)
@@ -381,10 +395,12 @@ process quality_control_aligned_reads {
     }' > qc_coverage.tsv
 
   MEAN_DEPTH=\$(awk 'NR==2 {print \$2}' qc_coverage.tsv)
+  MEAN_DEPTH=\${MEAN_DEPTH:-0}
   echo "QC | COVERAGE | Mean depth: \${MEAN_DEPTH}×"
 
   # Assess coverage quality
   DEPTH_INT=\${MEAN_DEPTH%.*}
+  DEPTH_INT=\${DEPTH_INT:-0}
   if [[ \${DEPTH_INT} -lt 10 ]]; then
     echo "QC | WARNING | Low coverage detected (<10×)"
   elif [[ \${DEPTH_INT} -ge 30 ]]; then
@@ -501,10 +517,41 @@ process quality_control_aligned_reads {
   echo "QC | METRICS | Strand balance: \${PLUS_FRAC} (+) / \$(awk -v f=\${PLUS_FRAC} 'BEGIN{printf "%.4f", 1-f}') (-)"
 
   ###########################################################################
+  # 9.5) OPTIONAL QC FAILURE THRESHOLDS
+  ###########################################################################
+
+  RE_NUM='^[0-9]+\\.?[0-9]*\$'
+  RE_FRAC='^0?\\.?[0-9]+\\.?[0-9]*\$'
+  if [[ -n "\${FAIL_MAP_RATE}" && "\${FAIL_MAP_RATE}" =~ \$RE_NUM ]]; then
+    MAP_INT=\${MAP_PERCENT%.*}
+    if [[ \${MAP_INT:-0} -lt \${FAIL_MAP_RATE%.*} ]]; then
+      tracktx_error "quality_control_aligned_reads" "Mapping rate \${MAP_PERCENT}% below threshold \${FAIL_MAP_RATE}%" "Improve library/alignment or set params.qc.fail_map_rate_below = null to disable" 2
+    fi
+  fi
+
+  if [[ -n "\${FAIL_STRAND}" && "\${FAIL_STRAND}" =~ \$RE_FRAC ]]; then
+    MINUS_FRAC=\$(awk -v f=\${PLUS_FRAC} 'BEGIN{printf "%.4f", 1-f}')
+    STRAND_MIN=\$(awk -v p=\${PLUS_FRAC} -v m=\${MINUS_FRAC} 'BEGIN{print (p+0<m+0)?p:m}')
+    if awk -v s=\${STRAND_MIN} -v t=\${FAIL_STRAND} 'BEGIN{exit (s+0 < t+0)?0:1}'; then
+      tracktx_error "quality_control_aligned_reads" "Strand balance \${STRAND_MIN} below threshold \${FAIL_STRAND}" "Check library protocol or set params.qc.fail_strand_min = null to disable" 3
+    fi
+  fi
+
+  ###########################################################################
   # 10) WRITE JSON SUMMARY
   ###########################################################################
 
   echo "QC | OUTPUT | Writing JSON summary..."
+
+  # Build optional median_fragment_length (single-quote literal avoids shell eating the key quotes)
+  EXTRA_JSON=""
+  if [[ \${IS_PAIRED} -eq 1 ]]; then
+    if [[ -n "\${MEDIAN_FRAG}" && "\${MEDIAN_FRAG}" != "NA" ]]; then
+      EXTRA_JSON=', "median_fragment_length": '\${MEDIAN_FRAG}
+    else
+      EXTRA_JSON=', "median_fragment_length": null'
+    fi
+  fi
 
   cat > qc_pol.json <<JSONEOF
 {
@@ -531,7 +578,7 @@ process quality_control_aligned_reads {
   "umi_input_reads": \${UMI_INPUT_READS},
   "umi_output_reads": \${UMI_OUTPUT_READS},
   "umi_duplicates_removed": \${UMI_DUPLICATES_REMOVED},
-  "umi_deduplication_percent": \${UMI_DEDUP_PERCENT}\$([ \${IS_PAIRED} -eq 1 ] && echo ", \"median_fragment_length\": \${MEDIAN_FRAG:-null}" || echo "")
+  "umi_deduplication_percent": \${UMI_DEDUP_PERCENT}\${EXTRA_JSON}
 }
 JSONEOF
 
@@ -544,7 +591,7 @@ JSONEOF
 
   echo "QC | README | Creating documentation..."
 
-  cat > README_qc.txt <<'DOCEOF'
+  cat > README_qc.txt <<DOCEOF
 ================================================================================
 QUALITY CONTROL REPORT — \${SAMPLE_ID}
 ================================================================================

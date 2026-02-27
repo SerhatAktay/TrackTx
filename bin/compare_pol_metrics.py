@@ -45,6 +45,7 @@ from typing import List, Tuple, Optional
 import numpy as np
 import pandas as pd
 from pandas.api.types import is_numeric_dtype
+from scipy import stats
 
 # Matplotlib backend must be set before importing pyplot
 import matplotlib
@@ -318,166 +319,207 @@ def safe_log2_fold_change(numerator: pd.Series, denominator: pd.Series) -> pd.Se
     """
     return np.log2((numerator.astype(float) + 1e-9) / (denominator.astype(float) + 1e-9))
 
-def compute_single_contrast(
-    medians_df: pd.DataFrame,
+
+def benjamini_hochberg(pvalues: np.ndarray) -> np.ndarray:
+    """
+    Benjamini-Hochberg FDR correction.
+    
+    Args:
+        pvalues: Array of p-values (may contain NaN)
+        
+    Returns:
+        Adjusted p-values (padj), same shape as input
+    """
+    p = np.asarray(pvalues, dtype=float)
+    padj = np.full_like(p, np.nan)
+    valid = np.isfinite(p)
+    if not np.any(valid):
+        return padj
+    n = np.sum(valid)
+    order = np.argsort(p)
+    p_sorted = p[order]
+    padj_sorted = np.minimum(1, p_sorted * n / np.arange(1, n + 1, dtype=float))
+    # Ensure monotonicity
+    for i in range(1, n):
+        padj_sorted[i] = min(padj_sorted[i], padj_sorted[i - 1])
+    padj[order] = padj_sorted
+    return padj
+
+
+def _compute_contrast_with_stats(
+    merged_df: pd.DataFrame,
     variable: str,
     numerator: str,
     denominator: str,
-    metrics: List[str]
+    metric: str,
+    group_by: str,
+    level_col: str,
 ) -> Optional[pd.DataFrame]:
     """
-    Compute a single contrast
-    
+    Compute contrast for one metric using replicate-level data with Mann-Whitney U test.
+    """
+    num_df = merged_df[merged_df[variable] == numerator].copy()
+    denom_df = merged_df[merged_df[variable] == denominator].copy()
+
+    if num_df.empty or denom_df.empty:
+        return None
+
+    # Aggregate per (gene_id, gene_name, level): collect values from all replicates
+    id_cols = ["gene_id", "gene_name", level_col]
+    num_agg = (
+        num_df.groupby(id_cols)[metric]
+        .apply(lambda x: x.dropna().tolist())
+        .reset_index()
+        .rename(columns={metric: "num_vals"})
+    )
+    denom_agg = (
+        denom_df.groupby(id_cols)[metric]
+        .apply(lambda x: x.dropna().tolist())
+        .reset_index()
+        .rename(columns={metric: "denom_vals"})
+    )
+
+    joined = num_agg.merge(denom_agg, on=id_cols, how="inner")
+    if joined.empty:
+        return None
+
+    # Compute median, log2FC, and pvalue per gene
+    def row_stats(row):
+        nv = row["num_vals"]
+        dv = row["denom_vals"]
+        if not nv or not dv:
+            return pd.Series({"numerator": np.nan, "denominator": np.nan, "log2FC": np.nan, "pvalue": np.nan})
+        med_n = np.median(nv)
+        med_d = np.median(dv)
+        log2fc = np.log2((med_n + 1e-9) / (med_d + 1e-9))
+        try:
+            _, pval = stats.mannwhitneyu(nv, dv, alternative="two-sided")
+        except Exception:
+            pval = np.nan
+        return pd.Series({"numerator": med_n, "denominator": med_d, "log2FC": log2fc, "pvalue": pval})
+
+    stats_df = joined.apply(row_stats, axis=1)
+    result = joined[id_cols].copy()
+    result["numerator"] = stats_df["numerator"]
+    result["denominator"] = stats_df["denominator"]
+    result["log2FC"] = stats_df["log2FC"]
+    result["pvalue"] = stats_df["pvalue"]
+    result["group_by"] = group_by
+    result["level"] = result[level_col]
+    result["contrast"] = f"{variable}:{numerator}_vs_{denominator}"
+    result["metric"] = metric
+    return result[[
+        "gene_id", "gene_name", "group_by", "level",
+        "contrast", "metric", "numerator", "denominator", "log2FC", "pvalue"
+    ]]
+
+
+def compute_single_contrast(
+    merged_df: pd.DataFrame,
+    variable: str,
+    numerator: str,
+    denominator: str,
+    metrics: List[str],
+) -> Optional[pd.DataFrame]:
+    """
+    Compute a single contrast with replicate-level statistical testing.
+
+    Uses Mann-Whitney U test for significance. log2FC from group medians.
+    padj is applied in compute_all_contrasts (Benjamini-Hochberg per contrast+metric).
+
     Args:
-        medians_df: DataFrame with median values per group
+        merged_df: Replicate-level metrics (sample_id, condition, timepoint, etc.)
         variable: Variable to contrast (condition or timepoint)
         numerator: Numerator group name
         denominator: Denominator group name
         metrics: Metrics to compute contrasts for
-        
+
     Returns:
-        DataFrame with contrast results or None
+        DataFrame with contrast results including pvalue, or None
     """
     if variable not in ["condition", "timepoint"]:
         log_warning(f"Unsupported contrast variable: {variable}")
         return None
-    
+
     results = []
-    
     for metric in metrics:
-        if metric not in medians_df.columns:
+        if metric not in merged_df.columns:
             continue
-        
         if variable == "condition":
-            # Compare conditions across timepoints
-            numerator_df = medians_df.query("condition == @numerator")[
-                ["gene_id", "gene_name", "timepoint", metric]
-            ].rename(columns={metric: "numerator"})
-            
-            denominator_df = medians_df.query("condition == @denominator")[
-                ["gene_id", "gene_name", "timepoint", metric]
-            ].rename(columns={metric: "denominator"})
-            
-            joined = numerator_df.merge(
-                denominator_df,
-                on=["gene_id", "gene_name", "timepoint"],
-                how="inner"
+            df = _compute_contrast_with_stats(
+                merged_df, variable, numerator, denominator, metric,
+                group_by="timepoint", level_col="timepoint",
             )
-            
-            if joined.empty:
-                log_warning(f"No overlap for {variable}:{numerator} vs {denominator} on {metric}")
-                continue
-            
-            joined["group_by"] = "timepoint"
-            joined["level"] = joined["timepoint"]
-            
-        else:  # timepoint
-            # Compare timepoints across conditions
-            numerator_df = medians_df.query("timepoint == @numerator")[
-                ["gene_id", "gene_name", "condition", metric]
-            ].rename(columns={metric: "numerator"})
-            
-            denominator_df = medians_df.query("timepoint == @denominator")[
-                ["gene_id", "gene_name", "condition", metric]
-            ].rename(columns={metric: "denominator"})
-            
-            joined = numerator_df.merge(
-                denominator_df,
-                on=["gene_id", "gene_name", "condition"],
-                how="inner"
+        else:
+            df = _compute_contrast_with_stats(
+                merged_df, variable, numerator, denominator, metric,
+                group_by="condition", level_col="condition",
             )
-            
-            if joined.empty:
-                log_warning(f"No overlap for {variable}:{numerator} vs {denominator} on {metric}")
-                continue
-            
-            joined["group_by"] = "condition"
-            joined["level"] = joined["condition"]
-        
-        # Remove rows with missing values
-        joined = joined.dropna(subset=["numerator", "denominator"])
-        
-        if joined.empty:
-            log_warning(f"All NA after join for {variable}:{numerator} vs {denominator} on {metric}")
-            continue
-        
-        # Calculate fold change
-        joined["contrast"] = f"{variable}:{numerator}_vs_{denominator}"
-        joined["metric"] = metric
-        joined["log2FC"] = safe_log2_fold_change(joined["numerator"], joined["denominator"])
-        
-        # Select output columns
-        result = joined[[
-            "gene_id", "gene_name", "group_by", "level",
-            "contrast", "metric", "numerator", "denominator", "log2FC"
-        ]]
-        
-        results.append(result)
-    
+        if df is not None and not df.empty:
+            results.append(df)
+
     if not results:
         return None
-    
     return pd.concat(results, ignore_index=True)
 
 def compute_all_contrasts(
     merged_df: pd.DataFrame,
     contrast_specs: List[Tuple[str, str, str]],
-    metrics: List[str]
+    metrics: List[str],
 ) -> Optional[pd.DataFrame]:
     """
-    Compute all specified contrasts
-    
+    Compute all specified contrasts with replicate-level statistical testing.
+
+    Uses Mann-Whitney U for pvalue, Benjamini-Hochberg for padj (per contrast+metric).
+
     Args:
-        merged_df: Merged metrics DataFrame
-        contrast_specs: List of contrast tuples
-        metrics: Metrics to analyze
-        
+        merged_df: Replicate-level merged metrics
+        contrast_specs: List of (variable, numerator, denominator) tuples
+        metrics: Metrics to contrast (e.g. pi_len_norm, pi_raw, body_cpm, tss_cpm)
+
     Returns:
-        DataFrame with all contrasts or None
+        DataFrame with log2FC, pvalue, padj or None
     """
     if merged_df.empty:
         log_warning("Empty DataFrame, cannot compute contrasts")
         return None
-    
+
     log("CONTRAST", f"Computing {len(contrast_specs)} contrasts...")
-    
-    # Ensure numeric columns
+    log("CONTRAST", f"Metrics: {', '.join(metrics)}")
+
     working_df = merged_df.copy()
     working_df = coerce_numeric_columns(working_df, metrics)
-    
-    # Collapse replicates: median per (gene, condition, timepoint)
-    log("CONTRAST", "Collapsing replicates (median)...")
-    medians = working_df.groupby(
-        ["gene_id", "gene_name", "condition", "timepoint"],
-        dropna=False
-    ).median(numeric_only=True).reset_index()
-    
-    log("CONTRAST", f"Median aggregation: {len(medians):,} unique combinations")
-    
-    # Compute each contrast
+
     all_results = []
-    
     for i, (variable, numerator, denominator) in enumerate(contrast_specs, 1):
         log_info(f"Computing contrast {i}/{len(contrast_specs)}: {variable}:{numerator} vs {denominator}")
-        
+
         result = compute_single_contrast(
-            medians,
+            working_df,
             variable,
             numerator,
             denominator,
-            metrics
+            metrics,
         )
-        
-        if result is not None:
+
+        if result is not None and not result.empty:
             all_results.append(result)
-    
+
     if not all_results:
         log_warning("No contrasts produced")
         return None
-    
+
     contrasts_df = pd.concat(all_results, ignore_index=True)
-    
-    log("CONTRAST", f"Generated {len(contrasts_df):,} contrast results")
+
+    # Benjamini-Hochberg correction per (contrast, metric)
+    log("CONTRAST", "Applying Benjamini-Hochberg FDR correction...")
+    padj_arr = np.full(len(contrasts_df), np.nan, dtype=float)
+    for (_, _), grp in contrasts_df.groupby(["contrast", "metric"]):
+        idx = grp.index
+        padj_arr[idx] = benjamini_hochberg(grp["pvalue"].values)
+    contrasts_df["padj"] = padj_arr
+
+    log("CONTRAST", f"Generated {len(contrasts_df):,} contrast results (log2FC, pvalue, padj)")
     return contrasts_df
 
 # =============================================================================
@@ -642,7 +684,8 @@ def generate_all_plots(
     
     # Heatmaps for merged data
     if not merged_df.empty:
-        metrics = ["pi_len_norm", "body_cpm"]
+        metrics = ["pi_len_norm", "pi_raw", "body_cpm", "tss_cpm"]
+        metrics = [m for m in metrics if m in merged_df.columns]
         groups = ["condition", "timepoint"]
         
         for metric in metrics:
@@ -733,6 +776,11 @@ def main():
         help="Number of top variable genes for heatmaps [default: 100]"
     )
     parser.add_argument(
+        "--metrics",
+        default=",".join(AVAILABLE_METRICS),
+        help=f"Comma-separated metrics for contrasts [default: {','.join(AVAILABLE_METRICS)}]"
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {VERSION}"
@@ -783,11 +831,18 @@ def main():
                 log_warning(f"Could not parse contrast '{contrast_str}': {e}")
         
         if contrast_specs:
+            # Parse metrics (filter to available only)
+            contrast_metrics = [
+                m.strip() for m in args.metrics.split(",")
+                if m.strip() in AVAILABLE_METRICS
+            ]
+            if not contrast_metrics:
+                contrast_metrics = AVAILABLE_METRICS
             # Compute contrasts
             contrasts_df = compute_all_contrasts(
                 merged_df,
                 contrast_specs,
-                ["pi_len_norm", "body_cpm"]
+                contrast_metrics,
             )
             
             if contrasts_df is not None and not contrasts_df.empty:

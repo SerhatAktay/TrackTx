@@ -37,7 +37,7 @@ def parse_args():
         epilog="Interactive keys: j/k=nav t=trends p=process e=export h=help q=quit"
     )
     ap.add_argument("--log", default=".nextflow.log", help="Path to .nextflow.log")
-    ap.add_argument("--trace", default="results/trace/trace.txt", help="Path to trace file")
+    ap.add_argument("--trace", default="", help="Path to trace file (auto-detect if empty)")
     ap.add_argument("--work", default="", help="Work directory (auto-detected if not specified)")
     ap.add_argument("--refresh", type=float, default=0.4, help="Refresh interval in seconds")
     ap.add_argument("--tail", type=int, default=20, help="Lines to tail from task logs")
@@ -967,25 +967,22 @@ def docker_containers_map() -> Dict[str, str]:
     """Map work directories to Docker container IDs"""
     mapping = {}
     try:
-        # Get all running container IDs
         out = subprocess.check_output(
             ["docker", "ps", "-q"],
             text=True, stderr=subprocess.DEVNULL
         )
-        container_ids = [cid.strip() for cid in  out.strip().splitlines() if cid.strip()]
-        
+        container_ids = [cid.strip() for cid in out.strip().splitlines() if cid.strip()]
+
         for container_id in container_ids:
             try:
-                # Get the command args which contains the .command.run path
                 cmd_out = subprocess.check_output(
                     ["docker", "inspect", container_id, "--format", "{{.Path}} {{join .Args \" \"}}"],
                     text=True, stderr=subprocess.DEVNULL
                 )
-                
-                # Extract work directory from command like: .../work/xx/hash/.command.run
+                # Match work dir: .../work/xx/hash (with optional trailing / or .command.run)
                 match = re.search(r'(/[^\s]+/work/[0-9a-f]{2}/[0-9a-f]+)', cmd_out)
                 if match:
-                    workdir = match.group(1)
+                    workdir = os.path.normpath(match.group(1).rstrip("/"))
                     mapping[workdir] = container_id
             except Exception:
                 continue
@@ -1056,7 +1053,7 @@ WRAP_DROP = [
     re.compile(r"^ulimit "), re.compile(r"^exec > "), re.compile(r"^nxf_"),
     re.compile(r"^NXF_"), re.compile(r"^CAPSULE:"), re.compile(r"^Picked up _JAVA_OPTIONS"),
     re.compile(r"^Warning: .*illegal reflective access"), re.compile(r"^INFO +\(.*Nextflow.*\)"),
-    re.compile(r"^ *\["), re.compile(r"read -t \d+ -r DONE"),
+    re.compile(r"read -t \d+ -r DONE"),
     re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*"),  # VAR=value or VAR=$(...) - skip variable assignments
 ]
 
@@ -1167,6 +1164,8 @@ def list_outputs(d: str, k=3) -> List[Tuple[str, str]]:
 
 # Stage detection from logs
 STEP_RE = re.compile(r"\bStep\s+\d+\s*/\s*\d+\s*:\s*(.+)")
+# TrackTx module format: "PREP | START |", "TRACKS | BIGWIG |", "DIVERGENT | CONFIG |", etc.
+TRACKTX_STAGE_RE = re.compile(r"^([A-Za-z_]+\s*\|\s*[A-Za-z_]+\s*\|.*)$")
 
 def detect_stage_from_tail(lines: List[str]) -> Optional[str]:
     """Extract current processing stage from logs"""
@@ -1177,6 +1176,16 @@ def detect_stage_from_tail(lines: List[str]) -> Optional[str]:
     for ln in reversed(lines or []):
         if "INFO  Step" in ln:
             return ln.strip()
+    # TrackTx modules: PREP |, TRACKS |, DIVERGENT |, GTF |, ALIGN |, POL |, QC |, NORM |, etc.
+    for ln in reversed(lines or []):
+        s = ln.strip()
+        if TRACKTX_STAGE_RE.match(s) and len(s) < 120:
+            return s
+    # Fallback: last non-empty line that looks like progress (contains |)
+    for ln in reversed(lines or []):
+        s = ln.strip()
+        if s and " | " in s and len(s) < 100:
+            return s
     return None
 
 def extract_timestamp_from_log(lines: List[str]) -> Optional[str]:
@@ -1197,6 +1206,9 @@ def insight(d: str, tail_n: int) -> Tuple[str, List[str], List[Tuple[str, str]]]
     user = newest_user_log(d)
     src = user or best_log_for_tail(d)
     tl = slurp_tail(src, tail_n, scrub=True) if src else ["<no output yet>"]
+    # If strict filtering removed everything, fall back to raw tail so users still see activity
+    if src and not tl:
+        tl = slurp_tail(src, tail_n, scrub=False)
     # Prefer actual timestamp from log (e.g. "Completed 2026-02-12T09:27:46Z") over script commands
     payload = extract_timestamp_from_log(tl) or payload_from(d)
     outs = list_outputs(d)
@@ -1286,8 +1298,9 @@ def classify(world: World):
         
         # Try Docker stats first (for Docker executor)
         got_metrics = False
-        if d in docker_map:
-            container_id = docker_map[d]
+        d_norm = os.path.normpath(d.rstrip("/"))
+        container_id = docker_map.get(d_norm) or docker_map.get(d)
+        if container_id:
             cpu, rss = docker_stats_for_container(container_id)
             if cpu is not None:
                 t.metrics.cpu_pct = cpu
@@ -1295,7 +1308,7 @@ def classify(world: World):
             if rss is not None:
                 t.metrics.rss_mb = rss
                 got_metrics = True
-        
+
         # Fallback to PID-based monitoring (for local executor)
         if not got_metrics:
             pid = pid_from_dir(d)
@@ -1898,7 +1911,21 @@ def main():
         w.filt = re.compile(a.filter)
     
     log = abspath(a.log) if a.log else ""
-    w.trace_path = abspath(a.trace) if a.trace else None
+    # Trace: explicit path, or auto-detect (results/trace or results_*/trace, most recent)
+    if a.trace:
+        w.trace_path = abspath(a.trace)
+    else:
+        candidates = []
+        try:
+            for p in ["results/trace/trace.txt"] + [
+                os.path.join(d, "trace", "trace.txt") for d in (os.listdir(".") or [])
+                if d.startswith("results") and os.path.isdir(d)
+            ]:
+                if os.path.isfile(p):
+                    candidates.append((p, os.path.getmtime(p)))
+        except OSError:
+            pass
+        w.trace_path = abspath(max(candidates, key=lambda x: x[1])[0]) if candidates else None
     
     if os.path.isfile(log):
         w.meta.work_root = guess_work_root(log, a.work)

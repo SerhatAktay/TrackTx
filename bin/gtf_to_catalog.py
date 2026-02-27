@@ -7,22 +7,22 @@
 # ║            tss.bed    (BED6; 1bp TSS per gene; name = gene_name|gene_id) ║
 # ║            tes.bed    (BED6; 1bp TES per gene; name = gene_name|gene_id) ║
 # ║                                                                          ║
+# ║  Options : --exclude-biotypes rRNA,tRNA  (exclude genes by biotype)       ║
+# ║            --chr-add-prefix|--chr-remove-prefix (normalize chr names)    ║
+# ║                                                                          ║
 # ║  Design                                                                  ║
 # ║   • Streaming parser (low memory); tolerant to GTF or GFF attributes.    ║
-# ║   • Falls back across common keys:                                       ║
-# ║       gene_id:  gene_id, geneID, gene, ID, Parent                         ║
-# ║       gene_name: gene_name, Name, gene                                    ║
-# ║       biotype:  gene_type, gene_biotype, biotype                          ║
-# ║   • Consolidates per-gene extents using gene features when present;       ║
+# ║   • Falls back across common keys: gene_id, gene_name, biotype           ║
+# ║   • Consolidates per-gene extents using gene features when present;     ║
 # ║     otherwise uses min/max across transcripts/exons.                      ║
 # ║   • Deterministic iteration/sorting at write stage.                       ║
 # ║   • BED rows are BED6, 0-based start, 1-based end, with strand.           ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 from __future__ import annotations
-import sys, os, io, gzip, datetime
+import sys, os, io, gzip, datetime, argparse
 from collections import defaultdict
-from typing import Dict, Tuple, Iterable
+from typing import Dict, Tuple, Iterable, List, Set
 
 # ── IO helpers ──────────────────────────────────────────────────────────────
 def open_text(path: str) -> io.TextIOBase:
@@ -67,6 +67,16 @@ def make_name(gene_name: str | None, gene_id: str) -> str:
     if gene_name and gene_name != gene_id:
         return f"{gene_name}|{gene_id}"
     return gene_id
+
+def normalize_chrom(chrom: str, mode: str | None) -> str:
+    """Normalize chromosome name for UCSC/Ensembl compatibility.
+    mode: 'add' = add chr prefix (Ensembl->UCSC), 'remove' = remove prefix (UCSC->Ensembl)
+    """
+    if mode == "add":
+        return chrom if chrom.startswith("chr") else f"chr{chrom}"
+    if mode == "remove" and chrom.startswith("chr"):
+        return chrom[3:]
+    return chrom
 
 # ── Core conversion ─────────────────────────────────────────────────────────
 def build_catalog(gtf_path: str) -> Tuple[
@@ -205,36 +215,60 @@ def finalize_rows(genes: Dict[str, Dict[str, object]],
     return out
 
 # ── Writers ────────────────────────────────────────────────────────────────
-def write_genes_tsv(path: str, rows: list[tuple]) -> None:
+def write_genes_tsv(path: str, rows: list[tuple], chr_mode: str | None = None) -> None:
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("gene_id\tgene_name\tchr\tstrand\tstart\tend\ttss\ttes\tbiotype\n")
         for gid, gname, chrom, strand, gstart, gend, tss, tes, gtype in rows:
-            fh.write(f"{gid}\t{gname}\t{chrom}\t{strand}\t{gstart}\t{gend}\t{tss}\t{tes}\t{gtype}\n")
+            c = normalize_chrom(chrom, chr_mode)
+            fh.write(f"{gid}\t{gname}\t{c}\t{strand}\t{gstart}\t{gend}\t{tss}\t{tes}\t{gtype}\n")
 
-def write_bed6(path: str, rows: list[tuple], which: str) -> None:
+def write_bed6(path: str, rows: list[tuple], which: str, chr_mode: str | None = None) -> None:
     """
     which: "tss" or "tes"
     Writes 1-bp BED6 with 0-based start, 1-based end.
     name field = gene_name|gene_id (or gene_id if identical).
     """
     assert which in {"tss", "tes"}
-    idx = 6 if which == "tss" else 7
     with open(path, "w", encoding="utf-8") as fh:
         for gid, gname, chrom, strand, _gs, _ge, tss, tes, _bt in rows:
+            c = normalize_chrom(chrom, chr_mode)
             pos = int(tss if which == "tss" else tes)
             lo = max(0, pos - 1)
             hi = pos
             name = make_name(gname, gid)
-            fh.write(f"{chrom}\t{lo}\t{hi}\t{name}\t0\t{strand}\n")
+            fh.write(f"{c}\t{lo}\t{hi}\t{name}\t0\t{strand}\n")
 
 # ── CLI ────────────────────────────────────────────────────────────────────
 def main(argv: list[str]) -> int:
-    sys.stderr.write(f"[gtf_to_catalog] start ts={datetime.datetime.utcnow().isoformat()}Z\n")
-    if len(argv) != 5:
-        sys.stderr.write("Usage: gtf_to_catalog.py <in.gtf[.gz]> <genes.tsv> <tss.bed> <tes.bed>\n")
-        return 2
+    ap = argparse.ArgumentParser(description="Build gene catalog from GTF")
+    ap.add_argument("gtf_in", help="Input GTF (plain or .gz)")
+    ap.add_argument("genes_tsv", help="Output genes.tsv")
+    ap.add_argument("tss_bed", help="Output TSS BED")
+    ap.add_argument("tes_bed", help="Output TES BED")
+    ap.add_argument("--exclude-biotypes", default="", help="Comma-separated biotypes to exclude (e.g. rRNA,tRNA)")
+    ap.add_argument("--chr-add-prefix", action="store_true", help="Add chr prefix to chromosome names (Ensembl->UCSC)")
+    ap.add_argument("--chr-remove-prefix", action="store_true", help="Remove chr prefix (UCSC->Ensembl)")
+    args = ap.parse_args()
 
-    gtf_in, genes_tsv, tss_bed, tes_bed = argv[1:5]
+    gtf_in = args.gtf_in
+    genes_tsv = args.genes_tsv
+    tss_bed = args.tss_bed
+    tes_bed = args.tes_bed
+
+    exclude_biotypes: Set[str] = set()
+    if args.exclude_biotypes:
+        exclude_biotypes = {b.strip().lower() for b in args.exclude_biotypes.split(",") if b.strip()}
+        sys.stderr.write(f"[gtf_to_catalog] Excluding biotypes: {exclude_biotypes}\n")
+
+    chr_mode: str | None = None
+    if args.chr_add_prefix:
+        chr_mode = "add"
+        sys.stderr.write("[gtf_to_catalog] Adding chr prefix to chromosome names\n")
+    elif args.chr_remove_prefix:
+        chr_mode = "remove"
+        sys.stderr.write("[gtf_to_catalog] Removing chr prefix from chromosome names\n")
+
+    sys.stderr.write(f"[gtf_to_catalog] start ts={datetime.datetime.utcnow().isoformat()}Z\n")
     if not os.path.exists(gtf_in):
         sys.stderr.write(f"ERROR: input not found: {gtf_in}\n")
         return 2
@@ -274,10 +308,15 @@ def main(argv: list[str]) -> int:
 
     rows = finalize_rows(genes, tx_min, tx_max, chrom_hint, strand_hint, name_hint, bio_hint)
 
+    # Filter by biotype if requested
+    if exclude_biotypes:
+        rows = [r for r in rows if (r[8] or "").strip().lower() not in exclude_biotypes]
+        sys.stderr.write(f"[gtf_to_catalog] After biotype filter: {len(rows)} genes\n")
+
     # Write (deterministic order already enforced by finalize_rows sort)
-    write_genes_tsv(genes_tsv, rows)
-    write_bed6(tss_bed, rows, "tss")
-    write_bed6(tes_bed, rows, "tes")
+    write_genes_tsv(genes_tsv, rows, chr_mode)
+    write_bed6(tss_bed, rows, "tss", chr_mode)
+    write_bed6(tes_bed, rows, "tes", chr_mode)
 
     sys.stderr.write(f"✓ Wrote {len(rows)} genes to {genes_tsv}, TSS={tss_bed}, TES={tes_bed}\n")
     sys.stderr.write(f"[gtf_to_catalog] done ts={datetime.datetime.utcnow().isoformat()}Z\n")

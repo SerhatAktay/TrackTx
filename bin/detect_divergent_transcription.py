@@ -77,11 +77,19 @@ Output:
     
     # Detection parameters
     ap.add_argument("--threshold", type=float, default=None,
-                    help="Per-bin signal threshold (default: auto-calibrate to 95th percentile)")
+                    help="Per-bin signal threshold (default: auto-calibrate)")
     ap.add_argument("--sum-thr", type=float, default=None,
-                    help="Minimum peak total signal (default: 10x threshold)")
+                    help="Minimum peak total signal (default: auto-calibrate)")
     ap.add_argument("--fdr", type=float, default=0.05,
                     help="False discovery rate threshold (default: 0.05)")
+    
+    # Calibration parameters (when using auto)
+    ap.add_argument("--calibration-percentile", type=float, default=75.0,
+                    help="Percentile for threshold when auto-calibrating (default: 75, more permissive than 95)")
+    ap.add_argument("--calibration-sum-multiplier", type=float, default=3.0,
+                    help="Multiplier for sum_thr = threshold * N when auto (default: 3, allows narrower peaks)")
+    ap.add_argument("--calibration-background-lower", action="store_true",
+                    help="Use lower 50%% of bins for background (avoids inflating threshold from hotspots)")
     
     # Pairing parameters
     ap.add_argument("--nt-window", type=int, default=1000,
@@ -90,6 +98,10 @@ Output:
                     help="Maximum gap within peaks (default: 100bp)")
     ap.add_argument("--balance", type=float, default=0.0,
                     help="Minimum strand balance for initial pairing (default: 0.0, filtering done statistically)")
+    
+    # Post-processing
+    ap.add_argument("--merge-gap", type=int, default=500,
+                    help="Merge overlapping regions within this gap (bp); 0=disable (default: 500)")
     
     # Performance
     ap.add_argument("--ncores", type=int, default=1,
@@ -206,21 +218,27 @@ def read_bedgraph(path: str, role: str, quiet: bool = False) -> pd.DataFrame:
 
 
 def auto_calibrate(pos_df: pd.DataFrame, neg_df: pd.DataFrame, 
+                   percentile: float = 75.0,
+                   sum_multiplier: float = 3.0,
+                   use_lower_background: bool = False,
                    quiet: bool = False) -> Dict[str, float]:
     """
-    Auto-calibrate detection thresholds from background distribution.
+    Auto-calibrate detection thresholds from signal distribution.
     
-    Samples 100K random bins to estimate background, then sets:
-    - threshold = 95th percentile of background
-    - sum_thr = 10x threshold
+    Uses more permissive defaults (75th percentile, 3x multiplier) to target
+    50-100K divergent sites typical for mammalian genomes. Optionally samples
+    from lower 50% of bins to avoid inflating threshold from hotspots.
     
     Args:
         pos_df: Positive strand bedGraph
         neg_df: Negative strand bedGraph
+        percentile: Percentile for threshold (default 75 = more permissive)
+        sum_multiplier: sum_thr = threshold * multiplier (default 3)
+        use_lower_background: If True, use lower 50% of bins for percentile
         quiet: Suppress logging
         
     Returns:
-        Dict with keys: threshold, sum_thr, bg_mean, bg_std, bg_p95
+        Dict with keys: threshold, sum_thr, bg_mean, bg_std, bg_pXX
     """
     log("Auto-calibrating detection thresholds...", quiet)
     
@@ -237,24 +255,34 @@ def auto_calibrate(pos_df: pd.DataFrame, neg_df: pd.DataFrame,
         ).values
     ])
     
+    if use_lower_background:
+        median_val = np.median(all_signals)
+        background_signals = all_signals[all_signals <= median_val]
+        if len(background_signals) < 100:
+            background_signals = all_signals
+        percentile_val = float(np.percentile(background_signals, min(percentile, 99)))
+        log(f"  Using lower 50% of bins as background (n={len(background_signals):,})", quiet)
+    else:
+        percentile_val = float(np.percentile(all_signals, percentile))
+    
     bg_mean = float(np.mean(all_signals))
     bg_std = float(np.std(all_signals))
-    bg_p95 = float(np.percentile(all_signals, 95))
     
-    threshold = bg_p95
-    sum_thr = bg_p95 * 10
+    threshold = percentile_val
+    sum_thr = max(threshold * sum_multiplier, 1.0)
     
-    log(f"  Background mean: {bg_mean:.2f}, std: {bg_std:.2f}", quiet)
-    log(f"  Background 95th percentile: {bg_p95:.2f}", quiet)
-    log(f"  Recommended threshold: {threshold:.2f}", quiet)
-    log(f"  Recommended sum_thr: {sum_thr:.2f}", quiet)
+    log(f"  Signal mean: {bg_mean:.2f}, std: {bg_std:.2f}", quiet)
+    log(f"  Threshold ({percentile}th percentile): {threshold:.2f}", quiet)
+    log(f"  Sum threshold ({sum_multiplier}x): {sum_thr:.2f}", quiet)
     
     return {
         'threshold': threshold,
         'sum_thr': sum_thr,
         'bg_mean': bg_mean,
         'bg_std': bg_std,
-        'bg_p95': bg_p95
+        'bg_p95': float(np.percentile(all_signals, 95)),
+        'percentile': percentile,
+        'sum_multiplier': sum_multiplier
     }
 
 
@@ -404,6 +432,67 @@ def pair_peaks_on_chromosome(
     return pd.DataFrame(pairs, columns=["chr", "start", "end", "total"])
 
 
+def merge_overlapping_regions(
+    df: pd.DataFrame,
+    merge_gap: int,
+    score_col: str = 'score',
+    total_col: str = 'total',
+    quiet: bool = False
+) -> pd.DataFrame:
+    """
+    Merge overlapping or nearby regions, keeping the highest-scoring representative.
+    
+    Reduces redundancy from one-to-many peak pairing. Regions within merge_gap bp
+    are merged; the merged region keeps the max score and sum of total signal.
+    
+    Args:
+        df: DataFrame with chr, start, end, score, total
+        merge_gap: Max gap (bp) to merge; 0 = no merging
+        score_col: Column name for confidence score
+        total_col: Column name for total signal
+        quiet: Suppress logging
+        
+    Returns:
+        Merged DataFrame
+    """
+    if merge_gap <= 0 or df.empty or len(df) <= 1:
+        return df
+    
+    log(f"Merging overlapping regions (gap <= {merge_gap} bp)...", quiet)
+    n_before = len(df)
+    
+    merged_rows = []
+    df = df.sort_values(['chr', 'start', 'end']).reset_index(drop=True)
+    
+    for chrom, group in df.groupby('chr', sort=False):
+        grp = group.sort_values('start').reset_index(drop=True)
+        starts = grp['start'].values
+        ends = grp['end'].values
+        scores = grp[score_col].values
+        totals = grp[total_col].values
+        
+        i = 0
+        while i < len(grp):
+            s, e = starts[i], ends[i]
+            best_score = scores[i]
+            best_total = totals[i]
+            j = i + 1
+            
+            while j < len(grp) and starts[j] <= e + merge_gap:
+                e = max(e, ends[j])
+                best_score = max(best_score, scores[j])
+                best_total = max(best_total, totals[j])
+                j += 1
+            
+            merged_rows.append((chrom, int(s), int(e), float(best_total), float(best_score)))
+            i = j
+    
+    result = pd.DataFrame(merged_rows, columns=['chr', 'start', 'end', total_col, score_col])
+    n_after = len(result)
+    log(f"  Merged {n_before:,} → {n_after:,} regions ({100*(1-n_after/max(1,n_before)):.1f}% reduction)", quiet)
+    return result
+
+
 def extract_features(
     paired_df: pd.DataFrame,
     pos_idx: FastBedGraph,
@@ -509,11 +598,15 @@ def score_with_mixture_model(
     quiet: bool = False
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Score regions using Gaussian Mixture Model and apply FDR control.
+    Score regions using Gaussian Mixture Model and apply approximate FDR control.
     
     Fits 2-component GMM on key features to identify true divergent TX
     vs noise/artifacts. Computes posterior probabilities and applies
-    FDR-controlled filtering.
+    FDR-like filtering using cumulative expected FP / cumulative calls.
+    
+    Note: This is an approximate FDR procedure (posterior-based, not p-value BH).
+    The GMM posterior is not a p-value; empirical validation recommended for
+    strict FDR guarantees.
     
     Args:
         features_df: Feature matrix
@@ -615,8 +708,8 @@ def generate_qc_report(
         f.write("-"*70 + "\n")
         f.write(f"  Threshold used:           {actual_threshold:.3f}\n")
         f.write(f"  Sum threshold used:       {actual_sum_thr:.3f}\n")
-        f.write(f"  (Auto-calibrated bg p95:  {calibration['bg_p95']:.3f})\n")
-        f.write(f"  (Auto-calibrated values:  {calibration['threshold']:.3f}, {calibration['sum_thr']:.3f})\n\n")
+        f.write(f"  (Auto-calibrated p{int(calibration.get('percentile', 75))}: {calibration['threshold']:.3f})\n")
+        f.write(f"  (Auto-calibrated sum_thr:  {calibration['sum_thr']:.3f})\n\n")
         
         f.write("Peak Calling\n")
         f.write("-"*70 + "\n")
@@ -666,7 +759,7 @@ def generate_qc_report(
         f.write("Score Interpretation:\n")
         f.write("  Score = P(true divergent TX | features) from Gaussian mixture model\n")
         f.write("  Higher scores = higher confidence\n")
-        f.write("  All regions collectively pass FDR control\n")
+        f.write("  FDR control is approximate (posterior-based, not p-value BH)\n")
         f.write("="*70 + "\n")
 
 
@@ -706,7 +799,13 @@ def main():
     
     # Auto-calibrate thresholds
     log("[3/7] Calibrating thresholds...")
-    calibration = auto_calibrate(pos_df, neg_df, args.quiet)
+    calibration = auto_calibrate(
+        pos_df, neg_df,
+        percentile=args.calibration_percentile,
+        sum_multiplier=args.calibration_sum_multiplier,
+        use_lower_background=args.calibration_background_lower,
+        quiet=args.quiet
+    )
     
     # Use user-specified or auto-calibrated values
     if args.threshold is not None:
@@ -767,11 +866,21 @@ def main():
         features_df, args.fdr, args.quiet
     )
     
-    # Output results
+    # Build final results
     final = paired[passing_mask].copy()
     final['score'] = scores[passing_mask]
     final = final.sort_values('score', ascending=False).reset_index(drop=True)
     
+    # Merge overlapping regions (reduces redundancy from one-to-many pairing)
+    if args.merge_gap > 0 and len(final) > 1:
+        final = merge_overlapping_regions(
+            final, args.merge_gap,
+            score_col='score', total_col='total',
+            quiet=args.quiet
+        )
+        final = final.sort_values('score', ascending=False).reset_index(drop=True)
+    
+    # Output results
     final[['chr', 'start', 'end', 'total', 'score']].to_csv(
         args.out, sep='\t', header=False, index=False, float_format='%.4f'
     )

@@ -18,6 +18,7 @@
 
 - [🎉 What's New in v3.0](#-whats-new-in-v30)
 - [⚡ Quick Start](#-quick-start)
+- [🧪 Testing the Pipeline](#-testing-the-pipeline)
 - [📊 What Does TrackTx Do?](#-what-does-tracktx-do)
 - [🔧 Installation](#-installation)
 - [📁 Input Files](#-input-files)
@@ -111,7 +112,7 @@ That's it! The script will:
 ./run_pipeline.sh --output_dir my_run    # Custom output directory
 ```
 
-**💡 All files in project dir by default.** Use `--external-drive` only when project is on exFAT/USB — then cache (~1–2 GB) goes to local, work and results stay on project.
+**💡 All files in project dir by default.** Use `--external-drive` only when project is on exFAT/USB — then cache, temp, and work (~10–50 GB) go to local; results stay on project.
 
 ### 3️⃣ Monitor Progress (Real-time)
 
@@ -120,6 +121,8 @@ Watch your pipeline in action with the **live monitor**:
 ```bash
 python3 nfmon.py
 ```
+
+**Custom output dir?** nfmon auto-detects trace files in `results/` and `results_*/` (e.g. `results_test_PE3/trace/trace.txt`). To force a path: `python3 nfmon.py --trace results_test_PE3/trace/trace.txt`
 
 **Install Rich (optional, for enhanced UI):** The monitor works without it (basic curses fallback), but for a better layout, colors, and live updates:
 ```bash
@@ -142,6 +145,40 @@ python3 nfmon.py --all-logs                      # See all task logs
 python3 nfmon.py --oneshot                       # Quick snapshot
 python3 nfmon.py --oneshot --json status.json    # Export JSON
 ```
+
+---
+
+## 🧪 Testing the Pipeline
+
+Want to verify the pipeline works before running your own data? Use the bundled test setup with readymade samplesheets, params, and a script that downloads small test datasets.
+
+### Step 1: Download test data (PE only)
+
+Run the download script to fetch and subset public PRO-seq data (~10% of reads, ~100–200 MB for the test):
+
+```bash
+# Paired-end (1 sample, ~3 min)
+./scripts/download_and_subset_test_data.sh
+```
+
+**With Docker** (same image as the pipeline; no local curl/gzip needed):
+
+```bash
+./scripts/download_and_subset_test_data.sh --docker
+```
+
+The script downloads from ENA, subsets to 10%, and removes the full files. Outputs go to `test_PE/test_data/`.
+
+### Step 2: Run the pipeline with the readymade config
+
+```bash
+./run_pipeline.sh \
+  --samplesheet test_PE/samplesheet_PE.csv \
+  --params-file test_PE/params_PE.yaml \
+  --output_dir ./results_test_PE
+```
+
+The config uses `sample_source: "local"` and points to the subset FASTQs. See `test_PE/README.md` for dataset details.
 
 ---
 
@@ -272,7 +309,7 @@ cd tracktx
 
 The script auto-detects Docker and runs the pipeline. First run will download the container image (~2–5 min).
 
-**Updating after git pull:** When you `git pull` and run again, `run_pipeline.sh` automatically pulls the latest Docker image so pipeline and container stay in sync. To skip the pull (e.g. offline): `TRACKTX_SKIP_PULL=1 ./run_pipeline.sh`
+**Updating after git pull:** When you `git pull` and run again, `run_pipeline.sh` automatically pulls the Docker image (tag `tracktx:3.0` by default) so pipeline and container stay in sync. To skip the pull (e.g. offline): `TRACKTX_SKIP_PULL=1 ./run_pipeline.sh`
 
 ---
 
@@ -350,12 +387,19 @@ You can also create it manually if you prefer:
 
 ```yaml
 # Basic Settings
-reference_genome: "hs1"        # Human (hs1), Mouse (mm10), Fly (dm6)
+samplesheet: "samplesheet.csv" # Sample sheet CSV (or override via --samplesheet)
+sample_source: "local"        # "local" for FASTQ paths, "srr" for SRA downloads
+reference_genome: "hg38"       # Human (hg38, hs1), Mouse (mm39, mm10), Fly (dm6), etc.
 paired_end: false              # true for paired-end data
 output_dir: "./results"        # Where to save results
 
 # Optional: Spike-in Normalization
 spikein_genome: "dm6"          # Drosophila spike-in
+
+# Annotation options (affects divergent read assignment)
+annotation_source: refseq      # refseq, ensembl, gencode
+annotation_exclude_biotypes: ""  # e.g. rRNA,tRNA
+annotation_chr_naming: none    # none, add (Ensembl->UCSC), remove (UCSC->Ensembl)
 
 # Optional: Adapter Trimming
 adapter_trimming:
@@ -371,12 +415,21 @@ umi:
 
 # Advanced: Divergent Transcription (Statistical)
 advanced:
-  divergent_threshold: auto    # auto = 95th percentile, or specify float
-  divergent_sum_thr: auto      # auto = 10x threshold, or specify float
-  divergent_fdr: 0.05          # False discovery rate (0.01-0.10)
+  divergent_threshold: auto    # auto = 65th percentile, or specify float
+  divergent_sum_thr: auto      # auto = 1.5x threshold, or specify float
+  divergent_fdr: 0.08          # False discovery rate (0.01-0.10)
+  divergent_calibration_percentile: 65   # Recommended (targets ~50-150K sites)
+  divergent_calibration_sum_multiplier: 1.5
+  divergent_merge_gap: 150     # Merge overlapping regions (bp); 0=disabled
   divergent_nt_window: 1000    # Max pairing distance (bp)
   divergent_balance: 0.0       # Balance ratio (0 = max sensitivity)
   divergent_qc: true           # Generate QC reports
+
+# Functional regions (affects divergent read assignment)
+functional_regions:
+  tss_active_pm: 500          # TSS ± bp for active gene detection
+  prom_up: 500
+  prom_down: 250
 ```
 
 **💡 Pro Tip:** Use the interactive config generator (`TrackTx_config_generator.html`) for guided parameter selection with detailed explanations!
@@ -388,28 +441,33 @@ advanced:
 ```
 results/
 ├── 📈 05_normalized_tracks/        # Load in IGV/UCSC Browser
-│   └── <sample>/3p/cpm/*.bw        # CPM and siCPM normalized
+│   └── <sample>/3p/*.cpm.bw        # CPM and siCPM normalized BigWigs
 ├── 🔬 06_divergent_tx/             # Divergent transcription (statistical)
-│   ├── <sample>_divergent.bed      # High-confidence regions (BED5)
-│   └── <sample>_qc.txt             # Statistical QC report
+│   └── <sample>/
+│       ├── divergent_transcription.bed   # High-confidence regions (BED5)
+│       └── divergent_transcription_qc.txt # Statistical QC report
 ├── 🧬 07_functional_regions/       # Genomic region annotations
-│   ├── <sample>_regions.bed
-│   └── functional_regions_summary.tsv
+│   └── <sample>/
+│       ├── functional_regions.bed
+│       └── functional_regions_summary.tsv
 ├── 📊 08_pol_metrics/             # Pol-II pausing & density
-│   ├── <sample>_pausing_index.tsv
-│   └── <sample>_pol_density.tsv
+│   └── <sample>/
+│       ├── pausing_index.tsv
+│       └── pol_density.tsv
 ├── 🔍 10_qc/                       # Quality control metrics
-│   └── <sample>/qc_summary.json
+│   └── <sample>/qc_pol.json
 ├── 📋 11_reports/                  # Interactive HTML reports
 │   ├── cohort/
 │   │   └── global_summary.html     # ⭐ Comprehensive cohort dashboard
 │   └── samples/
 │       └── <sample>/<sample>.report.html
-└── 🔍 trace/                       # Pipeline performance
+└── 🔍 trace/                       # Pipeline performance (in output_dir)
     ├── report.html
     ├── timeline.html
     └── trace.txt
 ```
+
+**Note:** Intermediate outputs (00_references, 01_trimmed_fastq, 02_alignments, 03_genome_tracks, 04_counts, 09_pol_aggregate) are also produced. Trace files live in `{output_dir}/trace/`.
 
 **🎯 Start Here:**
 1. **`11_reports/cohort/global_summary.html`** - Comprehensive cohort analysis with:
@@ -422,7 +480,7 @@ results/
    
 2. **`11_reports/samples/<sample>/<sample>.report.html`** - Detailed per-sample reports
 
-3. **`05_normalized_tracks/*/*/cpm/*.bw`** - Load directly in IGV/UCSC genome browsers
+3. **`05_normalized_tracks/<sample>/3p/*.cpm.bw`** - Load directly in IGV/UCSC genome browsers
 
 4. **`trace/report.html`** - Pipeline performance and resource usage
 
@@ -460,14 +518,22 @@ paired_end: false
 
 ### Download from SRA
 
+**Samplesheet** (SRR accessions in `file1`):
 ```csv
 sample,condition,timepoint,replicate,file1,file2
 sample1,control,0,1,SRR4454567,
 sample2,treatment,30,1,SRR4454568,
 ```
 
+**params.yaml** must include `sample_source: srr`:
+```yaml
+sample_source: srr
+reference_genome: "hg38"
+output_dir: "./results"
+```
+
 ```bash
-./run_pipeline.sh --samplesheet sra_samples.csv
+./run_pipeline.sh --samplesheet sra_samples.csv --params-file params.yaml
 ```
 
 ---
@@ -483,6 +549,7 @@ The pipeline **auto-detects** your environment, but you can force a specific pro
 | **conda_server** | For NFS/network storage | Conda has filesystem issues |
 | **singularity** | HPC containers | On HPC clusters |
 | **slurm** | SLURM scheduler | Combine with containers |
+| **performance** | External drive optimizations | Use with docker/conda via `--external-drive` |
 | **local** | System tools | Tools already installed |
 
 **Examples:**
@@ -491,6 +558,7 @@ The pipeline **auto-detects** your environment, but you can force a specific pro
 ./run_pipeline.sh -profile docker          # Force Docker
 ./run_pipeline.sh -profile conda           # Force Conda
 ./run_pipeline.sh -profile slurm,singularity  # HPC with Singularity
+./run_pipeline.sh --external-drive         # USB/exFAT: appends performance profile
 ```
 
 ---
@@ -508,12 +576,38 @@ The pipeline **auto-detects** your environment, but you can force a specific pro
 ```
 
 This automatically:
-- ✅ Keeps work and results on your project directory (no local space needed)
+- ✅ Keeps **results** on your project directory (no local space needed for outputs)
 - ✅ Fixes publish errors (uses copy instead of hard links)
+- ✅ Fixes OverlappingFileLockException (cache, temp, work on local — exFAT lacks file locking)
 - ✅ Disables scratch space (reduces file copying on slow storage)
 - ✅ Increases task parallelism for better I/O utilization
 
-**Everything on external:** `--external-drive` keeps work and results on your project directory (no local space needed).
+**Note:** `--external-drive` puts cache, temp, and work (~10–50 GB) on local disk (`~/tmp/tracktx_*`); only results stay on the project dir. Ensure ~20–50 GB free on your internal drive.
+
+### Storage Footprint
+
+Typical sizes for a single-sample PE test run (10% subset):
+
+| Location | Size | Contents |
+|----------|------|----------|
+| **results/** | ~2.3 GB | Published outputs |
+| **work/** | ~1.7 GB | Nextflow intermediates (BAMs, bedgraphs, logs) |
+| **.cache/genomes** | ~7 GB | Reference genomes (shared across runs) |
+| **input data** | ~325 MB | Raw FASTQ (test subset) |
+
+**Largest result folders:** `01_trimmed_fastq` (~920 MB uncompressed FASTQ), `00_references` (~800 MB, mostly GTF), `02_alignments` (~270 MB), `03_genome_tracks` (~150 MB), `05_normalized_tracks` (~165 MB).
+
+**Ways to reduce footprint:**
+
+1. **Skip trimmed FASTQ** — `publish_trimmed_fastq: false` (~920 MB per sample)
+2. **Skip alignments** — `publish_alignments: false` (~270 MB per sample)
+3. **Skip GTF** — `publish_references_gtf: false` (~790 MB one-time)
+4. **Skip raw tracks** — `output.raw_tracks: false` (~150 MB; normalized tracks kept)
+5. **Skip bedGraphs** — `output.bedgraph: false` (~100 MB; BigWigs kept)
+6. **Skip allMap tracks** — `norm.emit_allmap: false` (~50 MB)
+7. **Skip 5′ tracks** — `norm.emit_5p: false` (~75 MB; 3′ always kept)
+8. **Shared genome cache** — Point `genome_cache` to a central location
+9. **Clean work dir** — `nextflow clean -f` after a successful run
 
 ### Expected Performance
 
@@ -527,7 +621,9 @@ This automatically:
 
 ### Reading Error Messages
 
-When a process fails, Nextflow prints verbose output. **Look for the TRACKTX ERROR block** — it summarizes the problem and fix:
+When a process fails, Nextflow prints the captured output. **Look for the TRACKTX ERROR block** — it summarizes the problem and fix:
+
+**Note:** Progress output is written to log files only. On failure, Nextflow shows stderr (errors and the TRACKTX ERROR block). Full output is in the work dir (see `Work dir:` in the error message).
 
 ```
 ═══════════════════════════════════════════════════════════════════════
@@ -595,14 +691,18 @@ conda clean --all --yes
 - Use SSD storage for better performance
 - Monitor with `python3 nfmon.py` to see bottlenecks
 
+**Low MAPQ pass rate (e.g. &lt;30%):**
+- QC reports "De-dup reads (MAPQ≥10)" — only reads with MAPQ ≥ threshold are counted
+- PRO-seq often has 30–60% MAPQ pass; subset data or repetitive genomes can be lower
+- To use a lower threshold: add `qc: { mapq: 5 }` to params.yaml (or `pol: { mapq: 5 }` for Pol metrics)
+- Multimapping in repetitive regions reduces MAPQ; this is expected for some datasets
+
 **"Failed to publish file [link]"** (external drive / exFAT):
 
 Hard links don't work on exFAT (common on USB drives). Fix:
 
 ```bash
-./run_pipeline.sh --external-drive        # Everything on external; fixes publish errors
-# Or, if you have ~20GB free on internal disk:
-./run_pipeline.sh --external-drive        # Everything on external; fixes publish errors
+./run_pipeline.sh --external-drive        # Cache/work on local; fixes publish + file-lock errors
 ```
 
 **OverlappingFileLockException** (e.g. `preprocess_and_quality_filter_reads`, `download_genome_annotations`):
@@ -615,7 +715,7 @@ Java file-lock conflict. Common causes and fixes:
    rm -rf work .nextflow
    ./run_pipeline.sh
    ```
-3. **USB drive with exFAT/FAT32 (macOS) / OverlappingFileLockException:** exFAT and FAT32 do not support file locking. **Fix:** Use `./run_pipeline.sh --external-drive` — it puts only the cache (~1–2 GB) on `~/tmp/tracktx_cache` (local); work and results stay on your project. Or reformat the USB to **APFS** or **Mac OS Extended**.
+3. **USB drive with exFAT/FAT32 (macOS) / OverlappingFileLockException:** exFAT and FAT32 do not support file locking. **Fix:** Use `./run_pipeline.sh --external-drive` — it puts cache, temp, and work (~10–50 GB) on local (`~/tmp/tracktx_cache`, `~/tmp/tracktx_work`); results stay on your project. Ensure ~20–50 GB free on internal drive. Or reformat the USB to **APFS** or **Mac OS Extended**.
 4. **NFS / network / cloud-synced storage:** File locking is unreliable on NFS, SMB, iCloud, Dropbox. Set work dir to internal disk or a USB drive formatted as APFS/ext4: `export NXF_WORK=/tmp/nextflow-work` or `export NXF_WORK=/Volumes/MySSD/nextflow-work` (macOS, SSD must be APFS/HFS+).
 5. **Conda profile:** Multiple tasks can contend on the conda cache. Try `./run_pipeline.sh -profile docker`, or set `export NXF_CONDA_CACHEDIR=/tmp/conda-$USER-$$` before running.
 6. **Upgrade Nextflow:** Pipeline requires ≥24.04.0; older versions have locking issues.
@@ -642,7 +742,7 @@ Java file-lock conflict. Common causes and fixes:
 ### Getting Help
 
 1. **Check logs**: `.nextflow.log` in the working directory
-2. **Review trace**: `results/trace/report.html` for resource issues
+2. **Review trace**: `{output_dir}/trace/report.html` for resource issues
 3. **Monitor live**: `python3 nfmon.py` to see what's happening
 4. **GitHub Issues**: [Report bugs](https://github.com/serhataktay/tracktx/issues)
 
@@ -658,7 +758,7 @@ Java file-lock conflict. Common causes and fixes:
 
 ## 🧬 Citation
 
-If TrackTx is useful for your research, please cite this github page
+If TrackTx is useful for your research, please cite: [https://github.com/serhataktay/tracktx](https://github.com/serhataktay/tracktx)
 
 ### Key References
 - **PRO-seq**: [Kwak et al., 2013](https://doi.org/10.1126/science.1229386) - Precision run-on sequencing

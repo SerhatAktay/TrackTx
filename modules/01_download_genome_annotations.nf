@@ -51,13 +51,19 @@ process download_genome_annotations {
   cache      'deep'
   conda      'envs/tracktx.yaml'
 
-  // Persistent storage for caching across runs
-  storeDir   "${params.assets_dir ?: "${projectDir}/assets"}/annotation/${params.reference_genome}"
+  // Persistent storage for caching across runs (includes annotation_source for cache key)
+  storeDir   "${params.assets_dir ?: "${projectDir}/assets"}/annotation/${params.reference_genome}_${params.annotation_source ?: 'refseq'}_${params.annotation_exclude_biotypes ?: ''}_${params.annotation_chr_naming ?: 'none'}"
   
   // Use params.publish_mode: 'link' (default) or 'copy' (required for exFAT/USB drives)
   publishDir "${params.output_dir}/00_references/${params.reference_genome}", 
              mode: params.publish_mode, 
-             overwrite: true
+             overwrite: true,
+             saveAs: { filename ->
+               def name = filename instanceof Path ? filename.getFileName().toString() : filename.toString()
+               // Skip GTF when publish_references_gtf: false (~790 MB saved); genes/tss/tes kept
+               if (params.publish_references_gtf == false && name.endsWith('.gtf')) return null
+               return name
+             }
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:
@@ -115,11 +121,45 @@ process download_genome_annotations {
   CUSTOM_PATH='!{params.gtf_path ?: ""}'
   CUSTOM_URL='!{params.gtf_url ?: ""}'
 
-  # UCSC download URLs
+  # Annotation source and catalog options
+  ANNOTATION_SOURCE='!{params.annotation_source ?: "refseq"}'
+  EXCLUDE_BIOTYPES='!{params.annotation_exclude_biotypes ?: ""}'
+  CHR_NAMING='!{params.annotation_chr_naming ?: "none"}'
+
+  # UCSC RefSeq (default)
   RSYNC_URL="rsync://hgdownload.soe.ucsc.edu/goldenPath/${ASM}/bigZips/genes/${ASM}.ncbiRefSeq.gtf.gz"
   HTTPS_URL="https://hgdownload.soe.ucsc.edu/goldenPath/${ASM}/bigZips/genes/${ASM}.ncbiRefSeq.gtf.gz"
 
+  # Ensembl URLs (release 113, Aug 2024)
+  # GENCODE URLs (release 45 for human, 33 for mouse)
+  case "${ANNOTATION_SOURCE}" in
+    ensembl)
+      case "${ASM}" in
+        hg38|GRCh38) HTTPS_URL="https://ftp.ensembl.org/pub/release-113/gtf/homo_sapiens/Homo_sapiens.GRCh38.113.gtf.gz" ;;
+        hg19|GRCh37) HTTPS_URL="https://ftp.ensembl.org/pub/release-113/gtf/homo_sapiens/Homo_sapiens.GRCh37.87.gtf.gz" ;;
+        mm39|GRCm39) HTTPS_URL="https://ftp.ensembl.org/pub/release-113/gtf/mus_musculus/Mus_musculus.GRCm39.113.gtf.gz" ;;
+        mm10|GRCm38) HTTPS_URL="https://ftp.ensembl.org/pub/release-113/gtf/mus_musculus/Mus_musculus.GRCm38.102.gtf.gz" ;;
+        *) echo "GTF | WARNING | Ensembl not configured for ${ASM}, falling back to RefSeq" ;;
+      esac
+      RSYNC_URL=""
+      ;;
+    gencode)
+      case "${ASM}" in
+        hg38|GRCh38) HTTPS_URL="https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_45/gencode.v45.annotation.gtf.gz" ;;
+        hg19|GRCh37) HTTPS_URL="https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_19/gencode.v19.annotation.gtf.gz" ;;
+        mm39|GRCm39) HTTPS_URL="https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M33/gencode.vM33.annotation.gtf.gz" ;;
+        mm10|GRCm38) HTTPS_URL="https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M32/gencode.vM32.annotation.gtf.gz" ;;
+        *) echo "GTF | WARNING | GENCODE not configured for ${ASM}, falling back to RefSeq" ;;
+      esac
+      RSYNC_URL=""
+      ;;
+    refseq|*) ;;
+  esac
+
   echo "GTF | CONFIG | Assembly: ${ASM}"
+  echo "GTF | CONFIG | Annotation source: ${ANNOTATION_SOURCE}"
+  echo "GTF | CONFIG | Exclude biotypes: ${EXCLUDE_BIOTYPES:-none}"
+  echo "GTF | CONFIG | Chr naming: ${CHR_NAMING}"
   echo "GTF | CONFIG | Cache directory: ${CACHE_DIR}"
   echo "GTF | CONFIG | Custom path: ${CUSTOM_PATH:-none}"
   echo "GTF | CONFIG | Custom URL: ${CUSTOM_URL:-none}"
@@ -307,13 +347,20 @@ process download_genome_annotations {
     echo "GTF | PROCESS | Using script: ${SCRIPT_PATH}"
   fi
 
+  # Build gtf_to_catalog extra args
+  GTC_EXTRA=""
+  [[ -n "${EXCLUDE_BIOTYPES}" ]] && GTC_EXTRA="${GTC_EXTRA} --exclude-biotypes ${EXCLUDE_BIOTYPES}"
+  [[ "${CHR_NAMING}" == "add" ]] && GTC_EXTRA="${GTC_EXTRA} --chr-add-prefix"
+  [[ "${CHR_NAMING}" == "remove" ]] && GTC_EXTRA="${GTC_EXTRA} --chr-remove-prefix"
+
   # Generate catalogs
   echo "GTF | PROCESS | Running gtf_to_catalog.py..."
   ${PYTHON_CMD} "${SCRIPT_PATH}" \
     "${CACHE_GTF}" \
     "${WORK_DIR}/genes.tsv" \
     "${WORK_DIR}/tss.bed" \
-    "${WORK_DIR}/tes.bed"
+    "${WORK_DIR}/tes.bed" \
+    ${GTC_EXTRA}
 
   if [[ $? -ne 0 ]]; then
     tracktx_error "download_genome_annotations" "Failed to generate gene catalogs" "Check GTF format and Python script"

@@ -10,9 +10,11 @@
 # Example:
 #   tracktx_error "detect_divergent_transcription" "Missing Python deps" "pip install numpy pandas"
 #
-# Also use separate stdout/stderr for cleaner Nextflow output:
-#   exec > >(tee -a module.log)
+# Use log-only stdout to reduce Nextflow error wall of text on failure:
+#   exec > module.log
 #   exec 2> >(tee -a module.log >&2)
+# Add ERR trap for unexpected failures:
+#   trap 'tracktx_error "module_name" "Unexpected process failure" "Check module.log in work dir"' ERR
 # =============================================================================
 
 tracktx_error() {

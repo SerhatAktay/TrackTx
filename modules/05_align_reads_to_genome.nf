@@ -43,7 +43,11 @@ process align_reads_to_genome {
 
   publishDir "${params.output_dir}/02_alignments/${sample_id}",
              mode: params.publish_mode,
-             overwrite: true
+             overwrite: true,
+             saveAs: { filename ->
+               if (params.publish_alignments == false) return null  // Skip entire folder to save ~270 MB/sample
+               return filename instanceof Path ? filename.getFileName().toString() : filename.toString()
+             }
 
   // ── Inputs ───────────────────────────────────────────────────────────────
   input:
@@ -83,7 +87,7 @@ process align_reads_to_genome {
   export LC_ALL=C
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a align_reads.log)
+  exec > align_reads.log
   exec 2> >(tee -a align_reads.log >&2)
 
   tracktx_error() {
