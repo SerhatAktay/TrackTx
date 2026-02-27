@@ -86,7 +86,7 @@ process combine_reports_into_cohort {
   export LC_ALL=C
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a combine.log)
+  exec > combine.log
   exec 2> >(tee -a combine.log >&2)
 
   tracktx_error() {
@@ -101,6 +101,7 @@ process combine_reports_into_cohort {
     echo "═══════════════════════════════════════════════════════════════════════" >&2
     exit "\$code"
   }
+  trap 'tracktx_error "combine_reports_into_cohort" "Unexpected process failure" "Check combine.log in work dir"' ERR
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -739,7 +740,7 @@ TSV Export:
   treatment <- subset(cohort, condition == "treatment")
   
   # Calculate statistics
-  mean(cohort$map_rate_percent)
+  mean(cohort\\$map_rate_percent)
   
   # Load in Python
   import pandas as pd

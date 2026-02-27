@@ -119,7 +119,7 @@ process quality_control_aligned_reads {
   export LC_ALL=C
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a qc.log)
+  exec > qc.log
   exec 2> >(tee -a qc.log >&2)
 
   tracktx_error() {
@@ -134,6 +134,7 @@ process quality_control_aligned_reads {
     echo "═══════════════════════════════════════════════════════════════════════" >&2
     exit "\$code"
   }
+  trap 'tracktx_error "quality_control_aligned_reads" "Unexpected process failure" "Check qc.log in work dir"' ERR
 
   TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -542,6 +543,16 @@ process quality_control_aligned_reads {
 
   echo "QC | OUTPUT | Writing JSON summary..."
 
+  # Build optional median_fragment_length (proper JSON escaping)
+  EXTRA_JSON=""
+  if [[ \${IS_PAIRED} -eq 1 ]]; then
+    if [[ -n "\${MEDIAN_FRAG}" && "\${MEDIAN_FRAG}" != "NA" ]]; then
+      EXTRA_JSON=", \"median_fragment_length\": \${MEDIAN_FRAG}"
+    else
+      EXTRA_JSON=", \"median_fragment_length\": null"
+    fi
+  fi
+
   cat > qc_pol.json <<JSONEOF
 {
   "sample_id": "\${SAMPLE_ID}",
@@ -567,7 +578,7 @@ process quality_control_aligned_reads {
   "umi_input_reads": \${UMI_INPUT_READS},
   "umi_output_reads": \${UMI_OUTPUT_READS},
   "umi_duplicates_removed": \${UMI_DUPLICATES_REMOVED},
-  "umi_deduplication_percent": \${UMI_DEDUP_PERCENT}\$([ \${IS_PAIRED} -eq 1 ] && echo ", \"median_fragment_length\": \${MEDIAN_FRAG:-null}" || echo "")
+  "umi_deduplication_percent": \${UMI_DEDUP_PERCENT}\${EXTRA_JSON}
 }
 JSONEOF
 

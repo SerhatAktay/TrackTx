@@ -57,7 +57,13 @@ process download_genome_annotations {
   // Use params.publish_mode: 'link' (default) or 'copy' (required for exFAT/USB drives)
   publishDir "${params.output_dir}/00_references/${params.reference_genome}", 
              mode: params.publish_mode, 
-             overwrite: true
+             overwrite: true,
+             saveAs: { filename ->
+               def name = filename instanceof Path ? filename.getFileName().toString() : filename.toString()
+               // Skip GTF when publish_references_gtf: false (~790 MB saved); genes/tss/tes kept
+               if (params.publish_references_gtf == false && name.endsWith('.gtf')) return null
+               return name
+             }
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:

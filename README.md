@@ -599,6 +599,31 @@ This automatically:
 
 **Note:** `--external-drive` puts cache, temp, and work (~10–50 GB) on local disk (`~/tmp/tracktx_*`); only results stay on the project dir. Ensure ~20–50 GB free on your internal drive.
 
+### Storage Footprint
+
+Typical sizes for a single-sample PE test run (10% subset):
+
+| Location | Size | Contents |
+|----------|------|----------|
+| **results/** | ~2.3 GB | Published outputs |
+| **work/** | ~1.7 GB | Nextflow intermediates (BAMs, bedgraphs, logs) |
+| **.cache/genomes** | ~7 GB | Reference genomes (shared across runs) |
+| **input data** | ~325 MB | Raw FASTQ (test subset) |
+
+**Largest result folders:** `01_trimmed_fastq` (~920 MB uncompressed FASTQ), `00_references` (~800 MB, mostly GTF), `02_alignments` (~270 MB), `03_genome_tracks` (~150 MB), `05_normalized_tracks` (~165 MB).
+
+**Ways to reduce footprint:**
+
+1. **Skip trimmed FASTQ** — `publish_trimmed_fastq: false` (~920 MB per sample)
+2. **Skip alignments** — `publish_alignments: false` (~270 MB per sample)
+3. **Skip GTF** — `publish_references_gtf: false` (~790 MB one-time)
+4. **Skip raw tracks** — `output.raw_tracks: false` (~150 MB; normalized tracks kept)
+5. **Skip bedGraphs** — `output.bedgraph: false` (~100 MB; BigWigs kept)
+6. **Skip allMap tracks** — `norm.emit_allmap: false` (~50 MB)
+7. **Skip 5′ tracks** — `norm.emit_5p: false` (~75 MB; 3′ always kept)
+8. **Shared genome cache** — Point `genome_cache` to a central location
+9. **Clean work dir** — `nextflow clean -f` after a successful run
+
 ### Expected Performance
 
 | Sample Count | Optimized (Internal SSD) | Default (External SSD) |
@@ -611,7 +636,9 @@ This automatically:
 
 ### Reading Error Messages
 
-When a process fails, Nextflow prints verbose output. **Look for the TRACKTX ERROR block** — it summarizes the problem and fix:
+When a process fails, Nextflow prints the captured output. **Look for the TRACKTX ERROR block** — it summarizes the problem and fix:
+
+**Note:** Progress output is written to log files only. On failure, Nextflow shows stderr (errors and the TRACKTX ERROR block). Full output is in the work dir (see `Work dir:` in the error message).
 
 ```
 ═══════════════════════════════════════════════════════════════════════
@@ -678,6 +705,12 @@ conda clean --all --yes
 - First run downloads reference genomes (~10-30 min)
 - Use SSD storage for better performance
 - Monitor with `python3 nfmon.py` to see bottlenecks
+
+**Low MAPQ pass rate (e.g. &lt;30%):**
+- QC reports "De-dup reads (MAPQ≥10)" — only reads with MAPQ ≥ threshold are counted
+- PRO-seq often has 30–60% MAPQ pass; subset data or repetitive genomes can be lower
+- To use a lower threshold: add `qc: { mapq: 5 }` to params.yaml (or `pol: { mapq: 5 }` for Pol metrics)
+- Multimapping in repetitive regions reduces MAPQ; this is expected for some datasets
 
 **"Failed to publish file [link]"** (external drive / exFAT):
 

@@ -292,10 +292,16 @@ def main():
     median_pausing = float("nan")
     if not pausing.empty:
         low = [c.lower() for c in pausing.columns]
+        pi_col = None
         for cand in ("pi_len_norm","pausing_index","pi_raw","pi"):
             if cand in low:
-                median_pausing = median_num(pausing[pausing.columns[low.index(cand)]])
+                pi_col = pausing.columns[low.index(cand)]
                 break
+        if pi_col is not None:
+            # Use only genes with valid PI (exclude nan/inf; gene_body_count>0 typically)
+            valid_pi = pd.to_numeric(pausing[pi_col], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+            if len(valid_pi) > 0:
+                median_pausing = float(np.median(valid_pi))
 
     median_density = float("nan")
     density_source = None
@@ -399,7 +405,8 @@ def main():
             umi_deduplication_enabled=umi_enabled,
             umi_input_reads=umi_input_reads,
             umi_output_reads=umi_output_reads,
-            umi_deduplication_percent=umi_dedup_percent
+            umi_deduplication_percent=umi_dedup_percent,
+            mean_coverage_depth=qc.get("mean_coverage_depth") if isinstance(qc, dict) else None,
         ),
         regions=regions_list,
         tracks=dict(
@@ -709,13 +716,15 @@ def main():
       <h2>At-a-glance</h2>
       <div class="grid">
         {kpi("Total input reads", row["qc"]["total_reads_raw"], "qc_pol.json")}
-        {kpi("De-dup reads (MAPQ≥)", row["qc"]["dedup_reads_mapq_ge"], "qc_pol.json")}
+        {kpi("De-dup reads (MAPQ≥)", row["qc"]["dedup_reads_mapq_ge"],
+             ("Low coverage expected for subset data. " if (row["qc"].get("mean_coverage_depth") or 1) < 0.1 else "") + "qc_pol.json")}
         {kpi("UMI Dedup %" if row["qc"].get("umi_deduplication_enabled", False) else "Duplicate %", 
              row["qc"].get("umi_deduplication_percent") if row["qc"].get("umi_deduplication_enabled", False) else row["qc"].get("duplicate_percent"))}
         {kpi("# divergent loci", row["metrics"]["divergent_regions"])}
         {kpi("Functional regions (distinct)", row["metrics"]["total_functional_regions"])}
         {kpi("Reads in functional regions", int(row["metrics"]["reads_total_functional"]))}
-        {kpi("Unlocalized fraction", row["metrics"]["unlocalized_fraction"])}
+        {kpi("Unlocalized fraction", row["metrics"]["unlocalized_fraction"],
+             "Common with low coverage or subset data" if (row["metrics"].get("unlocalized_fraction") or 0) > 0.5 else "")}
         {kpi("Median pausing (len-norm)", None if np.isnan(median_pausing) else round(median_pausing,3))}
         {kpi("Median density", (None if np.isnan(median_density) else round(median_density,3)), ("source: "+str(row['metrics'].get('density_source') or 'n/a') + (" — "+str(row['metrics'].get('density_reason')) if (np.isnan(median_density) and row['metrics'].get('density_reason')) else "")))}
         {kpi("CPM factor", row["metrics"]["cpm_factor"])}

@@ -94,7 +94,7 @@ process summarize_polymerase_metrics {
   export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a aggregate.log)
+  exec > aggregate.log
   exec 2> >(tee -a aggregate.log >&2)
 
   tracktx_error() {
@@ -109,6 +109,7 @@ process summarize_polymerase_metrics {
     echo "═══════════════════════════════════════════════════════════════════════" >&2
     exit "\$code"
   }
+  trap 'tracktx_error "summarize_polymerase_metrics" "Unexpected process failure" "Check aggregate.log in work dir"' ERR
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"

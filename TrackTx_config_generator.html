@@ -98,6 +98,27 @@
     .columns {
       margin-bottom: 1rem;
     }
+    
+    /* Space section: savings badges */
+    .space-badge {
+      display: inline-block;
+      font-size: 0.8rem;
+      font-weight: 600;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      background: #e8f4f8;
+      color: #0a6b8a;
+      margin-left: 0.5rem;
+    }
+    .space-row {
+      padding: 1rem 1.25rem;
+      border: 1px solid #eee;
+      border-radius: 8px;
+      margin-bottom: 0.75rem;
+      background: #fafafa;
+    }
+    .space-row label { margin: 0; display: block; }
+    .space-row .help { margin-top: 0.35rem; margin-bottom: 0; }
   </style>
 </head>
 <body>
@@ -934,19 +955,13 @@
           </label>
           <p class="help">Only works if you selected a spike-in genome and have proper controls.</p>
         </div>
-        <div class="column">
-          <label class="checkbox">
-            <input type="checkbox" id="outputRawTracks" checked>
-            <strong>Keep raw (unnormalized) tracks</strong>
-          </label>
-          <p class="help">Recommended. Uncheck to save disk space.</p>
-        </div>
       </div>
+      <p class="help is-dim">Raw tracks, allMap, 5′: see <strong>Storage / Space</strong> section below.</p>
       
       <div class="section-header mt-4">Track Formats</div>
       <div class="help-box mb-3">
         <strong>BigWig (.bw):</strong> Compressed binary format, fast loading in genome browsers (recommended).<br>
-        <strong>BedGraph (.bedgraph):</strong> Text format, larger files but human-readable.
+        <strong>BedGraph (.bedgraph):</strong> Text format, larger files but human-readable. Toggle in <strong>Space</strong> section below.
       </div>
       
       <div class="columns">
@@ -956,13 +971,6 @@
             <strong>BigWig format</strong> (recommended)
           </label>
           <p class="help">Compressed, fast loading in UCSC/IGV genome browsers.</p>
-        </div>
-        <div class="column">
-          <label class="checkbox">
-            <input type="checkbox" id="trackBedGraph" checked>
-            <strong>BedGraph format</strong>
-          </label>
-          <p class="help">Text format, useful for custom processing or debugging. Uncheck to save disk space.</p>
         </div>
       </div>
       
@@ -980,12 +988,6 @@
             Emit siCPM (if factors available)
           </label>
         </div>
-        <div class="column">
-          <label class="checkbox">
-            <input type="checkbox" id="normEmitAllMap" checked>
-            Emit allMap (multimapper) tracks
-          </label>
-        </div>
       </div>
       
       <div class="columns mt-3">
@@ -994,7 +996,7 @@
             <input type="checkbox" id="normForce5p">
             Force 5′ track generation (otherwise automatic)
           </label>
-          <p class="help">PRO-seq primarily uses 3' signal. 5' is optional.</p>
+          <p class="help">PRO-seq primarily uses 3' signal. 5' toggle in Space section below.</p>
         </div>
         <div class="column is-half">
           <label class="checkbox">
@@ -1007,10 +1009,87 @@
     </div>
 
     <!-- ================================================================ -->
-    <!-- STEP 8: BUILD & DOWNLOAD -->
+    <!-- STEP 8: STORAGE / SPACE -->
     <!-- ================================================================ -->
     <div class="box">
-      <h2 class="subtitle is-4"><span class="step">8</span> Build & Download</h2>
+      <h2 class="subtitle is-4"><span class="step">8</span> Storage / Space</h2>
+      <p class="mb-4">Control which outputs are published to save disk space. Uncheck options below to reduce footprint. Defaults keep everything for reproducibility and downstream use.</p>
+      
+      <div class="help-box mb-4">
+        <strong>How it works:</strong> Checked = publish (default). Unchecked = skip publishing to results. The pipeline still runs; only the copy to the results folder is skipped. Files remain in the work directory until you run <code class="mono">nextflow clean -f</code>.
+      </div>
+      
+      <div class="section-header">Publish Options</div>
+      
+      <div class="space-row">
+        <label class="checkbox">
+          <input type="checkbox" id="publishTrimmedFastq" checked>
+          <strong>Trimmed FASTQ</strong> <span class="space-badge">~900 MB per sample</span>
+        </label>
+        <p class="help">Publish <code class="mono">01_trimmed_fastq/</code> — cleaned reads after cutadapt/UMI. Uncheck to skip.</p>
+      </div>
+      
+      <div class="space-row">
+        <label class="checkbox">
+          <input type="checkbox" id="publishReferencesGtf" checked>
+          <strong>Reference GTF</strong> <span class="space-badge">~790 MB (one-time)</span>
+        </label>
+        <p class="help">Publish full GTF in <code class="mono">00_references/</code>. genes.tsv, tss.bed, tes.bed (~8 MB) are always kept. Uncheck to skip GTF only.</p>
+      </div>
+      
+      <div class="space-row">
+        <label class="checkbox">
+          <input type="checkbox" id="publishAlignments" checked>
+          <strong>Alignments (BAM)</strong> <span class="space-badge">~270 MB per sample</span>
+        </label>
+        <p class="help">Publish <code class="mono">02_alignments/</code> — BAM files. Uncheck to skip. Downstream steps still run.</p>
+      </div>
+      
+      <div class="space-row">
+        <label class="checkbox">
+          <input type="checkbox" id="trackBedGraph" checked>
+          <strong>BedGraph tracks</strong> <span class="space-badge">~100 MB</span>
+        </label>
+        <p class="help">Publish bedGraph files in <code class="mono">03_genome_tracks/</code> and <code class="mono">05_normalized_tracks/</code>. BigWigs are always published. Uncheck if BigWigs are sufficient.</p>
+      </div>
+      
+      <div class="space-row">
+        <label class="checkbox">
+          <input type="checkbox" id="outputRawTracks" checked>
+          <strong>Raw (unnormalized) tracks</strong> <span class="space-badge">~150 MB</span>
+        </label>
+        <p class="help">Publish <code class="mono">03_genome_tracks/</code> — raw coverage before CPM/siCPM. Normalized tracks in <code class="mono">05_normalized_tracks/</code> always published. Uncheck to skip raw.</p>
+      </div>
+      
+      <div class="section-header mt-4">Track Generation Options</div>
+      <p class="help mb-3">Uncheck to skip generating these track types. Saves compute and storage.</p>
+      
+      <div class="space-row">
+        <label class="checkbox">
+          <input type="checkbox" id="normEmitAllMap" checked>
+          <strong>allMap (multimapper) tracks</strong> <span class="space-badge">~50 MB</span>
+        </label>
+        <p class="help">Generate allMap tracks in 03 and 05. Main BAM tracks (unique mappers) always kept. Uncheck to skip multimapper tracks.</p>
+      </div>
+      
+      <div class="space-row">
+        <label class="checkbox">
+          <input type="checkbox" id="emit5pTracks" checked>
+          <strong>5′ end tracks</strong> <span class="space-badge">~75 MB</span>
+        </label>
+        <p class="help">Generate 5′ coverage tracks. PRO-seq primarily uses 3′. Uncheck to skip 5′ tracks (3′ always kept).</p>
+      </div>
+      
+      <p class="mt-4 is-dim" style="font-size: 0.9rem;">
+        <strong>Tip:</strong> Unchecking all publish options saves ~2.2 GB for a typical single-sample run. Use <code class="mono">genome_cache</code> on shared storage to avoid duplicating references across projects.
+      </p>
+    </div>
+
+    <!-- ================================================================ -->
+    <!-- STEP 9: BUILD & DOWNLOAD -->
+    <!-- ================================================================ -->
+    <div class="box">
+      <h2 class="subtitle is-4"><span class="step">9</span> Build & Download</h2>
       <p class="mb-4">Generate your configuration files and download them as a ZIP package.</p>
       
       <div class="buttons">
@@ -1413,12 +1492,17 @@ function buildYAML(){
   y += `  bigwig: ${out.bigwig}\n`;
   y += `  bedgraph: ${out.bedgraph}\n\n`;
 
+  y += `# Storage\n`;
+  y += `publish_trimmed_fastq: ${$('#publishTrimmedFastq').checked}   # false saves ~900 MB/sample\n`;
+  y += `publish_references_gtf: ${$('#publishReferencesGtf').checked}   # false saves ~790 MB (genes/tss/tes kept)\n`;
+  y += `publish_alignments: ${$('#publishAlignments').checked}   # false saves ~270 MB/sample\n\n`;
+
   y += `# Normalization options\n`;
   y += `norm:\n`;
   y += `  emit_bw: ${normEmitBW}\n`;
   y += `  emit_sicpm: ${normEmitSiCPM}\n`;
   y += `  emit_allmap: ${normEmitAllMap}\n`;
-  y += `  emit_5p: ${normForce5p ? 'true' : 'null'}\n\n`;
+  y += `  emit_5p: ${!$('#emit5pTracks').checked ? 'false' : (normForce5p ? 'true' : 'null')}   # false = skip 5' tracks\n\n`;
 
   y += `force_sort_bedgraph: ${forceSortBg}\n\n`;
 

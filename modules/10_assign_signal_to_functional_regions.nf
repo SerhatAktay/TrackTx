@@ -108,7 +108,7 @@ process assign_signal_to_functional_regions {
   export LC_ALL=C
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a functional_regions.log)
+  exec > functional_regions.log
   exec 2> >(tee -a functional_regions.log >&2)
 
   tracktx_error() {
@@ -123,6 +123,7 @@ process assign_signal_to_functional_regions {
     echo "═══════════════════════════════════════════════════════════════════════" >&2
     exit "\$code"
   }
+  trap 'tracktx_error "assign_signal_to_functional_regions" "Unexpected process failure" "Check functional_regions.log in work dir"' ERR
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"

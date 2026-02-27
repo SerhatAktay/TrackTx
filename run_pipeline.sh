@@ -657,51 +657,6 @@ check_input_files() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-# MONITOR LAUNCH (new terminal)
-# ═══════════════════════════════════════════════════════════════════════════
-
-# Launch nfmon.py in a new terminal window. Returns 0 on success.
-launch_monitor_in_new_terminal() {
-    local project_dir="$1"
-    local trace_path="$2"
-    
-    # Only in interactive mode with display
-    [[ ! -t 0 ]] && return 1
-    [[ -z "${DISPLAY:-}" && "$OSTYPE" != "darwin"* ]] && return 1
-    
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        # macOS: Terminal.app (escape quotes for AppleScript)
-        if [[ -d "/Applications/Utilities/Terminal.app" ]] || [[ -d "/System/Applications/Utilities/Terminal.app" ]]; then
-            local monitor_cmd="cd \"$project_dir\" && python3 nfmon.py --trace \"$trace_path\""
-            local escaped_cmd="${monitor_cmd//\"/\\\\\"}"
-            osascript -e "tell application \"Terminal\" to do script \"$escaped_cmd\"" 2>/dev/null && return 0
-        fi
-    elif [[ -n "${DISPLAY:-}" ]]; then
-        # Linux: use env vars to avoid quoting issues with paths
-        if has_command gnome-terminal; then
-            TRACKTX_MONITOR_DIR="$project_dir" TRACKTX_MONITOR_TRACE="$trace_path" \
-                gnome-terminal -- bash -c 'cd "$TRACKTX_MONITOR_DIR" && python3 nfmon.py --trace "$TRACKTX_MONITOR_TRACE"; exec bash'
-            return 0
-        fi
-        if has_command xterm; then
-            TRACKTX_MONITOR_DIR="$project_dir" TRACKTX_MONITOR_TRACE="$trace_path" \
-                xterm -e 'bash -c "cd \"$TRACKTX_MONITOR_DIR\" && python3 nfmon.py --trace \"$TRACKTX_MONITOR_TRACE\"; exec bash"'
-            return 0
-        fi
-        if has_command konsole; then
-            konsole -e "bash -c 'cd \"$project_dir\" && python3 nfmon.py --trace \"$trace_path\"; exec bash'"
-            return 0
-        fi
-        if has_command xfce4-terminal; then
-            xfce4-terminal -e "bash -c 'cd \"$project_dir\" && python3 nfmon.py --trace \"$trace_path\"; exec bash'"
-            return 0
-        fi
-    fi
-    
-    return 1
-}
-
-# ═══════════════════════════════════════════════════════════════════════════
 # HELP & USAGE
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -716,8 +671,6 @@ GETTING STARTED (First time?):
     2. Download:         Save params.yaml and samplesheet.csv to this folder
     3. Run:              ./run_pipeline.sh
    That's it! The script auto-detects Docker/Conda and runs the pipeline.
-   Optionally say yes when asked to open live monitoring in a second terminal.
-
 QUICK START:
     ./run_pipeline.sh                    # Auto-detect & run
     ./run_pipeline.sh -profile docker    # Force Docker
@@ -745,7 +698,6 @@ OPTIONS:
     --no-clear                     Keep terminal history (no clear screen)
     --no-auto-resume               Don't auto-detect or prompt for resume
     --no-docker-prompt             Don't prompt to start Docker if not running
-    --no-monitor-prompt            Don't prompt to open monitoring in new terminal
 
   Other:
     -h, --help                     Show this help message
@@ -805,7 +757,7 @@ EXAMPLES:
 
     # Skip prompts and countdown
     ./run_pipeline.sh --skip-countdown
-    ./run_pipeline.sh --no-monitor-prompt --skip-countdown
+    ./run_pipeline.sh --skip-countdown
     ./run_pipeline.sh --no-auto-resume
 
     # HPC and servers
@@ -854,7 +806,6 @@ main() {
     local NO_CLEAR=0
     local CLEAR_DELAY=30
     local NO_DOCKER_PROMPT=0
-    local NO_MONITOR_PROMPT=0
     local WANT_PROMPT_RESUME=1
     local SHOW_SYSTEM_INFO_ONLY=0
     local EXTERNAL_DRIVE_MODE=0
@@ -909,10 +860,6 @@ main() {
                 ;;
             --no-docker-prompt)
                 NO_DOCKER_PROMPT=1
-                shift
-                ;;
-            --no-monitor-prompt)
-                NO_MONITOR_PROMPT=1
                 shift
                 ;;
             --output_dir|--output-dir)
@@ -1022,11 +969,27 @@ main() {
     TRACKTX_IMAGE="ghcr.io/serhataktay/tracktx:3.0"
     if [[ "${TRACKTX_SKIP_PULL:-0}" -eq 0 ]]; then
         if [[ "$PROFILE" == *docker* ]] && has_command docker; then
-            info "Pulling latest Docker image: ${TRACKTX_IMAGE}"
-            docker pull "$TRACKTX_IMAGE" || warning "Could not pull (will use cached if available)"
+            section_header "Docker Image"
+            echo -e "  Image:   ${BOLD}${TRACKTX_IMAGE}${NC}"
+            echo -n "  Status:  "
+            if docker pull "$TRACKTX_IMAGE" >/dev/null 2>&1; then
+                echo -e "${GREEN}Ready${NC} (up to date or pulled)"
+            else
+                echo -e "${YELLOW}Using cached${NC} (pull failed or offline)"
+            fi
+            separator
+            echo ""
         elif [[ "$PROFILE" == *podman* ]] && has_command podman; then
-            info "Pulling latest Podman image: ${TRACKTX_IMAGE}"
-            podman pull "$TRACKTX_IMAGE" || warning "Could not pull (will use cached if available)"
+            section_header "Podman Image"
+            echo -e "  Image:   ${BOLD}${TRACKTX_IMAGE}${NC}"
+            echo -n "  Status:  "
+            if podman pull "$TRACKTX_IMAGE" >/dev/null 2>&1; then
+                echo -e "${GREEN}Ready${NC} (up to date or pulled)"
+            else
+                echo -e "${YELLOW}Using cached${NC} (pull failed or offline)"
+            fi
+            separator
+            echo ""
         fi
     fi
 
@@ -1163,31 +1126,6 @@ main() {
     info "Full command:"
     echo "  ${CMD[*]}"
     echo ""
-    
-    # Optional: launch monitoring tool in new terminal
-    if [[ ${NO_MONITOR_PROMPT:-0} -eq 0 && -t 0 ]] && [[ -f "nfmon.py" ]]; then
-        local trace_path="results/trace/trace.txt"
-        if [[ -n "$OUTPUT_DIR_OVERRIDE" ]]; then
-            trace_path="${OUTPUT_DIR_OVERRIDE}/trace/trace.txt"
-        elif [[ -f "$PARAMS_FILE" ]]; then
-            local out_from_params=$(grep '^output_dir:' "$PARAMS_FILE" 2>/dev/null | sed 's/output_dir: *//;s/["'\'']//g' || echo "")
-            [[ -n "$out_from_params" ]] && trace_path="${out_from_params}/trace/trace.txt"
-        fi
-        echo ""
-        echo -n "Open live monitoring in a new terminal? [y/N]: "
-        read -r -t 15 ANSWER || ANSWER="n"
-        case "${ANSWER:-n}" in
-            [Yy]*)
-                local proj_dir="$(pwd)"
-                if launch_monitor_in_new_terminal "$proj_dir" "$trace_path"; then
-                    success "Monitoring opened in new terminal"
-                else
-                    info "Could not open new terminal. Run manually: python3 nfmon.py"
-                fi
-                ;;
-        esac
-        echo ""
-    fi
     
     # Optional terminal clear with countdown
     if [[ $NO_CLEAR -eq 0 ]]; then

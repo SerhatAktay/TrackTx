@@ -68,19 +68,23 @@ barcode:
   length: 0
   location: 5
 
-# Output formats
+# Output formats (bedgraph: true = publish bedGraphs; false saves ~100 MB)
 output:
   cpm: true
   crpmsi: true
   raw_tracks: false
   bigwig: true
-  bedgraph: false
+  bedgraph: true
+
+# Storage (optional for testing - saves ~1.2 GB)
+publish_trimmed_fastq: false
+publish_alignments: false
 
 # Normalization (siCPM uses spike-in)
 norm:
   emit_bw: true
   emit_sicpm: true
-  emit_allmap: false
+  emit_allmap: true
   emit_5p: null
 
 force_sort_bedgraph: false

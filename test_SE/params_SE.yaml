@@ -4,6 +4,7 @@
 # Sample: 10% subset of SRR8669162 (GSE127844 K562, Vihervaara lab)
 #   - Drosophila S2 spike-in (dm6)
 #   - TruSeq small RNA adapters (trimming)
+#   - UMI (7 nt at 5')
 # First run: ./scripts/download_and_subset_test_data.sh SE
 # Then: ./run_pipeline.sh --samplesheet test_SE/samplesheet_SE.csv --params-file test_SE/params_SE.yaml
 # ============================================================
@@ -54,10 +55,10 @@ qc:
   enabled: true
 fastqc_raw: true
 
-# UMI processing (disabled)
+# UMI processing (7 nt at 5', same as PE test)
 umi:
-  enabled: false
-  length: 8
+  enabled: true
+  length: 7
   location: 5
 
 # Barcode processing
@@ -66,19 +67,23 @@ barcode:
   length: 0
   location: 5
 
-# Output formats
+# Output formats (bedgraph: true = publish bedGraphs; false saves ~100 MB)
 output:
   cpm: true
   crpmsi: true
   raw_tracks: false
   bigwig: true
-  bedgraph: false
+  bedgraph: true
+
+# Storage (optional for testing - saves ~1.2 GB)
+publish_trimmed_fastq: false
+publish_alignments: false
 
 # Normalization (siCPM uses spike-in)
 norm:
   emit_bw: true
   emit_sicpm: true
-  emit_allmap: false
+  emit_allmap: true
   emit_5p: null
 
 force_sort_bedgraph: false

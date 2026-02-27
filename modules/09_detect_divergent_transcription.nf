@@ -135,11 +135,12 @@ process detect_divergent_transcription {
   export LC_ALL=C
 
   # Stdout → log + terminal; stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a divergent.log)
+  exec > divergent.log
   exec 2> >(tee -a divergent.log >&2)
   
   # Trap SIGPIPE to avoid exit code 141
   trap '' PIPE
+  trap 'tracktx_error "detect_divergent_transcription" "Unexpected process failure" "Check divergent.log in work dir"' ERR
 
   # Standardized error reporting (surfaces clearly in Nextflow "Command error")
   tracktx_error() {

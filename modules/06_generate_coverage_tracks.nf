@@ -64,11 +64,17 @@ process generate_coverage_tracks {
              overwrite: true,
              saveAs: { filename ->
                def name = filename instanceof Path ? filename.getFileName().toString() : filename.toString()
+               def pathStr = filename.toString()
                // Exclude BAM files from publishing - they already exist in 02_alignments/
-               // This prevents duplicating large BAM files in the tracks folder
-               if (name.endsWith('.bam') || name.endsWith('.bam.bai')) {
-                 return null  // Skip BAM files
-               }
+               if (name.endsWith('.bam') || name.endsWith('.bam.bai')) return null
+               // Skip entire folder when output.raw_tracks: false (~150 MB saved)
+               if (params.output?.raw_tracks == false) return null
+               // Skip 5' tracks when norm.emit_5p: false (~75 MB saved)
+               if (params.norm?.emit_5p == false && (pathStr.contains('5p/') || name.contains('.5p.'))) return null
+               // Skip allMap tracks when norm.emit_allmap: false (~25 MB in 03)
+               if (params.norm?.emit_allmap == false && name.contains('allMap')) return null
+               // Skip bedGraphs when output.bedgraph: false (BigWigs sufficient for genome browsers)
+               if (params.output?.bedgraph == false && name.endsWith('.bedgraph')) return null
                return name
              }
 
@@ -148,7 +154,7 @@ process generate_coverage_tracks {
   export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a tracks.log)
+  exec > tracks.log
   exec 2> >(tee -a tracks.log >&2)
 
   tracktx_error() {

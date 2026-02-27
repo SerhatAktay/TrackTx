@@ -69,7 +69,13 @@ process normalize_coverage_tracks {
 
   publishDir "${params.output_dir}/05_normalized_tracks/${sample_id}",
              mode: params.publish_mode,
-             overwrite: true
+             overwrite: true,
+             saveAs: { filename ->
+               def name = filename instanceof Path ? filename.getFileName().toString() : filename.toString()
+               // Skip bedGraphs when output.bedgraph: false (BigWigs sufficient for genome browsers)
+               if (params.output?.bedgraph == false && name.endsWith('.bedgraph')) return null
+               return name
+             }
 
   conda (params.conda_norm ?: "${projectDir}/envs/tracktx.yaml")
 
@@ -124,7 +130,7 @@ process normalize_coverage_tracks {
   export LC_ALL=C
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a normalize_coverage_tracks.log)
+  exec > normalize_coverage_tracks.log
   exec 2> >(tee -a normalize_coverage_tracks.log >&2)
 
   tracktx_error() {
@@ -139,6 +145,7 @@ process normalize_coverage_tracks {
     echo "═══════════════════════════════════════════════════════════════════════" >&2
     exit "\$code"
   }
+  trap 'tracktx_error "normalize_coverage_tracks" "Unexpected process failure" "Check normalize_coverage_tracks.log in work dir"' ERR
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
