@@ -1206,9 +1206,12 @@ def insight(d: str, tail_n: int) -> Tuple[str, List[str], List[Tuple[str, str]]]
     user = newest_user_log(d)
     src = user or best_log_for_tail(d)
     tl = slurp_tail(src, tail_n, scrub=True) if src else ["<no output yet>"]
-    # If strict filtering removed everything, fall back to raw tail so users still see activity
+    # If strict filtering removed everything on a user log, fall back to raw tail so users still see activity.
+    # Do NOT do this for Nextflow wrapper logs ('.command.*'), which mostly contain shell noise.
     if src and not tl:
-        tl = slurp_tail(src, tail_n, scrub=False)
+        base = os.path.basename(src)
+        if not base.startswith(".command."):
+            tl = slurp_tail(src, tail_n, scrub=False)
     # Prefer actual timestamp from log (e.g. "Completed 2026-02-12T09:27:46Z") over script commands
     payload = extract_timestamp_from_log(tl) or payload_from(d)
     outs = list_outputs(d)
