@@ -1124,14 +1124,46 @@ def best_log_for_tail(d: str) -> Optional[str]:
 def newest_user_log(d: str) -> Optional[str]:
     """Find newest user-generated log file"""
     try:
+        # Prefer known TrackTx module logs when present
+        tracktx_candidates = [
+            "preprocess_reads.log",
+            "align_reads.log",
+            "tracks.log",
+            "quantify_reads_per_gene.log",
+            "divergent.log",
+            "qc.log",
+            "functional_regions.log",
+            "pol_metrics.log",
+            "aggregate.log",
+            "normalize_coverage_tracks.log",
+            "combine.log",
+        ]
+        best = None
+        mt = -1.0
+        for nm in tracktx_candidates:
+            p = os.path.join(d, nm)
+            if os.path.isfile(p):
+                try:
+                    m = os.path.getmtime(p)
+                except OSError:
+                    continue
+                if m > mt:
+                    best, mt = p, m
+        if best:
+            return best
+
+        # Generic heuristic: newest non-wrapper log-like file
         newest = None
-        mt = -1
+        mt = -1.0
         for nm in os.listdir(d):
             if nm.startswith(".command.") or nm == ".exitcode":
                 continue
             if any(s in nm.lower() for s in ("stdout", "stderr", ".log", ".err", ".out")):
                 p = os.path.join(d, nm)
-                m = os.path.getmtime(p)
+                try:
+                    m = os.path.getmtime(p)
+                except OSError:
+                    continue
                 if m > mt:
                     newest, mt = p, m
         return newest
@@ -1212,8 +1244,15 @@ def insight(d: str, tail_n: int) -> Tuple[str, List[str], List[Tuple[str, str]]]
         base = os.path.basename(src)
         if not base.startswith(".command."):
             tl = slurp_tail(src, tail_n, scrub=False)
-    # Prefer actual timestamp from log (e.g. "Completed 2026-02-12T09:27:46Z") over script commands
-    payload = extract_timestamp_from_log(tl) or payload_from(d)
+    # Prefer actual timestamp or stage line from module logs over script commands
+    ts = extract_timestamp_from_log(tl)
+    stage = detect_stage_from_tail(tl)
+    if ts:
+        payload = ts
+    elif stage:
+        payload = stage
+    else:
+        payload = payload_from(d)
     outs = list_outputs(d)
     return payload, tl, outs
 
