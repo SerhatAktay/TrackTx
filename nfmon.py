@@ -79,6 +79,7 @@ RE_SES = re.compile(r"(?:^|\s)(?:session:|sessionId[ :=]+|Session id[ :=]+)(?P<s
 RE_WORK = re.compile(r"(?:^|\s)(?:Work-dir|Working (?:dir|directory))\s*:\s*(?P<dir>\S+)")
 RE_WORK_HANDLER = re.compile(r"\bworkDir:\s*(?P<dir>[^\]]+)\]")
 RE_TASKDIR = re.compile(r".*/work/[0-9a-f]{2}/[0-9a-f]+$")
+RE_CONTAINER = re.compile(r"(?:^|\s)container\s*>\s*'?(?P<container>[^'\s]+)'?", re.I)
 
 def norm_state(tok: str) -> str:
     """Normalize state token to standard format"""
@@ -233,6 +234,9 @@ class Meta:
     session: str = "?"
     executor: str = "?"
     work_root: str = ""
+    # Container / environment metadata (best-effort, may be empty)
+    container_engine: str = ""
+    container_image: str = ""
 
 @dataclass
 class World:
@@ -271,6 +275,8 @@ class World:
     cum_cached: int = 0
     cum_failed: int = 0
     cum_killed: int = 0
+    # Operating mode: full (log+trace), log_only, trace_only, fs_only
+    mode: str = "fs_only"
     
     def add_alert(self, level: str, message: str, task_id: Optional[str] = None, process: Optional[str] = None):
         """Add new alert"""
@@ -433,6 +439,22 @@ def detect_resource_issues(task: Task, world: World) -> Optional[str]:
 
 def abspath(p: str) -> str:
     return p if os.path.isabs(p) else os.path.abspath(p)
+
+def find_nextflow_log(seed: str) -> Optional[str]:
+    """Search upwards from seed directory for a .nextflow.log file"""
+    try:
+        d = abspath(seed or ".")
+        while True:
+            cand = os.path.join(d, ".nextflow.log")
+            if os.path.isfile(cand):
+                return cand
+            parent = os.path.dirname(d)
+            if not parent or parent == d:
+                break
+            d = parent
+    except Exception:
+        pass
+    return None
 
 def guess_work_root(log_path: str, cli: str) -> str:
     """Guess work directory from log or filesystem"""
@@ -693,6 +715,15 @@ def apply_trace_row(world: World, row: Dict[str, str], now: float):
         except Exception:
             pass
     
+    # If this is a terminal state and we have a duration, approximate the true start time
+    if status in ("COMPLETED", "CACHED", "FAILED", "KILLED") and t.duration_ms:
+        try:
+            start_ts = now - (t.duration_ms / 1000.0)
+            if start_ts < t.first_ts:
+                t.first_ts = start_ts
+        except Exception:
+            pass
+
     # Update metrics history
     t.metrics.update()
 
@@ -787,6 +818,19 @@ def update_meta(world: World, line: str):
         except Exception:
             pass
         world.meta.work_root = cand
+
+    # Container engine / image (best-effort heuristics)
+    m = RE_CONTAINER.search(line)
+    if m:
+        world.meta.container_image = m.group("container")
+    low = line.lower()
+    if not world.meta.container_engine:
+        if "docker" in low:
+            world.meta.container_engine = "docker"
+        elif "singularity" in low:
+            world.meta.container_engine = "singularity"
+        elif "podman" in low:
+            world.meta.container_engine = "podman"
 
 def parse_line(world: World, line: str, now: float):
     """Parse log line for task events"""
@@ -1092,7 +1136,8 @@ def payload_from(workdir: str) -> str:
     """Extract actual command from task directory (skip var assignments, prefer real commands)"""
     # Shell noise: variable assignments, control keywords, if/while/for conditions
     PAYLOAD_SKIP = re.compile(
-        r"^(?:[A-Za-z_][A-Za-z0-9_]*=.*|\s*(?:fi|done|else|elif|then|esac)\s*$|"
+        r"^(?:\s*#.*|"  # pure comments like '# Get final file sizes'"
+        r"[A-Za-z_][A-Za-z0-9_]*=.*|\s*(?:fi|done|else|elif|then|esac)\s*$|"
         r"\s*if\s+\[\[|\s*if\s+\[|\s*elif\s+\[\[|\s*elif\s+\[|\s*while\s+\[\[|\s*while\s+\[|\s*for\s+\w+\s+in)"
     )
     for fn in (".command.sh", ".command.run"):
@@ -1237,12 +1282,17 @@ def insight(d: str, tail_n: int) -> Tuple[str, List[str], List[Tuple[str, str]]]
     """Bundle introspection: payload, log tail, outputs"""
     user = newest_user_log(d)
     src = user or best_log_for_tail(d)
+    # Always try to tail something so the log pane isn't empty
     tl = slurp_tail(src, tail_n, scrub=True) if src else ["<no output yet>"]
-    # If strict filtering removed everything on a user log, fall back to raw tail so users still see activity.
-    # Do NOT do this for Nextflow wrapper logs ('.command.*'), which mostly contain shell noise.
+    # If strict filtering removed everything:
+    #  - For TrackTx module logs, fall back to a raw tail so we keep all PREP/ALIGN/TRACKS lines.
+    #  - For Nextflow wrapper logs ('.command.*'), avoid dumping bash noise and instead show a
+    #    clear placeholder so the UI isn't misleadingly empty.
     if src and not tl:
         base = os.path.basename(src)
-        if not base.startswith(".command."):
+        if base.startswith(".command."):
+            tl = ["<waiting for module logs>"]
+        else:
             tl = slurp_tail(src, tail_n, scrub=False)
     # Prefer actual timestamp or stage line from module logs over script commands
     ts = extract_timestamp_from_log(tl)
@@ -1252,7 +1302,28 @@ def insight(d: str, tail_n: int) -> Tuple[str, List[str], List[Tuple[str, str]]]
     elif stage:
         payload = stage
     else:
-        payload = payload_from(d)
+        base = os.path.basename(src) if src else ""
+        if base.startswith(".command."):
+            # For wrapper logs, prefer a meaningful tool/progress line from the tail
+            # (e.g. bam_sort_core, bowtie2, samtools) and avoid echoing shell glue.
+            meaningful = None
+            for ln in reversed(tl):
+                s = (ln or "").strip()
+                if not s:
+                    continue
+                if s.startswith("#"):
+                    continue
+                if s.startswith("sed "):
+                    continue
+                meaningful = s
+                break
+            if meaningful:
+                payload = meaningful
+            else:
+                # Nothing but wrapper noise so far
+                payload = "<waiting for module logs>"
+        else:
+            payload = payload_from(d)
     outs = list_outputs(d)
     return payload, tl, outs
 
@@ -1502,12 +1573,18 @@ def classify(world: World):
     world.cum_failed = max(world.cum_failed, fail)
     world.cum_killed = max(world.cum_killed, killed)
     
+    # Snapshot totals for intuitive progress %
+    total = len(run) + len(queued) + done + fail + cache + killed
+    completed_like = done + cache
+    progress_pct = int((completed_like * 100 / max(1, total))) if total else 0
+    
     return run, queued, dict(
         done=done, failed=fail, cached=cache, killed=killed,
         running=len(run), queued=len(queued),
         cum_seen=world.cum_seen, cum_done=world.cum_done,
         cum_cached=world.cum_cached, cum_failed=world.cum_failed,
-        cum_killed=world.cum_killed
+        cum_killed=world.cum_killed,
+        total=total, progress_pct=progress_pct
     )
 
 # ═══════════════════════════════════════════════════════════════
@@ -1735,25 +1812,25 @@ class TUI:
             except Exception:
                 pass
         
-        # Progress: use total_so_far (cumulative + current) so % doesn't jump when tasks are pruned
-        total_so_far = (C.get("cum_done", 0) + C.get("cum_cached", 0) + C.get("cum_failed", 0)
-                       + C.get("cum_killed", 0) + C["running"] + C["queued"])
-        pct_cum = min(100, int(((C.get("cum_done", 0) + C.get("cum_cached", 0)) * 100 / max(1, total_so_far)))) if total_so_far else 0
-        total = C["running"] + C["queued"] + C["done"] + C["failed"] + C["cached"] + C["killed"]
+        # Progress: snapshot-based (completed+cached vs all known tasks)
+        pct = C.get("progress_pct", 0)
+        total = C.get("total", C["running"] + C["queued"] + C["done"] + C["failed"] + C["cached"] + C["killed"])
 
         # Header (compact)
         rn = (self.w.meta.run_name or "").strip()
         run_label = rn[:18] if rn and rn != "?" else "nf-monitor"
         cores_str = f" C{int(cores_in_use)}/{self.w.ncpu}" if self.w.ncpu > 0 else ""
-        self._add(0, 0, f"{run_label} {time.strftime('%H:%M:%S')}", curses.color_pair(1) | curses.A_BOLD)
+        mode = getattr(self.w, "mode", "")
+        mode_str = f" [{mode}]" if mode else ""
+        self._add(0, 0, f"{run_label} {time.strftime('%H:%M:%S')}{mode_str}", curses.color_pair(1) | curses.A_BOLD)
         self._add(1, 0, f"[{sec2hms(now)}] CPU:{self.w.cpu_pct}% MEM:{self.w.mem_pct}% LOAD:{self.w.load_1}{cores_str} | {C['running']} run {C['done']} done {C['failed']} fail")
         eta = predict_completion_eta(self.w)
         if eta:
             self._add(1, maxx - 12, format_eta(eta), curses.color_pair(4))
         # Progress bar
         barw = max(10, maxx - 12)
-        fill = int(barw * pct_cum / 100)
-        self._add(2, 0, "[" + ("█" * fill) + ("·" * (barw - fill)) + f"] {pct_cum:3d}%")
+        fill = int(barw * pct / 100)
+        self._add(2, 0, "[" + ("█" * fill) + ("·" * (barw - fill)) + f"] {pct:3d}%")
         # Layout: header 3 rows, rest for list + details
         header_h = 4
         avail_h = max(0, maxy - header_h)
@@ -1891,12 +1968,11 @@ class TUI:
 def oneshot(w: World):
     """Print snapshot to terminal"""
     run, que, C = classify(w)
-    total = sum([C[k] for k in ["running", "queued", "done", "failed", "cached", "killed"]])
-    total_so_far = (C.get("cum_done", 0) + C.get("cum_cached", 0) + C.get("cum_failed", 0)
-                    + C.get("cum_killed", 0) + C["running"] + C["queued"])
-    pct = min(100, int(((C.get("cum_done", 0) + C.get("cum_cached", 0)) * 100 / max(1, total_so_far)))) if total_so_far else 0
+    total = C.get("total", sum([C[k] for k in ["running", "queued", "done", "failed", "cached", "killed"]]))
+    pct = C.get("progress_pct", 0)
 
-    print(f"nf-monitor  {time.strftime('%H:%M:%S')}  (run:{w.meta.run_name}  session:{w.meta.session}  exec:{w.meta.executor})")
+    container = getattr(w.meta, "container_engine", "") or "none"
+    print(f"nf-monitor  {time.strftime('%H:%M:%S')}  (run:{w.meta.run_name}  session:{w.meta.session}  exec:{w.meta.executor}  container:{container})")
     print(f" Root: {os.getcwd()}")
     print(f" Uptime {sec2hms(int(time.time() - w.start_ts))} | CPU:{w.cpu_pct}% | MEM:{w.mem_pct}% | LOAD:{w.load_1}")
     print()
@@ -1973,13 +2049,31 @@ def main():
         w.meta.work_root = guess_work_root(log, a.work)
         bootstrap(w, log)
     else:
+        # Try to infer work root first
         if a.work:
             w.meta.work_root = abspath(a.work)
         else:
             w.meta.work_root = guess_work_root(".nextflow.log", a.work)
-        print(f"Warning: log not found, running in trace-first mode (log={a.log})", file=sys.stderr)
+        # Search upwards from work root (or cwd) for a .nextflow.log
+        alt_log = find_nextflow_log(w.meta.work_root or os.getcwd())
+        if alt_log and os.path.isfile(alt_log):
+            log = alt_log
+            w.meta.work_root = guess_work_root(log, a.work)
+            bootstrap(w, log)
+        else:
+            print(f"Warning: log not found, running in trace-first mode (log={a.log})", file=sys.stderr)
     
     w.cpu_pct, w.mem_pct, w.load_1 = sys_metrics()
+
+    # Determine operating mode based on available metadata
+    if os.path.isfile(log) and w.trace_path:
+        w.mode = "full"
+    elif os.path.isfile(log):
+        w.mode = "log_only"
+    elif w.trace_path:
+        w.mode = "trace_only"
+    else:
+        w.mode = "fs_only"
     
     # Resolve hash mode
     if a.resolve_hash:
@@ -2189,8 +2283,6 @@ def main():
                 except Exception:
                     term_height = 40
                 run,que,C=classify(w)
-                total=C["running"]+C["queued"]+C["done"]+C["failed"]+C["cached"]+C["killed"]
-                pct=int(((C["done"]+C["cached"])*100/max(1,total))) if total else 0
 
                 # header with run/session and system stats
                 hdr = Text()
@@ -2199,7 +2291,11 @@ def main():
                 ss = (w.meta.session or "?")
                 hdr.append(f"Run: {rn if rn!='?' else 'n/a'} ")
                 hdr.append(f"Session: {ss if ss!='?' else 'n/a'} ")
-                hdr.append(f"Exec: {w.meta.executor}\n")
+                container = getattr(w.meta, "container_engine", "") or "none"
+                hdr.append(f"Exec: {w.meta.executor}  Container: {container}\n")
+                mode = getattr(w, "mode", "")
+                if mode:
+                    hdr.append(f"Mode: {mode}\n")
                 # compute cores-in-use and ETA similar to curses UI
                 run,que,C=classify(w)
                 cores_in_use = sum([max(0.0, t.metrics.cpus) for t in run if t.metrics.cpus is not None])
@@ -2227,11 +2323,10 @@ def main():
                 hdr.append(f"\n[dim]j/k nav  f filter  s sort  a all-logs  q quit{sort_indicator}" + (" [yellow]ALL LOGS[/yellow]" if getattr(a, 'all_logs', False) else "") + "[/dim]")
                 header_panel = Panel(hdr, title="nf-monitor", border_style="cyan", padding=(0, 1))
 
-                # pipeline progress bar (cumulative; cap at 100 so it doesn't jump)
-                total_so_far = C.get('cum_done',0)+C.get('cum_cached',0)+C.get('cum_failed',0)+C.get('cum_killed',0)+C['running']+C['queued']
-                pct_cum = min(100, int(((C.get('cum_done',0)+C.get('cum_cached',0))*100/max(1,total_so_far)))) if total_so_far else 0
-                prog=Progress(TextColumn("[bold]Pipeline"), BarColumn(), TextColumn(f" {pct_cum}%"), expand=True)
-                prog.add_task("pipe", total=100, completed=pct_cum)
+                # pipeline progress bar (snapshot-based)
+                pct = C.get("progress_pct", 0)
+                prog=Progress(TextColumn("[bold]Pipeline"), BarColumn(), TextColumn(f" {pct}%"), expand=True)
+                prog.add_task("pipe", total=100, completed=pct)
 
                 # remove per-process summary; show placeholder
                 proc_tbl = Table(title="", expand=True, show_edge=False)
@@ -2260,7 +2355,7 @@ def main():
                     cpu=(f"{t.metrics.cpu_pct:.0f}%" if t.metrics.cpu_pct is not None else "--")
                     # colorize CPU and RSS
                     cpu_style = ("green" if (t.metrics.cpu_pct or 0) < 50 else ("yellow" if (t.metrics.cpu_pct or 0) < 80 else "red")) if t.metrics.cpu_pct is not None else "dim"
-                    cpus = (f"{t.metrics.cpus:.1f}" if t.metrics.cpus is not None else "--")
+                    cpus = (f"{t.metrics.cpus:.1f}" if t.metrics.cpus is not None else "?")
                     rss=(f"{t.metrics.rss_mb:.0f}MB" if t.metrics.rss_mb is not None else "--")
                     rss_style = ("green" if (t.metrics.rss_mb or 0) < 2048 else ("yellow" if (t.metrics.rss_mb or 0) < 8192 else "red")) if t.metrics.rss_mb is not None else "dim"
                     

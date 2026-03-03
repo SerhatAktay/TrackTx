@@ -337,7 +337,7 @@ PYEND
             -1 <(decompress "${R2}") \
             -2 <(decompress "${R1}" | rc_stream) \
             --un-conc unaligned_R%.fastq \
-            2> bowtie2_primary.log \
+            2> >(tee bowtie2_primary.log >&2) \
     | samtools sort -@ "${SAM_THREADS}" -o "${SAMPLE_ID}_allMap.bam"
     
     # Combine unaligned reads for spike-in
@@ -352,7 +352,7 @@ PYEND
             -x "${GENOME_IDX}" \
             -U <(decompress "${R1}" | rc_stream) \
             --un unaligned.fastq \
-            2> bowtie2_primary.log \
+            2> >(tee bowtie2_primary.log >&2) \
     | samtools sort -@ "${SAM_THREADS}" -o "${SAMPLE_ID}_allMap.bam"
   fi
 
@@ -404,7 +404,7 @@ PYEND
             --no-unal \
             -x "${SPIKE_IDX}" \
             -U unaligned.fastq \
-            2> bowtie2_spikein.log \
+            2> >(tee bowtie2_spikein.log >&2) \
     | samtools sort -@ "${SAM_THREADS}" -m 4G -o "${SAMPLE_ID}_spikein.bam"; then
       tracktx_error "align_reads_to_genome" "Spike-in alignment failed" "Check bowtie2_spikein.log in work dir"
     fi
