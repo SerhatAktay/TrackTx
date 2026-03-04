@@ -83,7 +83,9 @@ process align_reads_to_genome {
   shell:
   '''
   #!/usr/bin/env bash
-  set -euo pipefail
+  set -Eeuo pipefail
+  # Ensure ERR trap propagates into functions/subshells (Bash)
+  set -o errtrace
   export LC_ALL=C
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
@@ -102,7 +104,17 @@ process align_reads_to_genome {
     echo "═══════════════════════════════════════════════════════════════════════" >&2
     exit "\$code"
   }
-  trap 'tracktx_error "align_reads_to_genome" "Unexpected process failure" "Check align_reads.log in work dir"' ERR
+  # Print the precise failing command + location (much more actionable than exit status 1)
+  tracktx_on_err() {
+    local rc="$?"
+    local line="${BASH_LINENO[0]:-${LINENO}}"
+    local cmd="${BASH_COMMAND:-unknown}"
+    tracktx_error "align_reads_to_genome" \
+      "Command failed (exit=${rc}) at line ${line}" \
+      "See align_reads.log (work dir). Failing command: ${cmd}" \
+      "${rc}"
+  }
+  trap 'tracktx_on_err' ERR
 
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -170,7 +182,8 @@ process align_reads_to_genome {
     if [[ ! -s "${file}" ]]; then
       tracktx_error "align_reads_to_genome" "Read file missing or empty: ${file}" "Check samplesheet file1 paths"
     fi
-    FILE_SIZE=$(stat -c%s "${file}" 2>/dev/null || stat -f%z "${file}" 2>/dev/null || echo "unknown")
+      # NOTE: GNU stat reports symlink length unless -L is used; try dereference first
+      FILE_SIZE=$(stat -Lc%s "${file}" 2>/dev/null || stat -c%s "${file}" 2>/dev/null || stat -f%z "${file}" 2>/dev/null || echo "unknown")
     echo "ALIGN | VALIDATE | R1 size: ${FILE_SIZE} bytes"
   done
 
@@ -178,7 +191,7 @@ process align_reads_to_genome {
     tracktx_error "align_reads_to_genome" "R2 file missing or empty: ${R2}" "Check samplesheet file2 paths for paired-end samples"
   fi
   if [[ "${IS_PE}" == "true" ]]; then
-    FILE_SIZE=$(stat -c%s "${R2}" 2>/dev/null || stat -f%z "${R2}" 2>/dev/null || echo "unknown")
+    FILE_SIZE=$(stat -Lc%s "${R2}" 2>/dev/null || stat -c%s "${R2}" 2>/dev/null || stat -f%z "${R2}" 2>/dev/null || echo "unknown")
     echo "ALIGN | VALIDATE | R2 size: ${FILE_SIZE} bytes"
   fi
 
