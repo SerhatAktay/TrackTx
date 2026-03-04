@@ -332,7 +332,7 @@
           <div class="field">
             <label class="label">Primary Reference Genome</label>
             <div class="select">
-              <select id="ref_genome" onchange="toggleOtherGenomeUpload('ref')">
+              <select id="ref_genome" onchange="toggleOtherGenomeUpload('ref'); applySpeciesProfileToUI();">
                 <optgroup label="Human">
                   <option value="hs1">Human (T2T-CHM13 / hs1) - Latest complete genome</option>
                   <option value="hg38" selected>Human (GRCh38 / hg38) - Standard reference</option>
@@ -702,9 +702,12 @@
         <strong>Set thresholds to "auto" for automatic calibration</strong> - the algorithm will find optimal 
         values from your data's background distribution. No manual tuning needed!
       </div>
+      <div class="help-box is-dim mb-3" id="div_species_profile_info">
+        Species profile: using generic defaults. Choose your reference genome above to apply species-aware suggestions.
+      </div>
       
       <div class="field mb-4">
-        <label class="label">Quick preset (optional)</label>
+        <label class="label">Profile preset (optional)</label>
         <div class="select">
           <select id="div_preset">
             <option value="">— Custom / manual —</option>
@@ -715,7 +718,8 @@
           </select>
         </div>
         <p class="help">
-          Choose a preset to pre-fill parameters for your use case. You can still adjust any value manually below.
+          Choose a preset to pre-fill parameters for your use case. Species-specific defaults are applied first, then this preset.
+          You can still adjust any value manually below.
         </p>
       </div>
       
@@ -756,7 +760,9 @@
         </div>
       </div>
       
-      <div class="columns mt-3">
+      <div class="section-header mt-4">Geometry & Calibration (advanced)</div>
+      <p class="help mb-3">These settings control how far peaks can pair, how bins are merged, and how automatic thresholds are calibrated. Species presets provide sensible defaults; adjust only if you have specific needs.</p>
+      <div class="columns mt-2">
         <div class="column">
           <div class="field">
             <label class="label">Pairing Window (bp)</label>
@@ -1300,6 +1306,35 @@ function rebuildAllReplicateUIs(){
 }
 
 /* ====================== YAML Builder ====================== */
+function collectAnalysisWarnings(){
+  const warnings = [];
+  // FDR sanity
+  const fdrVal = parseFloat($('#div_fdr')?.value || '0.08');
+  if(isFinite(fdrVal) && fdrVal > 0.2){
+    warnings.push('Divergent FDR > 0.2 may produce many false positives.');
+  }
+  // Pairing window
+  const ntWin = parseInt($('#div_win')?.value || '1000', 10);
+  if(isFinite(ntWin) && ntWin > 5000){
+    warnings.push('Pairing window > 5000 bp is unusually large.');
+  }
+  // Promoter window
+  const promUp = parseInt($('#prom_up')?.value || '500', 10);
+  if(isFinite(promUp) && promUp > 5000){
+    warnings.push('Promoter upstream window > 5000 bp is unusually large.');
+  }
+  const promDown = parseInt($('#prom_down')?.value || '250', 10);
+  if(isFinite(promDown) && promDown > 5000){
+    warnings.push('Promoter downstream window > 5000 bp is unusually large.');
+  }
+  // Termination window
+  const twLen = parseInt($('#tw_length')?.value || '5000', 10);
+  if(isFinite(twLen) && twLen > 20000){
+    warnings.push('Termination window > 20000 bp is unusually large.');
+  }
+  return warnings;
+}
+
 function buildYAML(){
   const pairedEnd   = isPE();
   const sampleSource= source();
@@ -1497,6 +1532,10 @@ function buildYAML(){
   y += `  cutadapt_extra: ${mono(cutadaptExtra)}\n`;
   y += `  bowtie2_extra: ${mono(bowtie2Extra)}\n`;
   y += `  # Divergent transcription (statistical with GMM + FDR)\n`;
+  const speciesProfileKey = getSpeciesProfileKey(refGenome);
+  const divPreset = $('#div_preset')?.value || '';
+  const divergentProfile = `${speciesProfileKey}_${divPreset || 'custom'}`;
+  y += `  divergent_profile: ${mono(divergentProfile)}\n`;
   y += `  divergent_threshold: ${div.threshold === 'auto' ? 'auto' : div.threshold}  # auto = ${div.cal_pct}th percentile\n`;
   y += `  divergent_sum_thr: ${div.sum_thr === 'auto' ? 'auto' : div.sum_thr}      # auto = ${div.cal_mult}x threshold\n`;
   y += `  divergent_fdr: ${div.fdr}          # False discovery rate\n`;
@@ -1548,6 +1587,11 @@ function fillPreview(){
   if($('#ref_genome').value==='other' && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
     warn += "\n# WARNING: Custom genome requires gtf_path or gtf_url.\n";
   }
+  const analysisWarnings = collectAnalysisWarnings();
+  if(analysisWarnings.length){
+    warn += "\n# WARNINGS: some analysis parameters are outside typical ranges.\n";
+    analysisWarnings.forEach(w => { warn += "# - " + w + "\n"; });
+  }
   $('#yamlPreview').textContent = y + warn;
 }
 
@@ -1566,6 +1610,12 @@ async function downloadZip(){
 
   if($('#ref_genome').value === 'other' && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
     alert('⚠️ Custom genome requires a GTF file. Provide gtf_path or gtf_url before running the pipeline.');
+  }
+
+  const analysisWarnings = collectAnalysisWarnings();
+  if(analysisWarnings.length){
+    const msg = 'Some analysis parameters are outside typical ranges:\n- ' + analysisWarnings.join('\n- ') + '\n\nContinue and build ZIP anyway?';
+    if(!confirm(msg)) return;
   }
 
   const zip = new JSZip();
@@ -1598,6 +1648,12 @@ async function saveZipToLocation(){
 
   if($('#ref_genome').value === 'other' && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
     alert('⚠️ Custom genome requires a GTF file. Provide gtf_path or gtf_url before running the pipeline.');
+  }
+
+  const analysisWarnings2 = collectAnalysisWarnings();
+  if(analysisWarnings2.length){
+    const msg2 = 'Some analysis parameters are outside typical ranges:\n- ' + analysisWarnings2.join('\n- ') + '\n\nContinue and save ZIP anyway?';
+    if(!confirm(msg2)) return;
   }
 
   if(!('showSaveFilePicker' in window)){
@@ -1656,6 +1712,149 @@ const DIV_PRESETS = {
   }
 };
 
+// Species-aware defaults for divergent detection and functional geometry
+const SPECIES_PROFILES = {
+  mammal: {
+    label: 'Human / mouse / rat / rhesus',
+    divergent: {
+      nt_window: 1000,
+      bin_gap: 100,
+      cal_pct: 65,
+      cal_mult: 1.5,
+      merge_gap: 150,
+      balance: 0.0,
+      fdr: 0.08
+    },
+    functional: {
+      prom_up: 500,
+      prom_down: 250,
+      gb_start_offset: 2000,
+      cps_offset: 50,
+      tw_length: 5000,
+      tss_active_pm: 500,
+      merge_gap: 50
+    }
+  },
+  fly: {
+    label: 'Drosophila (dm6)',
+    divergent: {
+      nt_window: 800,
+      bin_gap: 100,
+      cal_pct: 70,
+      cal_mult: 2.0,
+      merge_gap: 150,
+      balance: 0.0,
+      fdr: 0.08
+    },
+    functional: {
+      prom_up: 400,
+      prom_down: 200,
+      gb_start_offset: 1500,
+      cps_offset: 50,
+      tw_length: 4000,
+      tss_active_pm: 400,
+      merge_gap: 50
+    }
+  },
+  yeast: {
+    label: 'Yeast / compact genomes (sacCer3)',
+    divergent: {
+      nt_window: 500,
+      bin_gap: 80,
+      cal_pct: 70,
+      cal_mult: 2.0,
+      merge_gap: 100,
+      balance: 0.0,
+      fdr: 0.08
+    },
+    functional: {
+      prom_up: 250,
+      prom_down: 150,
+      gb_start_offset: 1000,
+      cps_offset: 50,
+      tw_length: 1500,
+      tss_active_pm: 300,
+      merge_gap: 50
+    }
+  },
+  other: {
+    label: 'Generic defaults',
+    divergent: {
+      nt_window: 1000,
+      bin_gap: 100,
+      cal_pct: 65,
+      cal_mult: 1.5,
+      merge_gap: 150,
+      balance: 0.0,
+      fdr: 0.08
+    },
+    functional: {
+      prom_up: 500,
+      prom_down: 250,
+      gb_start_offset: 2000,
+      cps_offset: 50,
+      tw_length: 5000,
+      tss_active_pm: 500,
+      merge_gap: 50
+    }
+  }
+};
+
+function getSpeciesProfileKey(refGenome){
+  switch(refGenome){
+    case 'hs1':
+    case 'hg38':
+    case 'hg19':
+    case 'mm39':
+    case 'mm10':
+    case 'rn7':
+    case 'rn6':
+    case 'rheMac10':
+    case 'galGal6':
+    case 'xenTro10':
+      return 'mammal';
+    case 'dm6':
+      return 'fly';
+    case 'sacCer3':
+      return 'yeast';
+    default:
+      return 'other';
+  }
+}
+
+function applySpeciesProfileToUI(){
+  const refEl = document.getElementById('ref_genome');
+  if(!refEl) return;
+  const refGenome = refEl.value;
+  const key = getSpeciesProfileKey(refGenome);
+  const profile = SPECIES_PROFILES[key] || SPECIES_PROFILES.other;
+  if(!profile) return;
+
+  // Apply functional-region defaults as suggestions
+  if(document.getElementById('prom_up'))         document.getElementById('prom_up').value = profile.functional.prom_up;
+  if(document.getElementById('prom_down'))       document.getElementById('prom_down').value = profile.functional.prom_down;
+  if(document.getElementById('gb_start_offset')) document.getElementById('gb_start_offset').value = profile.functional.gb_start_offset;
+  if(document.getElementById('cps_offset'))      document.getElementById('cps_offset').value = profile.functional.cps_offset;
+  if(document.getElementById('tw_length'))       document.getElementById('tw_length').value = profile.functional.tw_length;
+  if(document.getElementById('tss_active_pm'))   document.getElementById('tss_active_pm').value = profile.functional.tss_active_pm;
+  if(document.getElementById('merge_gap'))       document.getElementById('merge_gap').value = profile.functional.merge_gap;
+
+  // Apply divergent defaults as suggestions (before any preset overlay)
+  if(document.getElementById('div_win'))        document.getElementById('div_win').value = profile.divergent.nt_window;
+  if(document.getElementById('div_bin_gap'))    document.getElementById('div_bin_gap').value = profile.divergent.bin_gap;
+  if(document.getElementById('div_cal_pct'))    document.getElementById('div_cal_pct').value = profile.divergent.cal_pct;
+  if(document.getElementById('div_cal_mult'))   document.getElementById('div_cal_mult').value = profile.divergent.cal_mult;
+  if(document.getElementById('div_merge_gap'))  document.getElementById('div_merge_gap').value = profile.divergent.merge_gap;
+  if(document.getElementById('div_bal'))        document.getElementById('div_bal').value = profile.divergent.balance;
+  if(document.getElementById('div_fdr'))        document.getElementById('div_fdr').value = profile.divergent.fdr;
+
+  // Update info box
+  const info = document.getElementById('div_species_profile_info');
+  if(info){
+    info.textContent = `Species profile: ${profile.label} (ref=${refGenome})`;
+  }
+}
+
 function applyDivPreset(){
   const preset = $('#div_preset').value;
   if(!preset || !DIV_PRESETS[preset]) return;
@@ -1683,6 +1882,7 @@ function init(){
   toggleAdapterFields();
   toggleSraOptions();
   setAdapterPreset();
+  applySpeciesProfileToUI();
   $('#div_preset').addEventListener('change', applyDivPreset);
 }
 init();

@@ -435,10 +435,13 @@ umi:
 
 # Advanced: Divergent Transcription (Statistical)
 advanced:
+  # divergent_profile is an optional label written by the config generator
+  # to document which preset/species profile was used (modules ignore it).
+  divergent_profile: "mammal_default"
   divergent_threshold: auto    # auto = 65th percentile, or specify float
   divergent_sum_thr: auto      # auto = 1.5x threshold, or specify float
   divergent_fdr: 0.08          # False discovery rate (0.01-0.10)
-  divergent_calibration_percentile: 65   # Recommended (targets ~50-150K sites)
+  divergent_calibration_percentile: 65   # Recommended (mammals; targets ~50-150K sites)
   divergent_calibration_sum_multiplier: 1.5
   divergent_merge_gap: 150     # Merge overlapping regions (bp); 0=disabled
   divergent_nt_window: 1000    # Max pairing distance (bp)
@@ -447,9 +450,10 @@ advanced:
 
 # Functional regions (affects divergent read assignment)
 functional_regions:
+  # Recommended defaults depend on reference_genome; for hg38/mm10:
   tss_active_pm: 500          # TSS ± bp for active gene detection
-  prom_up: 500
-  prom_down: 250
+  prom_up: 500                # Promoter upstream window
+  prom_down: 250              # Promoter downstream window
 ```
 
 **💡 Pro Tip:** Use the interactive config generator (`TrackTx_config_generator.html`) for guided parameter selection with detailed explanations!
