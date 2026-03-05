@@ -686,10 +686,11 @@ COHORT REPORT CONTENTS
    • Strand balance distribution
    • Coverage depth summary
    • Sample outlier detection
+   • Small-cohort summary card (n ≤ 5) with QC and design verdicts
 
 3. Divergent Transcription
    • Total loci across cohort
-   • Distribution per sample
+   • Distribution per sample (histograms for larger cohorts; dot/text summaries for n < 6)
    • Genomic characteristics
    • Summary statistics
 
@@ -702,7 +703,7 @@ COHORT REPORT CONTENTS
    • Comparative analysis
 
 5. Pausing Index Analysis
-   • Distribution across samples
+   • Distribution across samples (histograms for larger cohorts; dot/text summaries for n < 6)
    • Mean/median pausing indices
    • Top paused genes
    • Condition comparisons
@@ -730,7 +731,8 @@ HTML Report:
      - Type in search box to filter
      - Export data if needed
   4. Review QC summary for outliers
-  5. Compare metrics across conditions
+  5. For small cohorts (≤5 samples), focus on per-sample QC plots and the small-cohort summary card.
+  6. Compare metrics across conditions
 
 TSV Export:
   # Load in R
@@ -784,14 +786,15 @@ Troubleshooting:
   - Batch effects: Check processing dates, reagent lots
   - Low quality: Consider excluding samples
   - Inconsistent metrics: Verify library prep protocol
+  - Very small cohorts (≤5 samples): Treat cohort-level distributions as qualitative; rely on per-sample QC and the small-cohort summary card for decisions
 
 DOWNSTREAM ANALYSIS
 ────────────────────────────────────────────────────────────────────────────
   
   1. Comparative Analysis:
-     - Compare pausing indices across conditions
+     - Compare pausing indices and divergent transcription across conditions
      - Identify condition-specific transcription patterns
-     - Assess replicate consistency
+     - Assess replicate consistency (especially via per-condition QC summaries)
   
   2. Quality Control:
      - Identify failed or low-quality samples
