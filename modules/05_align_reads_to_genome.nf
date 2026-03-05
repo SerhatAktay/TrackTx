@@ -88,8 +88,9 @@ process align_reads_to_genome {
   set -o errtrace
   export LC_ALL=C
 
-  # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > align_reads.log
+  # Stdout/stderr → terminal (for nfmon) + align_reads.log
+  # IMPORTANT: nfmon expects progress on process stdout; do not redirect stdout solely to a file.
+  exec > >(tee -a align_reads.log)
   exec 2> >(tee -a align_reads.log >&2)
 
   tracktx_error() {
