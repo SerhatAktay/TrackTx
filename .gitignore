@@ -1,8 +1,7 @@
 # Nextflow runtime directories
 .work/
 work/
-.nextflow/
-.nextflow.log*
+.nextflow*
 .nxf_temp/
 
 # Local run outputs
