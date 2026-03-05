@@ -1,4 +1,3 @@
-<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -334,8 +333,8 @@
             <div class="select">
               <select id="ref_genome" onchange="toggleOtherGenomeUpload('ref'); applySpeciesProfileToUI();">
                 <optgroup label="Human">
-                  <option value="hs1">Human (T2T-CHM13 / hs1) - Latest complete genome</option>
-                  <option value="hg38" selected>Human (GRCh38 / hg38) - Standard reference</option>
+                  <option value="hs1" selected>Human (T2T-CHM13 / hs1) - Latest complete genome</option>
+                  <option value="hg38">Human (GRCh38 / hg38) - Standard reference</option>
                   <option value="hg19">Human (GRCh37 / hg19) - Legacy reference</option>
                 </optgroup>
                 <optgroup label="Mouse">
@@ -349,6 +348,9 @@
                 <optgroup label="Zebrafish">
                   <option value="danRer11">Zebrafish (GRCz11 / danRer11) - Latest</option>
                   <option value="danRer10">Zebrafish (GRCz10 / danRer10) - Standard</option>
+                </optgroup>
+                <optgroup label="Dog">
+                  <option value="canFam6">Canis lupis familiaris (canFam6)</option>
                 </optgroup>
                 <optgroup label="Drosophila">
                   <option value="dm6">Drosophila melanogaster (dm6)</option>
