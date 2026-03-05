@@ -47,6 +47,7 @@ import math
 import os
 import re
 import shlex
+import statistics
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -468,6 +469,58 @@ def aggregate_region_totals(samples: List[Dict[str, Any]]) -> Dict[str, float]:
     
     return totals
 
+
+def compute_aggregate_summary(rows: List[Dict[str, Any]]) -> Dict[str, Optional[float]]:
+    """
+    Compute simple cohort-level summary statistics from per-sample rows.
+    """
+    def collect_numeric(key: str) -> List[float]:
+        vals: List[float] = []
+        for r in rows:
+            v = r.get(key)
+            try:
+                num = float(v)
+            except (TypeError, ValueError):
+                continue
+            if math.isnan(num) or math.isinf(num):
+                continue
+            vals.append(num)
+        return vals
+
+    def agg_min(vals: List[float]) -> Optional[float]:
+        return float(min(vals)) if vals else None
+
+    def agg_max(vals: List[float]) -> Optional[float]:
+        return float(max(vals)) if vals else None
+
+    def agg_sum(vals: List[float]) -> Optional[float]:
+        return float(sum(vals)) if vals else None
+
+    def agg_mean(vals: List[float]) -> Optional[float]:
+        return float(sum(vals) / len(vals)) if vals else None
+
+    def agg_median(vals: List[float]) -> Optional[float]:
+        return float(statistics.median(vals)) if vals else None
+
+    div_vals = collect_numeric("divergent_regions")
+    func_vals = collect_numeric("reads_total_functional")
+    depth_vals = collect_numeric("input_reads")
+    unloc_vals = collect_numeric("unlocalized_fraction")
+
+    return {
+        "divergent_regions_total": int(agg_sum(div_vals)) if div_vals else None,
+        "divergent_regions_min_per_sample": agg_min(div_vals),
+        "divergent_regions_max_per_sample": agg_max(div_vals),
+        "divergent_regions_mean_per_sample": agg_mean(div_vals),
+        "divergent_regions_median_per_sample": agg_median(div_vals),
+        "reads_total_functional_total": agg_sum(func_vals),
+        "reads_total_functional_mean": agg_mean(func_vals),
+        "reads_total_functional_median": agg_median(func_vals),
+        "input_reads_mean": agg_mean(depth_vals),
+        "input_reads_median": agg_median(depth_vals),
+        "unlocalized_fraction_median": agg_median(unloc_vals),
+    }
+
 # =============================================================================
 # OUTPUT GENERATION
 # =============================================================================
@@ -545,6 +598,7 @@ def write_json_output(
     region_totals: Dict[str, float],
     region_keys: List[str],
     skipped_files: List[str],
+    aggregate: Dict[str, Optional[float]],
     output_path: str
 ):
     """
@@ -585,7 +639,8 @@ def write_json_output(
         "region_totals": region_totals,
         "region_keys": region_keys,
         "columns": all_columns,
-        "skipped_inputs": skipped_files
+        "skipped_inputs": skipped_files,
+        "aggregate": aggregate,
     }
     
     # Sanitize and write
@@ -716,11 +771,11 @@ def generate_html_report(
         <div class="kpi-value" id="kpi-depth">0M</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-label">Total Divergent Loci <span class="info-tip" title="Sum of divergent transcription regions detected across all samples">?</span></div>
+        <div class="kpi-label">Total Divergent Loci <span class="info-tip" title="Sum of divergent transcription regions detected across all samples (not de-duplicated across samples). Median per-sample values are shown in the Divergent Transcription section below.">?</span></div>
         <div class="kpi-value" id="kpi-div-total">0</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-label">Avg Functional Regions <span class="info-tip" title="Average number of functional genomic regions (genes, promoters, etc.) with signal per sample">?</span></div>
+        <div class="kpi-label">Median Functional Reads <span class="info-tip" title="Median reads in functional regions per sample (millions). Uses localized functional regions only.">?</span></div>
         <div class="kpi-value" id="kpi-regions-avg">0</div>
       </div>
     </div>
@@ -743,8 +798,8 @@ def generate_html_report(
       <strong>What to look for:</strong>
       <ul>
         <li><strong>Read Depth:</strong> PRO-seq typically requires 5-20M reads per sample for good gene coverage. Lower depth may miss lowly-expressed genes.</li>
-        <li><strong>Duplication Rate:</strong> <15% is excellent, 15-30% is acceptable, >30% suggests PCR over-amplification or low library complexity.</li>
-        <li><strong>Unlocalized Reads:</strong> <20% is typical. Higher values may indicate contamination, rRNA, or incomplete genome annotation.</li>
+        <li><strong>Duplication / UMI-dedup Rate:</strong> &lt;15% is excellent, 15-30% is acceptable, &gt;30% suggests PCR over-amplification or low library complexity. Values come from the per-sample QC JSON (post-demultiplexing, post-alignment; UMI-deduplication is used when available).</li>
+        <li><strong>Unlocalized Reads:</strong> &lt;20% is typical. Higher values may indicate contamination, rRNA, or incomplete genome annotation.</li>
         <li><strong>Sample Consistency:</strong> Replicates within a condition should cluster together. Large variability suggests technical issues or biological heterogeneity.</li>
       </ul>
     </div>
@@ -755,7 +810,7 @@ def generate_html_report(
         <div class="stat-value" id="qc-median-depth">-</div>
       </div>
       <div class="stat-item">
-        <div class="stat-label">Median Duplication</div>
+        <div class="stat-label">Median Duplication / UMI-dedup</div>
         <div class="stat-value" id="qc-median-dup">-</div>
       </div>
       <div class="stat-item">
@@ -766,12 +821,12 @@ def generate_html_report(
 
     <div class="viz-grid">
       <div class="viz-card">
-        <h3>Read Depth per Sample <span class="info-tip" title="Total input reads for each sample. HOVER over bars to see sample names and exact values.">?</span></h3>
+        <h3>Read Depth per Sample <span class="info-tip" title="Total input reads for each sample (in millions, M). Hover over bars to see sample names and exact values.">?</span></h3>
         <div id="chart-depth-per-sample" class="viz-body"></div>
         <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over bars to see sample IDs</p>
       </div>
       <div class="viz-card">
-        <h3>Duplication Rate per Sample <span class="info-tip" title="PCR duplication rate for each sample. HOVER over bars to see sample names. Lower is better.">?</span></h3>
+        <h3>Duplication / UMI-dedup Rate per Sample <span class="info-tip" title="If UMI-deduplication was used, this shows the UMI-deduplication percent; otherwise it shows the PCR duplicate percent from the QC JSON. Lower is better.">?</span></h3>
         <div id="chart-dup-per-sample" class="viz-body"></div>
         <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over bars to see sample IDs</p>
       </div>
@@ -861,7 +916,7 @@ def generate_html_report(
     
     <div class="help-box">
       <strong>What is Pol II pausing?</strong> After transcription initiation, RNA Polymerase II often pauses 20-60 bp downstream of the TSS before entering productive elongation.
-      The <strong>Pausing Index (PI)</strong> quantifies this: PI = (Promoter Signal) / (Gene Body Signal). 
+      The <strong>Pausing Index (PI)</strong> conceptually quantifies this as (Promoter signal) / (Gene body signal). In TrackTx we use a length-normalized version (pi_len_norm), i.e. promoter density divided by gene-body density, to correct for large differences in gene-body length.
       <ul>
         <li><strong>PI &gt; 2:</strong> Strong pausing - typical for rapidly-induced genes (e.g., heat shock genes)</li>
         <li><strong>PI = 0.5-2:</strong> Moderate pausing - most constitutive genes</li>
@@ -1355,6 +1410,9 @@ def main():
     
     # Extract rows for JSON
     rows = df.to_dict("records")
+
+    # Aggregate cohort-level summary statistics
+    aggregate = compute_aggregate_summary(rows)
     
     # Write outputs
     log("═" * 70, "")
@@ -1366,6 +1424,7 @@ def main():
         region_totals,
         region_keys,
         skipped_files,
+        aggregate,
         args.out_json
     )
     
@@ -1380,7 +1439,8 @@ def main():
         "rows": rows,
         "samples": samples,
         "region_totals": region_totals,
-        "region_keys": region_keys
+        "region_keys": region_keys,
+        "aggregate": aggregate
     }), ensure_ascii=False)
     
     # Embedded Assets
@@ -1613,7 +1673,7 @@ def main():
     <script>
     document.addEventListener('DOMContentLoaded', () => {
         const payload = JSON.parse(document.getElementById('payload').textContent);
-        const { samples, rows, region_totals, region_keys } = payload;
+        const { samples, rows, region_totals, region_keys, aggregate } = payload;
         
         console.log('Loaded', rows.length, 'samples');
         
@@ -1671,7 +1731,89 @@ def main():
             `;
         }
         
-        function renderBarChart(containerId, data, labels = null) {
+        function regionColor(name) {
+            const key = (name || '').toString().toLowerCase().replace(/[\s_-]+/g, '');
+            const map = {
+                'promoter': '#f38400',
+                'activepromoter': '#f38400',
+                'pppol': '#f38400',
+                'divergenttx': '#b23bd4',
+                'divtx': '#b23bd4',
+                'divergent': '#b23bd4',
+                'ppdiv': '#b23bd4',
+                'enhancers': '#73d47a',
+                'enhancer': '#73d47a',
+                'enh': '#73d47a',
+                'genebody': '#000000',
+                'genebodyregion': '#000000',
+                'genebodyreads': '#000000',
+                'genebodysignal': '#000000',
+                'genebodydensity': '#000000',
+                'genebodycoverage': '#000000',
+                'genebodycpm': '#000000',
+                'genebodycrpmsi': '#000000',
+                'genebodycrpm': '#000000',
+                'genebodycrpms': '#000000',
+                'genebodycrpmspolymeraseii': '#000000',
+                'genebodycrpmsi': '#000000',
+                'genebodycrpmspolii': '#000000',
+                'genebodycount': '#000000',
+                'genebodycounts': '#000000',
+                'genebodytotal': '#000000',
+                'genebodytotals': '#000000',
+                'genebodytotalreads': '#000000',
+                'genebodytotalread': '#000000',
+                'genebodytotalcpm': '#000000',
+                'genebodytotalcpms': '#000000',
+                'genebodytotalcrpmsi': '#000000',
+                'genebodytotalcrpms': '#000000',
+                'genebodytotalsignal': '#000000',
+                'genebodytotalcoverage': '#000000',
+                'genebodyreadsperbp': '#000000',
+                'genebodydensityperbp': '#000000',
+                'genebodysignalperbp': '#000000',
+                'genebodycoverageperbp': '#000000',
+                'genebodydensityperbase': '#000000',
+                'genebodycoverageperbase': '#000000',
+                'genebodydensityperbpcrpmsi': '#000000',
+                'genebodycoverageperbpcrpmsi': '#000000',
+                'genebodydensityperbpcrpm': '#000000',
+                'genebodycoverageperbpcrpm': '#000000',
+                'genebodydensityperbpcpm': '#000000',
+                'genebodycoverageperbpcpm': '#000000',
+                'genebodydensityperbpcounts': '#000000',
+                'genebodycoverageperbpcounts': '#000000',
+                'genebodydensityperbpreads': '#000000',
+                'genebodycoverageperbpreads': '#000000',
+                'genebodydensityperbpreads': '#000000',
+                'genebodycoverageperbpreads': '#000000',
+                'genebodydensityperbpcountsperbase': '#000000',
+                'genebodycoverageperbpcountsperbase': '#000000',
+                'genebodydensityperbpreadsperbase': '#000000',
+                'genebodycoverageperbpreadsperbase': '#000000',
+                'genebodydensityperbpcpmperbase': '#000000',
+                'genebodycoverageperbpcpmperbase': '#000000',
+                'genebodydensityperbpcrpmsiperbase': '#000000',
+                'genebodycoverageperbpcrpmsiperbase': '#000000',
+                'genebodydensityperbpcrpmperbase': '#000000',
+                'genebodycoverageperbpcrpmperbase': '#000000',
+                'cps': '#67c8f9',
+                'cleavagepolyadenylation': '#67c8f9',
+                'terminationwindow': '#ff3662',
+                'terminationwindowregion': '#ff3662',
+                'terminationwindowreads': '#ff3662',
+                'terminationwindowsignal': '#ff3662',
+                'terminationwindowdensity': '#ff3662',
+                'terminationwindowcoverage': '#ff3662',
+                'terminationwindowcpm': '#ff3662',
+                'terminationwindowcrpmsi': '#ff3662',
+                'termination': '#ff3662',
+                'tw': '#ff3662'
+            };
+            return map[key] || '#3b82f6';
+        }
+
+        function renderBarChart(containerId, data, labels = null, colorFn = null) {
             const container = document.getElementById(containerId);
             if (!container) return;
             if (!data || data.length === 0) {
@@ -1773,7 +1915,10 @@ def main():
                 
                 // Bar
                 const formattedValue = v < 1 ? v.toFixed(3) : (v < 10 ? v.toFixed(2) : v.toLocaleString());
-                svg += `<rect x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" fill="url(#grad${colorIdx})" rx="3" filter="url(#shadow${colorIdx})" style="cursor:pointer;transition:opacity 0.15s;" onmouseover="evt.target.style.opacity='0.7'" onmouseout="evt.target.style.opacity='1'">
+                const customColor = typeof colorFn === 'function' ? colorFn(i, label, colorPalette[colorIdx]) : null;
+                const fillRef = customColor ? customColor : `url(#grad${colorIdx})`;
+                const shadowRef = `url(#shadow${colorIdx})`;
+                svg += `<rect x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" fill="${fillRef}" rx="3" filter="${shadowRef}" style="cursor:pointer;transition:opacity 0.15s;" onmouseover="evt.target.style.opacity='0.7'" onmouseout="evt.target.style.opacity='1'">
                     <title>${label}: ${formattedValue}</title>
                 </rect>`;
                 
@@ -2078,7 +2223,7 @@ def main():
             const barSpacing = 8;
             const barWidth = Math.max(30, (chartWidth - (barSpacing * (barCount - 1))) / barCount);
             
-            const colorPalette = ['#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f59e0b', '#10b981', '#6366f1', '#06b6d4'];
+            const colorPalette = regionKeys.map(key => regionColor(key));
             
             let svg = `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" style="font-family:var(--font);">`;
             
@@ -2162,8 +2307,10 @@ def main():
         const totalDiv = rows.reduce((sum, r) => sum + (r.divergent_regions || 0), 0);
         document.getElementById('kpi-div-total').textContent = totalDiv.toLocaleString();
         
-        const avgRegions = mean(rows.map(r => r.total_regions || 0));
-        document.getElementById('kpi-regions-avg').textContent = avgRegions.toFixed(0);
+        // Median functional-region reads per sample (millions)
+        const funcReads = rows.map(r => r.reads_total_functional || 0).filter(v => v > 0);
+        const medFunc = funcReads.length > 0 ? median(funcReads) / 1e6 : 0;
+        document.getElementById('kpi-regions-avg').textContent = medFunc > 0 ? medFunc.toFixed(1) + 'M' : '-';
         
         // ===== QC SECTION =====
         // Show fallback banner when any sample uses estimated depth
@@ -2208,6 +2355,14 @@ def main():
         } else {
             document.getElementById('qc-median-dup').textContent = '-';
         }
+
+        // Display median unlocalized fraction (as percent)
+        const unlocFracs = rows.map(r => r.unlocalized_fraction).filter(v => v != null && isFinite(v));
+        if (unlocFracs.length > 0) {
+            document.getElementById('qc-median-unloc').textContent = (median(unlocFracs) * 100).toFixed(1) + '%';
+        } else {
+            document.getElementById('qc-median-unloc').textContent = '-';
+        }
         
         // Render per-sample depth bar chart
         if (depths.length > 0) {
@@ -2233,24 +2388,24 @@ def main():
             document.getElementById('chart-dup-per-sample').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No duplication data available</div>';
         }
         
-        // Render depth distribution histogram (only for larger cohorts)
+        // Render depth distribution histogram
         if (depths.length > 0) {
-            if (depths.length >= 10) {
+            if (depths.length >= 2) {
                 const depthSampleIds = rows.filter(r => r.input_reads != null && r.input_reads > 0).map(r => r.sample_id);
                 renderHistogram('chart-depth-dist', depths, 15, 'Read Depth (M)', depthSampleIds);
                 renderDistribSummary('depth-stats', depths);
             } else {
-                // For small cohorts, show summary stats instead of histogram
-                document.getElementById('chart-depth-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">Distribution histograms require ≥10 samples<br>(current: ' + depths.length + ' samples)</div>';
+                // With a single sample, show summary stats only
+                document.getElementById('chart-depth-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">Cohort distributions require ≥2 samples<br>(current: ' + depths.length + ' sample)</div>';
                 renderDistribSummary('depth-stats', depths);
             }
         } else {
             document.getElementById('chart-depth-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No read depth data available</div>';
         }
         
-        // Render duplication distribution histogram (only for larger cohorts)
+        // Render duplication / UMI-dedup distribution histogram
         if (dups.length > 0) {
-            if (dups.length >= 10) {
+            if (dups.length >= 2) {
                 const dupSampleIds = rows.filter(r => {
                     if (r.umi_deduplication_enabled === true) {
                         return r.umi_deduplication_percent != null;
@@ -2261,7 +2416,7 @@ def main():
                 renderHistogram('chart-dup-dist', dups, 15, 'Duplication Rate (%)', dupSampleIds);
                 renderDistribSummary('dup-stats', dups);
             } else {
-                document.getElementById('chart-dup-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">Distribution histograms require ≥10 samples<br>(current: ' + dups.length + ' samples)</div>';
+                document.getElementById('chart-dup-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">Cohort distributions require ≥2 samples<br>(current: ' + dups.length + ' sample)</div>';
                 renderDistribSummary('dup-stats', dups);
             }
         } else if (!hasUMIDedup) {
@@ -2284,12 +2439,12 @@ def main():
         
         renderBarChart('chart-div-per-sample', divRegions, rows.map(r => r.sample_id));
         
-        // Only show histogram for larger cohorts
-        if (divRegions.length >= 10) {
+        // Histogram for divergent regions (requires at least 2 samples)
+        if (divRegions.length >= 2) {
             renderHistogram('chart-div-hist', divRegions, 15, 'Divergent Regions per Sample', rows.map(r => r.sample_id));
             renderDistribSummary('div-stats', divRegions);
         } else {
-            document.getElementById('chart-div-hist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">Distribution histograms require ≥10 samples<br>(current: ' + divRegions.length + ' samples)</div>';
+            document.getElementById('chart-div-hist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">Cohort distributions require ≥2 samples<br>(current: ' + divRegions.length + ' sample)</div>';
             renderDistribSummary('div-stats', divRegions);
         }
         
@@ -2304,12 +2459,21 @@ def main():
         const divCondMeans = divCondLabels.map(c => mean(divByCondition[c]));
         renderBarChart('chart-div-by-condition', divCondMeans, divCondLabels);
         
-        // Replicate CV
-        const divCVs = divCondLabels.map(c => {
+        // Replicate CV (requires ≥2 samples per condition)
+        const cvLabels = [];
+        const cvValues = [];
+        divCondLabels.forEach(c => {
             const data = divByCondition[c];
-            return data.length > 1 ? (stdDev(data) / mean(data)) * 100 : 0;
+            if (data.length > 1 && mean(data) > 0) {
+                cvLabels.push(c);
+                cvValues.push((stdDev(data) / mean(data)) * 100);
+            }
         });
-        renderBarChart('chart-div-cv', divCVs, divCondLabels);
+        if (cvValues.length > 0) {
+            renderBarChart('chart-div-cv', cvValues, cvLabels);
+        } else {
+            document.getElementById('chart-div-cv').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">Replicate consistency requires ≥2 samples per condition with non-zero divergent regions.</div>';
+        }
         
         // ===== PAUSING SECTION =====
         const pausingIndices = rows.map(r => r.median_pausing_index).filter(p => p != null && p > 0 && isFinite(p));
@@ -2320,20 +2484,20 @@ def main():
             const piMin = Math.min(...pausingIndices);
             const piMax = Math.max(...pausingIndices);
             
-            document.getElementById('pi-cohort-median').textContent = piMedian.toFixed(2);
-            document.getElementById('pi-cohort-mean').textContent = piMean.toFixed(2);
-            document.getElementById('pi-std').textContent = piStd.toFixed(2);
-            document.getElementById('pi-range').textContent = `${piMin.toFixed(2)}-${piMax.toFixed(2)}`;
+        document.getElementById('pi-cohort-median').textContent = piMedian.toFixed(2);
+        document.getElementById('pi-cohort-mean').textContent = piMean.toFixed(2);
+        document.getElementById('pi-std').textContent = piStd.toFixed(2);
+        document.getElementById('pi-range').textContent = `${piMin.toFixed(2)}-${piMax.toFixed(2)}`;
             
             const piSampleIds = rows.filter(r => r.median_pausing_index != null && r.median_pausing_index > 0).map(r => r.sample_id);
             renderBarChart('chart-pi-per-sample', pausingIndices, piSampleIds);
             
-            // Only show histogram for larger cohorts
-            if (pausingIndices.length >= 10) {
+            // Histogram for pausing indices (requires at least 2 samples)
+            if (pausingIndices.length >= 2) {
                 renderHistogram('chart-pi-dist', pausingIndices, 15, 'Median Pausing Index', piSampleIds);
                 renderDistribSummary('pi-stats', pausingIndices);
             } else {
-                document.getElementById('chart-pi-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">Distribution histograms require ≥10 samples<br>(current: ' + pausingIndices.length + ' samples)</div>';
+                document.getElementById('chart-pi-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">Cohort distributions require ≥2 samples<br>(current: ' + pausingIndices.length + ' sample)</div>';
                 renderDistribSummary('pi-stats', pausingIndices);
             }
             
@@ -2365,7 +2529,7 @@ def main():
             const regionLabels = region_keys.filter(k => !k.toLowerCase().includes('localized'));
             
             if (regionLabels.length > 0 && regionData.some(d => d > 0)) {
-                renderBarChart('chart-region-totals', regionData, regionLabels);
+                renderBarChart('chart-region-totals', regionData, regionLabels, (i, label) => regionColor(label));
                 
                 // Region counts table
                 const regionTableHead = document.getElementById('region-counts-thead');
@@ -2574,15 +2738,24 @@ def main():
         // Export CSV
         document.getElementById('export-csv').addEventListener('click', () => {
             const headers = ['Sample','Condition','Timepoint','Replicate','Input_Reads','Functional_Reads','Dup_Pct','Unloc_Pct','Div_Regions','Total_Regions','Median_PI','Median_Density','CPM_Factor','siCPM_Factor'];
-            const csv = [headers.join(',')].concat(rows.map(r => [
-                r.sample_id, r.condition || '', r.timepoint || '', r.replicate || '',
-                r.input_reads || 0, r.reads_total_functional || 0,
-                (r.duplicate_percent || 0).toFixed(2),
-                ((r.unlocalized_fraction || 0) * 100).toFixed(2),
-                r.divergent_regions || 0, r.total_regions || 0,
-                r.median_pausing_index || '', r.median_density || '',
-                r.cpm_factor || '', r.crpmsi_factor || ''
-            ].join(','))).join('\\n');
+            const csv = [headers.join(',')].concat(rows.map(r => {
+                let dupVal = null;
+                if (r.umi_deduplication_enabled === true) {
+                    dupVal = r.umi_deduplication_percent != null ? r.umi_deduplication_percent : null;
+                } else if (r.duplicate_percent != null) {
+                    dupVal = r.duplicate_percent;
+                }
+                const dupOut = dupVal != null ? dupVal.toFixed(2) : '';
+                return [
+                    r.sample_id, r.condition || '', r.timepoint || '', r.replicate || '',
+                    r.input_reads || 0, r.reads_total_functional || 0,
+                    dupOut,
+                    ((r.unlocalized_fraction || 0) * 100).toFixed(2),
+                    r.divergent_regions || 0, r.total_regions || 0,
+                    r.median_pausing_index || '', r.median_density || '',
+                    r.cpm_factor || '', r.crpmsi_factor || ''
+                ].join(',');
+            })).join('\\n');
             const blob = new Blob([csv], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
