@@ -24,7 +24,7 @@ sra_max_size: "20G"
 sra_download_source: "auto"
 
 # Reference genomes (hg38 + Drosophila dm6 spike-in)
-reference_genome: "hg38"
+reference_genome: "hs1"
 genome_fasta: null
 spikein_genome: "dm6"
 spikein_fasta: null

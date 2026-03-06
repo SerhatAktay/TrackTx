@@ -580,7 +580,7 @@ check_nextflow() {
     fi
 
     local nf_version
-    nf_version=$(nextflow -version 2>&1 | grep version | awk '{print $3}')
+    nf_version=$(nextflow -version 2>&1 | grep -oE '[0-9]+\.[0-9]+[.0-9]*' | head -1)
     success "Nextflow ${nf_version}"
 
     # Validate minimum version (requires >=24.04.0)
@@ -675,29 +675,29 @@ check_input_files() {
     local params_file="$2"
 
     if [[ ! -f "$samplesheet" ]]; then
-        error "Sample sheet not found: $samplesheet"
-        info "Create template:"
-        info "  Use TrackTx_config_generator.html or: echo 'sample,condition,timepoint,replicate,file1,file2' > samplesheet.csv"
+        error "Sample sheet not found: $samplesheet" >&2
+        info "Create template:" >&2
+        info "  Use TrackTx_config_generator.html or: echo 'sample,condition,timepoint,replicate,file1,file2' > samplesheet.csv" >&2
         return 1
     fi
-    success "Sample sheet: $samplesheet"
+    success "Sample sheet: $samplesheet" >&2
 
     # Count samples (excluding header)
     local n_samples
     n_samples=$(($(wc -l < "$samplesheet") - 1))
     if [[ $n_samples -le 0 ]]; then
-        error "Sample sheet is empty (no samples after header)"
+        error "Sample sheet is empty (no samples after header)" >&2
         return 1
     fi
-    info "Samples: ${n_samples}"
+    info "Samples: ${n_samples}" >&2
 
     if [[ -f "$params_file" ]]; then
-        success "Parameters: $params_file"
+        success "Parameters: $params_file" >&2
     else
-        info "No custom parameters (using pipeline defaults)"
+        info "No custom parameters (using pipeline defaults)" >&2
     fi
 
-    # Return sample count for use in disk check
+    # Print sample count to stdout only — caller captures this
     echo "$n_samples"
     return 0
 }
@@ -1116,7 +1116,7 @@ main() {
     # Image version is read from nextflow.config to avoid hardcoding here.
     # ═══════════════════════════════════════════════════════════════════════
     local NF_VERSION
-    NF_VERSION=$(grep "^\s*version\s*=" nextflow.config 2>/dev/null | head -1 | grep -oP "[\d.]+" || echo "3.0")
+    NF_VERSION=$(grep "version" nextflow.config 2>/dev/null | head -1 | grep -oE "[0-9][0-9.]*" || echo "3.0")
     local TRACKTX_IMAGE="ghcr.io/serhataktay/tracktx:${NF_VERSION}"
 
     if [[ "${TRACKTX_SKIP_PULL:-0}" -eq 0 ]]; then
@@ -1125,7 +1125,7 @@ main() {
             echo -e "  Image:   ${BOLD}${TRACKTX_IMAGE}${NC}"
             echo ""
             info "Pulling image (may take a few minutes on first run)..."
-            if docker pull "$TRACKTX_IMAGE"; then
+            if docker pull "$TRACKTX_IMAGE" 2>&1 | grep -v "scout\|What's next\|View a summary\|^ghcr.io"; then
                 success "Image ready"
             else
                 warning "Pull failed — using cached image (pipeline will still run if cached)"
