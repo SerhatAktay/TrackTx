@@ -127,8 +127,32 @@ process download_genome_annotations {
   CHR_NAMING='!{params.annotation_chr_naming ?: "none"}'
 
   # UCSC RefSeq (default)
-  RSYNC_URL="rsync://hgdownload.soe.ucsc.edu/goldenPath/${ASM}/bigZips/genes/${ASM}.ncbiRefSeq.gtf.gz"
-  HTTPS_URL="https://hgdownload.soe.ucsc.edu/goldenPath/${ASM}/bigZips/genes/${ASM}.ncbiRefSeq.gtf.gz"
+  # UCSC uses two filename conventions depending on the assembly:
+  #   1. Prefixed:   ${ASM}.ncbiRefSeq.gtf.gz  (most assemblies)
+  #   2. Unprefixed: ncbiRefSeq.gtf.gz          (some assemblies, e.g. canFam6)
+  # We resolve the correct URL dynamically via HTTP HEAD checks rather than
+  # hardcoding per-assembly exceptions, so this works for any genome.
+  UCSC_BASE_HTTPS="https://hgdownload.soe.ucsc.edu/goldenPath/${ASM}/bigZips/genes"
+
+  _resolve_ucsc_gtf_url() {
+    local candidates=(
+      "${UCSC_BASE_HTTPS}/${ASM}.ncbiRefSeq.gtf.gz"
+      "${UCSC_BASE_HTTPS}/ncbiRefSeq.gtf.gz"
+      "${UCSC_BASE_HTTPS}/${ASM}.refGene.gtf.gz"
+      "${UCSC_BASE_HTTPS}/refGene.gtf.gz"
+    )
+    for url in "${candidates[@]}"; do
+      echo "GTF | FETCH | Probing: ${url}" >&2
+      if curl -fsSI --max-time 10 "${url}" >/dev/null 2>&1; then
+        echo "${url}"
+        return 0
+      fi
+    done
+    return 1
+  }
+
+  HTTPS_URL=""
+  RSYNC_URL=""
 
   # Ensembl URLs (release 113, Aug 2024)
   # GENCODE URLs (release 45 for human, 33 for mouse)
@@ -277,8 +301,21 @@ process download_genome_annotations {
     # ── Source 4: UCSC (rsync → https fallback) ──
     if [[ ${FETCH_SUCCESS} -eq 0 && "${ASM}" != "other" ]]; then
       echo "GTF | FETCH | Downloading from UCSC: ${ASM}"
-      
-      # Try rsync first (faster)
+
+      # Dynamically resolve which GTF filename UCSC uses for this assembly.
+      # Candidates are probed in priority order via HTTP HEAD (no data transfer).
+      echo "GTF | FETCH | Resolving UCSC GTF URL for ${ASM}..."
+      if HTTPS_URL=$(_resolve_ucsc_gtf_url); then
+        echo "GTF | FETCH | Resolved URL: ${HTTPS_URL}"
+        # Derive rsync URL from the resolved HTTPS URL
+        RSYNC_URL="${HTTPS_URL/https:\/\/hgdownload.soe.ucsc.edu/rsync:\/\/hgdownload.soe.ucsc.edu}"
+      else
+        tracktx_error "download_genome_annotations" \
+          "Could not find a GTF file on UCSC for assembly: ${ASM}" \
+          "Check UCSC availability or supply a custom GTF via --gtf_url / --gtf_path"
+      fi
+
+      # Try rsync first (faster, resumable)
       if command -v rsync >/dev/null 2>&1; then
         echo "GTF | FETCH | Attempting rsync download..."
         if rsync --quiet "${RSYNC_URL}" - 2>/dev/null | gunzip -c > "${GTF_TEMP}"; then
@@ -290,7 +327,7 @@ process download_genome_annotations {
       else
         echo "GTF | FETCH | Rsync not available, using HTTPS..."
       fi
-      
+
       # Fallback to HTTPS
       if [[ ${FETCH_SUCCESS} -eq 0 ]]; then
         echo "GTF | FETCH | Downloading via HTTPS..."
