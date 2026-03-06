@@ -49,3 +49,4 @@ HOW.md
 *.log
 log/
 logs/
+.cache
