@@ -307,7 +307,7 @@ process download_genome_annotations {
       if HTTPS_URL=$(_resolve_ucsc_gtf_url); then
         echo "GTF | FETCH | Resolved URL: ${HTTPS_URL}"
         # Derive rsync URL from the resolved HTTPS URL
-        RSYNC_URL="${HTTPS_URL/https:\/\/hgdownload.soe.ucsc.edu/rsync:\/\/hgdownload.soe.ucsc.edu}"
+        RSYNC_URL="$(echo "${HTTPS_URL}" | sed 's|https://|rsync://|')"
       else
         tracktx_error "download_genome_annotations" \
           "Could not find a GTF file on UCSC for assembly: ${ASM}" \
