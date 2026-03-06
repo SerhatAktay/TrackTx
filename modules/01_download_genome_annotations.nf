@@ -135,13 +135,12 @@ process download_genome_annotations {
   UCSC_BASE_HTTPS="https://hgdownload.soe.ucsc.edu/goldenPath/${ASM}/bigZips/genes"
 
   _resolve_ucsc_gtf_url() {
-    local candidates=(
-      "${UCSC_BASE_HTTPS}/${ASM}.ncbiRefSeq.gtf.gz"
-      "${UCSC_BASE_HTTPS}/ncbiRefSeq.gtf.gz"
-      "${UCSC_BASE_HTTPS}/${ASM}.refGene.gtf.gz"
+    for url in \
+      "${UCSC_BASE_HTTPS}/${ASM}.ncbiRefSeq.gtf.gz" \
+      "${UCSC_BASE_HTTPS}/ncbiRefSeq.gtf.gz" \
+      "${UCSC_BASE_HTTPS}/${ASM}.refGene.gtf.gz" \
       "${UCSC_BASE_HTTPS}/refGene.gtf.gz"
-    )
-    for url in "${candidates[@]}"; do
+    do
       echo "GTF | FETCH | Probing: ${url}" >&2
       if curl -fsSI --max-time 10 "${url}" >/dev/null 2>&1; then
         echo "${url}"
