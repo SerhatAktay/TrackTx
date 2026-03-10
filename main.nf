@@ -421,19 +421,21 @@ workflow TrackTx {
   def noBG5pNegPath = "${assetsDir}/EMPTY_5P_NEG.bedgraph"
   def noBGAm5pPosPath = "${assetsDir}/EMPTY_AM5P_POS.bedgraph"
   def noBGAm5pNegPath = "${assetsDir}/EMPTY_AM5P_NEG.bedgraph"
-  // Placeholder for align when no spike-in (avoids Channel.empty() causing 0 invocations)
-  def noSpikeFaPath = "${assetsDir}/EMPTY_SPIKE.fa"
+  // Placeholders for align when no spike-in (avoid Channel.empty() AND filename collisions)
+  def noSpikeFaPath  = "${assetsDir}/EMPTY_SPIKE.fa"
+  def noSpikeIdxPath = "${assetsDir}/EMPTY_SPIKE_INDEX.fa"
   
   // Create all placeholder files if they don't exist
-  [noR2Path, noBGPath, noBGPosPath, noBGNegPath, 
-   noBG5pPosPath, noBG5pNegPath, noBGAm5pPosPath, noBGAm5pNegPath].each { path ->
+  [noR2Path, noBGPath, noBGPosPath, noBGNegPath,
+   noBG5pPosPath, noBG5pNegPath, noBGAm5pPosPath, noBGAm5pNegPath,
+   noSpikeFaPath, noSpikeIdxPath].each { path ->
     if (!new File(path).exists()) {
       new File(path).text = ''
     }
   }
-  if (!new File(noSpikeFaPath).exists()) {
-    new File(noSpikeFaPath).text = ">none\nN\n"
-  }
+  // Ensure FASTA-compatible content for spike-in placeholders
+  new File(noSpikeFaPath).text  = ">none\nN\n"
+  new File(noSpikeIdxPath).text = ">none_index\nN\n"
 
   // Ensure R2 is always present (use sentinel for SE)
   clean_fastq_with_r2 = clean_fastq_ch.map { sid, r1, r2opt, c, t, r ->
@@ -477,10 +479,12 @@ workflow TrackTx {
 
   // Spike-in genome (optional)
   // CRITICAL: When no spike-in, use placeholder channels (not Channel.empty()) so align_reads
-  // receives one value per input and runs. Empty channels cause 0 invocations → downstream fails at Step 13.
-  def noSpikeFa = file(noSpikeFaPath)
+  // receives one value per input and runs. Also ensure placeholder file *names* are distinct
+  // to avoid Nextflow input file name collisions.
+  def noSpikeFa  = file(noSpikeFaPath)
+  def noSpikeIdx = file(noSpikeIdxPath)
   spike_meta_ch = Channel.value(tuple('none', 'none', noSpikeFa))
-  spike_idx_ch  = Channel.value(noSpikeFa)
+  spike_idx_ch  = Channel.value(noSpikeIdx)
   
   if (params.spikein_genome && params.spikein_genome != 'None') {
     if (params.verbose) log.info "STEP 5 | INDEX | Spike-in genome: ${params.spikein_genome}"
