@@ -170,7 +170,7 @@ python3 nfmon.py --oneshot --json status.json    # Export JSON
 
 ## 🧪 Testing the Pipeline
 
-Want to verify the pipeline works before running your own data? Use the bundled test setup with readymade samplesheets, params, and a script that downloads small test datasets.
+Want to verify the pipeline works before running your own data? Use the bundled test setup with readymade samplesheets, params, and a script that downloads small test datasets (currently **paired-end only**).
 
 ### Step 1: Download test data (PE only)
 
@@ -400,6 +400,11 @@ sample1,control,0,1,SRR123456,
 
 **Local files:** Use absolute paths (e.g. `/Users/you/data/sample_R1.fastq.gz`) or paths relative to the project directory.
 
+**Local vs SRA summary:**
+
+- **`sample_source: "local"`**: `file1`/`file2` are FASTQ paths.
+- **`sample_source: "srr"`**: `file1` is an SRR accession; FASTQs are downloaded automatically.
+
 ### Parameters (`params.yaml`)
 
 **Recommended:** Generate this using the interactive generator [`TrackTx_config_generator.html`](TrackTx_config_generator.html), which exports a validated `params.yaml` for you.  
@@ -458,14 +463,25 @@ functional_regions:
 
 **💡 Pro Tip:** Use the interactive config generator (`TrackTx_config_generator.html`) for guided parameter selection with detailed explanations!
 
+**💾 Disk space tips (high-level):**
+
+- **Skip trimmed FASTQ** — `publish_trimmed_fastq: false`
+- **Skip alignments** — `publish_alignments: false`
+- **Skip GTF** — `publish_references_gtf: false`
+- **Skip raw tracks** — `output.raw_tracks: false` (keep normalized BigWigs)
+- **Skip bedGraphs** — `output.bedgraph: false`
+
 ---
 
 ## 📊 Outputs
+
+Most users will mainly work with the **normalized BigWig tracks** and the **HTML reports**; other outputs are for advanced analyses and troubleshooting.
 
 ```
 results/
 ├── 📈 05_normalized_tracks/        # Load in IGV/UCSC Browser
 │   └── <sample>/3p/*.cpm.bw        # CPM and siCPM normalized BigWigs
+│
 ├── 🔬 06_divergent_tx/             # Divergent transcription (statistical)
 │   └── <sample>/
 │       ├── divergent_transcription.bed   # High-confidence regions (BED5)
@@ -527,6 +543,7 @@ EOF
 ./run_pipeline.sh --samplesheet timecourse.csv
 ```
 
+You can also generate both `timecourse.csv` and a matching `params.yaml` using `TrackTx_config_generator.html`.
 ### Drug Treatment with Spike-in
 
 ```yaml
@@ -539,6 +556,8 @@ paired_end: false
 ```bash
 ./run_pipeline.sh --params-file params.yaml
 ```
+
+You can also create this `params.yaml` via `TrackTx_config_generator.html` (recommended).
 
 ### Download from SRA
 
@@ -559,6 +578,8 @@ output_dir: "./results"
 ```bash
 ./run_pipeline.sh --samplesheet sra_samples.csv --params-file params.yaml
 ```
+
+You can also generate both `sra_samples.csv` and `params.yaml` using `TrackTx_config_generator.html`.
 
 ---
 
