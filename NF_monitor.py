@@ -1979,7 +1979,7 @@ class TUI:
 
         win.addstr(0, 0, truncate(f"Details: {t.label()}", w - 1), curses.color_pair(5))
         if t.workdir and os.path.isdir(t.workdir):
-            payload, logs, outs = insight(t.workdir, max(5, h - 3), self.world)
+            payload, logs, outs = insight(t.workdir, max(5, h - 3), self.w)
         else:
             payload, logs, outs = "Workdir not found", [], []
 
@@ -2533,7 +2533,7 @@ def main():
                         text = Text()
                         for i in range(processes_to_show):
                             t = run_filtered[i]
-                            payload, tail, outs = insight(t.workdir, log_lines_per_process, self.world)
+                            payload, tail, outs = insight(t.workdir, log_lines_per_process, self.w)
                             text.append(f"{_task_label(t)} (id:{short_hash(t.id or '')})\n", style="bold")
                             if payload:
                                 text.append(f"▶ {payload}\n", style="cyan")
@@ -2556,7 +2556,7 @@ def main():
                         # Account for: title(1) + payload(1) + outputs(1) = 3 lines
                         single_log_lines = max(5, available_log_lines - 3)
 
-                        payload, tail, outs = insight(ft.workdir, single_log_lines, self.world)
+                        payload, tail, outs = insight(ft.workdir, single_log_lines, self.w)
                         text = Text()
                         text.append(f"{_task_label(ft)} (id:{short_hash(ft.id or '')})\n", style="bold")
                         if payload:
