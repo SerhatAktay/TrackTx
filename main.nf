@@ -241,6 +241,7 @@ include { generate_coverage_tracks                               } from "${MOD}/
 include { quantify_reads_per_gene                                } from "${MOD}/07_quantify_reads_per_gene.nf"
 include { normalize_coverage_tracks                              } from "${MOD}/08_normalize_coverage_tracks.nf"
 include { detect_divergent_transcription                         } from "${MOD}/09_detect_divergent_transcription.nf"
+include { score_enhancer_vs_gene                                 } from "${MOD}/10a_score_enhancer_vs_gene.nf"
 include { assign_signal_to_functional_regions                    } from "${MOD}/10_assign_signal_to_functional_regions.nf"
 include { calculate_polymerase_occupancy_metrics                 } from "${MOD}/11_calculate_polymerase_occupancy_metrics.nf"
 include { summarize_polymerase_metrics                           } from "${MOD}/12_summarize_polymerase_metrics.nf"
@@ -742,15 +743,43 @@ workflow TrackTx {
 
 
   // ══════════════════════════════════════════════════════════════════════════
-  // STEP 11: Call Functional Regions
+  // STEP 11: Score Divergent Sites (Enhancer vs Gene)
   // ══════════════════════════════════════════════════════════════════════════
   
   if (params.verbose) {
     log.info "─".multiply(80)
-    log.info "STEP 11 | Call Functional Regions"
+    log.info "STEP 11 | Score Divergent Sites (Enhancer vs Gene)"
     log.info "─".multiply(80)
-    log.info "STEP 11 | CONFIG | Input: Divergent transcription regions + RAW tracks"
-    log.info "STEP 11 | CONFIG | Output: Promoter, enhancer, gene body annotations"
+    log.info "STEP 11 | PURPOSE | Attach continuous enhancer_score ∈ [0,1] to each divergent site"
+  }
+
+  enhancer_score_ch = score_enhancer_vs_gene(
+    divergent_tx_ch,
+    genes_ch,
+    tss_ch
+  ).scores
+
+  // Simple monitor
+  enhancer_score_ch.subscribe { sid, bed_scored, features_tsv, _cond, _time, _rep ->
+    def n = 0
+    if (file(bed_scored).exists() && file(bed_scored).size() > 0) {
+      n = file(bed_scored).readLines().findAll { !it.startsWith('#') }.size()
+    }
+    if (params.verbose) log.info "STEP 11 | COMPLETE | ${sid} → ${n} divergent sites scored (enhancer_score)"
+  }
+
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // STEP 12: Call Functional Regions
+  // ══════════════════════════════════════════════════════════════════════════
+  
+  if (params.verbose) {
+    log.info "─".multiply(80)
+    log.info "STEP 12 | Call Functional Regions"
+    log.info "─".multiply(80)
+    log.info "STEP 12 | CONFIG | Input: Divergent transcription regions + RAW tracks"
+    log.info "STEP 12 | CONFIG | Output: Promoter, enhancer, gene body annotations"
   }
 
   // IMPORTANT: Use RAW bedGraphs (not normalized) as per original pipeline design
@@ -796,21 +825,21 @@ workflow TrackTx {
     if (file(bed).exists() && file(bed).size() > 0) {
       count = file(bed).readLines().findAll { !it.startsWith('#') }.size()
     }
-    if (params.verbose) log.info "STEP 11 | COMPLETE | ${sid} → ${count} functional regions annotated"
+    if (params.verbose) log.info "STEP 12 | COMPLETE | ${sid} → ${count} functional regions annotated"
   }
 
 
 
   // ══════════════════════════════════════════════════════════════════════════
-  // STEP 12: Calculate Pol-II Metrics
+  // STEP 13: Calculate Pol-II Metrics
   // ══════════════════════════════════════════════════════════════════════════
   
   if (params.verbose) {
     log.info "─".multiply(80)
-    log.info "STEP 12 | Calculate Pol-II Metrics"
+    log.info "STEP 13 | Calculate Pol-II Metrics"
     log.info "─".multiply(80)
-    log.info "STEP 12 | CONFIG | Metrics: Density, pausing index, traveling ratio"
-    log.info "STEP 12 | CONFIG | Input: Normalized CPM/siCPM tracks + functional regions"
+    log.info "STEP 13 | CONFIG | Metrics: Density, pausing index, traveling ratio"
+    log.info "STEP 13 | CONFIG | Input: Normalized CPM/siCPM tracks + functional regions"
   }
 
   // Prepare Pol-II inputs (uses normalized CPM/siCPM tracks)
@@ -842,14 +871,14 @@ workflow TrackTx {
   pol_pausing_ch = calculate_polymerase_occupancy_metrics.out.pausing
 
   // ══════════════════════════════════════════════════════════════════════════
-  // STEP 13: Summarize Pol-II Metrics (Cohort-Level)
+  // STEP 14: Summarize Pol-II Metrics (Cohort-Level)
   // ══════════════════════════════════════════════════════════════════════════
   
   if (params.verbose) {
     log.info "─".multiply(80)
-    log.info "STEP 13 | Summarize Pol-II Metrics"
+    log.info "STEP 14 | Summarize Pol-II Metrics"
     log.info "─".multiply(80)
-    log.info "STEP 13 | PURPOSE | Cohort-level aggregation and visualization"
+    log.info "STEP 14 | PURPOSE | Cohort-level aggregation and visualization"
   }
 
   // Sort once and reuse to avoid channel exhaustion
@@ -909,7 +938,7 @@ workflow TrackTx {
       }
       
       tsv_file.text = clean_lines.join('\n') + '\n'
-      if (params.verbose) log.info "STEP 13 | INPUT | Samples TSV prepared: ${clean_lines.size() - 1} samples"
+    if (params.verbose) log.info "STEP 14 | INPUT | Samples TSV prepared: ${clean_lines.size() - 1} samples"
       tsv_file
     }
 
@@ -926,14 +955,14 @@ workflow TrackTx {
 
 
   // ══════════════════════════════════════════════════════════════════════════
-  // STEP 14: Quality Control
+  // STEP 15: Quality Control
   // ══════════════════════════════════════════════════════════════════════════
   
   if (params.verbose) {
     log.info "─".multiply(80)
-    log.info "STEP 14 | Quality Control Analysis"
+    log.info "STEP 15 | Quality Control Analysis"
     log.info "─".multiply(80)
-    log.info "STEP 14 | CONFIG | Metrics: Mapping rates, strand bias, coverage depth"
+    log.info "STEP 15 | CONFIG | Metrics: Mapping rates, strand bias, coverage depth"
   }
 
   qc_input_ch = aligned_ch
@@ -960,14 +989,14 @@ workflow TrackTx {
 
 
   // ══════════════════════════════════════════════════════════════════════════
-  // STEP 15: Generate Per-Sample Reports
+  // STEP 16: Generate Per-Sample Reports
   // ══════════════════════════════════════════════════════════════════════════
   
   if (params.verbose) {
     log.info "─".multiply(80)
-    log.info "STEP 15 | Generate Per-Sample Reports"
+    log.info "STEP 16 | Generate Per-Sample Reports"
     log.info "─".multiply(80)
-    log.info "STEP 15 | CONFIG | Format: HTML with embedded plots"
+    log.info "STEP 16 | CONFIG | Format: HTML with embedded plots"
   }
 
   // Helper function to resolve file paths safely
@@ -1033,14 +1062,14 @@ workflow TrackTx {
 
 
   // ══════════════════════════════════════════════════════════════════════════
-  // STEP 16: Combine Reports
+  // STEP 17: Combine Reports
   // ══════════════════════════════════════════════════════════════════════════
   
   if (params.verbose) {
     log.info "─".multiply(80)
-    log.info "STEP 16 | Combine Reports"
+    log.info "STEP 17 | Combine Reports"
     log.info "─".multiply(80)
-    log.info "STEP 16 | PURPOSE | Generate cohort-level summary report"
+    log.info "STEP 17 | PURPOSE | Generate cohort-level summary report"
   }
 
   // Collect reports and stage with sequential names to avoid collisions
