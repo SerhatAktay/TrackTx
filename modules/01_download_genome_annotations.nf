@@ -54,17 +54,6 @@ process download_genome_annotations {
   // Persistent storage for caching across runs (includes annotation_source for cache key)
   storeDir   "${params.assets_dir ?: "${projectDir}/assets"}/annotation/${params.reference_genome}_${params.annotation_source ?: 'refseq'}_${params.annotation_exclude_biotypes ?: ''}_${params.annotation_chr_naming ?: 'none'}"
   
-  // Use params.publish_mode: 'link' (default) or 'copy' (required for exFAT/USB drives)
-  publishDir "${params.output_dir}/00_references/${params.reference_genome}", 
-             mode: params.publish_mode, 
-             overwrite: true,
-             saveAs: { filename ->
-               def name = filename instanceof Path ? filename.getFileName().toString() : filename.toString()
-               // Skip GTF when publish_references_gtf: false (~790 MB saved); genes/tss/tes kept
-               if (params.publish_references_gtf == false && name.endsWith('.gtf')) return null
-               return name
-             }
-
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:
     path("${params.reference_genome}.gtf")
