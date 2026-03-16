@@ -28,15 +28,10 @@ venv/
 # Python
 __pycache__/
 *.py[cod]
-bin/combine_reports_old.py
 
 # Local configs and sample sheets (generated per run)
 params.yaml
 samplesheet.csv
-
-# Documentation (optional / local)
-CHANGELOG.md
-HOW.md
 
 # OS / editor noise
 .DS_Store
