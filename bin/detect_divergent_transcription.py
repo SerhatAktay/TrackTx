@@ -881,9 +881,33 @@ def main():
         final = final.sort_values('score', ascending=False).reset_index(drop=True)
     
     # Output results
-    final[['chr', 'start', 'end', 'total', 'score']].to_csv(
-        args.out, sep='\t', header=False, index=False, float_format='%.4f'
-    )
+    #
+    # NOTE: Avoid using DataFrame.to_csv here to reduce sensitivity to
+    # pandas' internal CSV formatter layout (which can vary between versions
+    # and has caused import issues on some systems). Instead, write the
+    # BED5-style output manually from values.
+    with open(args.out, 'w') as out_f:
+        for row in final[['chr', 'start', 'end', 'total', 'score']].itertuples(index=False):
+            chrom, start, end, total, score = row
+            # Coerce numeric fields defensively; fall back to raw value if needed
+            try:
+                start_i = int(start)
+            except Exception:
+                start_i = start
+            try:
+                end_i = int(end)
+            except Exception:
+                end_i = end
+            try:
+                total_v = float(total)
+            except Exception:
+                total_v = total
+            try:
+                score_v = float(score)
+                score_str = f"{score_v:.4f}"
+            except Exception:
+                score_str = str(score)
+            out_f.write(f"{chrom}\t{start_i}\t{end_i}\t{total_v}\t{score_str}\n")
     
     log(f"\nOutput: {args.out} ({len(final):,} regions)", args.quiet)
     
