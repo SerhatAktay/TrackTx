@@ -107,13 +107,13 @@ process align_reads_to_genome {
   }
   # Print the precise failing command + location (much more actionable than exit status 1)
   tracktx_on_err() {
-    local rc="$?"
-    local line="${BASH_LINENO[0]:-${LINENO}}"
-    local cmd="${BASH_COMMAND:-unknown}"
+    local rc="\$?"
+    local line="\${BASH_LINENO[0]:-\${LINENO}}"
+    local cmd="\${BASH_COMMAND:-unknown}"
     tracktx_error "align_reads_to_genome" \
-      "Command failed (exit=${rc}) at line ${line}" \
-      "See align_reads.log (work dir). Failing command: ${cmd}" \
-      "${rc}"
+      "Command failed (exit=\${rc}) at line \${line}" \
+      "See align_reads.log (work dir). Failing command: \${cmd}" \
+      "\${rc}"
   }
   trap 'tracktx_on_err' ERR
 
