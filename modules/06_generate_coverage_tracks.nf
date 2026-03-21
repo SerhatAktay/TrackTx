@@ -636,7 +636,7 @@ Key Settings:
 
 UMI Deduplication:
   Status: !{params.umi?.enabled ? 'Enabled' : 'Disabled'}
-  !{params.umi?.enabled ? 'Length: ' + params.umi.length + ' bp' : ''}
+  !{params.umi?.enabled ? 'Length: ' + params.umi?.length + ' bp' : ''}
   !{params.umi?.enabled ? 'Duplicates removed before track generation' : 'Duplicates retained in coverage'}
 
 USAGE

@@ -98,7 +98,7 @@ process download_genome_and_build_alignment_index {
   GENOME_ID="!{genome_id}"
   SOURCE="!{source}"
   THREADS=!{task.cpus}
-  FORCE_REBUILD="!{params.get('force_rebuild', false) ? 'true' : 'false'}"
+  FORCE_REBUILD="!{params.force_rebuild ? 'true' : 'false'}"
 
   # Directory structure
   CACHE_ROOT="!{params.genome_cache ?: '/tmp/genomes_cache'}"

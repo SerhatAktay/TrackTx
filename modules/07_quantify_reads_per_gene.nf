@@ -76,7 +76,6 @@ process quantify_reads_per_gene {
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
-  def allowIndexBuild = params.get('counts_allow_index_build', false) ? 'true' : 'false'
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -120,7 +119,7 @@ process quantify_reads_per_gene {
   TIMEPOINT="!{tp}"
   REPLICATE="!{rep}"
   
-  ALLOW_INDEX_BUILD="!{allowIndexBuild}"
+  ALLOW_INDEX_BUILD="!{params.counts_allow_index_build ? 'true' : 'false'}"
 
   echo "COUNTS | CONFIG | Sample ID: ${SAMPLE_ID}"
   echo "COUNTS | CONFIG | Condition: ${CONDITION}"
@@ -390,7 +389,7 @@ DOWNSTREAM USAGE
 
 INDEXING STRATEGY
 ────────────────────────────────────────────────────────────────────────────
-  Auto-index: !{params.get('counts_allow_index_build', false) ? 'Enabled' : 'Disabled'}
+  Auto-index: !{params.counts_allow_index_build ? 'Enabled' : 'Disabled'}
   
   If disabled (default):
     • Requires .bai files to exist
