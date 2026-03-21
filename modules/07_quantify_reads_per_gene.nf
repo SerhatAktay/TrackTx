@@ -76,6 +76,7 @@ process quantify_reads_per_gene {
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
+  def allowIndexBuild = params.get('counts_allow_index_build', false) ? 'true' : 'false'
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -119,7 +120,7 @@ process quantify_reads_per_gene {
   TIMEPOINT="!{tp}"
   REPLICATE="!{rep}"
   
-  ALLOW_INDEX_BUILD="!{params.get('counts_allow_index_build', false) ? 'true' : 'false'}"
+  ALLOW_INDEX_BUILD="!{allowIndexBuild}"
 
   echo "COUNTS | CONFIG | Sample ID: ${SAMPLE_ID}"
   echo "COUNTS | CONFIG | Condition: ${CONDITION}"

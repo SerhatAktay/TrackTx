@@ -235,13 +235,13 @@ comp = str.maketrans('ACGTNacgtn', 'TGCANtgcan')
 it = iter(sys.stdin)
 while True:
     try:
-        h = next(it).rstrip('\n')
-        s = next(it).rstrip('\n')
-        p = next(it).rstrip('\n')
-        q = next(it).rstrip('\n')
+        h = next(it).rstrip('\\n')
+        s = next(it).rstrip('\\n')
+        p = next(it).rstrip('\\n')
+        q = next(it).rstrip('\\n')
     except StopIteration:
         break
-    sys.stdout.write(f"{h}\n{s.translate(comp)[::-1]}\n{p}\n{q[::-1]}\n")
+    sys.stdout.write(f"{h}\\n{s.translate(comp)[::-1]}\\n{p}\\n{q[::-1]}\\n")
 PYEND
     fi
   }
