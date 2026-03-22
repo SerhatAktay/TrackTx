@@ -262,6 +262,7 @@ class World:
     alerts: deque = field(default_factory=lambda: deque(maxlen=50))
     recent_errors: deque = field(default_factory=lambda: deque(maxlen=6))
     start_ts: float = field(default_factory=time.time)
+    pipeline_start_ts: Optional[float] = None   # parsed from first log line timestamp
     
     # Log/trace tailing state
     last_log_pos: int = 0
@@ -928,8 +929,45 @@ def parse_line(world: World, line: str, now: float):
         token = "Completed" if ("succeed" in tail or "completed" in tail) else tail
         _apply(world, (m.group("name") or "").strip(), (m.group("tag") or "").strip(), (m.group("id") or "").strip(), token, now)
 
+_LOG_TS_RE = re.compile(
+    r'^(?P<mon>[A-Za-z]{3})-(?P<day>\d{2})\s+(?P<h>\d{2}):(?P<m>\d{2}):(?P<s>\d{2})'
+)
+
+def _parse_log_start_ts(log_path: str) -> Optional[float]:
+    """Read the first line of a Nextflow log and parse its timestamp.
+    NF log format: 'Nov-25 14:23:45.123 [main] ...'
+    Returns a UTC epoch float, or None if parsing fails.
+    """
+    try:
+        with open(log_path, 'r', errors='ignore') as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                m = _LOG_TS_RE.match(line)
+                if m:
+                    import calendar
+                    mon = m.group("mon")
+                    day = int(m.group("day"))
+                    h   = int(m.group("h"))
+                    mn  = int(m.group("m"))
+                    s   = int(m.group("s"))
+                    import datetime
+                    year = datetime.datetime.now().year
+                    try:
+                        month = list(calendar.month_abbr).index(mon.capitalize())
+                    except ValueError:
+                        return None
+                    dt = datetime.datetime(year, month, day, h, mn, s)
+                    return dt.timestamp()
+    except Exception:
+        pass
+    return None
+
 def bootstrap(world: World, log_path: str):
     """Bootstrap world state from full log"""
+    if world.pipeline_start_ts is None:
+        world.pipeline_start_ts = _parse_log_start_ts(log_path)
     for ln in read_all_lines(log_path):
         update_meta(world, ln)
         parse_line(world, ln, time.time())
@@ -2537,7 +2575,10 @@ def main():
                 hdr.append("  sess:", style="dim")
                 hdr.append(f" {ss_short if ss!='?' else 'n/a'}", style="")
                 hdr.append(f"  {w.meta.executor}  {container}", style="dim")
-                hdr.append(f"  ⏱ {sec2hms(int(time.time() - w.start_ts))}\n", style="dim")
+                _pipe_ts = w.pipeline_start_ts or w.start_ts
+                _elapsed = sec2hms(int(time.time() - _pipe_ts))
+                _ts_label = "run" if w.pipeline_start_ts else "up"
+                hdr.append(f"  ⏱ {_ts_label} {_elapsed}\n", style="dim")
 
                 # Line 2: system resources
                 cores_in_use = sum([max(0.0, t.metrics.cpus) for t in run if t.metrics.cpus is not None])
@@ -2591,13 +2632,13 @@ def main():
                 rt_title = "Running (all logs)" if getattr(a, 'all_logs', False) else "Running (j/k to focus)"
                 rt = Table(title=None, expand=True, padding=(0, 1), show_edge=False,
                            box=rich.box.SIMPLE, header_style="bold dim", show_lines=False)
-                rt.add_column("",       width=1,       no_wrap=True)   # focus/load dot
-                rt.add_column("Module", max_width=30, no_wrap=True)   # capped so Sample gets room
-                rt.add_column("Sample", ratio=1,      no_wrap=True)   # fills remaining flex space
-                rt.add_column("CPU",    justify="right", width=16) # "▓▓▓▓░░ 45%/4c"
-                rt.add_column("MEM",    justify="right", width=12) # "▓▓░░ 2.1G"
-                rt.add_column("Age",    justify="right", width=7)
-                rt.add_column("▲",      width=10)                  # CPU sparkline
+                rt.add_column("",       width=1,                   no_wrap=True)  # focus/load dot
+                rt.add_column("Module", max_width=30,              no_wrap=True)  # capped
+                rt.add_column("Sample", max_width=22,              no_wrap=True)  # capped — was ratio=1 (ballooned on wide terminals)
+                rt.add_column("CPU",    justify="right", width=14, no_wrap=True)  # "▓▓▓▓░░ 45%/8c" max ~14 chars
+                rt.add_column("MEM",    justify="right", width=10, no_wrap=True)  # "▓▓░░ 2.1G" max ~10 chars
+                rt.add_column("Age",    justify="right", width=7,  no_wrap=True)
+                rt.add_column("▲",      width=10)                                 # CPU sparkline
                 # ensure labels from FS if missing
                 for t in run:
                     ensure_task_label_from_fs(w, t)
@@ -2931,6 +2972,9 @@ def main():
                     if now>=next_tick:
                         for ln in tail_lines(w, log):
                             update_meta(w, ln); parse_line(w, ln, time.time())
+                            # Lazily parse pipeline start time from the log if not yet set
+                            if w.pipeline_start_ts is None and os.path.isfile(log):
+                                w.pipeline_start_ts = _parse_log_start_ts(log)
                             if any(k in ln for k in ("ERROR","FAILED","Exception","Caused by:")) and "collect-file" not in ln:
                                 w.recent_errors.append(ln.strip())
                         for row in tail_trace(w):
