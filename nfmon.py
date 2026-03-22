@@ -317,16 +317,25 @@ def sparkline_pct(values: List[float], width: int = SPARKLINE_WIDTH) -> str:
 
     Unlike sparkline(), the tallest block always represents 100%, so a bar at
     half-height genuinely means ~50% CPU — making different tasks comparable.
+    Uses SPARKLINE_BLOCKS (starting with ▁) so even idle tasks show a thin
+    bar rather than invisible spaces.
     """
     if not values:
         return ""
-    blocks = " ▂▃▄▅▆▇█"
-    normalized = [min(7, int((min(100.0, max(0.0, v)) / 100.0) * 7)) for v in values]
+    # Scale 0-100% to levels 0-7.  Use ceiling so even 1% shows ▁ rather than
+    # being rounded away to a space.
+    def _level(v: float) -> int:
+        v = min(100.0, max(0.0, v))
+        if v == 0.0:
+            return 0
+        return min(7, max(0, int((v / 100.0) * 8) - 1 + 1))  # 1..100 → 0..7
+
+    normalized = [_level(v) for v in values]
     if len(normalized) < width:
         normalized = ([0] * (width - len(normalized))) + normalized
     else:
         normalized = normalized[-width:]
-    return "".join([blocks[v] for v in normalized])
+    return "".join([SPARKLINE_BLOCKS[v] for v in normalized])
 
 def colorize_cpu_pct(pct: float) -> Tuple[str, str]:
     """Return (color_name, style) for CPU percentage"""
@@ -829,6 +838,15 @@ def update_meta(world: World, line: str):
     m = RE_SES.search(line)
     if m:
         world.meta.session = m.group("sid")
+    # Fallback: NF session IDs are always UUIDs.  If a session-related log line
+    # carries a UUID that the structured regex missed, grab it directly.
+    elif (world.meta.session in ("", "?") and "session" in line.lower()):
+        m_uuid = re.search(
+            r'\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b',
+            line, re.I
+        )
+        if m_uuid:
+            world.meta.session = m_uuid.group(1)
     
     # Only match global Work-dir declaration (not TaskHandler workDir)
     m = RE_WORK.search(line)
@@ -2223,7 +2241,6 @@ def main():
             from rich.live import Live
             from rich.table import Table
             from rich.panel import Panel
-            from rich.progress import Progress, BarColumn, TextColumn
             from rich.layout import Layout
             from rich.align import Align
             from rich.text import Text
@@ -2366,10 +2383,25 @@ def main():
                 hdr.append(f"\n[dim]j/k nav  f filter  s sort  a all-logs  q quit{sort_indicator}" + (" [yellow]ALL LOGS[/yellow]" if getattr(a, 'all_logs', False) else "") + "[/dim]")
                 header_panel = Panel(hdr, title="nf-monitor", border_style="cyan", padding=(0, 1))
 
-                # pipeline progress bar (snapshot-based)
+                # Pipeline progress bar — rendered as plain Rich Text rather than a
+                # Progress() widget.  The Progress widget: (a) uses BarColumn(bar_width=40)
+                # which leaves the right half of the terminal blank, and (b) holds animation
+                # state that causes flicker when a fresh Progress() is created every frame.
                 pct = C.get("progress_pct", 0)
-                prog=Progress(TextColumn("[bold]Pipeline"), BarColumn(), TextColumn(f" {pct}%"), expand=True)
-                prog.add_task("pipe", total=100, completed=pct)
+                try:
+                    term_w = shutil.get_terminal_size().columns
+                except Exception:
+                    term_w = 80
+                # Reserve space for "Pipeline [" (10) + "] 100%" (6) + panel borders (4)
+                bar_w = max(4, term_w - 20)
+                fill = int(bar_w * pct / 100)
+                prog_text = Text()
+                prog_text.append("Pipeline ", style="bold")
+                prog_text.append("[", style="dim")
+                prog_text.append("█" * fill, style="green bold")
+                prog_text.append("░" * (bar_w - fill), style="dim")
+                prog_text.append("] ", style="dim")
+                prog_text.append(f"{pct}%", style="bold")
 
                 # remove per-process summary; show placeholder
                 proc_tbl = Table(title="", expand=True, show_edge=False)
@@ -2529,7 +2561,7 @@ def main():
                 layout = Layout()
                 layout.split_column(
                     Layout(header_panel, size=5),
-                    Layout(Panel(prog, padding=(0, 0)), size=3),
+                    Layout(Panel(prog_text, padding=(0, 0)), size=3),
                     Layout(name="body")
                 )
                 layout["body"].split_row(Layout(name="right", ratio=1))
