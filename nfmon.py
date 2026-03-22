@@ -2531,29 +2531,20 @@ def main():
                 if n_fail: hdr.append(f"✗{n_fail} ", style="bold red")
                 if n_que:  hdr.append(f"⏳{n_que}",   style="dim")
 
-                # Key hints + active filters
                 show_help = filter_state.get('show_help', False)
                 sort_str  = filter_state.get('sort', 'default')
-                extras = ""
-                if filter_state["proc"]: extras += f"  [yellow]filter:{filter_state['proc']}[/yellow]"
-                if sort_str != 'default': extras += f"  [yellow]sort:{sort_str}[/yellow]"
-                if getattr(a, 'all_logs', False): extras += "  [yellow]ALL-LOGS[/yellow]"
-                hdr.append(f"\n[dim]j/k ↕  f filter  s sort  a logs  ? help  q quit[/dim]{extras}")
                 header_panel = Panel(hdr, title="nf-monitor", border_style="cyan", padding=(0, 1))
-
-                # remove per-process summary; show placeholder
-                proc_tbl = Table(title="", expand=True, show_edge=False)
 
                 # running table
                 rt_title = "Running (all logs)" if getattr(a, 'all_logs', False) else "Running (j/k to focus)"
                 rt = Table(title=rt_title, expand=True, padding=(0, 0), show_edge=True)
-                rt.add_column("Module", ratio=3)
-                rt.add_column("Sample", ratio=2)
-                rt.add_column("CPU", justify="right")   # merged: "45%/4c"
-                rt.add_column("MEM", justify="right")
-                rt.add_column("Age", justify="right")
-                rt.add_column("Stage", ratio=2)
-                rt.add_column("CPU hist")
+                rt.add_column("", width=1, no_wrap=True)        # focus indicator
+                rt.add_column("Module", ratio=2, no_wrap=True)
+                rt.add_column("Sample", ratio=1, no_wrap=True)
+                rt.add_column("CPU",  justify="right", width=9)  # "45%/4c"
+                rt.add_column("MEM",  justify="right", width=8)
+                rt.add_column("Age",  justify="right", width=7)
+                rt.add_column("▲",    width=10)                  # CPU sparkline
                 # ensure labels from FS if missing
                 for t in run:
                     ensure_task_label_from_fs(w, t)
@@ -2597,11 +2588,12 @@ def main():
                     if ':' in module_name:
                         module_name = module_name.split(':', 1)[-1]   # drop "TrackTx:" prefix
                     sample_tag = (t.tag or "─")
+                    is_focused = (not getattr(a, 'all_logs', False)) and idx == focused["idx"]
+                    dot = Text("●", style="bold cyan") if is_focused else Text("·", style="dim")
                     lab = Text(module_name, style=_name_style(module_name))
-                    if (not getattr(a, 'all_logs', False)) and idx == focused["idx"]:
+                    if is_focused:
                         lab.stylize("bold underline")
 
-                    stage = (t.stage or "")
                     hist  = list(t.metrics.cpu_hist)
                     spark = ""
                     if hist:
@@ -2609,20 +2601,11 @@ def main():
                             spark = sparkline_pct(hist[-20:])
                         except Exception:
                             spark = ""
-                    rt.add_row(lab, sample_tag, cpu_col, Text(rss, style=rss_style),
-                               sec2hms(int(time.time()-t.first_ts)), stage, Text(spark, style="cyan"))
+                    rt.add_row(dot, lab, sample_tag, cpu_col, Text(rss, style=rss_style),
+                               sec2hms(int(time.time()-t.first_ts)), Text(spark, style="cyan"))
 
                 # live log tail panel(s) - dynamically sized based on available space
-                # Calculate how much space we have (will be computed below alongside layout)
                 log_panel = Panel(Text("No running tasks", style="yellow"), title="Log", border_style="blue", padding=(0, 1))
-
-                # queued table
-                # remove queued table
-                qt = Table(title="", expand=True)
-
-                # errors panel
-                err_txt = Text("✓ none", style="green") if not w.recent_errors else Text("\n".join(list(w.recent_errors)[-3:]), style="red")
-                err_panel = Panel(err_txt, title="Errors", border_style="red", padding=(0, 1))
 
                 # help - extensive for novices
                 help_txt = Text()
@@ -2645,8 +2628,26 @@ def main():
                 help_txt.append("Columns: Module=process name, Sample=task tag, CPU%=usage, RSS=memory (MB)", style="dim")
                 help_panel = Panel(help_txt, title="Help", border_style="bright_black", padding=(0, 1))
 
-                # Estimate log lines from terminal
-                available_log_lines = max(5, int((term_height - 8) * 0.55))
+                # ── Footer bar: key hints + active state + error status ────────
+                foot = Text()
+                for key, desc in [("j/k","nav"), ("f","filter"), ("s","sort"),
+                                   ("a","all-logs"), ("?","help"), ("q","quit")]:
+                    foot.append(f" {key} ", style="bold yellow")
+                    foot.append(f"{desc}  ", style="dim")
+                if filter_state["proc"]: foot.append(f"│ proc:{filter_state['proc']}  ", style="yellow")
+                if sort_str != 'default': foot.append(f"│ sort:{sort_str}  ", style="yellow")
+                if getattr(a, 'all_logs', False): foot.append("│ ALL-LOGS  ", style="yellow")
+                if show_help: foot.append("│ HELP  ", style="bright_black")
+                foot.append("  │  ", style="dim")
+                if w.recent_errors:
+                    last_err = list(w.recent_errors)[-1].strip()
+                    foot.append(f"✗ {last_err[:90]}", style="bold red")
+                else:
+                    foot.append("✓ no errors", style="green")
+                footer_panel = Panel(foot, border_style="bright_black", padding=(0, 0))
+
+                # Estimate log lines from terminal (header=5, footer=3, log panel borders=2)
+                available_log_lines = max(5, term_height - 10)
                 
                 if run_filtered:
                     if getattr(a, 'all_logs', False):
@@ -2696,39 +2697,52 @@ def main():
                         focused["id"] = ft.id
                         
                         # Use all available lines for single process
-                        # Account for: title(1) + payload(1) + outputs(1) = 3 lines
-                        single_log_lines = max(5, available_log_lines - 3)
-                        
+                        # Account for: summary header(2) + payload(1) + outputs(1) = 4 overhead lines
+                        single_log_lines = max(5, available_log_lines - 4)
+
                         payload, tail, outs = insight(ft.workdir, single_log_lines)
                         text = Text()
-                        text.append(f"{_task_label(ft)} (id:{short_hash(ft.id or '')})\n", style="bold")
+                        # Task summary mini-header inside log panel
+                        elapsed_s = sec2hms(int(time.time() - ft.first_ts))
+                        _cpu_s = ""
+                        if ft.metrics.cpu_pct is not None and ft.metrics.cpus is not None:
+                            _cpu_s = f"{ft.metrics.cpu_pct:.0f}%/{int(ft.metrics.cpus)}c"
+                        elif ft.metrics.cpu_pct is not None:
+                            _cpu_s = f"{ft.metrics.cpu_pct:.0f}%"
+                        _rss_s = f"{ft.metrics.rss_mb:.0f} MB" if ft.metrics.rss_mb is not None else ""
+                        _meta = "  ".join(x for x in [elapsed_s, _cpu_s, _rss_s] if x)
+                        _mn = (ft.name or "?").split(":", 1)[-1]
+                        text.append(f"● {_mn}", style="bold cyan")
+                        if ft.tag: text.append(f"  ({ft.tag})", style="")
+                        if _meta: text.append(f"  {_meta}", style="dim")
+                        text.append("\n")
+                        text.append("─" * 60 + "\n", style="dim")
                         if payload:
                             text.append(f"▶ {payload}\n", style="cyan")
                         for ln in tail[:single_log_lines]:
                             text.append(ln+"\n")
                         if outs:
                             text.append("outputs: "+", ".join([f"{n} ({sz})" for n,sz in outs]))
-                        log_panel = Panel(text, title=f"Log ({focused['idx']+1}/{len(run_filtered)})", border_style="blue", padding=(0, 1))
+                        log_title = f"Log — {_mn}  ({focused['idx']+1}/{len(run_filtered)})"
+                        log_panel = Panel(text, title=log_title, border_style="blue", padding=(0, 1))
                 
                 layout = Layout()
                 layout.split_column(
-                    Layout(header_panel, size=7),
-                    Layout(name="body")
+                    Layout(header_panel, size=5),
+                    Layout(name="body"),
+                    Layout(footer_panel, size=3),
                 )
-                layout["body"].split_row(Layout(name="right", ratio=1))
-                # Ratio-based: table 2, log 5, errors 1; help panel only when toggled with ?
+                # Side-by-side: running tasks (left) | log panel (right) | optional help sidebar
                 if show_help:
-                    layout["right"].split_column(
-                        Layout(rt, ratio=2, minimum_size=4),
-                        Layout(log_panel, ratio=5, minimum_size=5),
-                        Layout(err_panel, ratio=1, minimum_size=2),
-                        Layout(help_panel, ratio=1, minimum_size=14)
+                    layout["body"].split_row(
+                        Layout(rt,         ratio=1, minimum_size=4),
+                        Layout(log_panel,  ratio=2, minimum_size=10),
+                        Layout(help_panel, ratio=1, minimum_size=20),
                     )
                 else:
-                    layout["right"].split_column(
-                        Layout(rt, ratio=2, minimum_size=4),
-                        Layout(log_panel, ratio=5, minimum_size=5),
-                        Layout(err_panel, ratio=1, minimum_size=2),
+                    layout["body"].split_row(
+                        Layout(rt,        ratio=1, minimum_size=4),
+                        Layout(log_panel, ratio=2, minimum_size=10),
                     )
                 return layout
 
