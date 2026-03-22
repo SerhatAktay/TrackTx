@@ -2380,6 +2380,8 @@ def main():
             from rich.layout import Layout
             from rich.align import Align
             from rich.text import Text
+            from rich.rule import Rule
+            import rich.box
             import hashlib
 
             def _task_label(t: Task) -> str:
@@ -2421,6 +2423,24 @@ def main():
                     return "white"
                 h = int(hashlib.md5(name.encode("utf-8")).hexdigest(), 16)
                 return palette[h % len(palette)]
+
+            def _vstack(*items):
+                """Stack renderables vertically without Panel borders."""
+                g = Table(show_header=False, show_edge=False, box=None,
+                          padding=0, expand=True)
+                g.add_column(ratio=1)
+                for item in items:
+                    g.add_row(item)
+                return g
+
+            def mini_bar(pct: float, width: int = 6,
+                         full_style: str = "green", empty_style: str = "dim") -> Text:
+                """Return a Rich Text mini fill bar e.g. ▓▓▓▓░░"""
+                filled = min(width, max(0, int(round(pct / 100.0 * width))))
+                t = Text()
+                t.append("▓" * filled,          style=full_style)
+                t.append("░" * (width - filled), style=empty_style)
+                return t
 
             # remember focused task across renders and support j/k to switch
             focused = {"id": None, "idx": 0}
@@ -2483,18 +2503,25 @@ def main():
                     term_height = 40
                 run,que,C=classify(w)   # single call — reused throughout render()
 
-                # ── Header ──────────────────────────────────────────────────
-                hdr = Text()
+                # ── Header (borderless) ─────────────────────────────────────
+                show_help = filter_state.get('show_help', False)
+                sort_str  = filter_state.get('sort', 'default')
                 rn = (w.meta.run_name or "?")
                 ss = (w.meta.session or "?")
-                # Compact session: first 8 hex chars are enough to identify it
                 ss_short = ss[:8] if (ss != "?" and len(ss) > 8) else ss
                 container = getattr(w.meta, "container_engine", "") or "none"
-                hdr.append(f"Run: ", style="dim"); hdr.append(f"{rn if rn!='?' else 'n/a'}", style="bold cyan")
-                hdr.append(f"  Session: ", style="dim"); hdr.append(f"{ss_short if ss!='?' else 'n/a'}", style="")
-                hdr.append(f"  Exec: {w.meta.executor}  {container}\n", style="dim")
 
-                # System resource line
+                hdr = Text()
+                # Line 1: branded title + identity + uptime
+                hdr.append(" ◈ nf-monitor ", style="bold white on dark_cyan")
+                hdr.append("  run:", style="dim")
+                hdr.append(f" {rn if rn!='?' else 'n/a'}", style="bold cyan")
+                hdr.append("  sess:", style="dim")
+                hdr.append(f" {ss_short if ss!='?' else 'n/a'}", style="")
+                hdr.append(f"  {w.meta.executor}  {container}", style="dim")
+                hdr.append(f"  ⏱ {sec2hms(int(time.time() - w.start_ts))}\n", style="dim")
+
+                # Line 2: system resources
                 cores_in_use = sum([max(0.0, t.metrics.cpus) for t in run if t.metrics.cpus is not None])
                 if w.ncpu <= 0:
                     try:
@@ -2508,43 +2535,40 @@ def main():
                     approx = sum(max(0.0, t.metrics.cpu_pct/100.0) for t in run if t.metrics.cpu_pct is not None)
                     cores_in_use = min(float(w.ncpu), approx)
                 cores_txt = f"  cores {int(round(cores_in_use))}/{w.ncpu}" if w.ncpu > 0 else ""
-                uptime_txt = f"  ⏱ {sec2hms(int(time.time() - w.start_ts))}"
-                hdr.append(f"CPU {w.cpu_pct}%  MEM {w.mem_pct}%  load {w.load_1}{cores_txt}{uptime_txt}\n", style="")
+                hdr.append(f"sys  cpu {w.cpu_pct}%  mem {w.mem_pct}%  load {w.load_1}{cores_txt}\n", style="dim")
 
-                # Progress bar (embedded — saves the 3-line standalone panel)
+                # Line 3: progress bar + task badges
                 pct = C.get("progress_pct", 0)
                 try:
                     term_w = shutil.get_terminal_size().columns
                 except Exception:
                     term_w = 80
-                # bar width: term_w minus panel borders(2) + padding(2) + "%100  "(5) + count text(~18)
                 bar_w = max(4, term_w - 27)
                 fill = int(bar_w * pct / 100)
                 hdr.append("━" * fill,           style="green")
                 hdr.append("━" * (bar_w - fill), style="dim")
                 hdr.append(f"  {pct}%  ", style="bold")
-                # Task count badges
                 n_run  = C.get("running", 0);  n_done = C.get("done", 0) + C.get("cached", 0)
                 n_fail = C.get("failed",  0);  n_que  = C.get("queued", 0)
                 if n_run:  hdr.append(f"▶{n_run} ",  style="bold cyan")
                 if n_done: hdr.append(f"✓{n_done} ", style="green")
                 if n_fail: hdr.append(f"✗{n_fail} ", style="bold red")
-                if n_que:  hdr.append(f"⏳{n_que}",   style="dim")
+                if n_que:  hdr.append(f"⏳{n_que}",  style="dim")
 
-                show_help = filter_state.get('show_help', False)
-                sort_str  = filter_state.get('sort', 'default')
-                header_panel = Panel(hdr, title="nf-monitor", border_style="cyan", padding=(0, 1))
+                # Separator Rule replaces the Panel border
+                header_grp = _vstack(hdr, Rule(style="cyan"))
 
                 # running table
                 rt_title = "Running (all logs)" if getattr(a, 'all_logs', False) else "Running (j/k to focus)"
-                rt = Table(title=rt_title, expand=True, padding=(0, 0), show_edge=True)
-                rt.add_column("", width=1, no_wrap=True)        # focus indicator
-                rt.add_column("Module", ratio=2, no_wrap=True)
-                rt.add_column("Sample", ratio=1, no_wrap=True)
-                rt.add_column("CPU",  justify="right", width=9)  # "45%/4c"
-                rt.add_column("MEM",  justify="right", width=8)
-                rt.add_column("Age",  justify="right", width=7)
-                rt.add_column("▲",    width=10)                  # CPU sparkline
+                rt = Table(title=None, expand=True, padding=(0, 1), show_edge=False,
+                           box=rich.box.SIMPLE, header_style="bold dim", show_lines=False)
+                rt.add_column("",       width=1,  no_wrap=True)   # focus/load dot
+                rt.add_column("Module", ratio=2,  no_wrap=True)
+                rt.add_column("Sample", ratio=1,  no_wrap=True)
+                rt.add_column("CPU",    justify="right", width=16) # "▓▓▓▓░░ 45%/4c"
+                rt.add_column("MEM",    justify="right", width=12) # "▓▓░░ 2.1G"
+                rt.add_column("Age",    justify="right", width=7)
+                rt.add_column("▲",      width=10)                  # CPU sparkline
                 # ensure labels from FS if missing
                 for t in run:
                     ensure_task_label_from_fs(w, t)
@@ -2562,21 +2586,32 @@ def main():
                     # Ensure we have proper labels from filesystem
                     ensure_task_label_from_fs(w, t)
                     
-                    # CPU% with color + merged CPUS: "45%/4c" or "45%" or "─/4c"
+                    # CPU — mini bar + number
                     cpu_pct = t.metrics.cpu_pct
                     cpus_n  = t.metrics.cpus
                     cpu_style = ("green" if (cpu_pct or 0) < 50 else ("yellow" if (cpu_pct or 0) < 80 else "red")) if cpu_pct is not None else "dim"
-                    if cpu_pct is not None and cpus_n is not None:
-                        cpu_col = Text(f"{cpu_pct:.0f}%/{int(cpus_n)}c", style=cpu_style)
-                    elif cpu_pct is not None:
-                        cpu_col = Text(f"{cpu_pct:.0f}%", style=cpu_style)
+                    if cpu_pct is not None:
+                        cpu_col = mini_bar(cpu_pct, 6, cpu_style)
+                        suffix = f" {cpu_pct:.0f}%"
+                        if cpus_n is not None: suffix += f"/{int(cpus_n)}c"
+                        cpu_col.append(suffix, style=cpu_style)
                     elif cpus_n is not None:
-                        cpu_col = Text(f"─/{int(cpus_n)}c", style="dim")
+                        cpu_col = Text(f"░░░░░░ ──/{int(cpus_n)}c", style="dim")
                     else:
-                        cpu_col = Text("──", style="dim")
+                        cpu_col = Text("░░░░░░  ──", style="dim")
 
-                    rss = (f"{t.metrics.rss_mb:.0f} MB" if t.metrics.rss_mb is not None else "──")
-                    rss_style = ("green" if (t.metrics.rss_mb or 0) < 2048 else ("yellow" if (t.metrics.rss_mb or 0) < 8192 else "red")) if t.metrics.rss_mb is not None else "dim"
+                    # MEM — mini bar + number (scale: 32 GB = 100%)
+                    _rss = t.metrics.rss_mb
+                    rss_style = ("green" if (_rss or 0) < 2048 else ("yellow" if (_rss or 0) < 8192 else "red")) if _rss is not None else "dim"
+                    if _rss is not None:
+                        rss_pct = min(100.0, _rss / 32768.0 * 100)
+                        mem_col = mini_bar(rss_pct, 4, rss_style)
+                        if _rss >= 1024:
+                            mem_col.append(f" {_rss/1024:.1f}G", style=rss_style)
+                        else:
+                            mem_col.append(f" {_rss:.0f}M", style=rss_style)
+                    else:
+                        mem_col = Text("░░░░ ──", style="dim")
 
                     # Module name: strip workflow prefix ("TrackTx:align_reads_to_genome" → "align_reads_to_genome")
                     if not t.name or looks_like_hash(t.name):
@@ -2589,7 +2624,15 @@ def main():
                         module_name = module_name.split(':', 1)[-1]   # drop "TrackTx:" prefix
                     sample_tag = (t.tag or "─")
                     is_focused = (not getattr(a, 'all_logs', False)) and idx == focused["idx"]
-                    dot = Text("●", style="bold cyan") if is_focused else Text("·", style="dim")
+                    if is_focused:
+                        dot = Text("►", style="bold cyan")
+                    elif cpu_pct is not None:
+                        if cpu_pct > 80:   dot = Text("●", style="bold red")
+                        elif cpu_pct > 50: dot = Text("●", style="yellow")
+                        elif cpu_pct > 10: dot = Text("●", style="green")
+                        else:              dot = Text("●", style="dim")
+                    else:
+                        dot = Text("·", style="dim")
                     lab = Text(module_name, style=_name_style(module_name))
                     if is_focused:
                         lab.stylize("bold underline")
@@ -2601,11 +2644,17 @@ def main():
                             spark = sparkline_pct(hist[-20:])
                         except Exception:
                             spark = ""
-                    rt.add_row(dot, lab, sample_tag, cpu_col, Text(rss, style=rss_style),
+                    rt.add_row(dot, lab, sample_tag, cpu_col, mem_col,
                                sec2hms(int(time.time()-t.first_ts)), Text(spark, style="cyan"))
 
+                # Wrap running table in a borderless group with a Rule title
+                _rt_title = f"▶ Running [{len(run_filtered)}]" if run_filtered else "▶ Running  (none)"
+                if not getattr(a, 'all_logs', False): _rt_title += "  j/k navigate"
+                rt_group = _vstack(Rule(title=_rt_title, style="cyan", align="left"), rt)
+
                 # live log tail panel(s) - dynamically sized based on available space
-                log_panel = Panel(Text("No running tasks", style="yellow"), title="Log", border_style="blue", padding=(0, 1))
+                log_panel = _vstack(Rule(title="Log", style="blue", align="left"),
+                                    Text("No running tasks", style="yellow"))
 
                 # help - extensive for novices
                 help_txt = Text()
@@ -2626,7 +2675,7 @@ def main():
                 help_txt.append("  q  or  Esc  ", style="yellow")
                 help_txt.append("Exit the monitor\n", style="dim")
                 help_txt.append("Columns: Module=process name, Sample=task tag, CPU%=usage, RSS=memory (MB)", style="dim")
-                help_panel = Panel(help_txt, title="Help", border_style="bright_black", padding=(0, 1))
+                help_panel = _vstack(Rule(title="Help  ·  ? to close", style="bright_black"), help_txt)
 
                 # ── Footer bar: key hints + active state + error status ────────
                 foot = Text()
@@ -2644,7 +2693,7 @@ def main():
                     foot.append(f"✗ {last_err[:90]}", style="bold red")
                 else:
                     foot.append("✓ no errors", style="green")
-                footer_panel = Panel(foot, border_style="bright_black", padding=(0, 0))
+                footer_grp = _vstack(Rule(style="bright_black"), foot)
 
                 # Estimate log lines from terminal (header=5, footer=3, log panel borders=2)
                 available_log_lines = max(5, term_height - 10)
@@ -2688,7 +2737,9 @@ def main():
                                 text.append("outputs: "+", ".join([f"{n} ({sz})" for n,sz in outs[:2]]))
                             if i < processes_to_show - 1:
                                 text.append("\n", style="dim")
-                        log_panel = Panel(text, title=f"Log ({processes_to_show}/{num_processes})", border_style="blue", padding=(0, 1))
+                        log_panel = _vstack(
+                            Rule(title=f"Log ({processes_to_show}/{num_processes})  ·  a to toggle", style="blue", align="left"),
+                            text)
                     else:
                         # single focused log - use ALL available lines
                         if focused["idx"] >= len(run_filtered):
@@ -2723,26 +2774,28 @@ def main():
                             text.append(ln+"\n")
                         if outs:
                             text.append("outputs: "+", ".join([f"{n} ({sz})" for n,sz in outs]))
-                        log_title = f"Log — {_mn}  ({focused['idx']+1}/{len(run_filtered)})"
-                        log_panel = Panel(text, title=log_title, border_style="blue", padding=(0, 1))
+                        log_panel = _vstack(
+                            Rule(title=f"Log — {_mn}  ({focused['idx']+1}/{len(run_filtered)})", style="blue", align="left"),
+                            text)
                 
                 layout = Layout()
                 layout.split_column(
-                    Layout(header_panel, size=5),
+                    Layout(header_grp, size=4),
                     Layout(name="body"),
-                    Layout(footer_panel, size=3),
+                    Layout(footer_grp, size=2),
                 )
-                # Side-by-side: running tasks (left) | log panel (right) | optional help sidebar
+                layout["body"].split_row(Layout(name="right", ratio=1))
+                # Stacked: running tasks (top) | log (middle) | optional help (bottom)
                 if show_help:
-                    layout["body"].split_row(
-                        Layout(rt,         ratio=1, minimum_size=4),
-                        Layout(log_panel,  ratio=2, minimum_size=10),
-                        Layout(help_panel, ratio=1, minimum_size=20),
+                    layout["right"].split_column(
+                        Layout(rt_group,   ratio=1, minimum_size=4),
+                        Layout(log_panel,  ratio=2, minimum_size=5),
+                        Layout(help_panel, ratio=1, minimum_size=10),
                     )
                 else:
-                    layout["body"].split_row(
-                        Layout(rt,        ratio=1, minimum_size=4),
-                        Layout(log_panel, ratio=2, minimum_size=10),
+                    layout["right"].split_column(
+                        Layout(rt_group,  ratio=1, minimum_size=4),
+                        Layout(log_panel, ratio=2, minimum_size=5),
                     )
                 return layout
 
