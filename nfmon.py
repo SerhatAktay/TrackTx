@@ -290,6 +290,12 @@ class World:
     cum_cached: int = 0
     cum_failed: int = 0
     cum_killed: int = 0
+
+    # Per-process CPU allocation learned from completed trace rows.
+    # Key: process short name (e.g. "align_reads_to_genome"), value: cpus float.
+    # Used to back-fill running tasks of the same type before their trace row
+    # is written (NF 25.x local executor never writes NXF_TASK_CPUS to disk).
+    process_cpus: Dict[str, float] = field(default_factory=dict)
     # Operating mode: full (log+trace), log_only, trace_only, fs_only
     mode: str = "fs_only"
     
@@ -725,6 +731,11 @@ def apply_trace_row(world: World, row: Dict[str, str], now: float):
     cpus = _parse_float(cpus_val) if cpus_val is not None else None
     if cpus is not None:
         t.metrics.cpus = cpus
+        # Cache per process name so running tasks of the same type can be back-filled
+        if name:
+            short = name.split(":")[-1]   # strip workflow prefix (e.g. "TrackTx:")
+            world.process_cpus[short] = cpus
+            world.process_cpus[name]  = cpus  # also store full name
     
     rss = _parse_float(row.get("rss"))
     if rss is not None:
@@ -1562,11 +1573,19 @@ def classify(world: World):
                     if t.metrics.rss_mb  is None: t.metrics.rss_mb  = rss_mb
                     break
         
-        # Learn cpus from env if missing
+        # Learn allocated CPUs if still unknown.
+        # Priority: (1) task file scan, (2) per-process cache from completed trace rows
         if t.metrics.cpus is None:
             cc = cpus_from_dir(d)
             if cc is not None:
                 t.metrics.cpus = cc
+            else:
+                # NF 25.x local executor does not write NXF_TASK_CPUS to any file.
+                # Fall back to the per-process cache populated from completed trace rows.
+                short = (t.name or "").split(":")[-1]
+                cached = world.process_cpus.get(t.name) or world.process_cpus.get(short)
+                if cached is not None:
+                    t.metrics.cpus = cached
         
         # Update metrics history
         t.metrics.update()
