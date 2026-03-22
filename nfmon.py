@@ -83,7 +83,8 @@ RE_RUN = re.compile(
 )
 RE_SES = re.compile(
     r"(?:"
-    r"Session\s+ID\s*[:=]+\s*"           # "Session ID: uuid" (NF 25.x)
+    r"Session\s+UUID\s*[:=]+\s*"         # "Session UUID: uuid" (NF 25.x DEBUG log)
+    r"|Session\s+ID\s*[:=]+\s*"          # "Session ID: uuid" (NF stdout)
     r"|(?:^|\s)sessionId\s*[:=]+\s*"     # "sessionId: uuid" (older NF)
     r"|Session\s+id\s*[:=]+\s*"          # "Session id: uuid"
     r"|Workflow\s+session\s*[:=]\s*"     # "Workflow session: uuid"
