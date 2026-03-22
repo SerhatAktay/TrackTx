@@ -74,8 +74,22 @@ RE_HANDLER = re.compile(
     r"TaskHandler\[id:\s*\d+;\s*name:\s*(?P<name>[^;(]+)(?:\s*\((?P<tag>[^)]+)\))?;\s*status:\s*(?P<status>[^;]+);\s*.*?workDir:\s*(?P<workdir>[^\]]+)\]", re.I
 )
 RE_EXEC = re.compile(r"(?:^|\s)executor\s*>\s*(?P<exec>[^\s]+)", re.I)
-RE_RUN = re.compile(r"(?:Workflow run name:|(?:^|\s)runName\s*[:=]\s*)(?P<name>[A-Za-z0-9_.:-]+)")
-RE_SES = re.compile(r"(?:^|\s)(?:session:|sessionId[ :=]+|Session id[ :=]+)(?P<sid>[A-Za-z0-9-]+)")
+RE_RUN = re.compile(
+    r"(?:"
+    r"(?:Workflow\s+run\s+name|Run\s+name)\s*:\s*"   # "Run name: xxx" (NF 25.x stdout/log)
+    r"|(?:^|\s)runName\s*[:=]\s*"                    # "runName: xxx" (older NF log)
+    r"|Launching\s+`[^`]+`\s+\["                     # "Launching `main.nf` [run_name]" (NF 25.x)
+    r")(?P<name>[A-Za-z0-9_-]+)"
+)
+RE_SES = re.compile(
+    r"(?:"
+    r"Session\s+ID\s*[:=]+\s*"           # "Session ID: uuid" (NF 25.x)
+    r"|(?:^|\s)sessionId\s*[:=]+\s*"     # "sessionId: uuid" (older NF)
+    r"|Session\s+id\s*[:=]+\s*"          # "Session id: uuid"
+    r"|Workflow\s+session\s*[:=]\s*"     # "Workflow session: uuid"
+    r"|(?:^|\s)session:\s*"              # "session: uuid"
+    r")(?P<sid>[A-Za-z0-9-]+)"
+)
 RE_WORK = re.compile(r"(?:^|\s)(?:Work-dir|Working (?:dir|directory))\s*:\s*(?P<dir>\S+)")
 RE_WORK_HANDLER = re.compile(r"\bworkDir:\s*(?P<dir>[^\]]+)\]")
 RE_TASKDIR = re.compile(r".*/work/[0-9a-f]{2}/[0-9a-f]+$")
@@ -113,8 +127,8 @@ class TaskMetrics:
             self.rss_hist.append(max(0.0, float(self.rss_mb)))
     
     def cpu_sparkline(self) -> str:
-        """Generate CPU usage sparkline"""
-        return sparkline(list(self.cpu_hist))
+        """Generate CPU usage sparkline (fixed 0-100% scale)"""
+        return sparkline_pct(list(self.cpu_hist))
     
     def rss_sparkline(self) -> str:
         """Generate memory usage sparkline"""
@@ -287,21 +301,32 @@ class World:
 # ═══════════════════════════════════════════════════════════════
 
 def sparkline(values: List[float], width: int = SPARKLINE_WIDTH) -> str:
-    """Generate ASCII sparkline from values"""
+    """Generate ASCII sparkline from values (relative scale — max value = full bar)."""
     if not values:
         return ""
-    
-    # Normalize to 0-7 range for block characters
     max_val = max(values) if max(values) > 0 else 1.0
     normalized = [min(7, int((v / max_val) * 7)) for v in values]
-    
-    # Pad or truncate to width
     if len(normalized) < width:
         normalized = ([0] * (width - len(normalized))) + normalized
     else:
         normalized = normalized[-width:]
-    
     return "".join([SPARKLINE_BLOCKS[v] for v in normalized])
+
+def sparkline_pct(values: List[float], width: int = SPARKLINE_WIDTH) -> str:
+    """Generate ASCII sparkline fixed to a 0–100% scale.
+
+    Unlike sparkline(), the tallest block always represents 100%, so a bar at
+    half-height genuinely means ~50% CPU — making different tasks comparable.
+    """
+    if not values:
+        return ""
+    blocks = " ▂▃▄▅▆▇█"
+    normalized = [min(7, int((min(100.0, max(0.0, v)) / 100.0) * 7)) for v in values]
+    if len(normalized) < width:
+        normalized = ([0] * (width - len(normalized))) + normalized
+    else:
+        normalized = normalized[-width:]
+    return "".join([blocks[v] for v in normalized])
 
 def colorize_cpu_pct(pct: float) -> Tuple[str, str]:
     """Return (color_name, style) for CPU percentage"""
@@ -823,14 +848,18 @@ def update_meta(world: World, line: str):
     m = RE_CONTAINER.search(line)
     if m:
         world.meta.container_image = m.group("container")
-    low = line.lower()
     if not world.meta.container_engine:
-        if "docker" in low:
+        low = line.lower()
+        # Only match on lines that definitively declare the engine — not any mention of the word.
+        # "No docker container", "checking for docker", etc. must not trigger.
+        if re.search(r"container\s*engine\s*[:=]\s*docker|executor\s*>\s*docker|docker\s*executor", low):
             world.meta.container_engine = "docker"
-        elif "singularity" in low:
+        elif re.search(r"container\s*engine\s*[:=]\s*singularity|singularity\s*executor|executor\s*>\s*singularity", low):
             world.meta.container_engine = "singularity"
-        elif "podman" in low:
+        elif re.search(r"container\s*engine\s*[:=]\s*podman|podman\s*executor|executor\s*>\s*podman", low):
             world.meta.container_engine = "podman"
+        elif re.search(r"activating\s+conda|conda\s*env(?:ironment)?\s*[:=]|executor\s*>\s*conda|conda.server", low):
+            world.meta.container_engine = "conda"
 
 def parse_line(world: World, line: str, now: float):
     """Parse log line for task events"""
@@ -949,22 +978,32 @@ def pid_from_dir(d: str) -> Optional[int]:
     return None
 
 def cpus_from_dir(d: str) -> Optional[float]:
-    """Read allocated CPUs from .command.env"""
-    try:
-        env = os.path.join(d, ".command.env")
-        val = ""
-        with open(env, "r", encoding="utf-8", errors="ignore") as fh:
-            for ln in fh:
-                if ln.startswith("NXF_CPUS=") or ln.startswith("task.cpus="):
-                    val = ln.split("=", 1)[1].strip().strip('"')
-                    break
-        if val:
-            try:
-                return float(val)
-            except Exception:
-                pass
-    except Exception:
-        pass
+    """Read allocated CPUs from .command.env or .command.run.
+
+    Nextflow does not write a standard NXF_CPUS env variable; different
+    versions use different names (nxf_cpus, NXF_TASK_CPUS, etc.) or embed
+    the value only in .command.run.  Try a broad pattern across both files.
+    """
+    _cpu_re = re.compile(
+        r"^(?:export\s+)?(?P<var>"
+        r"NXF_CPUS|nxf_cpus|NXF_TASK_CPUS|nxf_task_cpus"
+        r"|NXFPROCESSCPUS|nxf_num_cpus|task\.cpus"
+        r")\s*=\s*[\"']?(?P<val>\d+(?:\.\d+)?)[\"']?",
+        re.I
+    )
+    for fname in (".command.env", ".command.run"):
+        fpath = os.path.join(d, fname)
+        try:
+            with open(fpath, "r", encoding="utf-8", errors="ignore") as fh:
+                for ln in fh:
+                    m = _cpu_re.match(ln.strip())
+                    if m:
+                        try:
+                            return float(m.group("val"))
+                        except (ValueError, TypeError):
+                            pass
+        except Exception:
+            pass
     return None
 
 def ps_for_pid(pid: int) -> Tuple[Optional[float], Optional[float]]:
@@ -1374,8 +1413,10 @@ def classify(world: World):
     active_dirs = running_dirs(roots)
     seen_ids = set()
     
-    # Get Docker container mapping (if using Docker executor)
-    docker_map = docker_containers_map()
+    # Get Docker container mapping only when Docker is actually in use.
+    # Calling `docker ps` on every classify() cycle is expensive and noisy for
+    # conda/local runs where Docker is not involved.
+    docker_map = docker_containers_map() if world.meta.container_engine == "docker" else {}
     
     for d in active_dirs:
         tid = "/".join(d.rstrip("/").split("/")[-2:])
@@ -1573,9 +1614,12 @@ def classify(world: World):
     world.cum_failed = max(world.cum_failed, fail)
     world.cum_killed = max(world.cum_killed, killed)
     
-    # Snapshot totals for intuitive progress %
-    total = len(run) + len(queued) + done + fail + cache + killed
-    completed_like = done + cache
+    # Progress: use cumulative counters so pruned tasks still count.
+    # cum_done/cum_cached are monotonically non-decreasing; cum_seen tracks
+    # every distinct task hash seen in the log.
+    completed_like = world.cum_done + world.cum_cached
+    snapshot_total = len(run) + len(queued) + done + fail + cache + killed
+    total = max(world.cum_seen, snapshot_total)
     progress_pct = int((completed_like * 100 / max(1, total))) if total else 0
     
     return run, queued, dict(
@@ -2282,7 +2326,7 @@ def main():
                     term_height = shutil.get_terminal_size().lines
                 except Exception:
                     term_height = 40
-                run,que,C=classify(w)
+                run,que,C=classify(w)   # single call — reused throughout render()
 
                 # header with run/session and system stats
                 hdr = Text()
@@ -2296,8 +2340,7 @@ def main():
                 mode = getattr(w, "mode", "")
                 if mode:
                     hdr.append(f"Mode: {mode}\n")
-                # compute cores-in-use and ETA similar to curses UI
-                run,que,C=classify(w)
+                # compute cores-in-use (reuse run/que/C from above — no second classify call)
                 cores_in_use = sum([max(0.0, t.metrics.cpus) for t in run if t.metrics.cpus is not None])
                 # determine total cores
                 if w.ncpu <= 0:
@@ -2379,10 +2422,8 @@ def main():
                     spark = ""
                     if hist:
                         try:
-                            # map to 0-7 levels using unicode blocks
-                            blocks = " ▂▃▄▅▆▇█"
-                            mx = max(1.0, max(hist))
-                            spark = "".join([blocks[min(7, int((v/mx)*7))] for v in hist[-20:]])
+                            # Fixed 0-100% scale: half-height = ~50% CPU
+                            spark = sparkline_pct(hist[-20:])
                         except Exception:
                             spark = ""
                     rt.add_row(lab, sample_tag, short_hash(t.id or ""), str(t.pid or '-'), Text(cpu, style=cpu_style), cpus, Text(rss, style=rss_style), sec2hms(int(time.time()-t.first_ts)), stage, Text(spark, style="cyan"))
