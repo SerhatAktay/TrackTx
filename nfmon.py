@@ -996,7 +996,15 @@ def label_from_dir(d: str) -> Tuple[str, str]:
     return name or os.path.basename(d), tag or ""
 
 def pid_from_dir(d: str) -> Optional[int]:
-    """Read PID from .command.pid"""
+    """Read PID of the task running in work dir d.
+
+    With scratch=false: .command.pid lives in d itself.
+    With scratch=true:  Nextflow runs the task from a /tmp/nxf-* temp dir and
+    writes .command.pid there.  We find the matching process via /proc by
+    looking for a bash wrapper running .command.run whose cwd or script body
+    references the NFS work dir hash.
+    """
+    # Fast path: .command.pid in the NFS work dir (scratch=false)
     for cand in (".command.pid", ".nxf.pid"):
         p = os.path.join(d, cand)
         try:
@@ -1005,35 +1013,103 @@ def pid_from_dir(d: str) -> Optional[int]:
                 return int(txt)
         except Exception:
             pass
+
+    # Slow path (Linux only): scan /proc for bash processes running .command.run
+    # whose scratch cwd or script body references our work dir.
+    if not os.path.isdir("/proc"):
+        return None
+
+    thash      = os.path.basename(d)          # long hex hash, e.g. "c1a2b3d4..."
+    work_norm  = os.path.normpath(d)
+    # Only bother if the hash looks like a real NF hash (>=8 hex chars)
+    if len(thash) < 8 or not re.fullmatch(r"[0-9a-f]+", thash, re.I):
+        return None
+
+    try:
+        for entry in os.scandir("/proc"):
+            if not entry.name.isdigit():
+                continue
+            pid = int(entry.name)
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    cmdline = f.read(512).decode("utf-8", "replace").replace("\x00", " ")
+                if ".command.run" not in cmdline:
+                    continue
+
+                # Read cwd symlink — this is the scratch temp dir
+                try:
+                    cwd = os.readlink(f"/proc/{pid}/cwd")
+                except OSError:
+                    continue
+
+                # Case 1: cwd IS the NFS work dir (scratch=false, PID file missing)
+                if os.path.normpath(cwd) == work_norm:
+                    for pf in (".command.pid", ".nxf.pid"):
+                        try:
+                            txt = open(os.path.join(cwd, pf)).read().strip()
+                            if txt.isdigit(): return int(txt)
+                        except Exception:
+                            pass
+                    return pid
+
+                # Case 2: cwd is a scratch temp dir — check its .command.run for
+                # a reference to our work dir hash (NF writes copy-back paths)
+                run_file = os.path.join(cwd, ".command.run")
+                try:
+                    with open(run_file, "r", errors="ignore") as f:
+                        head = f.read(4096)
+                    if thash in head or work_norm in head:
+                        # Found the scratch dir for our task — get PID from there
+                        for pf in (".command.pid", ".nxf.pid"):
+                            try:
+                                txt = open(os.path.join(cwd, pf)).read().strip()
+                                if txt.isdigit(): return int(txt)
+                            except Exception:
+                                pass
+                        return pid   # fall back to wrapper PID itself
+                except Exception:
+                    pass
+            except Exception:
+                continue
+    except Exception:
+        pass
     return None
 
 def cpus_from_dir(d: str) -> Optional[float]:
-    """Read allocated CPUs from .command.env or .command.run.
+    """Read allocated CPUs from task work dir files.
 
-    Nextflow does not write a standard NXF_CPUS env variable; different
-    versions use different names (nxf_cpus, NXF_TASK_CPUS, etc.) or embed
-    the value only in .command.run.  Try a broad pattern across both files.
+    NF 25.x local executor no longer writes NXF_TASK_CPUS as a static variable.
+    The beforeScript in nextflow.config renders task.cpus into .command.sh as
+    thread-count env vars (OMP_NUM_THREADS, BOWTIE2_THREADS, etc.), so we look
+    for those.  Fallback patterns cover older NF versions.
     """
+    # Primary: NF 25.x renders task.cpus into .command.sh via beforeScript
+    # e.g.  export OMP_NUM_THREADS=4   export BOWTIE2_THREADS=4
+    _thread_re = re.compile(
+        r"^export\s+(?:"
+        r"OMP_NUM_THREADS|OPENBLAS_NUM_THREADS|MKL_NUM_THREADS"
+        r"|BOWTIE2_THREADS|SAMTOOLS_THREADS|BEDTOOLS_THREADS"
+        r"|STAR_THREADS|HISAT2_THREADS|MINIMAP2_THREADS"
+        r"|PIGZ_THREADS|KALLISTO_THREADS|SALMON_THREADS"
+        r")\s*=\s*[\"']?(?P<val>\d+)[\"']?",
+        re.I
+    )
+    # Legacy: NXF_TASK_CPUS, nxf_cpus, etc. (older NF versions)
     _cpu_re = re.compile(
-        r"^(?:export\s+)?(?P<var>"
-        r"NXF_CPUS|nxf_cpus|NXF_TASK_CPUS|nxf_task_cpus"
-        r"|NXFPROCESSCPUS|nxf_num_cpus|task\.cpus"
-        r"|NXF_TASK_PROCESS_CPUS|nxf_task_process_cpus"
+        r"^(?:export\s+)?(?:"
+        r"NXF_CPUS|NXF_TASK_CPUS|NXF_TASK_PROCESS_CPUS"
+        r"|nxf_cpus|nxf_task_cpus|nxf_num_cpus|task\.cpus"
         r")\s*=\s*[\"']?(?P<val>\d+(?:\.\d+)?)[\"']?",
         re.I
     )
-    # Broader fallback: bare assignment like  nxf_cpus=4  or  cpus=4  (no export)
-    _cpu_bare_re = re.compile(
-        r"^(?:export\s+)?nxf[_.](?:task[_.])?cpus\s*=\s*[\"']?(?P<val>\d+)[\"']?",
-        re.I
-    )
-    for fname in (".command.env", ".command.run", ".command.sh"):
+    # Scan .command.sh first (beforeScript output), then fallbacks
+    for fname in (".command.sh", ".command.env", ".command.run"):
         fpath = os.path.join(d, fname)
         try:
             with open(fpath, "r", encoding="utf-8", errors="ignore") as fh:
                 for ln in fh:
                     stripped = ln.strip()
-                    m = _cpu_re.match(stripped) or _cpu_bare_re.match(stripped)
+                    m = _thread_re.match(stripped) or _cpu_re.match(stripped)
                     if m:
                         try:
                             return float(m.group("val"))
