@@ -160,7 +160,7 @@ process summarize_polymerase_metrics {
     fi
     
     if [[ -n "${ACTUAL_FILE}" && -e "${ACTUAL_FILE}" ]]; then
-      ln -sf "${ACTUAL_FILE}" "${TARGET_NAME}"
+      cp -f "${ACTUAL_FILE}" "${TARGET_NAME}"
       SIZE=$(stat -c%s "${ACTUAL_FILE}" 2>/dev/null || stat -f%z "${ACTUAL_FILE}" 2>/dev/null || echo "unknown")
       echo "AGGREGATE | STAGE | ✓ ${ACTUAL_FILE} -> ${TARGET_NAME} (${SIZE} bytes)"
     else
