@@ -2469,6 +2469,8 @@ def main():
                                 except ValueError:
                                     idx = 0
                                 filter_state['sort'] = order[(idx+1) % len(order)]
+                            if ch == '?':
+                                filter_state['show_help'] = not filter_state.get('show_help', False)
                     termios.tcsetattr(fd, termios.TCSADRAIN, old)
                 except Exception:
                     pass
@@ -2481,21 +2483,19 @@ def main():
                     term_height = 40
                 run,que,C=classify(w)   # single call — reused throughout render()
 
-                # header with run/session and system stats
+                # ── Header ──────────────────────────────────────────────────
                 hdr = Text()
-                # hide placeholders for run/session when unknown
                 rn = (w.meta.run_name or "?")
                 ss = (w.meta.session or "?")
-                hdr.append(f"Run: {rn if rn!='?' else 'n/a'} ")
-                hdr.append(f"Session: {ss if ss!='?' else 'n/a'} ")
+                # Compact session: first 8 hex chars are enough to identify it
+                ss_short = ss[:8] if (ss != "?" and len(ss) > 8) else ss
                 container = getattr(w.meta, "container_engine", "") or "none"
-                hdr.append(f"Exec: {w.meta.executor}  Container: {container}\n")
-                mode = getattr(w, "mode", "")
-                if mode:
-                    hdr.append(f"Mode: {mode}\n")
-                # compute cores-in-use (reuse run/que/C from above — no second classify call)
+                hdr.append(f"Run: ", style="dim"); hdr.append(f"{rn if rn!='?' else 'n/a'}", style="bold cyan")
+                hdr.append(f"  Session: ", style="dim"); hdr.append(f"{ss_short if ss!='?' else 'n/a'}", style="")
+                hdr.append(f"  Exec: {w.meta.executor}  {container}\n", style="dim")
+
+                # System resource line
                 cores_in_use = sum([max(0.0, t.metrics.cpus) for t in run if t.metrics.cpus is not None])
-                # determine total cores
                 if w.ncpu <= 0:
                     try:
                         if sys.platform.startswith("darwin"):
@@ -2504,39 +2504,42 @@ def main():
                             w.ncpu=int(subprocess.check_output(["bash","-lc","nproc 2>/dev/null || getconf _NPROCESSORS_ONLN"],text=True))
                     except Exception:
                         w.ncpu = 0
-                # fallback cores-in-use using sum of cpu_pct when cpus missing
-                if cores_in_use <= 0 and w.ncpu>0:
-                    approx = 0.0
-                    for t in run:
-                        if t.metrics.cpu_pct is not None:
-                            approx += max(0.0, t.metrics.cpu_pct/100.0)
+                if cores_in_use <= 0 and w.ncpu > 0:
+                    approx = sum(max(0.0, t.metrics.cpu_pct/100.0) for t in run if t.metrics.cpu_pct is not None)
                     cores_in_use = min(float(w.ncpu), approx)
-                cores_txt = f" CORES {int(round(cores_in_use))}/{w.ncpu}" if w.ncpu>0 else ""
-                hdr.append(f"CPU {w.cpu_pct}% MEM {w.mem_pct}% LOAD1 {w.load_1}{cores_txt}")
-                if filter_state["proc"]:
-                    hdr.append(f"\nFilter: {filter_state['proc']}", style="yellow")
-                sort_indicator = f" • Sort: {filter_state.get('sort', 'default')}" if filter_state.get('sort') != 'default' else ""
-                hdr.append(f"\n[dim]j/k nav  f filter  s sort  a all-logs  q quit{sort_indicator}" + (" [yellow]ALL LOGS[/yellow]" if getattr(a, 'all_logs', False) else "") + "[/dim]")
-                header_panel = Panel(hdr, title="nf-monitor", border_style="cyan", padding=(0, 1))
+                cores_txt = f"  cores {int(round(cores_in_use))}/{w.ncpu}" if w.ncpu > 0 else ""
+                uptime_txt = f"  ⏱ {sec2hms(int(time.time() - w.start_ts))}"
+                hdr.append(f"CPU {w.cpu_pct}%  MEM {w.mem_pct}%  load {w.load_1}{cores_txt}{uptime_txt}\n", style="")
 
-                # Pipeline progress bar — rendered as plain Rich Text rather than a
-                # Progress() widget.  The Progress widget: (a) uses BarColumn(bar_width=40)
-                # which leaves the right half of the terminal blank, and (b) holds animation
-                # state that causes flicker when a fresh Progress() is created every frame.
+                # Progress bar (embedded — saves the 3-line standalone panel)
                 pct = C.get("progress_pct", 0)
                 try:
                     term_w = shutil.get_terminal_size().columns
                 except Exception:
                     term_w = 80
-                # Thin-line progress bar: "Pipeline  ━━━━━━━━━━━━━━━━━━━━  45%"
-                # Reserve: "Pipeline  " (10) + "  100%" (6) + panel borders (4)
-                bar_w = max(4, term_w - 20)
+                # bar width: term_w minus panel borders(2) + padding(2) + "%100  "(5) + count text(~18)
+                bar_w = max(4, term_w - 27)
                 fill = int(bar_w * pct / 100)
-                prog_text = Text()
-                prog_text.append("Pipeline  ", style="bold")
-                prog_text.append("━" * fill,            style="green")
-                prog_text.append("━" * (bar_w - fill),  style="dim")
-                prog_text.append(f"  {pct}%",            style="bold")
+                hdr.append("━" * fill,           style="green")
+                hdr.append("━" * (bar_w - fill), style="dim")
+                hdr.append(f"  {pct}%  ", style="bold")
+                # Task count badges
+                n_run  = C.get("running", 0);  n_done = C.get("done", 0) + C.get("cached", 0)
+                n_fail = C.get("failed",  0);  n_que  = C.get("queued", 0)
+                if n_run:  hdr.append(f"▶{n_run} ",  style="bold cyan")
+                if n_done: hdr.append(f"✓{n_done} ", style="green")
+                if n_fail: hdr.append(f"✗{n_fail} ", style="bold red")
+                if n_que:  hdr.append(f"⏳{n_que}",   style="dim")
+
+                # Key hints + active filters
+                show_help = filter_state.get('show_help', False)
+                sort_str  = filter_state.get('sort', 'default')
+                extras = ""
+                if filter_state["proc"]: extras += f"  [yellow]filter:{filter_state['proc']}[/yellow]"
+                if sort_str != 'default': extras += f"  [yellow]sort:{sort_str}[/yellow]"
+                if getattr(a, 'all_logs', False): extras += "  [yellow]ALL-LOGS[/yellow]"
+                hdr.append(f"\n[dim]j/k ↕  f filter  s sort  a logs  ? help  q quit[/dim]{extras}")
+                header_panel = Panel(hdr, title="nf-monitor", border_style="cyan", padding=(0, 1))
 
                 # remove per-process summary; show placeholder
                 proc_tbl = Table(title="", expand=True, show_edge=False)
@@ -2544,7 +2547,13 @@ def main():
                 # running table
                 rt_title = "Running (all logs)" if getattr(a, 'all_logs', False) else "Running (j/k to focus)"
                 rt = Table(title=rt_title, expand=True, padding=(0, 0), show_edge=True)
-                rt.add_column("Module", ratio=2); rt.add_column("Sample", ratio=2); rt.add_column("id"); rt.add_column("PID"); rt.add_column("CPU"); rt.add_column("CPUS"); rt.add_column("RSS"); rt.add_column("Age"); rt.add_column("Stage", ratio=2); rt.add_column("CPU hist")
+                rt.add_column("Module", ratio=3)
+                rt.add_column("Sample", ratio=2)
+                rt.add_column("CPU", justify="right")   # merged: "45%/4c"
+                rt.add_column("MEM", justify="right")
+                rt.add_column("Age", justify="right")
+                rt.add_column("Stage", ratio=2)
+                rt.add_column("CPU hist")
                 # ensure labels from FS if missing
                 for t in run:
                     ensure_task_label_from_fs(w, t)
@@ -2562,38 +2571,46 @@ def main():
                     # Ensure we have proper labels from filesystem
                     ensure_task_label_from_fs(w, t)
                     
-                    cpu=(f"{t.metrics.cpu_pct:.0f}%" if t.metrics.cpu_pct is not None else "--")
-                    # colorize CPU and RSS
-                    cpu_style = ("green" if (t.metrics.cpu_pct or 0) < 50 else ("yellow" if (t.metrics.cpu_pct or 0) < 80 else "red")) if t.metrics.cpu_pct is not None else "dim"
-                    cpus = (f"{t.metrics.cpus:.1f}" if t.metrics.cpus is not None else "?")
-                    rss=(f"{t.metrics.rss_mb:.0f}MB" if t.metrics.rss_mb is not None else "--")
+                    # CPU% with color + merged CPUS: "45%/4c" or "45%" or "─/4c"
+                    cpu_pct = t.metrics.cpu_pct
+                    cpus_n  = t.metrics.cpus
+                    cpu_style = ("green" if (cpu_pct or 0) < 50 else ("yellow" if (cpu_pct or 0) < 80 else "red")) if cpu_pct is not None else "dim"
+                    if cpu_pct is not None and cpus_n is not None:
+                        cpu_col = Text(f"{cpu_pct:.0f}%/{int(cpus_n)}c", style=cpu_style)
+                    elif cpu_pct is not None:
+                        cpu_col = Text(f"{cpu_pct:.0f}%", style=cpu_style)
+                    elif cpus_n is not None:
+                        cpu_col = Text(f"─/{int(cpus_n)}c", style="dim")
+                    else:
+                        cpu_col = Text("──", style="dim")
+
+                    rss = (f"{t.metrics.rss_mb:.0f} MB" if t.metrics.rss_mb is not None else "──")
                     rss_style = ("green" if (t.metrics.rss_mb or 0) < 2048 else ("yellow" if (t.metrics.rss_mb or 0) < 8192 else "red")) if t.metrics.rss_mb is not None else "dim"
-                    
-                    # split into module (process name) and sample/tag
-                    # If name still looks like hash, try to extract from workdir one more time
+
+                    # Module name: strip workflow prefix ("TrackTx:align_reads_to_genome" → "align_reads_to_genome")
                     if not t.name or looks_like_hash(t.name):
                         if t.workdir:
                             name_temp, tag_temp = label_from_dir(t.workdir)
                             if name_temp and not looks_like_hash(name_temp):
-                                t.name = name_temp
-                                t.tag = tag_temp
-                    
+                                t.name = name_temp; t.tag = tag_temp
                     module_name = t.name if (t.name and not looks_like_hash(t.name)) else f"task_{short_hash(t.id or '?')}"
-                    sample_tag  = (t.tag or "-")
+                    if ':' in module_name:
+                        module_name = module_name.split(':', 1)[-1]   # drop "TrackTx:" prefix
+                    sample_tag = (t.tag or "─")
                     lab = Text(module_name, style=_name_style(module_name))
                     if (not getattr(a, 'all_logs', False)) and idx == focused["idx"]:
-                        lab.stylize("bold yellow")
+                        lab.stylize("bold underline")
+
                     stage = (t.stage or "")
-                    # sparkline from cpu_hist
-                    hist = list(t.metrics.cpu_hist)
+                    hist  = list(t.metrics.cpu_hist)
                     spark = ""
                     if hist:
                         try:
-                            # Fixed 0-100% scale: half-height = ~50% CPU
                             spark = sparkline_pct(hist[-20:])
                         except Exception:
                             spark = ""
-                    rt.add_row(lab, sample_tag, short_hash(t.id or ""), str(t.pid or '-'), Text(cpu, style=cpu_style), cpus, Text(rss, style=rss_style), sec2hms(int(time.time()-t.first_ts)), stage, Text(spark, style="cyan"))
+                    rt.add_row(lab, sample_tag, cpu_col, Text(rss, style=rss_style),
+                               sec2hms(int(time.time()-t.first_ts)), stage, Text(spark, style="cyan"))
 
                 # live log tail panel(s) - dynamically sized based on available space
                 # Calculate how much space we have (will be computed below alongside layout)
@@ -2695,18 +2712,24 @@ def main():
                 
                 layout = Layout()
                 layout.split_column(
-                    Layout(header_panel, size=5),
-                    Layout(Panel(prog_text, padding=(0, 0)), size=3),
+                    Layout(header_panel, size=7),
                     Layout(name="body")
                 )
                 layout["body"].split_row(Layout(name="right", ratio=1))
-                # Ratio-based: table 2, log 5, errors 1, help gets enough for full text
-                layout["right"].split_column(
-                    Layout(rt, ratio=2, minimum_size=4),
-                    Layout(log_panel, ratio=5, minimum_size=5),
-                    Layout(err_panel, ratio=1, minimum_size=2),
-                    Layout(help_panel, ratio=1, minimum_size=14)
-                )
+                # Ratio-based: table 2, log 5, errors 1; help panel only when toggled with ?
+                if show_help:
+                    layout["right"].split_column(
+                        Layout(rt, ratio=2, minimum_size=4),
+                        Layout(log_panel, ratio=5, minimum_size=5),
+                        Layout(err_panel, ratio=1, minimum_size=2),
+                        Layout(help_panel, ratio=1, minimum_size=14)
+                    )
+                else:
+                    layout["right"].split_column(
+                        Layout(rt, ratio=2, minimum_size=4),
+                        Layout(log_panel, ratio=5, minimum_size=5),
+                        Layout(err_panel, ratio=1, minimum_size=2),
+                    )
                 return layout
 
             import threading
