@@ -10,7 +10,7 @@
 
 import argparse, curses, io, json, os, re, signal, subprocess, sys, time
 from dataclasses import dataclass, field
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Set, Tuple
 from collections import deque, defaultdict
 from datetime import datetime
 
@@ -1007,15 +1007,22 @@ def cpus_from_dir(d: str) -> Optional[float]:
         r"^(?:export\s+)?(?P<var>"
         r"NXF_CPUS|nxf_cpus|NXF_TASK_CPUS|nxf_task_cpus"
         r"|NXFPROCESSCPUS|nxf_num_cpus|task\.cpus"
+        r"|NXF_TASK_PROCESS_CPUS|nxf_task_process_cpus"
         r")\s*=\s*[\"']?(?P<val>\d+(?:\.\d+)?)[\"']?",
         re.I
     )
-    for fname in (".command.env", ".command.run"):
+    # Broader fallback: bare assignment like  nxf_cpus=4  or  cpus=4  (no export)
+    _cpu_bare_re = re.compile(
+        r"^(?:export\s+)?nxf[_.](?:task[_.])?cpus\s*=\s*[\"']?(?P<val>\d+)[\"']?",
+        re.I
+    )
+    for fname in (".command.env", ".command.run", ".command.sh"):
         fpath = os.path.join(d, fname)
         try:
             with open(fpath, "r", encoding="utf-8", errors="ignore") as fh:
                 for ln in fh:
-                    m = _cpu_re.match(ln.strip())
+                    stripped = ln.strip()
+                    m = _cpu_re.match(stripped) or _cpu_bare_re.match(stripped)
                     if m:
                         try:
                             return float(m.group("val"))
@@ -1064,6 +1071,37 @@ def _ps_snapshot() -> List[Tuple[int, int, float, float, str]]:
     except Exception:
         pass
     return out
+
+def _tree_cpu_rss(root_pid: int, snap: Optional[List] = None) -> Tuple[float, float]:
+    """Sum CPU% and max RSS (MB) across root_pid and all its descendants.
+
+    The PID stored in .command.pid is the bash wrapper that runs .command.run.
+    The actual compute (bowtie2, samtools, python, …) runs as a child of that
+    wrapper, so we must walk the tree to get meaningful CPU/RSS numbers.
+    """
+    if snap is None:
+        snap = _ps_snapshot()
+    by_ppid: Dict[int, List] = {}
+    for p, pp, c, r, _ in snap:
+        by_ppid.setdefault(pp, []).append((p, c, r))
+
+    total_cpu = 0.0
+    max_rss   = 0.0
+    queue: List[int] = [root_pid]
+    seen:  Set[int]  = set()
+    while queue:
+        pid = queue.pop(0)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        for p, pp, c, r, _ in snap:
+            if p == pid:
+                total_cpu += c
+                max_rss    = max(max_rss, r)
+                break
+        queue.extend(cp for cp, _, _ in by_ppid.get(pid, []))
+
+    return total_cpu, max_rss
 
 def docker_containers_map() -> Dict[str, str]:
     """Map work directories to Docker container IDs"""
@@ -1486,29 +1524,31 @@ def classify(world: World):
         if not got_metrics:
             pid = pid_from_dir(d)
             t.pid = pid
-            
+
             if pid:
-                cpu, rss = ps_for_pid(pid)
-                if cpu is not None:
-                    t.metrics.cpu_pct = cpu
-                if rss is not None:
-                    t.metrics.rss_mb = rss
-        
-        # Fallback: try to match process by command line if PID missing
-        if t.state == "RUNNING" and (t.pid is None or t.metrics.cpu_pct is None):
+                # The PID in .command.pid is the bash wrapper (.command.run).
+                # The actual tool (bowtie2, samtools, …) runs as a child.
+                # Walk the whole process subtree so we capture real CPU/RSS.
+                snap = _ps_snapshot()
+                cpu, rss = _tree_cpu_rss(pid, snap)
+                t.metrics.cpu_pct = cpu
+                t.metrics.rss_mb  = rss
+
+        # Fallback: try to match process by command line when PID file is absent
+        if t.state == "RUNNING" and t.pid is None:
             snap = _ps_snapshot()
             # build children index by ppid
-            children = {}
+            children: Dict[int, List] = {}
             for pid, ppid, pcpu, rss_mb, cmd in snap:
                 if ppid not in children: children[ppid] = []
                 children[ppid].append((pid, pcpu, rss_mb, cmd))
-            
+
             thash = (t.id or '').split('/')[-1]
             for pid, ppid, pcpu, rss_mb, cmd in snap:
                 hit = False
                 if thash and thash in cmd: hit = True
                 elif t.workdir and t.workdir in cmd: hit = True
-                
+
                 if hit:
                     # if wrapper, try to find hottest child
                     if any(k in cmd for k in ("/bash", "bash", "/sh", "sh", "nextflow", "java")) and pid in children:
@@ -1516,10 +1556,10 @@ def classify(world: World):
                         kids.sort(key=lambda x: x[1], reverse=True)
                         if kids:
                             pid, pcpu, rss_mb, cmd = kids[0]
-                    
+
                     t.pid = pid
                     if t.metrics.cpu_pct is None: t.metrics.cpu_pct = pcpu
-                    if t.metrics.rss_mb is None: t.metrics.rss_mb = rss_mb
+                    if t.metrics.rss_mb  is None: t.metrics.rss_mb  = rss_mb
                     break
         
         # Learn cpus from env if missing
@@ -1893,7 +1933,7 @@ class TUI:
         # Progress bar
         barw = max(10, maxx - 12)
         fill = int(barw * pct / 100)
-        self._add(2, 0, "[" + ("█" * fill) + ("·" * (barw - fill)) + f"] {pct:3d}%")
+        self._add(2, 0, ("━" * fill) + ("─" * (barw - fill)) + f"  {pct:3d}%")
         # Layout: header 3 rows, rest for list + details
         header_h = 4
         avail_h = max(0, maxy - header_h)
@@ -2042,7 +2082,7 @@ def oneshot(w: World):
     bw = 80
     fill = int(bw * pct / 100)
     print("┌─ Pipeline ─┐")
-    print("[" + ("█" * fill) + ("·" * (bw - fill)) + f"] {pct:3d}%")
+    print(("━" * fill) + ("─" * (bw - fill)) + f"  {pct:3d}%")
     print(f"  total:{total}  run:{C['running']}  done:{C['done']}  fail:{C['failed']}  cache:{C['cached']}")
     
     # ETA
@@ -2393,16 +2433,15 @@ def main():
                     term_w = shutil.get_terminal_size().columns
                 except Exception:
                     term_w = 80
-                # Reserve space for "Pipeline [" (10) + "] 100%" (6) + panel borders (4)
+                # Thin-line progress bar: "Pipeline  ━━━━━━━━━━━━━━━━━━━━  45%"
+                # Reserve: "Pipeline  " (10) + "  100%" (6) + panel borders (4)
                 bar_w = max(4, term_w - 20)
                 fill = int(bar_w * pct / 100)
                 prog_text = Text()
-                prog_text.append("Pipeline ", style="bold")
-                prog_text.append("[", style="dim")
-                prog_text.append("█" * fill, style="green bold")
-                prog_text.append("░" * (bar_w - fill), style="dim")
-                prog_text.append("] ", style="dim")
-                prog_text.append(f"{pct}%", style="bold")
+                prog_text.append("Pipeline  ", style="bold")
+                prog_text.append("━" * fill,            style="green")
+                prog_text.append("━" * (bar_w - fill),  style="dim")
+                prog_text.append(f"  {pct}%",            style="bold")
 
                 # remove per-process summary; show placeholder
                 proc_tbl = Table(title="", expand=True, show_edge=False)
