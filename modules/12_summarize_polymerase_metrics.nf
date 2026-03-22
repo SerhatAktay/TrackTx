@@ -86,6 +86,9 @@ process summarize_polymerase_metrics {
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
+  polTopN      = params.pol?.top_n ?: 100
+  polPlots     = params.pol?.plots != null ? params.pol.plots : true
+  polContrasts = ((params.pol?.contrasts ?: []) as List).join('\n')
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -125,8 +128,8 @@ process summarize_polymerase_metrics {
   AGGREGATOR_SCRIPT="!{projectDir}/bin/compare_pol_metrics.py"
 
   # Parameters
-  TOP_N=!{params.pol?.top_n ?: 100}
-  ENABLE_PLOTS=$([[ "!{params.pol?.plots}" == "false" ]] && echo 0 || echo 1)
+  TOP_N=!{polTopN}
+  ENABLE_PLOTS=$([[ "!{polPlots}" == "false" ]] && echo 0 || echo 1)
 
   echo "AGGREGATE | CONFIG | Samples manifest: ${SAMPLES_TSV}"
   echo "AGGREGATE | CONFIG | Aggregator script: ${AGGREGATOR_SCRIPT}"
@@ -182,7 +185,7 @@ process summarize_polymerase_metrics {
 
   # Parse contrasts from params
   cat > contrasts.txt <<'CONTRASTEOF'
-!{((params.pol?.contrasts ?: []) as List).join('\n')}
+!{polContrasts}
 CONTRASTEOF
 
   # Count contrasts

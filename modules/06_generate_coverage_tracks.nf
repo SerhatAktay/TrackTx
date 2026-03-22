@@ -146,6 +146,8 @@ process generate_coverage_tracks {
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
+  umiEnabled = params.umi?.enabled ? 'true' : 'false'
+  umiLength  = params.umi?.length ?: 0
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -188,8 +190,8 @@ process generate_coverage_tracks {
   ALLMAP_BAM="!{allmap_bam}"
   IS_PE="!{is_paired}"
   
-  UMI_ENABLED="!{params.umi?.enabled ? 'true' : 'false'}"
-  UMI_LENGTH=!{params.umi?.length ?: 0}
+  UMI_ENABLED="!{umiEnabled}"
+  UMI_LENGTH=!{umiLength}
 
   # Constants
   readonly FLAG_PRIMARY_MAPPED=260      # Exclude unmapped(4) + secondary(256)
@@ -563,7 +565,7 @@ OVERVIEW
     • 5' end coverage: Always generated (PE and SE)
   
   BAM Sources:
-    • Main BAM: Primary alignments !{params.umi?.enabled ? 'with UMI deduplication' : '(duplicates retained)'}
+    • Main BAM: Primary alignments !{umiEnabled == 'true' ? 'with UMI deduplication' : '(duplicates retained)'}
     • AllMap BAM: All mapped reads (primary + secondary alignments)
 
 CRITICAL IMPLEMENTATION DETAIL
@@ -635,9 +637,9 @@ Key Settings:
   • Chromosome sizes from BAM header (more reliable than FASTA)
 
 UMI Deduplication:
-  Status: !{params.umi?.enabled ? 'Enabled' : 'Disabled'}
-  !{params.umi?.enabled ? 'Length: ' + params.umi?.length + ' bp' : ''}
-  !{params.umi?.enabled ? 'Duplicates removed before track generation' : 'Duplicates retained in coverage'}
+  Status: !{umiEnabled == 'true' ? 'Enabled' : 'Disabled'}
+  !{umiEnabled == 'true' ? 'Length: ' + umiLength + ' bp' : ''}
+  !{umiEnabled == 'true' ? 'Duplicates removed before track generation' : 'Duplicates retained in coverage'}
 
 USAGE
 ────────────────────────────────────────────────────────────────────────────
@@ -715,8 +717,8 @@ TECHNICAL NOTES
 
 PARAMETERS USED
 ────────────────────────────────────────────────────────────────────────────
-  UMI deduplication:    !{params.umi?.enabled ? 'Enabled' : 'Disabled'}
-  UMI length:           !{params.umi?.length ?: 'N/A'} bp
+  UMI deduplication:    !{umiEnabled == 'true' ? 'Enabled' : 'Disabled'}
+  UMI length:           !{umiLength ?: 'N/A'} bp
   Library type:         !{is_paired == "true" ? "Paired-end" : "Single-end"}
   CPU threads:          !{task.cpus}
 

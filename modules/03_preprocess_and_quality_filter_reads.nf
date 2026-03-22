@@ -115,6 +115,19 @@ process preprocess_and_quality_filter_reads {
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
+  trimEnabled   = params.adapter_trimming?.enabled == true ? 'true' : 'false'
+  trimAdapter1  = (params.adapter_trimming?.adapter1 ?: '').toString()
+  trimAdapter2  = (params.adapter_trimming?.adapter2 ?: '').toString()
+  trimMinlen    = params.adapter_trimming?.minlen ?: 0
+  bc1Enabled    = params.barcode?.enabled == true ? 'true' : 'false'
+  bc1Length     = params.barcode?.length ?: 0
+  bc1Location   = (params.barcode?.location ?: '5').toString()
+  bc2Enabled    = params.barcode?.r2_enabled == true ? 'true' : 'false'
+  bc2Length     = params.barcode?.r2_length ?: 0
+  bc2Location   = (params.barcode?.r2_location ?: '5').toString()
+  umiEnabled03  = params.umi?.enabled == true ? 'true' : 'false'
+  umiLength03   = params.umi?.length ?: 0
+  umiLocation03 = (params.umi?.location ?: '5').toString()
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -165,10 +178,10 @@ process preprocess_and_quality_filter_reads {
   fi
 
   # ── Adapter Trimming Parameters ──
-  TRIM_ENABLED=$([ '!{params.adapter_trimming?.enabled == true}' = 'true' ] && echo 1 || echo 0)
-  ADAPTER1='!{(params.adapter_trimming?.adapter1 ?: "").toString()}'
-  ADAPTER2='!{(params.adapter_trimming?.adapter2 ?: "").toString()}'
-  USER_MINLEN=!{(params.adapter_trimming?.minlen ?: 0)}
+  TRIM_ENABLED=$([ '!{trimEnabled}' = 'true' ] && echo 1 || echo 0)
+  ADAPTER1='!{trimAdapter1}'
+  ADAPTER2='!{trimAdapter2}'
+  USER_MINLEN=!{trimMinlen}
 
   echo "PREP | CONFIG | Adapter trimming: $([ ${TRIM_ENABLED} -eq 1 ] && echo "enabled" || echo "disabled")"
   if [[ ${TRIM_ENABLED} -eq 1 ]]; then
@@ -177,13 +190,13 @@ process preprocess_and_quality_filter_reads {
   fi
 
   # ── Barcode Parameters ──
-  BC1_ENABLED=$([ '!{params.barcode?.enabled == true}' = 'true' ] && echo 1 || echo 0)
-  BC1_LENGTH=!{(params.barcode?.length ?: 0)}
-  BC1_LOCATION='!{(params.barcode?.location ?: "5").toString()}'
+  BC1_ENABLED=$([ '!{bc1Enabled}' = 'true' ] && echo 1 || echo 0)
+  BC1_LENGTH=!{bc1Length}
+  BC1_LOCATION='!{bc1Location}'
 
-  BC2_ENABLED=$([ '!{params.barcode?.r2_enabled == true}' = 'true' ] && echo 1 || echo 0)
-  BC2_LENGTH=!{(params.barcode?.r2_length ?: 0)}
-  BC2_LOCATION='!{(params.barcode?.r2_location ?: "5").toString()}'
+  BC2_ENABLED=$([ '!{bc2Enabled}' = 'true' ] && echo 1 || echo 0)
+  BC2_LENGTH=!{bc2Length}
+  BC2_LOCATION='!{bc2Location}'
 
   echo "PREP | CONFIG | Barcode R1: $([ ${BC1_ENABLED} -eq 1 ] && echo "enabled (${BC1_LENGTH}bp, ${BC1_LOCATION}')" || echo "disabled")"
   if [[ "${MODE}" == "PE" ]]; then
@@ -191,9 +204,9 @@ process preprocess_and_quality_filter_reads {
   fi
 
   # ── UMI Parameters ──
-  UMI_ENABLED=$([ '!{params.umi?.enabled == true}' = 'true' ] && echo 1 || echo 0)
-  UMI_LENGTH=!{(params.umi?.length ?: 0)}
-  UMI_LOCATION='!{(params.umi?.location ?: "5").toString()}'
+  UMI_ENABLED=$([ '!{umiEnabled03}' = 'true' ] && echo 1 || echo 0)
+  UMI_LENGTH=!{umiLength03}
+  UMI_LOCATION='!{umiLocation03}'
 
   echo "PREP | CONFIG | UMI: $([ ${UMI_ENABLED} -eq 1 ] && echo "enabled (${UMI_LENGTH}bp, ${UMI_LOCATION}')" || echo "disabled")"
 
@@ -571,9 +584,9 @@ PARAMETERS
   Mode:                       !{(data_type ?: "SE").toString()}
   Threads:                    !{task.cpus}
   
-  Adapter Trimming:           !{params.adapter_trimming?.enabled == true ? "enabled" : "disabled"}
-  Barcode Removal (R1):       !{params.barcode?.enabled == true ? "enabled" : "disabled"}
-  UMI Extraction:             !{params.umi?.enabled == true ? "enabled" : "disabled"}
+  Adapter Trimming:           !{trimEnabled == 'true' ? "enabled" : "disabled"}
+  Barcode Removal (R1):       !{bc1Enabled == 'true' ? "enabled" : "disabled"}
+  UMI Extraction:             !{umiEnabled03 == 'true' ? "enabled" : "disabled"}
   QC Tool:                    FastQC
   QC Enabled:                 !{(params.qc?.enabled == null ? true : params.qc?.enabled) ? "yes" : "no"}
 

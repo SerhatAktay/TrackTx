@@ -124,6 +124,11 @@ process normalize_coverage_tracks {
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
+  normEmitBw     = params.norm?.emit_bw != null ? params.norm.emit_bw : true
+  normEmitSicpm  = params.norm?.emit_sicpm != null ? params.norm.emit_sicpm : true
+  normEmitAllmap = params.norm?.emit_allmap != null ? params.norm.emit_allmap : true
+  normTimeoutBw  = params.norm?.timeout_bw ?: 900
+  normEmit5p     = params.norm?.emit_5p
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -176,16 +181,16 @@ process normalize_coverage_tracks {
   AM5P_NEG="!{am5p_neg_bg}"
 
   # Feature flags
-  EMIT_BW=$([[ "!{params.norm?.emit_bw}" == "false" ]] && echo 0 || echo 1)
-  EMIT_SICPM=$([[ "!{params.norm?.emit_sicpm}" == "false" ]] && echo 0 || echo 1)
-  EMIT_ALLMAP=$([[ "!{params.norm?.emit_allmap}" == "false" ]] && echo 0 || echo 1)
+  EMIT_BW=$([[ "!{normEmitBw}" == "false" ]] && echo 0 || echo 1)
+  EMIT_SICPM=$([[ "!{normEmitSicpm}" == "false" ]] && echo 0 || echo 1)
+  EMIT_ALLMAP=$([[ "!{normEmitAllmap}" == "false" ]] && echo 0 || echo 1)
   FORCE_SORT=$([[ "!{params.force_sort_bedgraph}" == "true" ]] && echo 1 || echo 0)
   
   CONTROL_LABEL="!{params.control_label ?: 'CTRL'}"
-  TIMEOUT_BW=!{params.norm?.timeout_bw ?: 900}
+  TIMEOUT_BW=!{normTimeoutBw}
 
   # Auto-detect 5' track generation
-  EMIT_5P_SETTING="!{params.norm?.emit_5p}"
+  EMIT_5P_SETTING="!{normEmit5p}"
   if [[ "${EMIT_5P_SETTING}" == "true" ]]; then
     EMIT_5P=1
   elif [[ "${EMIT_5P_SETTING}" == "false" ]]; then

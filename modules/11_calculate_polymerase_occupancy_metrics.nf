@@ -93,6 +93,13 @@ process calculate_polymerase_occupancy_metrics {
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
+  polMapq           = params.pol?.mapq ?: 10
+  polDedup          = params.pol?.dedup != null ? params.pol.dedup : true
+  polTssWin         = params.pol?.tss_win ?: 50
+  polBodyOffsetMin  = params.pol?.body_offset_min ?: 2000
+  polBodyOffsetFrac = params.pol?.body_offset_frac ?: 0.10
+  polFeatureTypes   = params.pol?.feature_types ?: 'gene,transcript'
+  polFailIfNoGenes  = params.pol?.fail_if_no_genes ? 'true' : 'false'
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -151,13 +158,13 @@ process calculate_polymerase_occupancy_metrics {
   NEG_SICPM="!{neg3_sicpm_bg}"
 
   # Parameters
-  MAPQ=!{params.pol?.mapq ?: 10}
-  DEDUP_ENABLED=$([[ "!{params.pol?.dedup ?: true}" == "false" ]] && echo 0 || echo 1)
-  TSS_WIN=!{params.pol?.tss_win ?: 50}
-  BODY_OFFSET_MIN=!{params.pol?.body_offset_min ?: 2000}
-  BODY_OFFSET_FRAC=!{params.pol?.body_offset_frac ?: 0.10}
-  FEATURE_TYPES="!{params.pol?.feature_types ?: 'gene,transcript'}"
-  FAIL_IF_NO_GENES=$([[ "!{params.pol?.fail_if_no_genes}" == "true" ]] && echo 1 || echo 0)
+  MAPQ=!{polMapq}
+  DEDUP_ENABLED=$([[ "!{polDedup}" == "false" ]] && echo 0 || echo 1)
+  TSS_WIN=!{polTssWin}
+  BODY_OFFSET_MIN=!{polBodyOffsetMin}
+  BODY_OFFSET_FRAC=!{polBodyOffsetFrac}
+  FEATURE_TYPES="!{polFeatureTypes}"
+  FAIL_IF_NO_GENES=$([[ "!{polFailIfNoGenes}" == "true" ]] && echo 1 || echo 0)
 
   echo "POL | CONFIG | Sample ID: ${SAMPLE_ID}"
   echo "POL | CONFIG | Condition: ${CONDITION}"

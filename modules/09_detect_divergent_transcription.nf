@@ -129,6 +129,7 @@ process detect_divergent_transcription {
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
+  advDivergentQc = params.advanced?.divergent_qc
   '''
   #!/usr/bin/env bash
   set -eu
@@ -189,7 +190,7 @@ process detect_divergent_transcription {
   MERGE_GAP=!{merge_gap}
 
   # Feature flags
-  DO_QC=$([[ "!{params.advanced?.divergent_qc}" == "false" ]] && echo 0 || echo 1)
+  DO_QC=$([[ "!{advDivergentQc}" == "false" ]] && echo 0 || echo 1)
 
   echo "DIVERGENT | CONFIG | Sample ID: ${SAMPLE_ID}"
   echo "DIVERGENT | CONFIG | Condition: ${CONDITION}"

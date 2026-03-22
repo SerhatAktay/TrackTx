@@ -102,6 +102,21 @@ process assign_signal_to_functional_regions {
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
+  frPromUp              = params.functional_regions?.prom_up ?: 250
+  frPromDown            = params.functional_regions?.prom_down ?: 250
+  frDivInner            = params.functional_regions?.div_inner ?: 250
+  frDivOuter            = params.functional_regions?.div_outer ?: 750
+  frTwLength            = params.functional_regions?.tw_length ?: 10000
+  frTssActivePm         = params.functional_regions?.tss_active_pm ?: 500
+  frActiveSlop          = params.functional_regions?.active_slop ?: 0
+  frMinSignal           = params.functional_regions?.min_signal ?: 0.0
+  frMinSignalMode       = (params.functional_regions?.min_signal_mode ?: 'absolute').toString()
+  frMinSignalQuantile   = params.functional_regions?.min_signal_quantile ?: 0.90
+  frCountMode           = (params.functional_regions?.count_mode ?: 'signal').toString()
+  frDivFallbackEnable   = params.functional_regions?.div_fallback_enable ? 'true' : 'false'
+  frDivFallbackThresh   = params.functional_regions?.div_fallback_threshold ?: 0.30
+  frDivFallbackMaxFrac  = params.functional_regions?.div_fallback_max_frac ?: 0.25
+  frAllowUnstranded     = params.functional_regions?.allow_unstranded != null ? params.functional_regions.allow_unstranded : true
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -150,27 +165,27 @@ process assign_signal_to_functional_regions {
   FGR_SCRIPT="!{functional_regions_py}"
 
   # Region geometry parameters
-  PROM_UP=!{params.functional_regions?.prom_up ?: 250}
-  PROM_DOWN=!{params.functional_regions?.prom_down ?: 250}
-  DIV_INNER=!{params.functional_regions?.div_inner ?: 250}
-  DIV_OUTER=!{params.functional_regions?.div_outer ?: 750}
-  TW_LENGTH=!{params.functional_regions?.tw_length ?: 10000}
-  TSS_ACTIVE_PM=!{params.functional_regions?.tss_active_pm ?: 500}
-  ACTIVE_SLOP=!{params.functional_regions?.active_slop ?: 0}
+  PROM_UP=!{frPromUp}
+  PROM_DOWN=!{frPromDown}
+  DIV_INNER=!{frDivInner}
+  DIV_OUTER=!{frDivOuter}
+  TW_LENGTH=!{frTwLength}
+  TSS_ACTIVE_PM=!{frTssActivePm}
+  ACTIVE_SLOP=!{frActiveSlop}
 
   # Signal parameters
-  MIN_SIGNAL=!{params.functional_regions?.min_signal ?: 0.0}
-  MIN_SIGNAL_MODE="!{params.functional_regions?.min_signal_mode ?: 'absolute'}"
-  MIN_SIGNAL_QUANTILE=!{params.functional_regions?.min_signal_quantile ?: 0.90}
-  COUNT_MODE="!{params.functional_regions?.count_mode ?: 'signal'}"
+  MIN_SIGNAL=!{frMinSignal}
+  MIN_SIGNAL_MODE="!{frMinSignalMode}"
+  MIN_SIGNAL_QUANTILE=!{frMinSignalQuantile}
+  COUNT_MODE="!{frCountMode}"
 
   # Divergent fallback parameters
-  DIV_FALLBACK_ENABLE=$([[ "!{params.functional_regions?.div_fallback_enable}" == "true" ]] && echo 1 || echo 0)
-  DIV_FALLBACK_THRESHOLD=!{params.functional_regions?.div_fallback_threshold ?: 0.30}
-  DIV_FALLBACK_MAX_FRAC=!{params.functional_regions?.div_fallback_max_frac ?: 0.25}
+  DIV_FALLBACK_ENABLE=$([[ "!{frDivFallbackEnable}" == "true" ]] && echo 1 || echo 0)
+  DIV_FALLBACK_THRESHOLD=!{frDivFallbackThresh}
+  DIV_FALLBACK_MAX_FRAC=!{frDivFallbackMaxFrac}
 
   # Feature flags
-  ALLOW_UNSTRANDED=$([[ "!{params.functional_regions?.allow_unstranded}" == "false" ]] && echo 0 || echo 1)
+  ALLOW_UNSTRANDED=$([[ "!{frAllowUnstranded}" == "false" ]] && echo 0 || echo 1)
 
   echo "FUNCREGION | CONFIG | Sample ID: ${SAMPLE_ID}"
   echo "FUNCREGION | CONFIG | Condition: ${CONDITION}"
