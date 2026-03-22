@@ -2489,8 +2489,11 @@ def main():
                                 except ValueError:
                                     idx = 0
                                 filter_state['sort'] = order[(idx+1) % len(order)]
-                            if ch == '?':
-                                filter_state['show_help'] = not filter_state.get('show_help', False)
+                            if ch == 'h':
+                                new_val = not filter_state.get('show_help', False)
+                                filter_state['show_help'] = new_val
+                                if new_val:
+                                    filter_state['help_opened_at'] = time.time()
                     termios.tcsetattr(fd, termios.TCSADRAIN, old)
                 except Exception:
                     pass
@@ -2502,6 +2505,11 @@ def main():
                 except Exception:
                     term_height = 40
                 run,que,C=classify(w)   # single call — reused throughout render()
+
+                # Auto-close help after 60 s of being open
+                if filter_state.get('show_help') and \
+                        time.time() - filter_state.get('help_opened_at', 0) > 60:
+                    filter_state['show_help'] = False
 
                 # ── Header (borderless) ─────────────────────────────────────
                 show_help = filter_state.get('show_help', False)
@@ -2562,9 +2570,9 @@ def main():
                 rt_title = "Running (all logs)" if getattr(a, 'all_logs', False) else "Running (j/k to focus)"
                 rt = Table(title=None, expand=True, padding=(0, 1), show_edge=False,
                            box=rich.box.SIMPLE, header_style="bold dim", show_lines=False)
-                rt.add_column("",       width=1,  no_wrap=True)   # focus/load dot
-                rt.add_column("Module", ratio=2,  no_wrap=True)
-                rt.add_column("Sample", ratio=1,  no_wrap=True)
+                rt.add_column("",       width=1,       no_wrap=True)   # focus/load dot
+                rt.add_column("Module", max_width=30, no_wrap=True)   # capped so Sample gets room
+                rt.add_column("Sample", ratio=1,      no_wrap=True)   # fills remaining flex space
                 rt.add_column("CPU",    justify="right", width=16) # "▓▓▓▓░░ 45%/4c"
                 rt.add_column("MEM",    justify="right", width=12) # "▓▓░░ 2.1G"
                 rt.add_column("Age",    justify="right", width=7)
@@ -2656,31 +2664,115 @@ def main():
                 log_panel = _vstack(Rule(title="Log", style="blue", align="left"),
                                     Text("No running tasks", style="yellow"))
 
-                # help - extensive for novices
+                # help — comprehensive reference panel
+                _secs_open = int(time.time() - filter_state.get('help_opened_at', time.time()))
+                _secs_left = max(0, 60 - _secs_open)
                 help_txt = Text()
-                help_txt.append("NAVIGATION\n", style="bold cyan")
-                help_txt.append("  j  or  Down  ", style="yellow")
-                help_txt.append("Move down to next running task\n", style="dim")
-                help_txt.append("  k  or  Up    ", style="yellow")
-                help_txt.append("Move up to previous task\n", style="dim")
-                help_txt.append("FILTER & SORT\n", style="bold cyan")
-                help_txt.append("  f  ", style="yellow")
-                help_txt.append("Filter by process: show only one module at a time (cycle through)\n", style="dim")
-                help_txt.append("  s  ", style="yellow")
-                help_txt.append("Sort: default → by CPU% → by memory → by age\n", style="dim")
-                help_txt.append("VIEW\n", style="bold cyan")
-                help_txt.append("  a  ", style="yellow")
-                help_txt.append("Toggle all-logs: show every task's log, or just the focused one\n", style="dim")
-                help_txt.append("QUIT\n", style="bold cyan")
-                help_txt.append("  q  or  Esc  ", style="yellow")
-                help_txt.append("Exit the monitor\n", style="dim")
-                help_txt.append("Columns: Module=process name, Sample=task tag, CPU%=usage, RSS=memory (MB)", style="dim")
-                help_panel = _vstack(Rule(title="Help  ·  ? to close", style="bright_black"), help_txt)
+
+                help_txt.append("KEYBOARD SHORTCUTS\n", style="bold cyan")
+                help_txt.append("  j / ↓      ", style="bold yellow")
+                help_txt.append("Move focus down to next running task\n")
+                help_txt.append("  k / ↑      ", style="bold yellow")
+                help_txt.append("Move focus up to previous running task\n")
+                help_txt.append("  f          ", style="bold yellow")
+                help_txt.append("Cycle process filter: All → each module type in turn → All\n")
+                help_txt.append("  s          ", style="bold yellow")
+                help_txt.append("Cycle sort order: default → by CPU% → by memory (RSS) → by age\n")
+                help_txt.append("  a          ", style="bold yellow")
+                help_txt.append("Toggle all-logs: focused task only ↔ all running tasks stacked\n")
+                help_txt.append("  h          ", style="bold yellow")
+                help_txt.append("Toggle this help panel (auto-closes after 60 s)\n")
+                help_txt.append("  q / Esc    ", style="bold yellow")
+                help_txt.append("Quit nf-monitor\n")
+                help_txt.append("\n")
+
+                help_txt.append("COLUMN REFERENCE\n", style="bold cyan")
+                help_txt.append("  ●/►   ", style="bold yellow")
+                help_txt.append("Focus & load indicator — see legend below\n")
+                help_txt.append("  Module", style="bold yellow")
+                help_txt.append("  Nextflow process name (workflow prefix stripped)\n")
+                help_txt.append("  Sample", style="bold yellow")
+                help_txt.append("  Task tag — usually the sample ID or input file name\n")
+                help_txt.append("  CPU   ", style="bold yellow")
+                help_txt.append("  ▓▓▓░░░ bar (6-wide) + actual%/allocated cores\n")
+                help_txt.append("         ", style="bold yellow")
+                help_txt.append("  bar is proportional to CPU%; ── means no data yet\n", style="dim")
+                help_txt.append("  MEM   ", style="bold yellow")
+                help_txt.append("  ▓▓░░ bar (4-wide, 32 GB=full) + current RSS\n")
+                help_txt.append("         ", style="bold yellow")
+                help_txt.append("  shows G (gigabytes) or M (megabytes)\n", style="dim")
+                help_txt.append("  Age   ", style="bold yellow")
+                help_txt.append("  Wall-clock time since the task was submitted\n")
+                help_txt.append("  ▲     ", style="bold yellow")
+                help_txt.append("  CPU% sparkline — last 20 samples, ▁=low █=high\n")
+                help_txt.append("\n")
+
+                help_txt.append("INDICATOR LEGEND\n", style="bold cyan")
+                help_txt.append("  ► ", style="bold cyan")
+                help_txt.append("cyan      focused row (log panel tracks this task)\n")
+                help_txt.append("  ● ", style="green")
+                help_txt.append("green     CPU 10–50%   moderate load\n")
+                help_txt.append("  ● ", style="yellow")
+                help_txt.append("yellow    CPU 50–80%   high load\n")
+                help_txt.append("  ● ", style="bold red")
+                help_txt.append("red       CPU > 80%    saturated / bottleneck\n")
+                help_txt.append("  · ", style="dim")
+                help_txt.append("dim       CPU unknown or task idle\n")
+                help_txt.append("\n")
+
+                help_txt.append("PROGRESS BAR BADGES\n", style="bold cyan")
+                help_txt.append("  ▶N  ", style="bold cyan")
+                help_txt.append("N tasks currently running\n")
+                help_txt.append("  ✓N  ", style="green")
+                help_txt.append("N tasks completed successfully (includes cached)\n")
+                help_txt.append("  ✗N  ", style="bold red")
+                help_txt.append("N tasks failed or errored\n")
+                help_txt.append("  ⏳N ", style="dim")
+                help_txt.append("N tasks queued (submitted but not yet started)\n")
+                help_txt.append("\n")
+
+                help_txt.append("LOG PANEL\n", style="bold cyan")
+                help_txt.append("The log panel shows live tail of the focused task's ")
+                help_txt.append(".command.log", style="bold")
+                help_txt.append(" file.\n")
+                help_txt.append("Summary line at top: process name, sample tag, elapsed, CPU, RSS.\n")
+                help_txt.append("A ▶ line shows the most recent meaningful output (insight).\n")
+                help_txt.append("Press ")
+                help_txt.append("a", style="bold yellow")
+                help_txt.append(" to switch to all-logs mode — stacks every running task.\n")
+                help_txt.append("\n")
+
+                help_txt.append("HOW CPU & MEMORY ARE MEASURED\n", style="bold cyan")
+                help_txt.append("CPU and RSS are summed across the ")
+                help_txt.append("full process subtree", style="bold")
+                help_txt.append(" (the bash wrapper\n")
+                help_txt.append("+ all child processes it spawned). This gives accurate numbers\n")
+                help_txt.append("even for tools like STAR or BWA that fork many threads.\n")
+                help_txt.append("CPU allocation (/Nc) is read from ")
+                help_txt.append("OMP_NUM_THREADS", style="bold")
+                help_txt.append(" in .command.sh\n")
+                help_txt.append("(written by Nextflow's beforeScript) or from completed trace rows.\n")
+                help_txt.append("\n")
+
+                help_txt.append("TIPS\n", style="bold cyan")
+                help_txt.append("  • ", style="dim")
+                help_txt.append("Use --refresh 1.0 to reduce overhead on large cluster runs\n", style="dim")
+                help_txt.append("  • ", style="dim")
+                help_txt.append("Use --filter 'align' to pre-filter tasks by regex from startup\n", style="dim")
+                help_txt.append("  • ", style="dim")
+                help_txt.append("On scratch=true (NFS), PID lookup scans /proc — Linux only\n", style="dim")
+                help_txt.append("  • ", style="dim")
+                help_txt.append("--retain-sec 0 clears completed tasks immediately from the list\n", style="dim")
+                help_txt.append("  • ", style="dim")
+                help_txt.append("Run with --oneshot to print a summary snapshot and exit\n", style="dim")
+
+                _help_rule_title = f"Help  ·  h to close  ·  auto-closes in {_secs_left}s"
+                help_panel = _vstack(Rule(title=_help_rule_title, style="bright_black"), help_txt)
 
                 # ── Footer bar: key hints + active state + error status ────────
                 foot = Text()
                 for key, desc in [("j/k","nav"), ("f","filter"), ("s","sort"),
-                                   ("a","all-logs"), ("?","help"), ("q","quit")]:
+                                   ("a","all-logs"), ("h","help"), ("q","quit")]:
                     foot.append(f" {key} ", style="bold yellow")
                     foot.append(f"{desc}  ", style="dim")
                 if filter_state["proc"]: foot.append(f"│ proc:{filter_state['proc']}  ", style="yellow")
@@ -2785,17 +2877,23 @@ def main():
                     Layout(footer_grp, size=2),
                 )
                 layout["body"].split_row(Layout(name="right", ratio=1))
-                # Stacked: running tasks (top) | log (middle) | optional help (bottom)
+                # Dynamic height for running table: only as tall as it needs to be.
+                # SIMPLE box: 1 header line + 1 separator line + N data rows.
+                # Plus 1 for the Rule title above = N + 3 total.
+                _body_h = term_height - 4 - 2  # header_grp + footer_grp
+                _rt_rows = len(run_filtered[:max_rows])
+                _rt_height = max(4, min(_rt_rows + 3, _body_h - 8))  # always leave ≥8 for log
+                # Stacked: running tasks (top, dynamic) | log (middle) | optional help (bottom)
                 if show_help:
                     layout["right"].split_column(
-                        Layout(rt_group,   ratio=1, minimum_size=4),
+                        Layout(rt_group,   size=_rt_height),
                         Layout(log_panel,  ratio=2, minimum_size=5),
                         Layout(help_panel, ratio=1, minimum_size=10),
                     )
                 else:
                     layout["right"].split_column(
-                        Layout(rt_group,  ratio=1, minimum_size=4),
-                        Layout(log_panel, ratio=2, minimum_size=5),
+                        Layout(rt_group,  size=_rt_height),
+                        Layout(log_panel, ratio=1, minimum_size=5),
                     )
                 return layout
 
