@@ -2425,13 +2425,23 @@ def main():
                 return palette[h % len(palette)]
 
             def _vstack(*items):
-                """Stack renderables vertically without Panel borders."""
-                g = Table(show_header=False, show_edge=False, box=None,
-                          padding=0, expand=True)
-                g.add_column(ratio=1)
-                for item in items:
-                    g.add_row(item)
-                return g
+                """Stack renderables without Panel borders.
+                First item (typically a Rule) spans full width; subsequent items
+                get a 1-line top gap and 2-char left/right gutters."""
+                outer = Table(show_header=False, show_edge=False,
+                              box=None, padding=0, expand=True)
+                outer.add_column(ratio=1)
+                inner = Table(show_header=False, show_edge=False,
+                              box=None, padding=(0, 2), expand=True)
+                inner.add_column(ratio=1)
+                for i, item in enumerate(items):
+                    if i == 0:
+                        outer.add_row(item)       # Rule: full width, no padding
+                    else:
+                        inner.add_row(Text(""))   # 1-line breathing gap
+                        inner.add_row(item)       # content with 2-char side gutters
+                outer.add_row(inner)
+                return outer
 
             def mini_bar(pct: float, width: int = 6,
                          full_style: str = "green", empty_style: str = "dim") -> Text:
@@ -2543,9 +2553,9 @@ def main():
                     approx = sum(max(0.0, t.metrics.cpu_pct/100.0) for t in run if t.metrics.cpu_pct is not None)
                     cores_in_use = min(float(w.ncpu), approx)
                 cores_txt = f"  cores {int(round(cores_in_use))}/{w.ncpu}" if w.ncpu > 0 else ""
-                hdr.append(f"sys  cpu {w.cpu_pct}%  mem {w.mem_pct}%  load {w.load_1}{cores_txt}\n", style="dim")
+                hdr.append(f"sys  cpu {w.cpu_pct}%  mem {w.mem_pct}%  load {w.load_1}{cores_txt}\n\n", style="dim")
 
-                # Line 3: progress bar + task badges
+                # Line 3: progress bar + task badges (blank line above provided by \n\n)
                 pct = C.get("progress_pct", 0)
                 try:
                     term_w = shutil.get_terminal_size().columns
@@ -2562,9 +2572,20 @@ def main():
                 if n_done: hdr.append(f"✓{n_done} ", style="green")
                 if n_fail: hdr.append(f"✗{n_fail} ", style="bold red")
                 if n_que:  hdr.append(f"⏳{n_que}",  style="dim")
+                hdr.append("\n")  # trailing blank line before the Rule separator
 
-                # Separator Rule replaces the Panel border
-                header_grp = _vstack(hdr, Rule(style="cyan"))
+                # _vstack puts Rule first (full-width) then hdr with side gutters
+                # but header is special: hdr comes BEFORE the Rule, so we build it manually
+                _hdr_outer = Table(show_header=False, show_edge=False,
+                                   box=None, padding=0, expand=True)
+                _hdr_outer.add_column(ratio=1)
+                _hdr_inner = Table(show_header=False, show_edge=False,
+                                   box=None, padding=(0, 2), expand=True)
+                _hdr_inner.add_column(ratio=1)
+                _hdr_inner.add_row(hdr)
+                _hdr_outer.add_row(_hdr_inner)
+                _hdr_outer.add_row(Rule(style="cyan"))
+                header_grp = _hdr_outer
 
                 # running table
                 rt_title = "Running (all logs)" if getattr(a, 'all_logs', False) else "Running (j/k to focus)"
@@ -2655,10 +2676,12 @@ def main():
                     rt.add_row(dot, lab, sample_tag, cpu_col, mem_col,
                                sec2hms(int(time.time()-t.first_ts)), Text(spark, style="cyan"))
 
-                # Wrap running table in a borderless group with a Rule title
+                # Wrap running table in a borderless group with a Rule title.
+                # _vstack adds: 1-line gap + 2-char side gutters after the Rule.
+                # Extra Text("") row adds a blank line below the table before the next section.
                 _rt_title = f"▶ Running [{len(run_filtered)}]" if run_filtered else "▶ Running  (none)"
                 if not getattr(a, 'all_logs', False): _rt_title += "  j/k navigate"
-                rt_group = _vstack(Rule(title=_rt_title, style="cyan", align="left"), rt)
+                rt_group = _vstack(Rule(title=_rt_title, style="cyan", align="left"), rt, Text(""))
 
                 # live log tail panel(s) - dynamically sized based on available space
                 log_panel = _vstack(Rule(title="Log", style="blue", align="left"),
@@ -2787,8 +2810,8 @@ def main():
                     foot.append("✓ no errors", style="green")
                 footer_grp = _vstack(Rule(style="bright_black"), foot)
 
-                # Estimate log lines from terminal (header=5, footer=3, log panel borders=2)
-                available_log_lines = max(5, term_height - 10)
+                # Estimate log lines from terminal (header=6, footer=3, log Rule+gap=2)
+                available_log_lines = max(5, term_height - 11)
                 
                 if run_filtered:
                     if getattr(a, 'all_logs', False):
@@ -2872,17 +2895,18 @@ def main():
                 
                 layout = Layout()
                 layout.split_column(
-                    Layout(header_grp, size=4),
+                    Layout(header_grp, size=6),
                     Layout(name="body"),
-                    Layout(footer_grp, size=2),
+                    Layout(footer_grp, size=3),
                 )
                 layout["body"].split_row(Layout(name="right", ratio=1))
                 # Dynamic height for running table: only as tall as it needs to be.
                 # SIMPLE box: 1 header line + 1 separator line + N data rows.
                 # Plus 1 for the Rule title above = N + 3 total.
-                _body_h = term_height - 4 - 2  # header_grp + footer_grp
+                _body_h = term_height - 6 - 2  # header_grp(6) + footer_grp(2)
                 _rt_rows = len(run_filtered[:max_rows])
-                _rt_height = max(4, min(_rt_rows + 3, _body_h - 8))  # always leave ≥8 for log
+                # _vstack layout: Rule(1) + gap(1) + table header+sep(2) + rows(N) + trailing blank(1) = N+5
+                _rt_height = max(5, min(_rt_rows + 5, _body_h - 8))  # always leave ≥8 for log
                 # Stacked: running tasks (top, dynamic) | log (middle) | optional help (bottom)
                 if show_help:
                     layout["right"].split_column(
