@@ -100,6 +100,7 @@ process calculate_polymerase_occupancy_metrics {
   polBodyOffsetFrac = params.pol?.body_offset_frac ?: 0.10
   polFeatureTypes   = params.pol?.feature_types ?: 'gene,transcript'
   polFailIfNoGenes  = params.pol?.fail_if_no_genes ? 'true' : 'false'
+  polCalcScript     = "${projectDir}/bin/calculate_pol_metrics.py".toString()
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -149,7 +150,7 @@ process calculate_polymerase_occupancy_metrics {
   IN_BAM="!{in_bam}"
   FUNC_BED="!{func_bed}"
   GTF_FILE="!{gtf}"
-  CALC_SCRIPT="!{projectDir}/bin/calculate_pol_metrics.py"
+  CALC_SCRIPT="!{polCalcScript}"
 
   # Coverage tracks
   POS_CPM="!{pos3_cpm_bg}"

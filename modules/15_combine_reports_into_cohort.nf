@@ -80,6 +80,7 @@ process combine_reports_into_cohort {
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
+  cohortCombinerScript = "${projectDir}/bin/combine_reports.py".toString()
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -112,7 +113,7 @@ process combine_reports_into_cohort {
   # 1) CONFIGURATION
   ###########################################################################
 
-  COMBINER_SCRIPT="!{projectDir}/bin/combine_reports.py"
+  COMBINER_SCRIPT="!{cohortCombinerScript}"
   
   # Pipeline metadata
   PIPELINE_VERSION="!{workflow.manifest.version ?: 'dev'}"

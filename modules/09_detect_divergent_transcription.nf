@@ -129,7 +129,8 @@ process detect_divergent_transcription {
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
-  advDivergentQc = params.advanced?.divergent_qc
+  advDivergentQc  = params.advanced?.divergent_qc
+  detectorScript  = "${projectDir}/bin/detect_divergent_transcription.py".toString()
   '''
   #!/usr/bin/env bash
   set -eu
@@ -175,7 +176,7 @@ process detect_divergent_transcription {
   POS_BG="!{pos_bg}"
   NEG_BG="!{neg_bg}"
   
-  DETECTOR_SCRIPT="!{projectDir}/bin/detect_divergent_transcription.py"
+  DETECTOR_SCRIPT="!{detectorScript}"
 
   # Detection parameters (passed as process inputs for cache control)
   THRESHOLD="!{threshold}"

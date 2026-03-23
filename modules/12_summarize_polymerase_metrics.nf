@@ -86,9 +86,10 @@ process summarize_polymerase_metrics {
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
-  polTopN      = params.pol?.top_n ?: 100
-  polPlots     = params.pol?.plots != null ? params.pol.plots : true
-  polContrasts = ((params.pol?.contrasts ?: []) as List).join('\n')
+  polTopN          = params.pol?.top_n ?: 100
+  polPlots         = params.pol?.plots != null ? params.pol.plots : true
+  polContrasts     = ((params.pol?.contrasts ?: []) as List).join('\n')
+  polAggScript     = "${projectDir}/bin/compare_pol_metrics.py".toString()
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -125,7 +126,7 @@ process summarize_polymerase_metrics {
 
   SAMPLES_TSV_ORIG="samples.tsv"
   SAMPLES_TSV="samples_rewritten.tsv"
-  AGGREGATOR_SCRIPT="!{projectDir}/bin/compare_pol_metrics.py"
+  AGGREGATOR_SCRIPT="!{polAggScript}"
 
   # Parameters
   TOP_N=!{polTopN}

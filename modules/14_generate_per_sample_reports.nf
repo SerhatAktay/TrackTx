@@ -102,6 +102,7 @@ process generate_per_sample_reports {
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
+  reportRenderScript = "${projectDir}/bin/render_sample_report.py".toString()
   '''
   #!/usr/bin/env bash
   # NOTE: Using -e (not -u) because track links may be empty strings
@@ -160,7 +161,7 @@ process generate_per_sample_reports {
   ALLMAP3P_NEG_CPM_BW="!{allmap3p_neg_cpm_bw}"
 
   # Renderer script
-  RENDER_SCRIPT="!{projectDir}/bin/render_sample_report.py"
+  RENDER_SCRIPT="!{reportRenderScript}"
 
   # Parameters
   ENABLE_PLOTS=!{(params.reports_plots == null) ? 0 : (params.reports_plots as int)}

@@ -69,6 +69,7 @@ process download_genome_annotations {
   gtfAnnotationSrc   = (params.annotation_source ?: 'refseq').toString()
   gtfExcludeBiotypes = (params.annotation_exclude_biotypes ?: '').toString()
   gtfChrNaming       = (params.annotation_chr_naming ?: 'none').toString()
+  gtfCatalogScript   = "${projectDir}/bin/gtf_to_catalog.py".toString()
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -369,7 +370,7 @@ process download_genome_annotations {
   trap 'rm -rf "${WORK_DIR}"' EXIT
 
   # Locate Python script
-  SCRIPT_PATH="!{projectDir}/bin/gtf_to_catalog.py"
+  SCRIPT_PATH="!{gtfCatalogScript}"
   if [[ ! -f "${SCRIPT_PATH}" ]]; then
     # Fallback to PATH if not found (for container environments)
     SCRIPT_PATH="gtf_to_catalog.py"
