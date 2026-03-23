@@ -618,8 +618,8 @@ FACTOREOF
   echo "NORMALIZE | LEGACY | Creating legacy symlinks for compatibility..."
 
   # Legacy copies for downstream compatibility (symlinks not supported on NFS)
-  cp -f "${SAMPLE_ID}.3p.pos.cpm.bedgraph" "3p/${SAMPLE_ID}_pos3_cpm.bedgraph"
-  cp -f "${SAMPLE_ID}.3p.neg.cpm.bedgraph" "3p/${SAMPLE_ID}_neg3_cpm.bedgraph"
+  cp -f "3p/${SAMPLE_ID}.3p.pos.cpm.bedgraph" "3p/${SAMPLE_ID}_pos3_cpm.bedgraph"
+  cp -f "3p/${SAMPLE_ID}.3p.neg.cpm.bedgraph" "3p/${SAMPLE_ID}_neg3_cpm.bedgraph"
 
   echo "NORMALIZE | LEGACY | Legacy symlinks created"
 
