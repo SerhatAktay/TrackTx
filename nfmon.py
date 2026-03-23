@@ -1198,7 +1198,7 @@ def _ps_snapshot() -> List[Tuple[int, int, float, float, str]]:
     return out
 
 # ── macOS CWD→PIDs cache (refreshed every 3 s via lsof) ──────────────────────
-_macos_cwd_cache: Dict[str, Any] = {"ts": 0.0, "data": {}}
+_macos_cwd_cache: dict = {"ts": 0.0, "data": {}}
 
 def _macos_pids_for_workdir(d: str) -> List[int]:
     """Return PIDs of every process whose CWD is work-dir d (macOS only).
