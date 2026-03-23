@@ -93,6 +93,9 @@ process download_sra_samples {
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
+  sraTmp        = (params.sra_tmp ?: '').toString()
+  sraMaxSize    = (params.sra_max_size ?: '200G').toString()
+  sraSource     = (params.sra_download_source ?: 'auto').toString()
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -132,9 +135,9 @@ process download_sra_samples {
   COMPRESS_FQ="!{(params.fastq_gzip == null) ? 'false' : (params.fastq_gzip as boolean ? 'true' : 'false')}"
   
   # SRA settings
-  SRA_TMP="!{params.sra_tmp ?: ''}"
-  SRA_MAX_SIZE="!{params.sra_max_size ?: '200G'}"
-  SRA_SOURCE="!{params.sra_download_source ?: 'auto'}"
+  SRA_TMP="!{sraTmp}"
+  SRA_MAX_SIZE="!{sraMaxSize}"
+  SRA_SOURCE="!{sraSource}"
   
   # Cache check looks in output dir (for -resume, Nextflow reuses work/ outputs)
   CACHE_DIR="!{params.output_dir}/01_trimmed_fastq"

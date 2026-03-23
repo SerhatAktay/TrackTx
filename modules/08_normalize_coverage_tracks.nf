@@ -129,6 +129,8 @@ process normalize_coverage_tracks {
   normEmitAllmap = params.norm?.emit_allmap != null ? params.norm.emit_allmap : true
   normTimeoutBw  = params.norm?.timeout_bw ?: 900
   normEmit5p     = params.norm?.emit_5p
+  normForceSortBedgraph = params.force_sort_bedgraph ? 'true' : 'false'
+  normControlLabel      = (params.control_label ?: 'CTRL').toString()
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -184,9 +186,9 @@ process normalize_coverage_tracks {
   EMIT_BW=$([[ "!{normEmitBw}" == "false" ]] && echo 0 || echo 1)
   EMIT_SICPM=$([[ "!{normEmitSicpm}" == "false" ]] && echo 0 || echo 1)
   EMIT_ALLMAP=$([[ "!{normEmitAllmap}" == "false" ]] && echo 0 || echo 1)
-  FORCE_SORT=$([[ "!{params.force_sort_bedgraph}" == "true" ]] && echo 1 || echo 0)
-  
-  CONTROL_LABEL="!{params.control_label ?: 'CTRL'}"
+  FORCE_SORT=$([[ "!{normForceSortBedgraph}" == "true" ]] && echo 1 || echo 0)
+
+  CONTROL_LABEL="!{normControlLabel}"
   TIMEOUT_BW=!{normTimeoutBw}
 
   # Auto-detect 5' track generation

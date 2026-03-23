@@ -68,6 +68,8 @@ process download_genome_and_build_alignment_index {
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
+  idxForceRebuild = params.force_rebuild ? 'true' : 'false'
+  idxGenomeCache  = (params.genome_cache ?: '/tmp/genomes_cache').toString()
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -98,10 +100,10 @@ process download_genome_and_build_alignment_index {
   GENOME_ID="!{genome_id}"
   SOURCE="!{source}"
   THREADS=!{task.cpus}
-  FORCE_REBUILD="!{params.force_rebuild ? 'true' : 'false'}"
+  FORCE_REBUILD="!{idxForceRebuild}"
 
   # Directory structure
-  CACHE_ROOT="!{params.genome_cache ?: '/tmp/genomes_cache'}"
+  CACHE_ROOT="!{idxGenomeCache}"
   GENOMES_DIR="${CACHE_ROOT}/local_genomes"
   CACHE_DIR="${CACHE_ROOT}/${GENOME_ID}"
   mkdir -p "${CACHE_DIR}"

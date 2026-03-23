@@ -63,6 +63,12 @@ process download_genome_annotations {
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
+  gtfGenomeCache     = (params.genome_cache ?: '/tmp/genomes_cache').toString()
+  gtfPath            = (params.gtf_path ?: '').toString()
+  gtfUrl             = (params.gtf_url ?: '').toString()
+  gtfAnnotationSrc   = (params.annotation_source ?: 'refseq').toString()
+  gtfExcludeBiotypes = (params.annotation_exclude_biotypes ?: '').toString()
+  gtfChrNaming       = (params.annotation_chr_naming ?: 'none').toString()
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -91,7 +97,7 @@ process download_genome_annotations {
   ###########################################################################
 
   ASM='!{params.reference_genome}'
-  CACHE_DIR='!{params.genome_cache ?: "/tmp/genomes_cache"}'
+  CACHE_DIR='!{gtfGenomeCache}'
   mkdir -p "${CACHE_DIR}"
 
   # Output file names
@@ -107,13 +113,13 @@ process download_genome_annotations {
   CACHE_TES="${CACHE_DIR}/${ASM}.tes.bed"
 
   # Custom GTF sources
-  CUSTOM_PATH='!{params.gtf_path ?: ""}'
-  CUSTOM_URL='!{params.gtf_url ?: ""}'
+  CUSTOM_PATH='!{gtfPath}'
+  CUSTOM_URL='!{gtfUrl}'
 
   # Annotation source and catalog options
-  ANNOTATION_SOURCE='!{params.annotation_source ?: "refseq"}'
-  EXCLUDE_BIOTYPES='!{params.annotation_exclude_biotypes ?: ""}'
-  CHR_NAMING='!{params.annotation_chr_naming ?: "none"}'
+  ANNOTATION_SOURCE='!{gtfAnnotationSrc}'
+  EXCLUDE_BIOTYPES='!{gtfExcludeBiotypes}'
+  CHR_NAMING='!{gtfChrNaming}'
 
   # UCSC RefSeq (default)
   # UCSC uses two filename conventions depending on the assembly:
