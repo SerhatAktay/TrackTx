@@ -1197,50 +1197,126 @@ def _ps_snapshot() -> List[Tuple[int, int, float, float, str]]:
         pass
     return out
 
-# ── macOS CWD→PIDs cache (refreshed every 3 s via lsof) ──────────────────────
+# ── macOS CWD→PIDs via libproc.dylib (proc_listallpids + proc_pidinfo) ────────
+#
+# Nextflow spawns tasks with a relative `bash .command.run` so the work-dir
+# path never appears in the process cmdline.  On macOS (no /proc) the only
+# reliable way to find task processes is by their current working directory.
+#
+# We call the same kernel APIs that lsof uses internally, but directly via
+# ctypes — no subprocess, no timeout risk.
+#
+# Layout of struct proc_vnodepathinfo (flavor 9 / PROC_PIDVNODEPATHINFO):
+#   pvi_cdir : vnode_info_path  (1176 bytes)
+#     vip_vi : vnode_info       (152 bytes)  ← vinfo_stat(136) + type(4) + pad(4) + fsid(8)
+#     vip_path: char[1024]      ← CWD string starts at offset 152
+#   pvi_rdir : vnode_info_path  (1176 bytes)
+# Total struct size = 2352 bytes.
+
+_PROC_PIDVNODEPATHINFO    = 9
+_PROC_VNODEPATHINFO_SIZE  = 2352
+_CWD_PATH_OFFSET          = 152   # offsetof(proc_vnodepathinfo, pvi_cdir.vip_path)
+_MAXPATHLEN               = 1024
+
+_libproc_handle = None
+
+def _get_libproc():
+    """Lazy-load libproc.dylib and configure argtypes/restype once."""
+    global _libproc_handle
+    if _libproc_handle is None:
+        import ctypes, ctypes.util
+        name = ctypes.util.find_library("proc") or "libproc.dylib"
+        lib  = ctypes.cdll.LoadLibrary(name)
+        lib.proc_listallpids.restype  = ctypes.c_int
+        lib.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.proc_pidinfo.restype      = ctypes.c_int
+        lib.proc_pidinfo.argtypes     = [
+            ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+            ctypes.c_void_p, ctypes.c_int,
+        ]
+        _libproc_handle = lib
+    return _libproc_handle
+
+
 _macos_cwd_cache: dict = {"ts": 0.0, "data": {}}
 
 def _macos_pids_for_workdir(d: str) -> List[int]:
-    """Return PIDs of every process whose CWD is work-dir d (macOS only).
+    """Return PIDs of every process whose CWD is work-dir *d* (macOS only).
 
-    Nextflow spawns tasks with a relative `bash .command.run` so the work-dir
-    path never appears in the process cmdline — the only reliable way to find
-    them on macOS (no /proc) is via lsof's current-working-directory fd type.
+    Uses proc_listallpids + proc_pidinfo(PROC_PIDVNODEPATHINFO) from
+    libproc.dylib directly (the same mechanism lsof uses under the hood).
+    Falls back to lsof if the ctypes path fails for any reason.
 
-    The result is cached for 3 s so repeated classify() calls hit the cache
-    rather than shelling out to lsof on every 0.4 s refresh tick.
+    Result is cached for 3 s to avoid hammering the kernel on every 0.4 s UI
+    refresh tick.
     """
     global _macos_cwd_cache
     now = time.time()
-    if now - _macos_cwd_cache["ts"] >= 3.0:
-        mapping: Dict[str, List[int]] = {}
-        try:
-            # -F pn  parseable output: p<pid> / n<path> pairs
-            # -a     AND the conditions
-            # -d cwd filter to current-working-directory fd only
-            # -n -P  skip hostname / port resolution (faster)
-            # -w     suppress warnings
-            txt = subprocess.check_output(
-                ["lsof", "-F", "pn", "-a", "-d", "cwd", "-n", "-P", "-w"],
-                text=True, stderr=subprocess.DEVNULL, timeout=10,
-            )
-            cur: Optional[int] = None
-            for ln in txt.splitlines():
-                if ln.startswith("p"):
-                    try:
-                        cur = int(ln[1:])
-                    except ValueError:
-                        cur = None
-                elif ln.startswith("n") and cur is not None:
-                    cwd = ln[1:]
-                    if cwd:
-                        mapping.setdefault(os.path.normpath(cwd), []).append(cur)
-                    cur = None
-        except Exception:
-            pass
-        _macos_cwd_cache["ts"] = now
+    if now - _macos_cwd_cache["ts"] < 3.0:
+        return _macos_cwd_cache["data"].get(os.path.normpath(d), [])
+
+    mapping: Dict[str, List[int]] = {}
+
+    # ── Primary path: direct libproc.dylib calls ──────────────────────────
+    try:
+        import ctypes
+        lib = _get_libproc()
+
+        # First call with NULL buffer returns the count of live PIDs.
+        n = lib.proc_listallpids(None, 0)
+        if n > 0:
+            pid_buf = (ctypes.c_int * (n + 32))()   # +32 headroom for new PIDs
+            n2 = lib.proc_listallpids(pid_buf, ctypes.sizeof(pid_buf))
+            info_buf = ctypes.create_string_buffer(_PROC_VNODEPATHINFO_SIZE)
+            for i in range(min(n2, len(pid_buf))):
+                pid = pid_buf[i]
+                if pid <= 0:
+                    continue
+                ret = lib.proc_pidinfo(
+                    pid, _PROC_PIDVNODEPATHINFO, 0,
+                    info_buf, _PROC_VNODEPATHINFO_SIZE,
+                )
+                if ret < _PROC_VNODEPATHINFO_SIZE:
+                    continue
+                # CWD string is a null-terminated C string at offset 152.
+                raw      = info_buf.raw[_CWD_PATH_OFFSET:_CWD_PATH_OFFSET + _MAXPATHLEN]
+                null_pos = raw.find(b"\x00")
+                path     = raw[:null_pos if null_pos >= 0 else _MAXPATHLEN].decode(
+                    "utf-8", errors="replace"
+                )
+                if path.startswith("/"):
+                    mapping.setdefault(os.path.normpath(path), []).append(pid)
+
+        _macos_cwd_cache["ts"]   = now
         _macos_cwd_cache["data"] = mapping
-    return _macos_cwd_cache["data"].get(os.path.normpath(d), [])
+        return mapping.get(os.path.normpath(d), [])
+    except Exception:
+        pass
+
+    # ── Fallback: lsof subprocess ─────────────────────────────────────────
+    try:
+        txt = subprocess.check_output(
+            ["lsof", "-F", "pn", "-a", "-d", "cwd", "-n", "-P", "-w"],
+            text=True, stderr=subprocess.DEVNULL, timeout=10,
+        )
+        cur: Optional[int] = None
+        for ln in txt.splitlines():
+            if ln.startswith("p"):
+                try:
+                    cur = int(ln[1:])
+                except ValueError:
+                    cur = None
+            elif ln.startswith("n") and cur is not None:
+                cwd = ln[1:]
+                if cwd:
+                    mapping.setdefault(os.path.normpath(cwd), []).append(cur)
+                cur = None
+    except Exception:
+        pass
+
+    _macos_cwd_cache["ts"]   = now
+    _macos_cwd_cache["data"] = mapping
+    return mapping.get(os.path.normpath(d), [])
 
 
 def _tree_cpu_rss(root_pid: int, snap: Optional[List] = None) -> Tuple[float, float]:
