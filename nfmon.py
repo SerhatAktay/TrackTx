@@ -1285,11 +1285,13 @@ def _macos_pids_for_workdir(d: str) -> List[int]:
                     "utf-8", errors="replace"
                 )
                 if path.startswith("/"):
-                    mapping.setdefault(os.path.normpath(path), []).append(pid)
+                    # Use realpath so /Users/... and /private/Users/... (APFS symlink)
+                    # resolve to the same canonical key.
+                    mapping.setdefault(os.path.realpath(path), []).append(pid)
 
         _macos_cwd_cache["ts"]   = now
         _macos_cwd_cache["data"] = mapping
-        return mapping.get(os.path.normpath(d), [])
+        return mapping.get(os.path.realpath(d), [])
     except Exception:
         pass
 
@@ -1309,14 +1311,14 @@ def _macos_pids_for_workdir(d: str) -> List[int]:
             elif ln.startswith("n") and cur is not None:
                 cwd = ln[1:]
                 if cwd:
-                    mapping.setdefault(os.path.normpath(cwd), []).append(cur)
+                    mapping.setdefault(os.path.realpath(cwd), []).append(cur)
                 cur = None
     except Exception:
         pass
 
     _macos_cwd_cache["ts"]   = now
     _macos_cwd_cache["data"] = mapping
-    return mapping.get(os.path.normpath(d), [])
+    return mapping.get(os.path.realpath(d), [])
 
 
 def _tree_cpu_rss(root_pid: int, snap: Optional[List] = None) -> Tuple[float, float]:
@@ -1501,13 +1503,29 @@ def payload_from(workdir: str) -> str:
     return "<no payload detected>"
 
 def best_log_for_tail(d: str) -> Optional[str]:
-    """Find best log file to tail"""
-    cand = [os.path.join(d, ".command.out"), os.path.join(d, ".command.err"), os.path.join(d, ".command.log")]
-    cand = [p for p in cand if os.path.exists(p)]
+    """Find best log file to tail.
+
+    Selection priority:
+      1. Non-empty files are always preferred over empty ones.
+      2. Among non-empty (or all-empty), sort by mtime descending.
+      3. Within same mtime, prefer .command.err > .command.out > .command.log
+         because bioinformatics tools typically write progress/warnings to stderr.
+    """
+    # Preference order: err before out before log (used as tiebreak)
+    pref = {".command.err": 0, ".command.out": 1, ".command.log": 2}
+    cand = []
+    for fn in (".command.err", ".command.out", ".command.log"):
+        p = os.path.join(d, fn)
+        try:
+            st = os.stat(p)
+            cand.append((p, st.st_size, st.st_mtime, pref[fn]))
+        except OSError:
+            pass
     if not cand:
         return None
-    cand.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-    return cand[0]
+    # Sort: non-empty first (size>0), then newest mtime, then stderr preference
+    cand.sort(key=lambda x: (0 if x[1] > 0 else 1, -x[2], x[3]))
+    return cand[0][0]
 
 def newest_user_log(d: str) -> Optional[str]:
     """Find newest user-generated log file"""
@@ -1629,12 +1647,31 @@ def insight(d: str, tail_n: int) -> Tuple[str, List[str], List[Tuple[str, str]]]
     tl = slurp_tail(src, tail_n, scrub=True) if src else ["<no output yet>"]
     # If strict filtering removed everything:
     #  - For TrackTx module logs, fall back to a raw tail so we keep all PREP/ALIGN/TRACKS lines.
-    #  - For Nextflow wrapper logs ('.command.*'), avoid dumping bash noise and instead show a
-    #    clear placeholder so the UI isn't misleadingly empty.
+    #  - For Nextflow wrapper logs ('.command.*'), try every other .command.* file before giving up,
+    #    since tools write to different streams (stderr, stdout) at different points. If none have
+    #    content after scrubbing, try a raw tail of .command.err as last resort (shows bash trace).
     if src and not tl:
         base = os.path.basename(src)
         if base.startswith(".command."):
-            tl = ["<waiting for module logs>"]
+            # Try remaining .command.* files in preference order
+            for alt_fn in (".command.err", ".command.out", ".command.log"):
+                alt = os.path.join(d, alt_fn)
+                if alt == src:
+                    continue
+                alt_lines = slurp_tail(alt, tail_n, scrub=True)
+                if alt_lines:
+                    tl = alt_lines
+                    src = alt
+                    break
+            # Still nothing after trying all three — show raw content (bash trace beats silence)
+            if not tl:
+                for alt_fn in (".command.err", ".command.out", ".command.log"):
+                    raw = slurp_tail(os.path.join(d, alt_fn), tail_n, scrub=False)
+                    if raw:
+                        tl = raw
+                        break
+            if not tl:
+                tl = ["<waiting for module logs>"]
         else:
             tl = slurp_tail(src, tail_n, scrub=False)
     # Prefer actual timestamp or stage line from module logs over script commands
