@@ -1650,42 +1650,42 @@ def classify(world: World):
             pid = pid_from_dir(d)
             t.pid = pid
 
+            # Take one process snapshot — reused for both tree-walk and cmdline scan.
+            snap = _ps_snapshot()
+
             if pid:
                 # The PID in .command.pid is the bash wrapper (.command.run).
                 # The actual tool (bowtie2, samtools, …) runs as a child.
                 # Walk the whole process subtree so we capture real CPU/RSS.
-                snap = _ps_snapshot()
                 cpu, rss = _tree_cpu_rss(pid, snap)
                 t.metrics.cpu_pct = cpu
                 t.metrics.rss_mb  = rss
 
-        # Fallback: try to match process by command line when PID file is absent
-        if t.state == "RUNNING" and t.pid is None:
-            snap = _ps_snapshot()
-            # build children index by ppid
-            children: Dict[int, List] = {}
-            for pid, ppid, pcpu, rss_mb, cmd in snap:
-                if ppid not in children: children[ppid] = []
-                children[ppid].append((pid, pcpu, rss_mb, cmd))
-
-            thash = (t.id or '').split('/')[-1]
-            for pid, ppid, pcpu, rss_mb, cmd in snap:
-                hit = False
-                if thash and thash in cmd: hit = True
-                elif t.workdir and t.workdir in cmd: hit = True
-
-                if hit:
-                    # if wrapper, try to find hottest child
-                    if any(k in cmd for k in ("/bash", "bash", "/sh", "sh", "nextflow", "java")) and pid in children:
-                        kids = children[pid]
-                        kids.sort(key=lambda x: x[1], reverse=True)
-                        if kids:
-                            pid, pcpu, rss_mb, cmd = kids[0]
-
-                    t.pid = pid
-                    if t.metrics.cpu_pct is None: t.metrics.cpu_pct = pcpu
-                    if t.metrics.rss_mb  is None: t.metrics.rss_mb  = rss_mb
-                    break
+            # Supplement (macOS) / fallback (no .command.pid):
+            # On macOS there is no /proc, so the PID from .command.pid may point to
+            # a bash wrapper that has already exited — leaving its children reparented
+            # to launchd and invisible to a tree walk from the stored PID.  The bash
+            # wrapper that executes .command.run always has the work-dir path in its
+            # own cmdline, so we can find it directly.  We then do a full recursive
+            # _tree_cpu_rss walk from that match.  If it yields a higher RSS than the
+            # PID-based walk (meaning it captured the actual compute children), we
+            # prefer those values.  This also fixes the old "hottest child" fallback
+            # that only went one level deep — bowtie2 typically sits 2-3 levels down.
+            if sys.platform.startswith("darwin") or t.pid is None:
+                thash = os.path.basename(d)   # full hex hash present in bash wrapper cmdline
+                wdir  = os.path.normpath(d)
+                for ep, _epp, _ec, _er, ecmd in snap:
+                    if (thash and thash in ecmd) or (wdir and wdir in ecmd):
+                        cpu2, rss2 = _tree_cpu_rss(ep, snap)
+                        if t.pid is None:
+                            t.pid             = ep
+                            t.metrics.cpu_pct = cpu2
+                            t.metrics.rss_mb  = rss2
+                        elif rss2 > (t.metrics.rss_mb or 0):
+                            # Cmdline root gave better coverage; prefer its values.
+                            t.metrics.cpu_pct = cpu2
+                            t.metrics.rss_mb  = rss2
+                        break
         
         # Learn allocated CPUs if still unknown.
         # Priority: (1) task file scan, (2) per-process cache from completed trace rows
