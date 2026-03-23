@@ -45,7 +45,7 @@ process align_reads_to_genome {
              mode: params.publish_mode,
              overwrite: true,
              saveAs: { filename ->
-               if (params.publish_alignments == false) return null  // Skip entire folder to save ~270 MB/sample
+               if (params.get('publish_alignments') == false) return null  // Skip entire folder to save ~270 MB/sample
                return filename instanceof Path ? filename.getFileName().toString() : filename.toString()
              }
 
