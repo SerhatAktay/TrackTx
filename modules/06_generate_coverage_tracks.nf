@@ -68,13 +68,13 @@ process generate_coverage_tracks {
                // Exclude BAM files from publishing - they already exist in 02_alignments/
                if (name.endsWith('.bam') || name.endsWith('.bam.bai')) return null
                // Skip entire folder when output.raw_tracks: false (~150 MB saved)
-               if (params.output?.raw_tracks == false) return null
+               if (params.get('output')?.get('raw_tracks') == false) return null
                // Skip 5' tracks when norm.emit_5p: false (~75 MB saved)
-               if (params.norm?.emit_5p == false && (pathStr.contains('5p/') || name.contains('.5p.'))) return null
+               if (params.get('norm')?.get('emit_5p') == false && (pathStr.contains('5p/') || name.contains('.5p.'))) return null
                // Skip allMap tracks when norm.emit_allmap: false (~25 MB in 03)
-               if (params.norm?.emit_allmap == false && name.contains('allMap')) return null
+               if (params.get('norm')?.get('emit_allmap') == false && name.contains('allMap')) return null
                // Skip bedGraphs when output.bedgraph: false (BigWigs sufficient for genome browsers)
-               if (params.output?.bedgraph == false && name.endsWith('.bedgraph')) return null
+               if (params.get('output')?.get('bedgraph') == false && name.endsWith('.bedgraph')) return null
                return name
              }
 
