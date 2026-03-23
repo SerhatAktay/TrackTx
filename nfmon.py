@@ -1197,6 +1197,52 @@ def _ps_snapshot() -> List[Tuple[int, int, float, float, str]]:
         pass
     return out
 
+# ── macOS CWD→PIDs cache (refreshed every 3 s via lsof) ──────────────────────
+_macos_cwd_cache: Dict[str, Any] = {"ts": 0.0, "data": {}}
+
+def _macos_pids_for_workdir(d: str) -> List[int]:
+    """Return PIDs of every process whose CWD is work-dir d (macOS only).
+
+    Nextflow spawns tasks with a relative `bash .command.run` so the work-dir
+    path never appears in the process cmdline — the only reliable way to find
+    them on macOS (no /proc) is via lsof's current-working-directory fd type.
+
+    The result is cached for 3 s so repeated classify() calls hit the cache
+    rather than shelling out to lsof on every 0.4 s refresh tick.
+    """
+    global _macos_cwd_cache
+    now = time.time()
+    if now - _macos_cwd_cache["ts"] >= 3.0:
+        mapping: Dict[str, List[int]] = {}
+        try:
+            # -F pn  parseable output: p<pid> / n<path> pairs
+            # -a     AND the conditions
+            # -d cwd filter to current-working-directory fd only
+            # -n -P  skip hostname / port resolution (faster)
+            # -w     suppress warnings
+            txt = subprocess.check_output(
+                ["lsof", "-F", "pn", "-a", "-d", "cwd", "-n", "-P", "-w"],
+                text=True, stderr=subprocess.DEVNULL, timeout=10,
+            )
+            cur: Optional[int] = None
+            for ln in txt.splitlines():
+                if ln.startswith("p"):
+                    try:
+                        cur = int(ln[1:])
+                    except ValueError:
+                        cur = None
+                elif ln.startswith("n") and cur is not None:
+                    cwd = ln[1:]
+                    if cwd:
+                        mapping.setdefault(os.path.normpath(cwd), []).append(cur)
+                    cur = None
+        except Exception:
+            pass
+        _macos_cwd_cache["ts"] = now
+        _macos_cwd_cache["data"] = mapping
+    return _macos_cwd_cache["data"].get(os.path.normpath(d), [])
+
+
 def _tree_cpu_rss(root_pid: int, snap: Optional[List] = None) -> Tuple[float, float]:
     """Sum CPU% and max RSS (MB) across root_pid and all its descendants.
 
@@ -1631,7 +1677,22 @@ def classify(world: World):
         
         t.workdir = d
         t.state = "RUNNING"
-        
+
+        # Fix first_ts: use .command.run mtime as the task's true start time.
+        # Tasks that were already running when nfmon.py started get first_ts=now
+        # from the log parser (_ensure()), which resets the age counter on each
+        # restart.  .command.run is written once by Nextflow before the task
+        # runs and never modified, so its mtime is a reliable start-time proxy.
+        # On macOS st_birthtime gives the actual creation time; Linux falls back
+        # to mtime which is equally reliable here.
+        try:
+            cr = os.stat(os.path.join(d, ".command.run"))
+            cr_ts = getattr(cr, "st_birthtime", cr.st_mtime)
+            if cr_ts < t.first_ts:
+                t.first_ts = cr_ts
+        except Exception:
+            pass
+
         # Try Docker stats first (for Docker executor)
         got_metrics = False
         d_norm = os.path.normpath(d.rstrip("/"))
@@ -1661,31 +1722,34 @@ def classify(world: World):
                 t.metrics.cpu_pct = cpu
                 t.metrics.rss_mb  = rss
 
-            # Supplement (macOS) / fallback (no .command.pid):
-            # On macOS there is no /proc, so the PID from .command.pid may point to
-            # a bash wrapper that has already exited — leaving its children reparented
-            # to launchd and invisible to a tree walk from the stored PID.  The bash
-            # wrapper that executes .command.run always has the work-dir path in its
-            # own cmdline, so we can find it directly.  We then do a full recursive
-            # _tree_cpu_rss walk from that match.  If it yields a higher RSS than the
-            # PID-based walk (meaning it captured the actual compute children), we
-            # prefer those values.  This also fixes the old "hottest child" fallback
-            # that only went one level deep — bowtie2 typically sits 2-3 levels down.
+            # macOS supplement / no-.command.pid fallback:
+            # Nextflow spawns tasks with a relative `bash .command.run`, so the
+            # work-dir path is never in the process cmdline — making cmdline
+            # matching useless.  Instead ask lsof for every PID whose current
+            # working directory is our work-dir; all task processes (bash wrapper,
+            # inner bash, bowtie2, samtools, …) inherit that CWD unchanged.
+            # We sum their CPU% and RSS for an accurate per-task view.
             if sys.platform.startswith("darwin") or t.pid is None:
-                thash = os.path.basename(d)   # full hex hash present in bash wrapper cmdline
-                wdir  = os.path.normpath(d)
-                for ep, _epp, _ec, _er, ecmd in snap:
-                    if (thash and thash in ecmd) or (wdir and wdir in ecmd):
-                        cpu2, rss2 = _tree_cpu_rss(ep, snap)
-                        if t.pid is None:
-                            t.pid             = ep
-                            t.metrics.cpu_pct = cpu2
-                            t.metrics.rss_mb  = rss2
-                        elif rss2 > (t.metrics.rss_mb or 0):
-                            # Cmdline root gave better coverage; prefer its values.
-                            t.metrics.cpu_pct = cpu2
-                            t.metrics.rss_mb  = rss2
-                        break
+                task_pids = _macos_pids_for_workdir(d) if sys.platform.startswith("darwin") else []
+
+                # Linux fallback when .command.pid is missing: use ps cmdline scan.
+                if not task_pids and t.pid is None:
+                    thash = os.path.basename(d)
+                    wdir  = os.path.normpath(d)
+                    for ep, _epp, _ec, _er, ecmd in snap:
+                        if (thash and thash in ecmd) or (wdir and wdir in ecmd):
+                            task_pids = [ep]
+                            break
+
+                if task_pids:
+                    snap_lu = {p: (c, r) for p, pp, c, r, cmd in snap}
+                    cpu2 = sum(snap_lu.get(p, (0.0, 0.0))[0] for p in task_pids)
+                    rss2 = sum(snap_lu.get(p, (0.0, 0.0))[1] for p in task_pids)
+                    if t.pid is None:
+                        t.pid = task_pids[0]
+                    if rss2 > (t.metrics.rss_mb or 0):
+                        t.metrics.cpu_pct = cpu2
+                        t.metrics.rss_mb  = rss2
         
         # Learn allocated CPUs if still unknown.
         # Priority: (1) task file scan, (2) per-process cache from completed trace rows
