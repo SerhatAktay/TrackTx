@@ -8,7 +8,7 @@
 # - Multiple interactive views
 # stdlib-only core, Python 3.8+, macOS/Linux
 
-import argparse, curses, io, json, os, re, signal, subprocess, sys, time
+import argparse, curses, glob, io, json, os, re, signal, subprocess, sys, time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, List, Set, Tuple
 from collections import deque, defaultdict
@@ -1033,6 +1033,120 @@ def label_from_dir(d: str) -> Tuple[str, str]:
     
     return name or os.path.basename(d), tag or ""
 
+# Paths that appear literally in Nextflow-generated .command.run (scratch staging)
+_SCRATCH_LITERAL_RE = re.compile(
+    r"(/(?:private)?/tmp/nxf[a-zA-Z0-9._+\-]+"
+    r"|/(?:private)?var/folders/[a-z0-9]+/[A-Za-z0-9]+/T/nxf[a-zA-Z0-9._+\-]+)"
+)
+
+
+def _nf_task_dir_looks_active(path: str) -> bool:
+    """True if *path* looks like a live Nextflow task directory (work or scratch)."""
+    if not os.path.isdir(path):
+        return False
+    for fn in (".command.sh", ".command.run", ".command.pid"):
+        if os.path.isfile(os.path.join(path, fn)):
+            return True
+    return False
+
+
+def scratch_dir_from_taskdir(d: str) -> Optional[str]:
+    """Resolve Nextflow scratch directory for task work dir *d* (NFS path).
+
+    When ``process.scratch=true``, the shell cwd is a temp dir; module logs and
+    ``.command.pid`` are often there.  Parse the staged ``.command.run`` in *d*,
+    then optionally match ``/tmp/nxf*`` dirs by work-hash fingerprint.
+    """
+    runp = os.path.join(d, ".command.run")
+    if not os.path.isfile(runp):
+        return None
+    try:
+        with open(runp, "r", errors="ignore") as fh:
+            head = fh.read(65536)
+    except OSError:
+        return None
+
+    candidates: List[str] = []
+
+    for m in re.finditer(
+        r'^\s*cd\s+(?:"(/[^"]+)"|\'(/[^\']+)\'|(/[^\s;|&()]+))',
+        head,
+        re.MULTILINE,
+    ):
+        p = m.group(1) or m.group(2) or m.group(3)
+        if p and p.startswith("/"):
+            candidates.append(p)
+
+    for m in _SCRATCH_LITERAL_RE.finditer(head):
+        candidates.append(m.group(1))
+
+    seen: Set[str] = set()
+    for raw in candidates:
+        try:
+            rp = os.path.realpath(raw)
+        except OSError:
+            continue
+        if rp in seen:
+            continue
+        seen.add(rp)
+        if _nf_task_dir_looks_active(rp):
+            return rp
+
+    return _scratch_glob_fallback(d, head)
+
+
+def _scratch_glob_fallback(d: str, _run_head: str) -> Optional[str]:
+    """Last resort: find a recent ``nxf*`` scratch dir whose .command.run references this task."""
+    thash = os.path.basename(os.path.normpath(d))
+    work_norm = os.path.normpath(d)
+    if len(thash) < 8 or not re.fullmatch(r"[0-9a-f]+", thash, re.I):
+        return None
+
+    dirs: List[str] = []
+    for pat in (
+        "/tmp/nxf*",
+        "/private/tmp/nxf*",
+        "/var/folders/*/*/T/nxf*",
+        "/private/var/folders/*/*/T/nxf*",
+    ):
+        for p in glob.glob(pat):
+            if os.path.isdir(p):
+                dirs.append(p)
+    dirs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    for path in dirs[:48]:
+        scr_run = os.path.join(path, ".command.run")
+        if not os.path.isfile(scr_run):
+            continue
+        try:
+            with open(scr_run, "r", errors="ignore") as fh:
+                chunk = fh.read(16384)
+        except OSError:
+            continue
+        if thash in chunk or work_norm in chunk:
+            if _nf_task_dir_looks_active(path):
+                return os.path.realpath(path)
+    return None
+
+
+def task_probe_dirs(d: str) -> List[str]:
+    """NFS work dir plus scratch (if any), de-duplicated and existing only."""
+    out: List[str] = []
+    seen: Set[str] = set()
+    scratch = scratch_dir_from_taskdir(d)
+    for p in (d, scratch or ""):
+        if not p:
+            continue
+        try:
+            rp = os.path.realpath(p)
+        except OSError:
+            continue
+        if rp in seen or not os.path.isdir(rp):
+            continue
+        seen.add(rp)
+        out.append(rp)
+    return out
+
+
 def pid_from_dir(d: str) -> Optional[int]:
     """Read PID of the task running in work dir d.
 
@@ -1051,6 +1165,18 @@ def pid_from_dir(d: str) -> Optional[int]:
                 return int(txt)
         except Exception:
             pass
+
+    # Scratch dir (process.scratch=true): PID file often lives next to the live script
+    scratch = scratch_dir_from_taskdir(d)
+    if scratch:
+        for cand in (".command.pid", ".nxf.pid"):
+            p = os.path.join(scratch, cand)
+            try:
+                txt = open(p).read().strip()
+                if txt.isdigit():
+                    return int(txt)
+            except Exception:
+                pass
 
     # Slow path (Linux only): scan /proc for bash processes running .command.run
     # whose scratch cwd or script body references our work dir.
@@ -1502,7 +1628,7 @@ def payload_from(workdir: str) -> str:
             pass
     return "<no payload detected>"
 
-def best_log_for_tail(d: str) -> Optional[str]:
+def best_log_for_tail(d: str, probe_dirs: Optional[List[str]] = None) -> Optional[str]:
     """Find best log file to tail.
 
     Selection priority:
@@ -1510,26 +1636,31 @@ def best_log_for_tail(d: str) -> Optional[str]:
       2. Among non-empty (or all-empty), sort by mtime descending.
       3. Within same mtime, prefer .command.err > .command.out > .command.log
          because bioinformatics tools typically write progress/warnings to stderr.
+
+    Probes both the NFS work dir and Nextflow scratch (when present).
     """
+    probes = probe_dirs if probe_dirs is not None else task_probe_dirs(d)
     # Preference order: err before out before log (used as tiebreak)
     pref = {".command.err": 0, ".command.out": 1, ".command.log": 2}
     cand = []
-    for fn in (".command.err", ".command.out", ".command.log"):
-        p = os.path.join(d, fn)
-        try:
-            st = os.stat(p)
-            cand.append((p, st.st_size, st.st_mtime, pref[fn]))
-        except OSError:
-            pass
+    for probe in probes:
+        for fn in (".command.err", ".command.out", ".command.log"):
+            p = os.path.join(probe, fn)
+            try:
+                st = os.stat(p)
+                cand.append((p, st.st_size, st.st_mtime, pref[fn]))
+            except OSError:
+                pass
     if not cand:
         return None
     # Sort: non-empty first (size>0), then newest mtime, then stderr preference
     cand.sort(key=lambda x: (0 if x[1] > 0 else 1, -x[2], x[3]))
     return cand[0][0]
 
-def newest_user_log(d: str) -> Optional[str]:
-    """Find newest user-generated log file"""
+def newest_user_log(d: str, probe_dirs: Optional[List[str]] = None) -> Optional[str]:
+    """Find newest user-generated log file (work dir and Nextflow scratch)."""
     try:
+        probes = probe_dirs if probe_dirs is not None else task_probe_dirs(d)
         # Prefer known TrackTx module logs when present
         tracktx_candidates = [
             "preprocess_reads.log",
@@ -1546,32 +1677,49 @@ def newest_user_log(d: str) -> Optional[str]:
         ]
         best = None
         mt = -1.0
-        for nm in tracktx_candidates:
-            p = os.path.join(d, nm)
-            if os.path.isfile(p):
-                try:
-                    m = os.path.getmtime(p)
-                except OSError:
-                    continue
-                if m > mt:
-                    best, mt = p, m
+        for probe in probes:
+            for nm in tracktx_candidates:
+                p = os.path.join(probe, nm)
+                if os.path.isfile(p):
+                    try:
+                        m = os.path.getmtime(p)
+                    except OSError:
+                        continue
+                    if m > mt:
+                        best, mt = p, m
+            try:
+                for gpath in glob.glob(os.path.join(probe, "*.report.log")):
+                    if os.path.isfile(gpath):
+                        try:
+                            m = os.path.getmtime(gpath)
+                        except OSError:
+                            continue
+                        if m > mt:
+                            best, mt = gpath, m
+            except OSError:
+                pass
         if best:
             return best
 
-        # Generic heuristic: newest non-wrapper log-like file
+        # Generic heuristic: newest non-wrapper log-like file across probe dirs
         newest = None
         mt = -1.0
-        for nm in os.listdir(d):
-            if nm.startswith(".command.") or nm == ".exitcode":
+        for probe in probes:
+            try:
+                nms = os.listdir(probe)
+            except OSError:
                 continue
-            if any(s in nm.lower() for s in ("stdout", "stderr", ".log", ".err", ".out")):
-                p = os.path.join(d, nm)
-                try:
-                    m = os.path.getmtime(p)
-                except OSError:
+            for nm in nms:
+                if nm.startswith(".command.") or nm == ".exitcode":
                     continue
-                if m > mt:
-                    newest, mt = p, m
+                if any(s in nm.lower() for s in ("stdout", "stderr", ".log", ".err", ".out")):
+                    p = os.path.join(probe, nm)
+                    try:
+                        m = os.path.getmtime(p)
+                    except OSError:
+                        continue
+                    if m > mt:
+                        newest, mt = p, m
         return newest
     except Exception:
         return None
@@ -1641,8 +1789,9 @@ def extract_timestamp_from_log(lines: List[str]) -> Optional[str]:
 
 def insight(d: str, tail_n: int) -> Tuple[str, List[str], List[Tuple[str, str]]]:
     """Bundle introspection: payload, log tail, outputs"""
-    user = newest_user_log(d)
-    src = user or best_log_for_tail(d)
+    probes = task_probe_dirs(d)
+    user = newest_user_log(d, probe_dirs=probes)
+    src = user or best_log_for_tail(d, probe_dirs=probes)
     # Always try to tail something so the log pane isn't empty
     tl = slurp_tail(src, tail_n, scrub=True) if src else ["<no output yet>"]
     # If strict filtering removed everything:
@@ -1653,22 +1802,28 @@ def insight(d: str, tail_n: int) -> Tuple[str, List[str], List[Tuple[str, str]]]
     if src and not tl:
         base = os.path.basename(src)
         if base.startswith(".command."):
-            # Try remaining .command.* files in preference order
+            # Try remaining .command.* files in preference order (work + scratch)
             for alt_fn in (".command.err", ".command.out", ".command.log"):
-                alt = os.path.join(d, alt_fn)
-                if alt == src:
-                    continue
-                alt_lines = slurp_tail(alt, tail_n, scrub=True)
-                if alt_lines:
-                    tl = alt_lines
-                    src = alt
+                for probe in probes:
+                    alt = os.path.join(probe, alt_fn)
+                    if alt == src:
+                        continue
+                    alt_lines = slurp_tail(alt, tail_n, scrub=True)
+                    if alt_lines:
+                        tl = alt_lines
+                        src = alt
+                        break
+                if tl:
                     break
             # Still nothing after trying all three — show raw content (bash trace beats silence)
             if not tl:
                 for alt_fn in (".command.err", ".command.out", ".command.log"):
-                    raw = slurp_tail(os.path.join(d, alt_fn), tail_n, scrub=False)
-                    if raw:
-                        tl = raw
+                    for probe in probes:
+                        raw = slurp_tail(os.path.join(probe, alt_fn), tail_n, scrub=False)
+                        if raw:
+                            tl = raw
+                            break
+                    if tl:
                         break
             if not tl:
                 tl = ["<waiting for module logs>"]
@@ -1824,31 +1979,45 @@ def classify(world: World):
             pid = pid_from_dir(d)
             t.pid = pid
 
-            # Take one process snapshot — reused for both tree-walk and cmdline scan.
+            # One snapshot for tree-walk, CWD union (macOS), and Linux cmdline fallback.
             snap = _ps_snapshot()
+            scratch = scratch_dir_from_taskdir(d)
 
-            if pid:
-                # The PID in .command.pid is the bash wrapper (.command.run).
-                # The actual tool (bowtie2, samtools, …) runs as a child.
-                # Walk the whole process subtree so we capture real CPU/RSS.
-                cpu, rss = _tree_cpu_rss(pid, snap)
-                t.metrics.cpu_pct = cpu
-                t.metrics.rss_mb  = rss
+            if sys.platform.startswith("darwin"):
+                # Sum CPU/RSS for every process whose CWD is the NFS work dir *or*
+                # the Nextflow scratch dir (scratch=true puts the real cwd in /tmp).
+                task_pids: List[int] = []
+                seen_tp: Set[int] = set()
+                for dr in (d, scratch or ""):
+                    if not dr or not os.path.isdir(dr):
+                        continue
+                    for p in _macos_pids_for_workdir(os.path.normpath(dr)):
+                        if p not in seen_tp:
+                            seen_tp.add(p)
+                            task_pids.append(p)
 
-            # macOS supplement / no-.command.pid fallback:
-            # Nextflow spawns tasks with a relative `bash .command.run`, so the
-            # work-dir path is never in the process cmdline — making cmdline
-            # matching useless.  Instead ask lsof for every PID whose current
-            # working directory is our work-dir; all task processes (bash wrapper,
-            # inner bash, bowtie2, samtools, …) inherit that CWD unchanged.
-            # We sum their CPU% and RSS for an accurate per-task view.
-            if sys.platform.startswith("darwin") or t.pid is None:
-                task_pids = _macos_pids_for_workdir(d) if sys.platform.startswith("darwin") else []
+                if task_pids:
+                    snap_lu = {p: (c, r) for p, pp, c, r, cmd in snap}
+                    cpu2 = sum(snap_lu.get(p, (0.0, 0.0))[0] for p in task_pids)
+                    rss2 = sum(snap_lu.get(p, (0.0, 0.0))[1] for p in task_pids)
+                    if t.pid is None:
+                        t.pid = task_pids[0]
+                    t.metrics.cpu_pct = cpu2
+                    t.metrics.rss_mb = rss2
+                elif pid:
+                    cpu, rss = _tree_cpu_rss(pid, snap)
+                    t.metrics.cpu_pct = cpu
+                    t.metrics.rss_mb = rss
+            else:
+                if pid:
+                    cpu, rss = _tree_cpu_rss(pid, snap)
+                    t.metrics.cpu_pct = cpu
+                    t.metrics.rss_mb = rss
 
-                # Linux fallback when .command.pid is missing: use ps cmdline scan.
-                if not task_pids and t.pid is None:
+                task_pids: List[int] = []
+                if t.pid is None:
                     thash = os.path.basename(d)
-                    wdir  = os.path.normpath(d)
+                    wdir = os.path.normpath(d)
                     for ep, _epp, _ec, _er, ecmd in snap:
                         if (thash and thash in ecmd) or (wdir and wdir in ecmd):
                             task_pids = [ep]
@@ -1862,8 +2031,8 @@ def classify(world: World):
                         t.pid = task_pids[0]
                     if rss2 > (t.metrics.rss_mb or 0):
                         t.metrics.cpu_pct = cpu2
-                        t.metrics.rss_mb  = rss2
-        
+                        t.metrics.rss_mb = rss2
+
         # Learn allocated CPUs if still unknown.
         # Priority: (1) task file scan, (2) per-process cache from completed trace rows
         if t.metrics.cpus is None:
@@ -3001,7 +3170,12 @@ def main():
                 help_txt.append("  • ", style="dim")
                 help_txt.append("Use --filter 'align' to pre-filter tasks by regex from startup\n", style="dim")
                 help_txt.append("  • ", style="dim")
-                help_txt.append("On scratch=true (NFS), PID lookup scans /proc — Linux only\n", style="dim")
+                help_txt.append(
+                    "On scratch=true, per-task CPU/mem uses /proc on Linux; on macOS, "
+                    "libproc CWD matching on the work dir plus the scratch path parsed "
+                    "from .command.run\n",
+                    style="dim",
+                )
                 help_txt.append("  • ", style="dim")
                 help_txt.append("--retain-sec 0 clears completed tasks immediately from the list\n", style="dim")
                 help_txt.append("  • ", style="dim")
