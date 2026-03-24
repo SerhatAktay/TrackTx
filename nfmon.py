@@ -1573,6 +1573,18 @@ WRAP_DROP = [
     re.compile(r"read -t \d+ -r DONE"),
     re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*"),  # VAR=value or VAR=$(...) - skip variable assignments
     re.compile(r"\b__mamba_hashr\b"),
+    # Docker / Nextflow local wrapper (common on macOS docker profile)
+    re.compile(r"\b/usr/bin/tini\b"),
+    re.compile(r"\bnxf_trace\b"),
+    re.compile(r"\.command\.run\b"),
+    re.compile(r"^\s*exec\s+"),  # shell: exec tini, exec bash (xtrace often adds + prefix; cover both)
+    re.compile(r"^\s*\+\+\s*$"),  # lone ++ depth markers
+    re.compile(r"^\s*type\s+-t\s+"),
+    re.compile(r"^\s*hash\s+-r\s*$"),
+    # conda/mamba hook chatter in .command.err
+    re.compile(r"^\s*\+\s*conda\s+"),
+    re.compile(r"^\s*\+\s*mamba\s+"),
+    re.compile(r"shell\.bash hook"),
 ]
 
 def keep_line(s: str) -> bool:
@@ -1584,6 +1596,21 @@ def keep_line(s: str) -> bool:
     if s.lstrip().startswith("echo "):
         return False
     return bool(s.strip())
+
+
+def is_wrapper_or_trace_line(s: str) -> bool:
+    """True if *s* looks like Nextflow/docker/bash trace (for payload picking)."""
+    if not keep_line(s):
+        return True
+    t = (s or "").strip()
+    if not t:
+        return True
+    if t in ("<waiting for module logs>", "<no output yet>"):
+        return True
+    # Bracket tests from xtraced conda/shell setup: ++++ '[' x = y ']'
+    if re.match(r"^\+*\s*\[", t):
+        return True
+    return False
 
 def slurp_tail(path: str, n: int, scrub=True) -> List[str]:
     """Tail last n lines from file"""
@@ -1847,16 +1874,8 @@ def insight(d: str, tail_n: int) -> Tuple[str, List[str], List[Tuple[str, str]]]
                         break
                 if tl:
                     break
-            # Still nothing after trying all three — show raw content (bash trace beats silence)
-            if not tl:
-                for alt_fn in (".command.err", ".command.out", ".command.log"):
-                    for probe in probes:
-                        raw = slurp_tail(os.path.join(probe, alt_fn), tail_n, scrub=False)
-                        if raw:
-                            tl = raw
-                            break
-                    if tl:
-                        break
+            # Never raw-tail .command.* : scrub=False only shows docker/tini/bash xtrace noise
+            # (especially on macOS docker).  Prefer placeholder until module logs exist.
             if not tl:
                 tl = ["<waiting for module logs>"]
         else:
@@ -1881,6 +1900,8 @@ def insight(d: str, tail_n: int) -> Tuple[str, List[str], List[Tuple[str, str]]]
                 if s.startswith("#"):
                     continue
                 if s.startswith("sed "):
+                    continue
+                if is_wrapper_or_trace_line(s):
                     continue
                 meaningful = s
                 break
