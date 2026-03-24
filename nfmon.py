@@ -1564,12 +1564,15 @@ def running_dirs(work_roots: List[str]) -> List[str]:
 # ═══════════════════════════════════════════════════════════════
 
 WRAP_DROP = [
-    re.compile(r"^\+{1,}"), re.compile(r"^set -"), re.compile(r"^trap "),
+    # bash xtrace (+ …) with optional leading whitespace / Rich prefix
+    re.compile(r"^\s*\+{1,}"),
+    re.compile(r"^set -"), re.compile(r"^trap "),
     re.compile(r"^ulimit "), re.compile(r"^exec > "), re.compile(r"^nxf_"),
     re.compile(r"^NXF_"), re.compile(r"^CAPSULE:"), re.compile(r"^Picked up _JAVA_OPTIONS"),
     re.compile(r"^Warning: .*illegal reflective access"), re.compile(r"^INFO +\(.*Nextflow.*\)"),
     re.compile(r"read -t \d+ -r DONE"),
     re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*"),  # VAR=value or VAR=$(...) - skip variable assignments
+    re.compile(r"\b__mamba_hashr\b"),
 ]
 
 def keep_line(s: str) -> bool:
@@ -1636,34 +1639,50 @@ def best_log_for_tail(d: str, probe_dirs: Optional[List[str]] = None) -> Optiona
       2. Among non-empty (or all-empty), sort by mtime descending.
       3. Within same mtime, prefer .command.err > .command.out > .command.log
          because bioinformatics tools typically write progress/warnings to stderr.
+      4. Prefer the NFS work dir over a parsed scratch dir on ties — scratch
+         may be mis-identified or hold noisy wrapper output while the work dir
+         streams the same task via the bind mount.
 
-    Probes both the NFS work dir and Nextflow scratch (when present).
+    Probes both the NFS work dir and Nextflow scratch (when *probe_dirs* lists both).
     """
     probes = probe_dirs if probe_dirs is not None else task_probe_dirs(d)
     # Preference order: err before out before log (used as tiebreak)
     pref = {".command.err": 0, ".command.out": 1, ".command.log": 2}
     cand = []
-    for probe in probes:
+    for pi, probe in enumerate(probes):
         for fn in (".command.err", ".command.out", ".command.log"):
             p = os.path.join(probe, fn)
             try:
                 st = os.stat(p)
-                cand.append((p, st.st_size, st.st_mtime, pref[fn]))
+                cand.append((p, st.st_size, st.st_mtime, pref[fn], pi))
             except OSError:
                 pass
     if not cand:
         return None
-    # Sort: non-empty first (size>0), then newest mtime, then stderr preference
-    cand.sort(key=lambda x: (0 if x[1] > 0 else 1, -x[2], x[3]))
+    # Sort: non-empty first; newest mtime; lower probe index (work dir first); stderr pref
+    cand.sort(key=lambda x: (0 if x[1] > 0 else 1, -x[2], x[4], x[3]))
     return cand[0][0]
 
+def _score_log_choice(path: str, size: int, mtime: float, probe_idx: int) -> Tuple[int, int, float, int]:
+    """Higher tuple sorts later; we want the best file last when using max()."""
+    # Prefer non-empty, then larger files (live module output), then newer, then work dir (low idx)
+    nonempty = 1 if size > 0 else 0
+    return (nonempty, size, mtime, -probe_idx)
+
+
 def newest_user_log(d: str, probe_dirs: Optional[List[str]] = None) -> Optional[str]:
-    """Find newest user-generated log file (work dir and Nextflow scratch)."""
+    """Find best user-generated log file (work dir and Nextflow scratch).
+
+    Picks by **content signal**, not mtime alone: a large ``preprocess_reads.log``
+    on the work dir wins over an empty or tiny copy on a mis-guessed scratch path,
+    which previously pushed nfmon toward noisy ``.command.*`` streams.
+    """
     try:
         probes = probe_dirs if probe_dirs is not None else task_probe_dirs(d)
         # Prefer known TrackTx module logs when present
         tracktx_candidates = [
             "preprocess_reads.log",
+            "umi_extract.log",
             "align_reads.log",
             "tracks.log",
             "quantify_reads_per_gene.log",
@@ -1675,36 +1694,40 @@ def newest_user_log(d: str, probe_dirs: Optional[List[str]] = None) -> Optional[
             "normalize_coverage_tracks.log",
             "combine.log",
         ]
-        best = None
-        mt = -1.0
-        for probe in probes:
+        best: Optional[str] = None
+        best_key: Optional[Tuple[int, int, float, int]] = None
+        for pi, probe in enumerate(probes):
             for nm in tracktx_candidates:
                 p = os.path.join(probe, nm)
-                if os.path.isfile(p):
-                    try:
-                        m = os.path.getmtime(p)
-                    except OSError:
-                        continue
-                    if m > mt:
-                        best, mt = p, m
+                if not os.path.isfile(p):
+                    continue
+                try:
+                    st = os.stat(p)
+                except OSError:
+                    continue
+                key = _score_log_choice(p, st.st_size, st.st_mtime, pi)
+                if best_key is None or key > best_key:
+                    best, best_key = p, key
             try:
                 for gpath in glob.glob(os.path.join(probe, "*.report.log")):
-                    if os.path.isfile(gpath):
-                        try:
-                            m = os.path.getmtime(gpath)
-                        except OSError:
-                            continue
-                        if m > mt:
-                            best, mt = gpath, m
+                    if not os.path.isfile(gpath):
+                        continue
+                    try:
+                        st = os.stat(gpath)
+                    except OSError:
+                        continue
+                    key = _score_log_choice(gpath, st.st_size, st.st_mtime, pi)
+                    if best_key is None or key > best_key:
+                        best, best_key = gpath, key
             except OSError:
                 pass
         if best:
             return best
 
-        # Generic heuristic: newest non-wrapper log-like file across probe dirs
-        newest = None
-        mt = -1.0
-        for probe in probes:
+        # Generic heuristic: best-scoring non-wrapper log-like file across probe dirs
+        newest: Optional[str] = None
+        best_key = None
+        for pi, probe in enumerate(probes):
             try:
                 nms = os.listdir(probe)
             except OSError:
@@ -1714,12 +1737,15 @@ def newest_user_log(d: str, probe_dirs: Optional[List[str]] = None) -> Optional[
                     continue
                 if any(s in nm.lower() for s in ("stdout", "stderr", ".log", ".err", ".out")):
                     p = os.path.join(probe, nm)
+                    if not os.path.isfile(p):
+                        continue
                     try:
-                        m = os.path.getmtime(p)
+                        st = os.stat(p)
                     except OSError:
                         continue
-                    if m > mt:
-                        newest, mt = p, m
+                    key = _score_log_choice(p, st.st_size, st.st_mtime, pi)
+                    if best_key is None or key > best_key:
+                        newest, best_key = p, key
         return newest
     except Exception:
         return None
@@ -1791,7 +1817,13 @@ def insight(d: str, tail_n: int) -> Tuple[str, List[str], List[Tuple[str, str]]]
     """Bundle introspection: payload, log tail, outputs"""
     probes = task_probe_dirs(d)
     user = newest_user_log(d, probe_dirs=probes)
-    src = user or best_log_for_tail(d, probe_dirs=probes)
+    # Prefer wrapper logs from the work dir first (bind-mounted with Docker); only
+    # then scratch — wrong scratch guess should not drown out the real stream.
+    src = user
+    if not src and probes:
+        src = best_log_for_tail(d, probe_dirs=[probes[0]])
+    if not src:
+        src = best_log_for_tail(d, probe_dirs=probes)
     # Always try to tail something so the log pane isn't empty
     tl = slurp_tail(src, tail_n, scrub=True) if src else ["<no output yet>"]
     # If strict filtering removed everything:
