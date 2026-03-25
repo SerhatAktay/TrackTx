@@ -2105,25 +2105,47 @@ def classify(world: World):
                     t.metrics.cpu_pct = cpu
                     t.metrics.rss_mb = rss
 
-                # Tertiary macOS fallback: find task processes via open stdout/stderr
-                # file handles.  Needed when BOTH of the above approaches fail, which
-                # happens because:
-                #  (a) SRA tools (prefetch/fasterq-dump) immediately chdir() to their
-                #      cache dir, so no process has CWD == work dir → CWD scan = [].
-                #  (b) macOS /bin/bash is 3.2 (GPLv2 boundary) and does NOT support
-                #      $BASHPID, so .command.pid contains empty/0 → pid_from_dir = None.
-                # The bash wrapper always redirects stdout/stderr to .command.out/.err
-                # via `exec 1>.command.out 2>.command.err`, so lsof reliably finds it
-                # (and any child that inherited the fd) regardless of CWD.
+                # Tertiary macOS fallbacks — used when BOTH CWD scan and .command.pid fail.
+                # Root causes:
+                #  (a) Tools like prefetch/fasterq-dump chdir() to their download cache
+                #      immediately, so no process has CWD == work dir → CWD scan = [].
+                #  (b) Nextflow's .command.run shebang is #!/bin/bash, which on macOS is
+                #      bash 3.2 (GPL boundary). Bash 3.2 has no $BASHPID → .command.pid
+                #      is written as empty/0 → pid_from_dir returns None.
+                #  (c) Nextflow 25.x captures task stdout/stderr via Java pipes, NOT via
+                #      `exec 1>.command.out`, so lsof on .command.out finds nothing useful.
+                #
+                # Strategy A: search the ps snapshot for the task TAG in process cmdlines.
+                #   Works for tools that receive the sample/accession as a CLI argument,
+                #   e.g. `prefetch SRR5364306` where tag="SRR5364306".
+                # Strategy B: search the ps snapshot for the work-dir hash in cmdlines
+                #   (same as the Linux fallback — some NF versions pass absolute paths).
+                # Strategy C: lsof +D to find any process with an open fd in the workdir
+                #   (catches bash still reading .command.run, or tools writing temp files).
                 if t.metrics.rss_mb is None or t.metrics.rss_mb == 0.0:
-                    for _fname in (".command.out", ".command.err"):
-                        _fpath = os.path.join(d, _fname)
-                        if not os.path.isfile(_fpath):
-                            continue
+                    _fb_matched: List[Tuple[int, float, float]] = []
+
+                    # Strategy A — task tag in cmdline
+                    _tag = (t.tag or "").strip()
+                    if not _fb_matched and len(_tag) >= 4:
+                        for _ep, _epp, _ec, _er, _ecmd in snap:
+                            if _tag in _ecmd:
+                                _fb_matched.append((_ep, _ec, _er))
+
+                    # Strategy B — work-dir hash in cmdline
+                    if not _fb_matched:
+                        _thash = os.path.basename(d)
+                        _wdir  = os.path.normpath(d)
+                        for _ep, _epp, _ec, _er, _ecmd in snap:
+                            if (_thash and _thash in _ecmd) or (_wdir and _wdir in _ecmd):
+                                _fb_matched.append((_ep, _ec, _er))
+
+                    # Strategy C — lsof +D (any open fd inside workdir)
+                    if not _fb_matched:
                         try:
                             _lo = subprocess.check_output(
-                                ["lsof", "-Fp", "--", _fpath],
-                                text=True, stderr=subprocess.DEVNULL, timeout=3,
+                                ["lsof", "-Fp", "+D", d],
+                                text=True, stderr=subprocess.DEVNULL, timeout=5,
                             )
                             _opids = list(dict.fromkeys(
                                 int(ln[1:]) for ln in _lo.splitlines()
@@ -2131,16 +2153,20 @@ def classify(world: World):
                             ))
                             if _opids:
                                 _slu = {p: (c, r) for p, pp, c, r, cmd in snap}
-                                _cpu2 = sum(_slu.get(p, (0.0, 0.0))[0] for p in _opids)
-                                _rss2 = sum(_slu.get(p, (0.0, 0.0))[1] for p in _opids)
-                                if _rss2 > 0:
-                                    t.metrics.cpu_pct = _cpu2
-                                    t.metrics.rss_mb = _rss2
-                                    if t.pid is None:
-                                        t.pid = _opids[0]
-                                    break
+                                for _op in _opids:
+                                    _oc, _or = _slu.get(_op, (0.0, 0.0))
+                                    _fb_matched.append((_op, _oc, _or))
                         except Exception:
                             pass
+
+                    if _fb_matched:
+                        _cpu2 = sum(c for _, c, _ in _fb_matched)
+                        _rss2 = sum(r for _, _, r in _fb_matched)
+                        if _rss2 > 0:
+                            t.metrics.cpu_pct = _cpu2
+                            t.metrics.rss_mb  = _rss2
+                            if t.pid is None:
+                                t.pid = _fb_matched[0][0]
             else:
                 if pid:
                     cpu, rss = _tree_cpu_rss(pid, snap)
