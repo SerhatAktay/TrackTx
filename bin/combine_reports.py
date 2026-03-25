@@ -1429,11 +1429,19 @@ def main():
         log_error("No valid samples loaded")
         return 3
 
-    # Sort by experimental design (condition, timepoint, replicate, sample_id)
+    # Sort by experimental design (condition, timepoint, replicate, sample_id).
+    # timepoint and replicate are sorted numerically when possible so that e.g.
+    # 10, 20, 40, 60, 160 sorts correctly instead of 10, 160, 20, 40, 60.
+    def _num_or_str(val):
+        try:
+            return (0, float(val))
+        except (TypeError, ValueError):
+            return (1, str(val))
+
     samples.sort(key=lambda s: (
         str(s.get("condition", "")),
-        str(s.get("timepoint", "")),
-        str(s.get("replicate", "")),
+        _num_or_str(s.get("timepoint", "")),
+        _num_or_str(s.get("replicate", "")),
         str(s.get("sample_id", "")),
     ))
     
