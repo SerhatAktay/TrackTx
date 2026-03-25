@@ -2104,6 +2104,43 @@ def classify(world: World):
                     cpu, rss = _tree_cpu_rss(pid, snap)
                     t.metrics.cpu_pct = cpu
                     t.metrics.rss_mb = rss
+
+                # Tertiary macOS fallback: find task processes via open stdout/stderr
+                # file handles.  Needed when BOTH of the above approaches fail, which
+                # happens because:
+                #  (a) SRA tools (prefetch/fasterq-dump) immediately chdir() to their
+                #      cache dir, so no process has CWD == work dir → CWD scan = [].
+                #  (b) macOS /bin/bash is 3.2 (GPLv2 boundary) and does NOT support
+                #      $BASHPID, so .command.pid contains empty/0 → pid_from_dir = None.
+                # The bash wrapper always redirects stdout/stderr to .command.out/.err
+                # via `exec 1>.command.out 2>.command.err`, so lsof reliably finds it
+                # (and any child that inherited the fd) regardless of CWD.
+                if t.metrics.rss_mb is None or t.metrics.rss_mb == 0.0:
+                    for _fname in (".command.out", ".command.err"):
+                        _fpath = os.path.join(d, _fname)
+                        if not os.path.isfile(_fpath):
+                            continue
+                        try:
+                            _lo = subprocess.check_output(
+                                ["lsof", "-Fp", "--", _fpath],
+                                text=True, stderr=subprocess.DEVNULL, timeout=3,
+                            )
+                            _opids = list(dict.fromkeys(
+                                int(ln[1:]) for ln in _lo.splitlines()
+                                if ln.startswith("p") and ln[1:].strip().isdigit()
+                            ))
+                            if _opids:
+                                _slu = {p: (c, r) for p, pp, c, r, cmd in snap}
+                                _cpu2 = sum(_slu.get(p, (0.0, 0.0))[0] for p in _opids)
+                                _rss2 = sum(_slu.get(p, (0.0, 0.0))[1] for p in _opids)
+                                if _rss2 > 0:
+                                    t.metrics.cpu_pct = _cpu2
+                                    t.metrics.rss_mb = _rss2
+                                    if t.pid is None:
+                                        t.pid = _opids[0]
+                                    break
+                        except Exception:
+                            pass
             else:
                 if pid:
                     cpu, rss = _tree_cpu_rss(pid, snap)
