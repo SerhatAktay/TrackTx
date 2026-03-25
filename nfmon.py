@@ -1160,9 +1160,14 @@ def pid_from_dir(d: str) -> Optional[int]:
     for cand in (".command.pid", ".nxf.pid"):
         p = os.path.join(d, cand)
         try:
-            txt = open(p).read().strip()
-            if txt.isdigit():
-                return int(txt)
+            # Use regex instead of isdigit() — more robust against null bytes,
+            # trailing newlines, or files with two PIDs appended (>> instead of >).
+            raw = open(p, "rb").read(64)
+            m = re.search(rb'(\d+)', raw)
+            if m:
+                pid_val = int(m.group(1))
+                if pid_val > 0:
+                    return pid_val
         except Exception:
             pass
 
@@ -1172,9 +1177,12 @@ def pid_from_dir(d: str) -> Optional[int]:
         for cand in (".command.pid", ".nxf.pid"):
             p = os.path.join(scratch, cand)
             try:
-                txt = open(p).read().strip()
-                if txt.isdigit():
-                    return int(txt)
+                raw = open(p, "rb").read(64)
+                m = re.search(rb'(\d+)', raw)
+                if m:
+                    pid_val = int(m.group(1))
+                    if pid_val > 0:
+                        return pid_val
             except Exception:
                 pass
 
@@ -1378,12 +1386,16 @@ def _macos_pids_for_workdir(d: str) -> List[int]:
     """
     global _macos_cwd_cache
     now = time.time()
+    d_real = os.path.realpath(d)
+    # BUG FIX: was os.path.normpath(d) — but the mapping is keyed by realpath,
+    # so normpath would miss entries whenever d contains symlinks.
     if now - _macos_cwd_cache["ts"] < 3.0:
-        return _macos_cwd_cache["data"].get(os.path.normpath(d), [])
+        return _macos_cwd_cache["data"].get(d_real, [])
 
     mapping: Dict[str, List[int]] = {}
 
     # ── Primary path: direct libproc.dylib calls ──────────────────────────
+    libproc_ok = False
     try:
         import ctypes
         lib = _get_libproc()
@@ -1414,14 +1426,45 @@ def _macos_pids_for_workdir(d: str) -> List[int]:
                     # Use realpath so /Users/... and /private/Users/... (APFS symlink)
                     # resolve to the same canonical key.
                     mapping.setdefault(os.path.realpath(path), []).append(pid)
-
-        _macos_cwd_cache["ts"]   = now
-        _macos_cwd_cache["data"] = mapping
-        return mapping.get(os.path.realpath(d), [])
+        libproc_ok = True
     except Exception:
         pass
 
-    # ── Fallback: lsof subprocess ─────────────────────────────────────────
+    # BUG FIX: previously returned inside the try block, which meant the lsof
+    # fallback was *only* reached when libproc raised an exception.  Now we
+    # check whether libproc actually found our directory and, if not, try a
+    # fast targeted lsof before falling back to the slow full-scan.
+    if libproc_ok:
+        found = mapping.get(d_real, [])
+        if found:
+            _macos_cwd_cache["ts"]   = now
+            _macos_cwd_cache["data"] = mapping
+            return found
+        # libproc ran successfully but reported no process with CWD == d.
+        # This can happen when macOS resolves the path differently (e.g. APFS
+        # firmlinks, network mounts) or when SIP silently drops certain entries.
+        # Try a lightweight targeted lsof for just this one directory.
+        try:
+            txt = subprocess.check_output(
+                ["lsof", "-Fp", "-a", "-d", "cwd", "--", d_real],
+                text=True, stderr=subprocess.DEVNULL, timeout=3,
+            )
+            pids = [int(ln[1:]) for ln in txt.splitlines()
+                    if ln.startswith("p") and ln[1:].strip().isdigit()]
+            if pids:
+                mapping[d_real] = pids
+                _macos_cwd_cache["ts"]   = now
+                _macos_cwd_cache["data"] = mapping
+                return pids
+        except Exception:
+            pass
+        # Neither libproc nor targeted lsof found anything — cache the (empty)
+        # mapping so we don't hammer the kernel on every tick.
+        _macos_cwd_cache["ts"]   = now
+        _macos_cwd_cache["data"] = mapping
+        return []
+
+    # ── Fallback: full lsof subprocess (libproc failed entirely) ──────────
     try:
         txt = subprocess.check_output(
             ["lsof", "-F", "pn", "-a", "-d", "cwd", "-n", "-P", "-w"],
@@ -1444,7 +1487,7 @@ def _macos_pids_for_workdir(d: str) -> List[int]:
 
     _macos_cwd_cache["ts"]   = now
     _macos_cwd_cache["data"] = mapping
-    return mapping.get(os.path.realpath(d), [])
+    return mapping.get(d_real, [])
 
 
 def _tree_cpu_rss(root_pid: int, snap: Optional[List] = None) -> Tuple[float, float]:
