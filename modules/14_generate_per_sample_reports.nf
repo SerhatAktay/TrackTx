@@ -112,7 +112,7 @@ process generate_per_sample_reports {
   export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > "!{sample_id}.report.log"
+  exec > >(tee -a "!{sample_id}.report.log")
   exec 2> >(tee -a "!{sample_id}.report.log" >&2)
 
   tracktx_error() {

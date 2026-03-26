@@ -114,7 +114,7 @@ process calculate_polymerase_occupancy_metrics {
   export NUMEXPR_NUM_THREADS=1
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > pol_metrics.log
+  exec > >(tee -a pol_metrics.log)
   exec 2> >(tee -a pol_metrics.log >&2)
 
   tracktx_error() {

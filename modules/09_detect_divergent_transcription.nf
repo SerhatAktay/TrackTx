@@ -137,7 +137,7 @@ process detect_divergent_transcription {
   export LC_ALL=C
 
   # Stdout → log + terminal; stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > divergent.log
+  exec > >(tee -a divergent.log)
   exec 2> >(tee -a divergent.log >&2)
   
   # Trap SIGPIPE to avoid exit code 141

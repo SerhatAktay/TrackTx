@@ -136,7 +136,7 @@ process preprocess_and_quality_filter_reads {
   export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > preprocess_reads.log
+  exec > >(tee -a preprocess_reads.log)
   exec 2> >(tee -a preprocess_reads.log >&2)
 
   tracktx_error() {

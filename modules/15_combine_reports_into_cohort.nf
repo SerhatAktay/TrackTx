@@ -87,7 +87,7 @@ process combine_reports_into_cohort {
   export LC_ALL=C
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > combine.log
+  exec > >(tee -a combine.log)
   exec 2> >(tee -a combine.log >&2)
 
   tracktx_error() {

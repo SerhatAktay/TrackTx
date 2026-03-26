@@ -98,7 +98,7 @@ process summarize_polymerase_metrics {
   export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > aggregate.log
+  exec > >(tee -a aggregate.log)
   exec 2> >(tee -a aggregate.log >&2)
 
   tracktx_error() {

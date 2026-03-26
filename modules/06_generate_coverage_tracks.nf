@@ -156,7 +156,7 @@ process generate_coverage_tracks {
   export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > tracks.log
+  exec > >(tee -a tracks.log)
   exec 2> >(tee -a tracks.log >&2)
 
   tracktx_error() {

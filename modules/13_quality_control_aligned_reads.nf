@@ -119,7 +119,7 @@ process quality_control_aligned_reads {
   export LC_ALL=C
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > qc.log
+  exec > >(tee -a qc.log)
   exec 2> >(tee -a qc.log >&2)
 
   tracktx_error() {
