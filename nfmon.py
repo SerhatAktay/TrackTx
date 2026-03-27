@@ -3140,8 +3140,8 @@ def main():
                 rt.add_column("",       width=1,                   no_wrap=True)  # focus/load dot
                 rt.add_column("Module", max_width=30,              no_wrap=True)  # capped
                 rt.add_column("Sample", max_width=22,              no_wrap=True)  # capped — was ratio=1 (ballooned on wide terminals)
-                rt.add_column("CPU",    justify="right", width=14, no_wrap=True)  # "▓▓▓▓░░ 45%/8c" max ~14 chars
-                rt.add_column("MEM",    justify="right", width=10, no_wrap=True)  # "▓▓░░ 2.1G" max ~10 chars
+                rt.add_column("CPU",    justify="left",  width=14, no_wrap=True)  # "▓▓▓▓░░ 45%/8c" max ~14 chars
+                rt.add_column("MEM",    justify="left",  width=10, no_wrap=True)  # "▓▓░░ 2.1G" max ~10 chars
                 rt.add_column("Age",    justify="right", width=7,  no_wrap=True)
                 rt.add_column("▲",      width=10)                                 # CPU sparkline
                 # ensure labels from FS if missing
@@ -3216,7 +3216,16 @@ def main():
                     spark = ""
                     if hist:
                         try:
-                            spark = sparkline_pct(hist[-20:])
+                            if cpus_n is not None and cpus_n > 0:
+                                # Scale to allocated CPUs: cpus_n×100% = full bar.
+                                # This lets the sparkline show real utilisation:
+                                # e.g. 322% on 5 cores → 64% bar, 118% on 5 cores → 24% bar.
+                                max_pct = cpus_n * 100.0
+                                scaled  = [min(100.0, v / max_pct * 100.0) for v in hist[-20:]]
+                                spark   = sparkline_pct(scaled)
+                            else:
+                                # No allocation info — show relative trend within this task.
+                                spark = sparkline(hist[-20:])
                         except Exception:
                             spark = ""
                     rt.add_row(dot, lab, sample_tag, cpu_col, mem_col,
