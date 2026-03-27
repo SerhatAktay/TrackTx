@@ -34,6 +34,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Tuple
+import multiprocessing
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -105,7 +106,7 @@ Output:
     
     # Performance
     ap.add_argument("--ncores", type=int, default=1,
-                    help="Number of CPU cores (default: 1, currently unused)")
+                    help="Number of CPU cores for parallel chromosome processing (default: 1)")
     
     # Output options
     ap.add_argument("--report", default=None,
@@ -138,41 +139,67 @@ def natural_sort_key(s: str) -> List:
 
 class FastBedGraph:
     """
-    Chromosome-indexed bedGraph for fast region queries.
-    
-    Organizes bedGraph by chromosome for O(1) chromosome lookup
-    followed by fast pandas boolean indexing.
+    Chromosome-indexed bedGraph with prefix-sum arrays for O(log n) range queries.
+
+    Each chromosome stores sorted numpy arrays and a cumulative prefix sum so
+    that any [start, end) range sum is resolved in O(log n) via two binary
+    searches, rather than an O(n) boolean-mask scan of every bin.
     """
-    
+
     def __init__(self, df: pd.DataFrame):
-        """Build chromosome index from bedGraph dataframe."""
-        self.by_chrom = {}
+        """Build per-chromosome sorted arrays and prefix sums."""
+        self.by_chrom: Dict[str, dict] = {}
         for chrom, group in df.groupby('chr', sort=False):
-            group = group.sort_values('start').reset_index(drop=True)
-            self.by_chrom[str(chrom)] = group
-    
+            group  = group.sort_values('start').reset_index(drop=True)
+            starts = group['start'].to_numpy()
+            ends   = group['end'].to_numpy()
+            sigs   = group['sig'].abs().to_numpy()
+            # prefix[i] = cumulative sum of sigs[0..i-1]; prefix[0] = 0
+            prefix = np.empty(len(sigs) + 1, dtype=np.float64)
+            prefix[0] = 0.0
+            np.cumsum(sigs, out=prefix[1:])
+            self.by_chrom[str(chrom)] = {
+                'starts': starts,
+                'ends':   ends,
+                'prefix': prefix,
+            }
+
     def query_sum(self, chrom: str, start: int, end: int) -> float:
         """
-        Query total signal in genomic region.
-        
-        Args:
-            chrom: Chromosome name
-            start: Region start (0-based)
-            end: Region end (exclusive)
-            
-        Returns:
-            Sum of absolute signal values in region
+        Query total absolute signal in [start, end).  O(log n).
+
+        Uses binary search on sorted starts/ends arrays and reads the result
+        directly from the pre-computed prefix sum.
         """
         if chrom not in self.by_chrom:
             return 0.0
-        
-        df = self.by_chrom[chrom]
-        mask = (df['end'] > start) & (df['start'] < end)
-        
-        if not mask.any():
+        d     = self.by_chrom[chrom]
+        left  = int(np.searchsorted(d['ends'],   start, side='right'))
+        right = int(np.searchsorted(d['starts'], end,   side='left'))
+        if right <= left:
             return 0.0
-        
-        return float(df.loc[mask, 'sig'].abs().sum())
+        return float(d['prefix'][right] - d['prefix'][left])
+
+    def query_sum_batch(self, chrom: str,
+                        starts: np.ndarray,
+                        ends:   np.ndarray) -> np.ndarray:
+        """
+        Vectorised range-sum query for arrays of (start, end) positions.
+
+        All positions must be on the same chromosome.
+        Returns an ndarray of absolute signal sums, one per input interval.
+        O(k log n) where k = len(starts), n = bins on this chromosome.
+        """
+        if chrom not in self.by_chrom:
+            return np.zeros(len(starts), dtype=np.float64)
+        d      = self.by_chrom[chrom]
+        lefts  = np.searchsorted(d['ends'],   starts, side='right')
+        rights = np.searchsorted(d['starts'], ends,   side='left')
+        valid  = rights > lefts
+        out    = np.zeros(len(starts), dtype=np.float64)
+        if valid.any():
+            out[valid] = d['prefix'][rights[valid]] - d['prefix'][lefts[valid]]
+        return out
 
 
 def read_bedgraph(path: str, role: str, quiet: bool = False) -> pd.DataFrame:
@@ -423,13 +450,18 @@ def pair_peaks_on_chromosome(
         end = np.maximum(pe[i], ne_slice)
         total = pg[i] + ng_slice
         
-        for s, e, t in zip(start, end, total):
-            pairs.append((chrom, int(s), int(e), float(t)))
-    
+        if len(start):
+            pairs.append(pd.DataFrame({
+                'chr':   np.full(len(start), chrom),
+                'start': start.astype(int),
+                'end':   end.astype(int),
+                'total': total.astype(float),
+            }))
+
     if not pairs:
         return pd.DataFrame(columns=["chr", "start", "end", "total"])
-    
-    return pd.DataFrame(pairs, columns=["chr", "start", "end", "total"])
+
+    return pd.concat(pairs, ignore_index=True)
 
 
 def merge_overlapping_regions(
@@ -500,96 +532,98 @@ def extract_features(
     quiet: bool = False
 ) -> pd.DataFrame:
     """
-    Extract features for statistical scoring.
-    
-    For each paired region, computes:
+    Extract features for statistical scoring — fully vectorised.
+
+    Processes regions chromosome-by-chromosome using batch prefix-sum queries
+    (query_sum_batch) and vectorised NumPy/SciPy operations, replacing the
+    former row-by-row iterrows() loop.  Result rows are returned in the same
+    order as paired_df.
+
+    For each paired region computes:
     - Total signal and strand-specific sums
-    - Bayesian balance score (Beta-Binomial model)
-    - Local background and signal-to-background ratio
+    - Bayesian balance score (Beta-Binomial model, vectorised)
+    - Local background and signal-to-background ratio (±5 kb flanks)
     - Region width and signal density
-    
-    Args:
-        paired_df: Paired regions
-        pos_idx: Indexed positive bedGraph
-        neg_idx: Indexed negative bedGraph
-        quiet: Suppress logging
-        
-    Returns:
-        DataFrame with feature columns
     """
     log(f"Extracting features for {len(paired_df):,} regions...", quiet)
-    
+
     try:
         from scipy.stats import beta as beta_dist
         has_scipy = True
     except ImportError:
         has_scipy = False
         log("  WARNING: scipy not available, using simple balance", quiet)
-    
-    features_list = []
-    
-    for idx, row in paired_df.iterrows():
-        if (idx + 1) % 5000 == 0:
-            log(f"  Progress: {idx+1:,} / {len(paired_df):,}", quiet)
-        
-        chrom = str(row['chr'])
-        start = int(row['start'])
-        end = int(row['end'])
-        total_from_pairing = float(row['total'])
-        
-        # Query strand-specific signals
-        pos_sum = max(pos_idx.query_sum(chrom, start, end), 0.01)
-        neg_sum = max(neg_idx.query_sum(chrom, start, end), 0.01)
-        
-        total_signal = max(total_from_pairing, pos_sum + neg_sum)
-        
-        # Bayesian balance score
-        if has_scipy and total_signal > 1:
+
+    BG_WINDOW = 5000
+    result_parts: List[pd.DataFrame] = []
+
+    for chrom, group in paired_df.groupby('chr', sort=False):
+        chrom  = str(chrom)
+        idx    = group.index          # preserve original row order for realignment
+        starts = group['start'].to_numpy()
+        ends   = group['end'].to_numpy()
+        totals = group['total'].to_numpy()
+
+        # ── Peak signal (batch prefix-sum queries) ────────────────────────
+        pos_sums = np.maximum(pos_idx.query_sum_batch(chrom, starts, ends), 0.01)
+        neg_sums = np.maximum(neg_idx.query_sum_batch(chrom, starts, ends), 0.01)
+        total_signal = np.maximum(totals, pos_sums + neg_sums)
+
+        # ── Bayesian balance score (Beta-Binomial, vectorised) ────────────
+        # Beta(2,2) prior; posterior P(balance ∈ [0.3, 0.7])
+        if has_scipy:
+            alpha_post = 2.0 + pos_sums
+            beta_post  = 2.0 + neg_sums
             try:
-                # Beta(2,2) prior, posterior mean balance probability
-                alpha_post = 2 + pos_sum
-                beta_post = 2 + neg_sum
-                balance_bayesian = float(
-                    beta_dist.cdf(0.7, alpha_post, beta_post) - 
+                balance_bayesian = (
+                    beta_dist.cdf(0.7, alpha_post, beta_post) -
                     beta_dist.cdf(0.3, alpha_post, beta_post)
                 )
-            except:
-                balance_bayesian = min(pos_sum, neg_sum) / max(pos_sum, neg_sum)
+            except Exception:
+                balance_bayesian = (
+                    np.minimum(pos_sums, neg_sums) /
+                    np.maximum(pos_sums, neg_sums)
+                )
         else:
-            balance_bayesian = min(pos_sum, neg_sum) / max(pos_sum, neg_sum)
-        
-        # Local background (±5kb excluding peak)
-        window = 5000
-        local_start = max(0, start - window)
-        local_end = end + window
-        
-        pos_bg_sum = (pos_idx.query_sum(chrom, local_start, start) + 
-                      pos_idx.query_sum(chrom, end, local_end))
-        neg_bg_sum = (neg_idx.query_sum(chrom, local_start, start) + 
-                      neg_idx.query_sum(chrom, end, local_end))
-        
-        bg_length = 2 * window
-        local_bg = (pos_bg_sum + neg_bg_sum) / max(1, bg_length)
-        local_bg = max(local_bg, 0.1)
-        
-        # Derived features
-        width = end - start
-        signal_to_bg = total_signal / max(0.1, local_bg * width)
-        
-        features = {
-            'total_signal': total_signal,
-            'log_total': np.log1p(total_signal),
+            balance_bayesian = (
+                np.minimum(pos_sums, neg_sums) /
+                np.maximum(pos_sums, neg_sums)
+            )
+
+        # ── Local background (±BG_WINDOW bp flanks, excluding peak) ──────
+        bg_left_start = np.maximum(0, starts - BG_WINDOW)
+        bg_right_end  = ends + BG_WINDOW
+
+        pos_bg = (pos_idx.query_sum_batch(chrom, bg_left_start, starts) +
+                  pos_idx.query_sum_batch(chrom, ends, bg_right_end))
+        neg_bg = (neg_idx.query_sum_batch(chrom, bg_left_start, starts) +
+                  neg_idx.query_sum_batch(chrom, ends, bg_right_end))
+
+        local_bg = np.maximum((pos_bg + neg_bg) / (2 * BG_WINDOW), 0.1)
+
+        # ── Derived features ──────────────────────────────────────────────
+        width        = (ends - starts).astype(float)
+        signal_to_bg = total_signal / np.maximum(0.1, local_bg * width)
+
+        result_parts.append(pd.DataFrame({
+            'total_signal':     total_signal,
+            'log_total':        np.log1p(total_signal),
             'balance_bayesian': balance_bayesian,
-            'width': width,
-            'signal_density': total_signal / max(1, width),
-            'local_bg': local_bg,
-            'signal_to_bg': signal_to_bg,
-            'log_snr': np.log1p(signal_to_bg)
-        }
-        
-        features_list.append(features)
-    
-    return pd.DataFrame(features_list)
+            'width':            width,
+            'signal_density':   total_signal / np.maximum(1.0, width),
+            'local_bg':         local_bg,
+            'signal_to_bg':     signal_to_bg,
+            'log_snr':          np.log1p(signal_to_bg),
+        }, index=idx))
+
+    if not result_parts:
+        return pd.DataFrame(columns=[
+            'total_signal', 'log_total', 'balance_bayesian', 'width',
+            'signal_density', 'local_bg', 'signal_to_bg', 'log_snr'
+        ])
+
+    # Restore original paired_df row order before returning
+    return pd.concat(result_parts).sort_index().reset_index(drop=True)
 
 
 def score_with_mixture_model(
@@ -837,17 +871,30 @@ def main():
     )
     log(f"  Processing {len(chroms)} chromosomes", args.quiet)
     
+    # Pre-filter peaks per chromosome once (avoids repeated boolean indexing
+    # inside the loop and is required to build picklable args for the pool)
+    pos_by_chrom = {c: pos_peaks[pos_peaks['chr'] == c].reset_index(drop=True)
+                    for c in chroms}
+    neg_by_chrom = {c: neg_peaks[neg_peaks['chr'] == c].reset_index(drop=True)
+                    for c in chroms}
+    chrom_args = [
+        (c, pos_by_chrom[c], neg_by_chrom[c], args.nt_window, args.balance)
+        for c in chroms
+    ]
+
     pieces = []
-    for chrom in chroms:
-        result = pair_peaks_on_chromosome(
-            chrom,
-            pos_peaks[pos_peaks['chr'] == chrom].reset_index(drop=True),
-            neg_peaks[neg_peaks['chr'] == chrom].reset_index(drop=True),
-            args.nt_window,
-            args.balance
-        )
-        if not result.empty:
-            pieces.append(result)
+    if args.ncores > 1 and len(chroms) > 1:
+        n_workers = min(args.ncores, len(chroms))
+        log(f"  Pairing {len(chroms)} chromosomes using {n_workers} parallel workers...",
+            args.quiet)
+        with multiprocessing.Pool(processes=n_workers) as pool:
+            results = pool.starmap(pair_peaks_on_chromosome, chrom_args)
+        pieces = [r for r in results if not r.empty]
+    else:
+        for ca in chrom_args:
+            result = pair_peaks_on_chromosome(*ca)
+            if not result.empty:
+                pieces.append(result)
     
     if not pieces:
         log("ERROR: No paired peaks found")
