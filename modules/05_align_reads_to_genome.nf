@@ -136,9 +136,12 @@ process align_reads_to_genome {
   R2="!{read2}"
 
   THREADS=!{task.cpus}
-  # Threading strategy: use all threads for Bowtie2, minimal for samtools sorting
-  BT2_THREADS="${THREADS}"
-  SAM_THREADS=1
+  # Threading strategy: reserve 2 threads for samtools sort, give the rest to
+  # Bowtie2.  Bowtie2 is the dominant step and scales well with many threads;
+  # samtools sort benefits significantly from 2 threads and was previously a
+  # single-threaded bottleneck on the alignment→BAM pipeline.
+  BT2_THREADS=$(( THREADS > 2 ? THREADS - 2 : THREADS ))
+  SAM_THREADS=$(( THREADS > 2 ? 2 : 1 ))
 
   # Determine if paired-end from input val and R2 presence
   PAIRED_PARAM='!{is_paired_end ? "true" : "false"}'

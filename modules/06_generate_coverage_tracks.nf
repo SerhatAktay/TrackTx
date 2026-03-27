@@ -276,13 +276,11 @@ process generate_coverage_tracks {
     fi
     
     echo "TRACKS | BIGWIG | Converting: $(basename ${bedgraph}) → $(basename ${bigwig})"
-    
-    # Sort bedGraph (required for bedGraphToBigWig)
-    echo "TRACKS | BIGWIG | Sorting bedGraph..."
-    LC_ALL=C sort -k1,1 -k2,2n -o "${bedgraph}" "${bedgraph}"
-    
+
+    # bedGraph is written pre-sorted by generate_coverage (genomecov | sort pipe),
+    # so no sort pass is needed here.
     local line_count=$(wc -l < "${bedgraph}" | tr -d ' ')
-    echo "TRACKS | BIGWIG | Sorted bedGraph: ${line_count} lines"
+    echo "TRACKS | BIGWIG | bedGraph lines: ${line_count}"
     
     # Convert to BigWig with timeout
     if ! timeout ${BIGWIG_TIMEOUT} bedGraphToBigWig "${bedgraph}" genome.sizes "${bigwig}"; then
@@ -311,13 +309,16 @@ process generate_coverage_tracks {
       return 1
     fi
     
-    # Positive strand coverage using direct BAM processing
+    # Positive strand coverage — pipe directly into sort to produce a
+    # pre-sorted bedGraph in one pass, eliminating an intermediate disk write.
+    # set -o pipefail (active globally) ensures bedtools failures propagate.
     echo "TRACKS | COVERAGE | Computing positive strand..."
     if ! bedtools genomecov \
       -ibam "${bam}" \
       -${end_type} \
       -strand + \
       -bg \
+      | LC_ALL=C sort -k1,1 -k2,2n \
       > "${prefix}.pos.bedgraph"; then
       echo "TRACKS | ERROR | Failed to generate positive strand coverage"
       return 1
@@ -327,7 +328,7 @@ process generate_coverage_tracks {
     local pos_size=$(stat -c%s "${prefix}.pos.bedgraph" 2>/dev/null || stat -f%z "${prefix}.pos.bedgraph" 2>/dev/null || echo "unknown")
     echo "TRACKS | COVERAGE | Positive strand: ${pos_lines} regions (${pos_size} bytes)"
     
-    # Negative strand coverage (mirrored with -scale -1)
+    # Negative strand coverage (mirrored with -scale -1) — same pipe-to-sort pattern.
     echo "TRACKS | COVERAGE | Computing negative strand (mirrored with -scale -1)..."
     if ! bedtools genomecov \
       -ibam "${bam}" \
@@ -335,6 +336,7 @@ process generate_coverage_tracks {
       -strand - \
       -bg \
       -scale -1 \
+      | LC_ALL=C sort -k1,1 -k2,2n \
       > "${prefix}.neg.bedgraph"; then
       echo "TRACKS | ERROR | Failed to generate negative strand coverage"
       return 1
@@ -500,48 +502,36 @@ process generate_coverage_tracks {
   head -5 genome.sizes | sed 's/^/TRACKS | GENOME |   /'
 
   ###########################################################################
-  # 6) GENERATE 3' END COVERAGE (Always)
+  # 6 + 7) GENERATE 3' AND 5' END COVERAGE (Parallel)
   ###########################################################################
 
   echo "────────────────────────────────────────────────────────────────────────"
-  echo "TRACKS | 3P | Generating 3' end coverage tracks..."
+  echo "TRACKS | COVERAGE | Launching 4 coverage jobs in parallel..."
+  echo "TRACKS | COVERAGE |   3p/main  |  3p/allMap  |  5p/main  |  5p/allMap"
   echo "────────────────────────────────────────────────────────────────────────"
 
-  # Main BAM
-  echo "TRACKS | 3P | Processing main BAM..."
-  if ! generate_coverage "${INPUT_BAM}" "3" "3p/${SAMPLE_ID}.3p"; then
-    tracktx_error "generate_coverage_tracks" "Failed to generate 3' coverage from main BAM" "Check tracks.log in work dir"
+  # All four jobs are independent (different BAM inputs, different output
+  # prefixes) and each is single-threaded, so they run concurrently on
+  # separate cores.  Log output will be interleaved; each job identifies
+  # itself via its BAM filename in the TRACKS | COVERAGE messages.
+  pids=()
+  generate_coverage "${INPUT_BAM}"  "3" "3p/${SAMPLE_ID}.3p"        & pids+=($!)
+  generate_coverage "${ALLMAP_BAM}" "3" "3p/${SAMPLE_ID}.allMap.3p" & pids+=($!)
+  generate_coverage "${INPUT_BAM}"  "5" "5p/${SAMPLE_ID}.5p"        & pids+=($!)
+  generate_coverage "${ALLMAP_BAM}" "5" "5p/${SAMPLE_ID}.allMap.5p" & pids+=($!)
+
+  # Wait for all jobs; collect failures rather than exiting on the first one
+  # so all error messages appear in the log before tracktx_error aborts.
+  COVERAGE_FAILED=0
+  for pid in "${pids[@]}"; do
+    wait "${pid}" || COVERAGE_FAILED=1
+  done
+
+  if [[ ${COVERAGE_FAILED} -ne 0 ]]; then
+    tracktx_error "generate_coverage_tracks" "One or more coverage generation jobs failed" "Check tracks.log for per-job error messages"
   fi
 
-  # AllMap BAM
-  echo "TRACKS | 3P | Processing allMap BAM..."
-  if ! generate_coverage "${ALLMAP_BAM}" "3" "3p/${SAMPLE_ID}.allMap.3p"; then
-    tracktx_error "generate_coverage_tracks" "Failed to generate 3' coverage from allMap BAM" "Check tracks.log in work dir"
-  fi
-
-  echo "TRACKS | 3P | 3' end coverage complete"
-
-  ###########################################################################
-  # 7) GENERATE 5' END COVERAGE (Always — PE and SE)
-  ###########################################################################
-
-  echo "────────────────────────────────────────────────────────────────────────"
-  echo "TRACKS | 5P | Generating 5' end coverage tracks..."
-  echo "────────────────────────────────────────────────────────────────────────"
-
-  # Main BAM
-  echo "TRACKS | 5P | Processing main BAM..."
-  if ! generate_coverage "${INPUT_BAM}" "5" "5p/${SAMPLE_ID}.5p"; then
-    tracktx_error "generate_coverage_tracks" "Failed to generate 5' coverage from main BAM" "Check tracks.log in work dir"
-  fi
-
-  # AllMap BAM
-  echo "TRACKS | 5P | Processing allMap BAM..."
-  if ! generate_coverage "${ALLMAP_BAM}" "5" "5p/${SAMPLE_ID}.allMap.5p"; then
-    tracktx_error "generate_coverage_tracks" "Failed to generate 5' coverage from allMap BAM" "Check tracks.log in work dir"
-  fi
-
-  echo "TRACKS | 5P | 5' end coverage complete"
+  echo "TRACKS | COVERAGE | All 4 coverage jobs complete"
 
   ###########################################################################
   # 8) CREATE DOCUMENTATION
