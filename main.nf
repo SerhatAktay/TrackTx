@@ -458,9 +458,13 @@ workflow TrackTx {
   }
 
   // Primary genome
+  // Use a pre-placed local FASTA if present; otherwise pass NO_FILE so the
+  // module falls through to its built-in UCSC download logic.
   reference_fa = params.reference_genome == 'other'
     ? file(params.genome_fasta)
-    : file("${projectDir}/genomes/${params.reference_genome}.fa")
+    : (file("${projectDir}/genomes/${params.reference_genome}.fa").exists()
+        ? file("${projectDir}/genomes/${params.reference_genome}.fa")
+        : file("NO_FILE"))
 
   if (params.verbose) log.info "STEP 5 | INDEX | Primary genome: ${params.reference_genome}"
 
@@ -491,7 +495,9 @@ workflow TrackTx {
     
     spike_fa = params.spikein_genome == 'other'
       ? file(params.spikein_fasta)
-      : file("${projectDir}/genomes/${params.spikein_genome}.fa")
+      : (file("${projectDir}/genomes/${params.spikein_genome}.fa").exists()
+          ? file("${projectDir}/genomes/${params.spikein_genome}.fa")
+          : file("NO_FILE"))
 
     spike_index(
       Channel.value(tuple(
