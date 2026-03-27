@@ -462,24 +462,37 @@ process calculate_polymerase_occupancy_metrics {
     fi
 
     BAM_END=$(date +%s)
-    BAM_TIME=$((BAM_END - BAM_START))
+    _bam_time=$((BAM_END - BAM_START))
 
     echo "POL | BAM | Indexing filtered BAM..."
     samtools index -@ ${THREADS} filtered.bam
 
     FILT_SIZE=$(stat -c%s filtered.bam 2>/dev/null || stat -f%z filtered.bam 2>/dev/null || echo "unknown")
-    FILT_READS=$(samtools view -c filtered.bam)
+    _filt_reads=$(samtools view -c filtered.bam)
 
-    echo "POL | BAM | Filtered BAM: ${FILT_SIZE} bytes (${FILT_READS} reads)"
-    echo "POL | BAM | Processing time: ${BAM_TIME}s"
+    echo "POL | BAM | Filtered BAM: ${FILT_SIZE} bytes (${_filt_reads} reads)"
+    echo "POL | BAM | Processing time: ${_bam_time}s"
+
+    # Write values to temp files so the parent shell can read them back
+    # (subshell variables are not visible in the parent with set -u)
+    echo "${_filt_reads}" > .bam_filt_reads
+    echo "${_bam_time}"   > .bam_time
   } &
   BAM_PID=$!
+
+  # Initialise with safe defaults in case subshell fails before writing
+  FILT_READS=0
+  BAM_TIME=0
 
   # Wait for both sections before proceeding to gene metrics
   PARALLEL_FAILED=0
   wait "${DENSITY_PID}" || PARALLEL_FAILED=1
   wait "${BAM_PID}"     || PARALLEL_FAILED=1
   [[ ${PARALLEL_FAILED} -ne 0 ]] && tracktx_error "calculate_polymerase_occupancy_metrics" "Density calculation or BAM preparation failed" "Check pol_metrics.log in work dir"
+
+  # Read values back from temp files written by the BAM subshell
+  FILT_READS=$(cat .bam_filt_reads 2>/dev/null || echo 0)
+  BAM_TIME=$(cat .bam_time         2>/dev/null || echo 0)
 
   echo "POL | PARALLEL | Density and BAM preparation complete"
 
