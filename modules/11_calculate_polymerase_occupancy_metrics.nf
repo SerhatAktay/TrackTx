@@ -344,116 +344,144 @@ process calculate_polymerase_occupancy_metrics {
     echo "POL | DENSITY | Cleaned: ${LINE_COUNT} intervals"
   }
 
-  # Clean and take absolute values of both strands
-  clean_and_abs "${POS_TRACK}" "pos.abs.bedgraph"
-  clean_and_abs "${NEG_TRACK}" "neg.abs.bedgraph"
-
-  # Merge positive and negative strands (|pos| + |neg|)
-  echo "POL | DENSITY | Merging strands..."
-  
-  cat pos.abs.bedgraph neg.abs.bedgraph | \
-    LC_ALL=C sort -k1,1 -k2,2n -k3,3n | \
-    bedtools merge -i - -c 4 -o sum > combined.norm.bedgraph || \
-    : > combined.norm.bedgraph
-
-  COMBINED_LINES=$(wc -l < combined.norm.bedgraph | tr -d ' ')
-  COMBINED_SIZE=$(stat -c%s combined.norm.bedgraph 2>/dev/null || stat -f%z combined.norm.bedgraph 2>/dev/null || echo "unknown")
-  echo "POL | DENSITY | Combined track: ${COMBINED_LINES} intervals (${COMBINED_SIZE} bytes)"
-
-  # Map signal to functional regions
-  if [[ "${FUNC_BED}" != "-" && -s "${FUNC_BED}" ]]; then
-    echo "POL | DENSITY | Mapping signal to functional regions..."
-    
-    # Clean functional regions BED
-    awk 'BEGIN{OFS="\t"}
-         !/^track/ && !/^browser/ && !/^#/ && (NF>=3) {
-           print $1, $2, $3, (NF>=4 ? $4 : "."), (NF>=5 ? $5 : "0"), (NF>=6 ? $6 : ".")
-         }' "${FUNC_BED}" | \
-      LC_ALL=C sort -k1,1 -k2,2n -k3,3n > functional_regions.sorted.bed
-    
-    FUNC_SORTED=$(wc -l < functional_regions.sorted.bed | tr -d ' ')
-    echo "POL | DENSITY | Sorted functional regions: ${FUNC_SORTED}"
-    
-    # Create header
-    echo -e "chr\tstart\tend\tname\tsignal\tnorm_method" > pol_density.tsv
-    
-    # Map signal using bedtools
-    bedtools map \
-      -a functional_regions.sorted.bed \
-      -b combined.norm.bedgraph \
-      -c 4 \
-      -o sum \
-      -null 0 | \
-      awk -v OFS='\t' -v METHOD="${NORM_METHOD}" '{
-        print $1, $2, $3, ($4 != "." ? $4 : "."), ($NF != "." ? $NF : 0), METHOD
-      }' >> pol_density.tsv
-    
-    DENSITY_LINES=$(tail -n +2 pol_density.tsv | wc -l | tr -d ' ')
-    echo "POL | DENSITY | Density table: ${DENSITY_LINES} regions"
-  else
-    echo "POL | DENSITY | No functional regions, creating header-only file"
-    echo -e "chr\tstart\tend\tname\tsignal\tnorm_method" > pol_density.tsv
-  fi
+  # Sections 3 (density) and 4 (BAM) write to independent outputs
+  # (pol_density.tsv vs filtered.bam) — run them in parallel.
+  echo "POL | PARALLEL | Starting density calculation and BAM preparation concurrently..."
 
   ###########################################################################
-  # 4) PREPARE BAM FOR GENE METRICS
+  # 3) DENSITY METRICS FROM NORMALIZED TRACKS       (background)
   ###########################################################################
 
-  echo "POL | BAM | Preparing BAM for gene-level metrics..."
+  {
+    # Clean and take absolute values of both strands — pos and neg are independent.
+    clean_and_abs "${POS_TRACK}" "pos.abs.bedgraph" &
+    CLEAN_POS_PID=$!
+    clean_and_abs "${NEG_TRACK}" "neg.abs.bedgraph" &
+    CLEAN_NEG_PID=$!
+    CLEAN_FAILED=0
+    wait "${CLEAN_POS_PID}" || CLEAN_FAILED=1
+    wait "${CLEAN_NEG_PID}" || CLEAN_FAILED=1
+    [[ ${CLEAN_FAILED} -ne 0 ]] && tracktx_error "calculate_polymerase_occupancy_metrics" "Strand cleaning (clean_and_abs) failed" "Check pol_metrics.log in work dir"
 
-  # Check if BAM is coordinate sorted
-  SO_COORD=0
-  if samtools view -H "${IN_BAM}" | \
-     awk '/^@HD/ && /SO:coordinate/ {ok=1} END{exit ok?0:1}'; then
-    SO_COORD=1
-    echo "POL | BAM | BAM is coordinate-sorted"
-  else
-    echo "POL | BAM | BAM is not coordinate-sorted, will sort"
-  fi
+    # Merge positive and negative strands (|pos| + |neg|)
+    echo "POL | DENSITY | Merging strands..."
 
-  # Build filtering flags
-  FILTER_FLAGS="-F 0x4"  # Exclude unmapped
-  if [[ ${DEDUP_ENABLED} -eq 1 ]]; then
-    FILTER_FLAGS="${FILTER_FLAGS} -F 0x400"  # Exclude duplicates
-    echo "POL | BAM | Will exclude duplicates"
-  else
-    echo "POL | BAM | Will retain duplicates"
-  fi
+    cat pos.abs.bedgraph neg.abs.bedgraph | \
+      LC_ALL=C sort -k1,1 -k2,2n -k3,3n | \
+      bedtools merge -i - -c 4 -o sum > combined.norm.bedgraph || \
+      : > combined.norm.bedgraph
 
-  # Filter BAM
-  BAM_START=$(date +%s)
-  
-  if [[ ${SO_COORD} -eq 1 ]]; then
-    echo "POL | BAM | Filtering BAM (MAPQ≥${MAPQ})..."
-    samtools view \
-      -@ ${THREADS} \
-      -b \
-      -q ${MAPQ} \
-      ${FILTER_FLAGS} \
-      "${IN_BAM}" \
-      -o filtered.bam
-  else
-    echo "POL | BAM | Filtering and sorting BAM (MAPQ≥${MAPQ})..."
-    samtools view \
-      -@ ${THREADS} \
-      -b \
-      -q ${MAPQ} \
-      ${FILTER_FLAGS} \
-      "${IN_BAM}" | \
-    samtools sort -@ ${THREADS} -o filtered.bam
-  fi
+    COMBINED_LINES=$(wc -l < combined.norm.bedgraph | tr -d ' ')
+    COMBINED_SIZE=$(stat -c%s combined.norm.bedgraph 2>/dev/null || stat -f%z combined.norm.bedgraph 2>/dev/null || echo "unknown")
+    echo "POL | DENSITY | Combined track: ${COMBINED_LINES} intervals (${COMBINED_SIZE} bytes)"
 
-  BAM_END=$(date +%s)
-  BAM_TIME=$((BAM_END - BAM_START))
-  
-  echo "POL | BAM | Indexing filtered BAM..."
-  samtools index -@ ${THREADS} filtered.bam
+    # Map signal to functional regions
+    if [[ "${FUNC_BED}" != "-" && -s "${FUNC_BED}" ]]; then
+      echo "POL | DENSITY | Mapping signal to functional regions..."
 
-  FILT_SIZE=$(stat -c%s filtered.bam 2>/dev/null || stat -f%z filtered.bam 2>/dev/null || echo "unknown")
-  FILT_READS=$(samtools view -c filtered.bam)
-  
-  echo "POL | BAM | Filtered BAM: ${FILT_SIZE} bytes (${FILT_READS} reads)"
-  echo "POL | BAM | Processing time: ${BAM_TIME}s"
+      # Clean functional regions BED
+      awk 'BEGIN{OFS="\t"}
+           !/^track/ && !/^browser/ && !/^#/ && (NF>=3) {
+             print $1, $2, $3, (NF>=4 ? $4 : "."), (NF>=5 ? $5 : "0"), (NF>=6 ? $6 : ".")
+           }' "${FUNC_BED}" | \
+        LC_ALL=C sort -k1,1 -k2,2n -k3,3n > functional_regions.sorted.bed
+
+      FUNC_SORTED=$(wc -l < functional_regions.sorted.bed | tr -d ' ')
+      echo "POL | DENSITY | Sorted functional regions: ${FUNC_SORTED}"
+
+      # Create header
+      echo -e "chr\tstart\tend\tname\tsignal\tnorm_method" > pol_density.tsv
+
+      # Map signal using bedtools
+      bedtools map \
+        -a functional_regions.sorted.bed \
+        -b combined.norm.bedgraph \
+        -c 4 \
+        -o sum \
+        -null 0 | \
+        awk -v OFS='\t' -v METHOD="${NORM_METHOD}" '{
+          print $1, $2, $3, ($4 != "." ? $4 : "."), ($NF != "." ? $NF : 0), METHOD
+        }' >> pol_density.tsv
+
+      DENSITY_LINES=$(tail -n +2 pol_density.tsv | wc -l | tr -d ' ')
+      echo "POL | DENSITY | Density table: ${DENSITY_LINES} regions"
+    else
+      echo "POL | DENSITY | No functional regions, creating header-only file"
+      echo -e "chr\tstart\tend\tname\tsignal\tnorm_method" > pol_density.tsv
+    fi
+  } &
+  DENSITY_PID=$!
+
+  ###########################################################################
+  # 4) PREPARE BAM FOR GENE METRICS                 (background, parallel with 3)
+  ###########################################################################
+
+  {
+    echo "POL | BAM | Preparing BAM for gene-level metrics..."
+
+    # Check if BAM is coordinate sorted
+    SO_COORD=0
+    if samtools view -H "${IN_BAM}" | \
+       awk '/^@HD/ && /SO:coordinate/ {ok=1} END{exit ok?0:1}'; then
+      SO_COORD=1
+      echo "POL | BAM | BAM is coordinate-sorted"
+    else
+      echo "POL | BAM | BAM is not coordinate-sorted, will sort"
+    fi
+
+    # Build filtering flags
+    FILTER_FLAGS="-F 0x4"  # Exclude unmapped
+    if [[ ${DEDUP_ENABLED} -eq 1 ]]; then
+      FILTER_FLAGS="${FILTER_FLAGS} -F 0x400"  # Exclude duplicates
+      echo "POL | BAM | Will exclude duplicates"
+    else
+      echo "POL | BAM | Will retain duplicates"
+    fi
+
+    # Filter BAM
+    BAM_START=$(date +%s)
+
+    if [[ ${SO_COORD} -eq 1 ]]; then
+      echo "POL | BAM | Filtering BAM (MAPQ≥${MAPQ})..."
+      samtools view \
+        -@ ${THREADS} \
+        -b \
+        -q ${MAPQ} \
+        ${FILTER_FLAGS} \
+        "${IN_BAM}" \
+        -o filtered.bam
+    else
+      echo "POL | BAM | Filtering and sorting BAM (MAPQ≥${MAPQ})..."
+      samtools view \
+        -@ ${THREADS} \
+        -b \
+        -q ${MAPQ} \
+        ${FILTER_FLAGS} \
+        "${IN_BAM}" | \
+      samtools sort -@ ${THREADS} -o filtered.bam
+    fi
+
+    BAM_END=$(date +%s)
+    BAM_TIME=$((BAM_END - BAM_START))
+
+    echo "POL | BAM | Indexing filtered BAM..."
+    samtools index -@ ${THREADS} filtered.bam
+
+    FILT_SIZE=$(stat -c%s filtered.bam 2>/dev/null || stat -f%z filtered.bam 2>/dev/null || echo "unknown")
+    FILT_READS=$(samtools view -c filtered.bam)
+
+    echo "POL | BAM | Filtered BAM: ${FILT_SIZE} bytes (${FILT_READS} reads)"
+    echo "POL | BAM | Processing time: ${BAM_TIME}s"
+  } &
+  BAM_PID=$!
+
+  # Wait for both sections before proceeding to gene metrics
+  PARALLEL_FAILED=0
+  wait "${DENSITY_PID}" || PARALLEL_FAILED=1
+  wait "${BAM_PID}"     || PARALLEL_FAILED=1
+  [[ ${PARALLEL_FAILED} -ne 0 ]] && tracktx_error "calculate_polymerase_occupancy_metrics" "Density calculation or BAM preparation failed" "Check pol_metrics.log in work dir"
+
+  echo "POL | PARALLEL | Density and BAM preparation complete"
 
   ###########################################################################
   # 5) CALCULATE GENE METRICS AND PAUSING INDEX

@@ -240,20 +240,30 @@ process download_sra_samples {
         ENA_FTP=\$(tail -n 1 "\${ENA_REPORT}" | cut -f2)
         rm -f "\${ENA_REPORT}"
         if [[ -n "\${ENA_FTP}" && "\${ENA_FTP}" != "fastq_ftp" ]]; then
+          # Launch all file downloads in parallel (R1 + R2 simultaneously)
+          ENA_PIDS=()
           IX=0
           for URL in \$(echo "\${ENA_FTP}" | tr ';' ' '); do
             [[ -z "\${URL}" ]] && continue
             IX=$((IX+1))
             FNAME="\${URL##*/}"
             FURL="https://\${URL}"
-            echo "SRR | ENA | Downloading file \${IX}: \${FNAME}"
-            if curl -sfL "\${FURL}" -o "\${FNAME}" 2>/dev/null; then
-              echo "SRR | ENA | Downloaded \${FNAME}"
-            else
-              echo "SRR | ENA | HTTPS failed, trying FTP..."
-              curl -sfL "ftp://\${URL}" -o "\${FNAME}"
-            fi
+            echo "SRR | ENA | Starting download \${IX}: \${FNAME}"
+            {
+              if curl -sfL "\${FURL}" -o "\${FNAME}" 2>/dev/null; then
+                echo "SRR | ENA | Downloaded \${FNAME}"
+              else
+                echo "SRR | ENA | HTTPS failed for \${FNAME}, trying FTP..."
+                curl -sfL "ftp://\${URL}" -o "\${FNAME}"
+              fi
+            } &
+            ENA_PIDS+=(\$!)
           done
+          ENA_FAILED=0
+          for pid in "\${ENA_PIDS[@]}"; do wait "\${pid}" || ENA_FAILED=1; done
+          if [[ \${ENA_FAILED} -ne 0 ]]; then
+            echo "SRR | ENA | One or more downloads failed"
+          fi
           NCBI_OK=1
         else
           echo "SRR | ENA | No FASTQ URLs in ENA report"

@@ -542,28 +542,38 @@ PYSCRIPT
 
   ###########################################################################
   # 6) NORMALIZE MAIN 3' TRACKS
+  # pos and neg are independent — run in parallel
   ###########################################################################
 
-  echo "NORMALIZE | MAIN3P | Normalizing main 3' tracks..."
+  echo "NORMALIZE | MAIN3P | Normalizing main 3' tracks (pos + neg in parallel)..."
 
-  # Initialize manifest
+  # Initialize manifest before launching parallel jobs
   : > tracks_manifest.tsv
 
-  normalize_bedgraph "${POS3}" "3p" "pos" "main"
-  normalize_bedgraph "${NEG3}" "3p" "neg" "main"
+  pids=()
+  normalize_bedgraph "${POS3}" "3p" "pos" "main" & pids+=($!)
+  normalize_bedgraph "${NEG3}" "3p" "neg" "main" & pids+=($!)
+  NORM_FAILED=0
+  for pid in "${pids[@]}"; do wait "${pid}" || NORM_FAILED=1; done
+  [[ ${NORM_FAILED} -ne 0 ]] && tracktx_error "normalize_coverage_tracks" "One or more main 3' normalization jobs failed" "Check normalize_coverage_tracks.log in work dir"
 
   echo "NORMALIZE | MAIN3P | Main 3' tracks complete"
 
   ###########################################################################
   # 7) NORMALIZE MAIN 5' TRACKS (if enabled)
+  # pos and neg are independent — run in parallel
   ###########################################################################
 
   if [[ ${EMIT_5P} -eq 1 ]]; then
-    echo "NORMALIZE | MAIN5P | Normalizing main 5' tracks..."
-    
-    normalize_bedgraph "${POS5}" "5p" "pos" "main"
-    normalize_bedgraph "${NEG5}" "5p" "neg" "main"
-    
+    echo "NORMALIZE | MAIN5P | Normalizing main 5' tracks (pos + neg in parallel)..."
+
+    pids=()
+    normalize_bedgraph "${POS5}" "5p" "pos" "main" & pids+=($!)
+    normalize_bedgraph "${NEG5}" "5p" "neg" "main" & pids+=($!)
+    NORM_FAILED=0
+    for pid in "${pids[@]}"; do wait "${pid}" || NORM_FAILED=1; done
+    [[ ${NORM_FAILED} -ne 0 ]] && tracktx_error "normalize_coverage_tracks" "One or more main 5' normalization jobs failed" "Check normalize_coverage_tracks.log in work dir"
+
     echo "NORMALIZE | MAIN5P | Main 5' tracks complete"
   else
     echo "NORMALIZE | MAIN5P | Skipping 5' tracks (not enabled)"
@@ -571,14 +581,19 @@ PYSCRIPT
 
   ###########################################################################
   # 8) NORMALIZE ALLMAP 3' TRACKS (if enabled)
+  # pos and neg are independent — run in parallel
   ###########################################################################
 
   if [[ ${EMIT_ALLMAP} -eq 1 ]]; then
-    echo "NORMALIZE | ALLMAP3P | Normalizing allMap 3' tracks..."
-    
-    normalize_bedgraph "${AM3P_POS}" "3p" "pos" "allMap"
-    normalize_bedgraph "${AM3P_NEG}" "3p" "neg" "allMap"
-    
+    echo "NORMALIZE | ALLMAP3P | Normalizing allMap 3' tracks (pos + neg in parallel)..."
+
+    pids=()
+    normalize_bedgraph "${AM3P_POS}" "3p" "pos" "allMap" & pids+=($!)
+    normalize_bedgraph "${AM3P_NEG}" "3p" "neg" "allMap" & pids+=($!)
+    NORM_FAILED=0
+    for pid in "${pids[@]}"; do wait "${pid}" || NORM_FAILED=1; done
+    [[ ${NORM_FAILED} -ne 0 ]] && tracktx_error "normalize_coverage_tracks" "One or more allMap 3' normalization jobs failed" "Check normalize_coverage_tracks.log in work dir"
+
     echo "NORMALIZE | ALLMAP3P | AllMap 3' tracks complete"
   else
     echo "NORMALIZE | ALLMAP3P | Skipping allMap 3' tracks (not enabled)"
@@ -586,14 +601,19 @@ PYSCRIPT
 
   ###########################################################################
   # 9) NORMALIZE ALLMAP 5' TRACKS (if both enabled)
+  # pos and neg are independent — run in parallel
   ###########################################################################
 
   if [[ ${EMIT_ALLMAP} -eq 1 && ${EMIT_5P} -eq 1 ]]; then
-    echo "NORMALIZE | ALLMAP5P | Normalizing allMap 5' tracks..."
-    
-    normalize_bedgraph "${AM5P_POS}" "5p" "pos" "allMap"
-    normalize_bedgraph "${AM5P_NEG}" "5p" "neg" "allMap"
-    
+    echo "NORMALIZE | ALLMAP5P | Normalizing allMap 5' tracks (pos + neg in parallel)..."
+
+    pids=()
+    normalize_bedgraph "${AM5P_POS}" "5p" "pos" "allMap" & pids+=($!)
+    normalize_bedgraph "${AM5P_NEG}" "5p" "neg" "allMap" & pids+=($!)
+    NORM_FAILED=0
+    for pid in "${pids[@]}"; do wait "${pid}" || NORM_FAILED=1; done
+    [[ ${NORM_FAILED} -ne 0 ]] && tracktx_error "normalize_coverage_tracks" "One or more allMap 5' normalization jobs failed" "Check normalize_coverage_tracks.log in work dir"
+
     echo "NORMALIZE | ALLMAP5P | AllMap 5' tracks complete"
   else
     echo "NORMALIZE | ALLMAP5P | Skipping allMap 5' tracks"

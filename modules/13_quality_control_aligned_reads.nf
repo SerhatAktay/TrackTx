@@ -149,10 +149,11 @@ process quality_control_aligned_reads {
   CONDITION="${condition}"
   TIMEPOINT="${timepoint}"
   REPLICATE="${replicate}"
-  
+  THREADS=${task.cpus}
+
   BAM_FILE="${aligned_bam}"
   DEDUP_STATS="${dedup_stats}"
-  
+
   MAPQ_THRESHOLD=${mapq_thr}
   DEDUP_ENABLED=${dedup_enabled}
   DEDUP_FLAG="${dedup_flag}"
@@ -186,7 +187,7 @@ process quality_control_aligned_reads {
   # Check if BAM is indexed (create if needed)
   if [[ ! -e "\${BAM_FILE}.bai" ]]; then
     echo "QC | VALIDATE | BAM index not found, creating..."
-    samtools index "\${BAM_FILE}"
+    samtools index -@ \${THREADS} "\${BAM_FILE}"
     echo "QC | VALIDATE | BAM index created"
   else
     echo "QC | VALIDATE | BAM index: present"
@@ -240,27 +241,27 @@ process quality_control_aligned_reads {
 
   # Total reads (primary alignments, not secondary/supplementary)
   echo "QC | STATS | Counting total reads..."
-  TOTAL_READS=\$(samtools view -c -F 0x900 "\${BAM_FILE}")
+  TOTAL_READS=\$(samtools view -@ \${THREADS} -c -F 0x900 "\${BAM_FILE}")
   echo "QC | STATS | Total reads: \${TOTAL_READS}"
 
   # Mapped reads (primary, not unmapped)
   echo "QC | STATS | Counting mapped reads..."
-  MAPPED_READS=\$(samtools view -c -F 0x904 "\${BAM_FILE}")
+  MAPPED_READS=\$(samtools view -@ \${THREADS} -c -F 0x904 "\${BAM_FILE}")
   echo "QC | STATS | Mapped reads: \${MAPPED_READS}"
 
   # Duplicate reads
   echo "QC | STATS | Counting duplicate reads..."
-  DUP_READS=\$(samtools view -c -f 0x400 -F 0x900 "\${BAM_FILE}")
+  DUP_READS=\$(samtools view -@ \${THREADS} -c -f 0x400 -F 0x900 "\${BAM_FILE}")
   echo "QC | STATS | Duplicate reads: \${DUP_READS}"
 
   # MAPQ filtered reads (primary, mapped, MAPQ≥threshold)
   echo "QC | STATS | Counting MAPQ≥\${MAPQ_THRESHOLD} reads..."
-  MAPQ_READS=\$(samtools view -c -F 0x904 -q \${MAPQ_THRESHOLD} "\${BAM_FILE}")
+  MAPQ_READS=\$(samtools view -@ \${THREADS} -c -F 0x904 -q \${MAPQ_THRESHOLD} "\${BAM_FILE}")
   echo "QC | STATS | MAPQ≥\${MAPQ_THRESHOLD} reads: \${MAPQ_READS}"
 
   # MAPQ filtered + deduplicated reads
   echo "QC | STATS | Counting MAPQ≥\${MAPQ_THRESHOLD} + non-duplicate reads..."
-  MAPQ_NODUP_READS=\$(samtools view -c -F 0xD04 -q \${MAPQ_THRESHOLD} "\${BAM_FILE}")
+  MAPQ_NODUP_READS=\$(samtools view -@ \${THREADS} -c -F 0xD04 -q \${MAPQ_THRESHOLD} "\${BAM_FILE}")
   echo "QC | STATS | MAPQ≥\${MAPQ_THRESHOLD} (no dup): \${MAPQ_NODUP_READS}"
 
   STATS_END=\$(date +%s)
@@ -277,7 +278,7 @@ process quality_control_aligned_reads {
 
   # Count reads on each strand (after MAPQ filtering)
   # Flag 0x10 = reverse strand
-  samtools view -F 0x904 -q \${MAPQ_THRESHOLD} ${dedup_flag} "\${BAM_FILE}" | \
+  samtools view -@ \${THREADS} -F 0x904 -q \${MAPQ_THRESHOLD} ${dedup_flag} "\${BAM_FILE}" | \
     awk '{
       if (and(\$2, 16)) {
         strand = "-"
@@ -333,7 +334,7 @@ process quality_control_aligned_reads {
     echo "QC | FRAGMENT | Extracting insert size distribution..."
     
     # Use samtools stats to get insert size distribution (IS lines: length, count)
-    samtools stats -F 0x904 -q \${MAPQ_THRESHOLD} ${dedup_flag} "\${BAM_FILE}" 2>/dev/null | \
+    samtools stats -@ \${THREADS} -F 0x904 -q \${MAPQ_THRESHOLD} ${dedup_flag} "\${BAM_FILE}" 2>/dev/null | \
       awk '/^IS[[:space:]]/ && NF>=3 && \$2+0==\$2 && \$3+0==\$3 {print \$2 "\\t" \$3}' > frag_tmp.tsv || true
 
     if [[ -s frag_tmp.tsv ]]; then
