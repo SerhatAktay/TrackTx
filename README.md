@@ -154,7 +154,7 @@ TrackTx runs 15 modules in sequence. Here is what each one does.
 Downloads GTF gene annotation files from Ensembl, RefSeq, or GENCODE for the chosen reference genome. Annotations drive gene-body boundary calls, divergent transcription pairing, and functional region assignment throughout the pipeline.
 
 **02 — Download SRA Samples**
-Retrieves FASTQ files from NCBI SRA or the European Nucleotide Archive (ENA) when `sample_source: srr` is set. Uses `fasterq-dump` with multi-threaded conversion and falls back to parallel ENA downloads automatically. Results are cached in Nextflow's `work/` directory so reruns with `-resume` skip re-downloading.
+Retrieves FASTQ files from NCBI SRA or the European Nucleotide Archive (ENA) when `sample_source: srr` is set. Uses `fasterq-dump` with multi-threaded conversion and falls back to parallel ENA downloads automatically. Raw FASTQs are stored via Nextflow's `storeDir` at `{output_dir}/00_sra_cache/{SRR}/`, so re-downloads are skipped as long as those files exist — even after the `work/` directory has been deleted between runs.
 
 **03 — Preprocess and Quality Filter Reads**
 Trims adapter sequences, removes barcodes, and applies a minimum length filter in a single `cutadapt` pass. UMI extraction with `umi_tools` follows if enabled. FastQC runs on both raw and cleaned reads to confirm quality before alignment.
@@ -163,7 +163,7 @@ Trims adapter sequences, removes barcodes, and applies a minimum length filter i
 Downloads the reference (and spike-in) genome FASTA, then builds a `bowtie2` alignment index. Pre-built indexes are cached and reused across runs.
 
 **05 — Align Reads to Genome**
-Aligns cleaned reads to the reference genome with `bowtie2` (end-to-end mode). Spike-in reads are aligned separately to derive normalization factors. Outputs include coordinate-sorted, indexed BAM files for primary, all-mapping, and spike-in alignments.
+Aligns cleaned reads to the reference genome with `bowtie2` (end-to-end mode). Spike-in reads are aligned separately to derive normalization factors. Outputs include coordinate-sorted, indexed BAM files for primary, all-mapping, and spike-in alignments. BAMs and alignment artefacts are stored via `storeDir` at `{output_dir}/02_alignments/{sample_id}/`, so alignment is skipped for any sample whose BAM already exists there — even across runs where `work/` has been cleared. To force realignment for a sample, delete its folder: `rm -rf {output_dir}/02_alignments/{sample_id}`.
 
 **06 — Generate Coverage Tracks**
 Produces strand-specific 3′-end and 5′-end coverage tracks in bedGraph format using `bedtools genomecov`. Four independent coverage jobs (3p positive, 3p negative, 5p positive, 5p negative) run in parallel. Each bedGraph is pre-sorted inline and converted to BigWig format for use in genome browsers.
@@ -398,11 +398,12 @@ functional_regions:
 | Flag | Savings |
 |------|---------|
 | `publish_trimmed_fastq: false` | ~920 MB per sample |
-| `publish_alignments: false` | ~270 MB per sample |
 | `publish_references_gtf: false` | ~790 MB (one-time) |
 | `output.raw_tracks: false` | ~150 MB per sample |
 | `output.bedgraph: false` | ~100 MB per sample |
 | `norm.emit_allmap: false` | ~50 MB per sample |
+
+> **Note:** `publish_alignments` no longer suppresses BAM output. Module 05 uses `storeDir`, so BAMs are always written to `{output_dir}/02_alignments/` and serve as the persistent cache. Delete individual sample folders manually if you need to reclaim space.
 
 ---
 
@@ -412,6 +413,20 @@ The pipeline writes results to `{output_dir}/` (default: `./results`).
 
 ```
 results/
+├── 00_sra_cache/                  # storeDir — raw FASTQs (SRA runs only)
+│   └── <SRR>/
+│       ├── <SRR>_R1.fastq[.gz]   # Persisted to survive work/ deletion
+│       ├── <SRR>_R2.fastq[.gz]   # (PE only)
+│       └── README_fastq.txt
+│
+├── 02_alignments/                 # storeDir — BAMs and alignment artefacts
+│   └── <sample>/
+│       ├── <sample>.bam / .bai
+│       ├── <sample>_allMap.bam
+│       ├── <sample>_spikein.bam / .bai
+│       ├── aligner_summary.tsv
+│       └── bowtie2_*.log
+│
 ├── 05_normalized_tracks/          # ⭐ Load in IGV or UCSC Genome Browser
 │   └── <sample>/
 │       ├── 3p/*.cpm.bw            # CPM BigWig tracks (3' end)
@@ -557,12 +572,16 @@ Typical sizes for a single paired-end sample (full run):
 
 | Location | Size | Contents |
 |----------|------|----------|
-| `results/` | ~2.3 GB | Published outputs |
-| `work/` | ~1.7 GB | Nextflow intermediates |
+| `results/` | ~2.3 GB | Published outputs + storeDir folders |
+| `results/00_sra_cache/` | ~100 GB+ | Raw SRA FASTQs (SRA runs only, storeDir) |
+| `results/02_alignments/` | ~270 MB/sample | BAMs (storeDir) |
+| `work/` | ~1.7 GB | Nextflow intermediates (safe to delete) |
 | `.cache/genomes` | ~7 GB | Reference genomes (shared across runs) |
 | Input data | ~325 MB | Raw FASTQ (test subset) |
 
-Largest result folders: `01_trimmed_fastq` (~920 MB), `00_references` (~800 MB GTF), `02_alignments` (~270 MB), `05_normalized_tracks` (~165 MB).
+Largest result folders: `01_trimmed_fastq` (~920 MB), `00_references` (~800 MB GTF), `02_alignments` (~270 MB per sample), `05_normalized_tracks` (~165 MB).
+
+The `work/` directory can be safely deleted between runs — `storeDir` folders (`00_sra_cache/` and `02_alignments/`) persist independently and will be used as cache on the next run.
 
 ### Expected runtimes
 
@@ -589,6 +608,12 @@ In Docker Desktop, check Settings → Resources → Memory. In WSL2, set a limit
 ```bash
 nextflow clean -f   # removes work/ directories for completed runs
 ```
+
+> **`nextflow clean` does not touch `storeDir` folders.** Raw SRA FASTQs (`00_sra_cache/`) and BAMs (`02_alignments/`) will remain on disk and continue to act as cache for future runs. Delete them manually only when you are certain they are no longer needed:
+> ```bash
+> rm -rf results/00_sra_cache/         # remove all cached SRA FASTQs
+> rm -rf results/02_alignments/SAMPLE  # remove one sample's BAMs to force realignment
+> ```
 
 ---
 
@@ -697,14 +722,34 @@ PRO-seq should be ~45–55% per strand. A severe imbalance (> 70% one strand) us
 
 ### Caching and resume issues
 
+**Understanding the two caching mechanisms:**
+TrackTx uses two complementary caching strategies:
+
+- **`storeDir`** (modules 02, 04, 05 and genome annotation/index steps) — caches by **file existence**. If the output files are present at the store path, the process is skipped entirely, regardless of whether `work/` exists. Survives `nextflow clean` and deleting `work/`.
+- **`-resume`** (all other modules) — caches by **input checksum**. Requires `work/` to be intact. Skips tasks whose inputs have not changed since the last run.
+
 **`-resume` re-runs tasks that already completed:**
-Nextflow's cache depends on input file path, size, and timestamp. NFS/network storage can give inconsistent timestamps. Fix:
+Nextflow's resume cache depends on input file path, size, and timestamp. NFS/network storage can give inconsistent timestamps. Fix:
 ```yaml
 preprocess_reads_lenient_cache: true
 ```
 or run with `--preprocess_reads_lenient_cache`. Debug with:
 ```bash
 nextflow run ... -resume -dump-hashes 2>&1 | grep "cache hash"
+```
+
+**SRA download or alignment re-runs even though outputs exist:**
+These modules use `storeDir`. If a rerun triggers them unexpectedly, check that the expected output files are actually present and non-empty at:
+- `{output_dir}/00_sra_cache/{SRR}/{SRR}_R1.fastq`
+- `{output_dir}/02_alignments/{sample_id}/{sample_id}.bam`
+
+If outputs are missing or zero-size, delete the folder and rerun.
+
+**Forcing a re-download or realignment:**
+Delete the relevant `storeDir` subfolder — `-resume` alone is not enough, as `storeDir` bypasses the checksum cache:
+```bash
+rm -rf results/00_sra_cache/SRR123456      # re-download one accession
+rm -rf results/02_alignments/my_sample     # realign one sample
 ```
 
 **`preprocess_and_quality_filter_reads` re-runs after a Ctrl+C:**

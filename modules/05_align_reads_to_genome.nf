@@ -39,15 +39,15 @@ process align_reads_to_genome {
   // ── Process Configuration ────────────────────────────────────────────────
   tag        { sample_id }
   label      'conda'
-  cache      'deep'  // Ignore resource allocation changes for better caching
+  cache      'deep'  // Used as fallback when storeDir outputs are absent
 
-  publishDir "${params.output_dir}/02_alignments/${sample_id}",
-             mode: params.publish_mode,
-             overwrite: true,
-             saveAs: { filename ->
-               if (params.get('publish_alignments') == false) return null  // Skip entire folder to save ~270 MB/sample
-               return filename instanceof Path ? filename.getFileName().toString() : filename.toString()
-             }
+  // storeDir persists BAMs and alignment artefacts to the results folder.
+  // If all declared outputs already exist at this path, alignment is skipped
+  // entirely — even after the work/ directory has been deleted between runs.
+  // NOTE: storeDir caches by file existence, not input checksums. If trimmed
+  // FASTQs change for a sample, manually delete the storeDir folder to force
+  // realignment: rm -rf <output_dir>/02_alignments/<sample_id>
+  storeDir "${params.output_dir}/02_alignments/${sample_id}"
 
   // ── Inputs ───────────────────────────────────────────────────────────────
   input:

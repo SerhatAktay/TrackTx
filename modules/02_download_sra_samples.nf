@@ -27,8 +27,8 @@
 //   tuple(sample_id, sra_id, condition, timepoint, replicate, paired_end)
 //
 // Outputs:
-//   ${params.output_dir}/01_trimmed_fastq/
-//     ├── <SRR>_R1.fastq[.gz]        — Read 1 FASTQ
+//   ${params.output_dir}/00_sra_cache/<SRR>/
+//     ├── <SRR>_R1.fastq[.gz]        — Read 1 FASTQ  (persisted as storeDir cache)
 //     ├── <SRR>_R2.fastq[.gz]        — Read 2 FASTQ (PE only)
 //     ├── <SRR>_R1.fastq.md5         — Checksums
 //     ├── <SRR>_R2.fastq.md5         — Checksums (PE only)
@@ -51,24 +51,12 @@ process download_sra_samples {
   cache      'deep'
   conda      (params.conda_sra ?: "${projectDir}/envs/tracktx.yaml")
   
-  // NOTE: Raw FASTQ files are NOT published here to save disk space (~100GB+)
-  // They are intermediate files that get processed by preprocess_and_quality_filter_reads
-  // Only the final trimmed/processed FASTQs are published by preprocess_and_quality_filter_reads
-  // Raw files remain in work/ directory for Nextflow caching with -resume
-  
-  publishDir "${params.output_dir}/01_trimmed_fastq",
-             mode: params.publish_mode,
-             overwrite: true,
-             saveAs: { filename ->
-               // Only publish checksums and README, NOT the raw FASTQ files
-               // This saves ~100GB+ of redundant storage
-               if (filename.endsWith('.md5') || 
-                   filename.endsWith('.sha256') || 
-                   filename == 'README_fastq.txt') {
-                 return filename
-               }
-               return null  // Don't publish raw FASTQs
-             }
+  // storeDir persists raw FASTQs to a dedicated cache folder outside the work directory.
+  // If outputs already exist at this path, the download is skipped entirely — even after
+  // the work/ directory has been deleted. Cache is keyed per SRA accession so adding new
+  // samples never invalidates existing downloads.
+  // NOTE: ~100GB+ of raw FASTQ data will accumulate here; clean up manually when no longer needed.
+  storeDir "${params.output_dir}/00_sra_cache/${sra_id}"
 
   // ── Inputs ────────────────────────────────────────────────────────────────
   input:
@@ -139,8 +127,9 @@ process download_sra_samples {
   SRA_MAX_SIZE="!{sraMaxSize}"
   SRA_SOURCE="!{sraSource}"
   
-  # Cache check looks in output dir (for -resume, Nextflow reuses work/ outputs)
-  CACHE_DIR="!{params.output_dir}/01_trimmed_fastq"
+  # storeDir handles caching at the Nextflow level — if outputs exist in 00_sra_cache/<SRR>/
+  # this script never runs. CACHE_DIR is kept as a fallback for manual inspection only.
+  CACHE_DIR="!{params.output_dir}/00_sra_cache/!{sra_id}"
   mkdir -p "${CACHE_DIR}"
 
   echo "SRR | CONFIG | Sample ID: ${SAMPLE_ID}"
@@ -458,8 +447,9 @@ FILES
 
 CACHING
 ────────────────────────────────────────────────────────────────────────────
-  Files remain in Nextflow work/ directory. Use -resume to reuse cached outputs
-  and skip re-download on reruns.
+  Files are stored via Nextflow storeDir in: output_dir/00_sra_cache/<SRR>/
+  Re-downloads are skipped as long as output files exist in the storeDir,
+  even after the work/ directory has been deleted between runs.
 
 NOTES
 ────────────────────────────────────────────────────────────────────────────
