@@ -54,6 +54,7 @@
 //     ├── divergent_transcription.bed       — Detected regions (BED5)
 //     ├── divergent_transcription_qc.txt    — QC report with statistics
 //     ├── divergent_summary.tsv             — Detection statistics
+//     ├── divergence_ratios.tsv             — Per-region log2(pos/neg) ratios + GMM component labels
 //     ├── README_divergent.txt              — Documentation
 //     └── divergent.log                     — Processing log
 //
@@ -124,6 +125,7 @@ process detect_divergent_transcription {
 
     path "divergent_transcription_qc.txt", optional: true, emit: qc_txt
     path "divergent_summary.tsv",                          emit: summary
+    path "divergence_ratios.tsv",          optional: true, emit: ratios
     path "README_divergent.txt",                           emit: readme
     path "divergent.log",                                  emit: log
 
@@ -337,6 +339,7 @@ process detect_divergent_transcription {
     --merge-gap    "${MERGE_GAP}" \
     --ncores       "${THREADS}" \
     --write-summary "divergent_summary.tsv" \
+    --write-ratios  "divergence_ratios.tsv" \
     ${THRESHOLD_ARG} \
     ${SUM_THR_ARG} \
     ${CAL_BG_ARG} \

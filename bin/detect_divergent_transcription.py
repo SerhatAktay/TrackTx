@@ -115,6 +115,11 @@ Output:
                     help="Disable QC report generation")
     ap.add_argument("--write-summary", default=None,
                     help="Path to summary TSV file (for pipeline integration)")
+    ap.add_argument("--write-ratios", default=None,
+                    help="Path to write per-region divergence ratios TSV "
+                         "(columns: chrom, start, end, log2_ratio, gmm_component). "
+                         "Contains ALL candidate pairs before FDR filtering, enabling "
+                         "GMM histogram visualisation (Fig 1C).")
     ap.add_argument("--quiet", action="store_true",
                     help="Suppress progress messages")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -608,6 +613,7 @@ def extract_features(
         result_parts.append(pd.DataFrame({
             'total_signal':     total_signal,
             'log_total':        np.log1p(total_signal),
+            'log2_ratio':       np.log2(pos_sums / neg_sums),  # strand balance as log2(pos/neg)
             'balance_bayesian': balance_bayesian,
             'width':            width,
             'signal_density':   total_signal / np.maximum(1.0, width),
@@ -618,7 +624,7 @@ def extract_features(
 
     if not result_parts:
         return pd.DataFrame(columns=[
-            'total_signal', 'log_total', 'balance_bayesian', 'width',
+            'total_signal', 'log_total', 'log2_ratio', 'balance_bayesian', 'width',
             'signal_density', 'local_bg', 'signal_to_bg', 'log_snr'
         ])
 
@@ -951,6 +957,18 @@ def main():
         )
         log(f"QC report: {report_path}", args.quiet)
     
+    # Write per-region divergence ratios (for GMM histogram figure, Fig 1C)
+    if args.write_ratios:
+        ratios_df = pd.DataFrame({
+            'chrom':         paired['chr'].values,
+            'start':         paired['start'].values,
+            'end':           paired['end'].values,
+            'log2_ratio':    features_df['log2_ratio'].values,
+            'gmm_component': passing_mask.astype(int),  # 0 = background, 1 = signal
+        })
+        ratios_df.to_csv(args.write_ratios, sep='\t', index=False)
+        log(f"Divergence ratios: {args.write_ratios} ({len(ratios_df):,} regions)", args.quiet)
+
     # Generate summary TSV (for pipeline integration)
     if args.write_summary:
         elapsed = time.time() - start_time
