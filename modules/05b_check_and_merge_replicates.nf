@@ -58,18 +58,22 @@ process check_and_merge_replicates {
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:
+    // Use exact filenames (not broad globs) so *.merged.bam doesn't capture
+    // *.allMap.merged.bam and *.spikein.merged.bam as well, which would turn
+    // filt_bam into a 3-element list and silently empty the downstream channel.
     tuple val(condition), val(timepoint),
-          path("*.merged.bam"),
-          path("*.allMap.merged.bam"),
-          path("*.spikein.merged.bam"),
+          path("${mergedPrefix}.bam"),
+          path("${mergedPrefix}.allMap.merged.bam"),
+          path("${mergedPrefix}.spikein.merged.bam"),
           emit: merged_bams,
           optional: true
 
-    // Passthrough: individual BAMs when not merging (concordance failed or single replicate)
+    // Passthrough: individual BAMs when not merging (concordance failed or single replicate).
+    // Files are written to typed subdirs so the three globs are non-overlapping.
     tuple val(condition), val(timepoint),
-          path("passthrough/*.bam"),
-          path("passthrough/*.allMap.bam"),
-          path("passthrough/*.spikein.bam"),
+          path("passthrough/filt/*.bam"),
+          path("passthrough/allmap/*.bam"),
+          path("passthrough/spike/*.bam"),
           emit: passthrough_bams,
           optional: true
 
@@ -107,7 +111,8 @@ process check_and_merge_replicates {
   echo "Concordance threshold: ${CONCORDANCE_MIN}"
   echo ""
 
-  mkdir -p passthrough
+  # Typed passthrough subdirs so output globs don't overlap
+  mkdir -p passthrough/filt passthrough/allmap passthrough/spike
 
   # ── Collect BAM files ──────────────────────────────────────────────────────
   # Nextflow stages files flat; reconstruct lists from staged names
@@ -137,9 +142,9 @@ process check_and_merge_replicates {
   # ── Single replicate: passthrough immediately ──────────────────────────────
   if [[ "$N_REPLICATES" -le 1 ]]; then
     echo "Only 1 replicate — skipping concordance check, passing through unchanged."
-    for f in "${FILTERED_BAMS[@]:-}"; do [[ -f "$f" ]] && cp "$f" "passthrough/" ; done
-    for f in "${ALLMAP_BAMS[@]:-}";   do [[ -f "$f" ]] && cp "$f" "passthrough/" ; done
-    for f in "${SPIKE_BAMS[@]:-}";    do [[ -f "$f" ]] && cp "$f" "passthrough/" ; done
+    for f in "${FILTERED_BAMS[@]:-}"; do [[ -f "$f" ]] && cp "$f" "passthrough/filt/" ; done
+    for f in "${ALLMAP_BAMS[@]:-}";   do [[ -f "$f" ]] && cp "$f" "passthrough/allmap/" ; done
+    for f in "${SPIKE_BAMS[@]:-}";    do [[ -f "$f" ]] && cp "$f" "passthrough/spike/" ; done
     echo -e "condition\ttimepoint\tsamples\tmin_corr\tmethod\tmerged" \
       > concordance_report.tsv
     echo -e "${CONDITION}\t${TIMEPOINT}\t${SAMPLE_IDS[*]}\tNA\t${CONCORDANCE_METHOD}\tno_single" \
@@ -251,9 +256,9 @@ process check_and_merge_replicates {
     echo "  WARNING: Replicates for ${CONDITION}@${TIMEPOINT} are too discordant to merge."
     echo "  Proceeding with individual replicates."
 
-    for f in "${FILTERED_BAMS[@]:-}"; do [[ -f "$f" ]] && cp "$f" "passthrough/" ; done
-    for f in "${ALLMAP_BAMS[@]:-}";   do [[ -f "$f" ]] && cp "$f" "passthrough/" ; done
-    for f in "${SPIKE_BAMS[@]:-}";    do [[ -f "$f" ]] && cp "$f" "passthrough/" ; done
+    for f in "${FILTERED_BAMS[@]:-}"; do [[ -f "$f" ]] && cp "$f" "passthrough/filt/" ; done
+    for f in "${ALLMAP_BAMS[@]:-}";   do [[ -f "$f" ]] && cp "$f" "passthrough/allmap/" ; done
+    for f in "${SPIKE_BAMS[@]:-}";    do [[ -f "$f" ]] && cp "$f" "passthrough/spike/" ; done
 
     echo -e "${CONDITION}\t${TIMEPOINT}\t${SAMPLE_IDS[*]}\t${MIN_CORR}\t${CONCORDANCE_METHOD}\tno_failed" \
       >> concordance_report.tsv
