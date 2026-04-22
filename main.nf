@@ -237,6 +237,7 @@ include { preprocess_and_quality_filter_reads                    } from "${MOD}/
 include { download_genome_and_build_alignment_index as build_index } from "${MOD}/04_download_genome_and_build_alignment_index.nf"
 include { download_genome_and_build_alignment_index as spike_index } from "${MOD}/04_download_genome_and_build_alignment_index.nf"
 include { align_reads_to_genome                                  } from "${MOD}/05_align_reads_to_genome.nf"
+include { check_and_merge_replicates                             } from "${MOD}/05b_check_and_merge_replicates.nf"
 include { generate_coverage_tracks                               } from "${MOD}/06_generate_coverage_tracks.nf"
 include { quantify_reads_per_gene                                } from "${MOD}/07_quantify_reads_per_gene.nf"
 include { normalize_coverage_tracks                              } from "${MOD}/08_normalize_coverage_tracks.nf"
@@ -539,20 +540,82 @@ workflow TrackTx {
   )
   
   aligned_ch = align_reads_to_genome.out[0]
-  
+
   // Monitor alignments
   aligned_ch.subscribe { sid, _bam, _allbam, _spike, _cond, _time, _rep ->
     if (params.verbose) log.info "STEP 6 | ALIGN | ${sid} alignment complete"
   }
-  
+
   // aligned_ch: (sample_id, sample.bam, sample_allMap.bam, spikein.bam, condition, timepoint, replicate)
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // STEP 6b: Replicate Concordance Check & BAM Merging (optional)
+  // ══════════════════════════════════════════════════════════════════════════
+  //
+  // When params.replicates.merge == true:
+  //   - Group BAMs by (condition, timepoint)
+  //   - Compute Pearson/Spearman genome-wide correlation between replicates
+  //   - If min(pairwise corr) >= concordance_min: merge with samtools merge
+  //   - Otherwise: warn and fall back to individual replicates
+  // When disabled (default): aligned_ch passes through unchanged.
+
+  if (params.replicates?.merge == true) {
+    if (params.verbose) {
+      log.info "─".multiply(80)
+      log.info "STEP 6b | Replicate Concordance Check & BAM Merging"
+      log.info "─".multiply(80)
+      log.info "STEP 6b | CONFIG | Method: ${params.replicates?.concordance_method ?: 'pearson'}"
+      log.info "STEP 6b | CONFIG | Threshold: ${params.replicates?.concordance_min ?: 0.9}"
+    }
+
+    // Group by (condition, timepoint) — collect sample IDs and all BAM paths
+    merge_input_ch = aligned_ch
+      .map { sid, filt_bam, all_bam, spike_bam, c, t, r ->
+        tuple(c, t, sid, filt_bam, all_bam, spike_bam ?: file('NO_SPIKE'))
+      }
+      .groupTuple(by: [0, 1])
+      // → (condition, timepoint, [sample_ids], [filt_bams], [all_bams], [spike_bams])
+
+    check_and_merge_replicates(merge_input_ch)
+
+    // Rebuild aligned_ch from merged BAMs (condition+timepoint collapsed to single entry)
+    // merged_bams: (condition, timepoint, merged.bam, allMap.merged.bam, spikein.merged.bam)
+    merged_aligned_ch = check_and_merge_replicates.out.merged_bams
+      .map { cond, tpt, filt_bam, all_bam, spike_bam ->
+        def merged_sid = "${cond}_${tpt}_merged".toString().replaceAll(/[^a-zA-Z0-9_-]/, '_')
+        def spike_f = (spike_bam.name != 'NO_SPIKE' && spike_bam.size() > 0) ? spike_bam : null
+        tuple(merged_sid, filt_bam, all_bam, spike_f, cond, tpt, 0)
+      }
+
+    // Passthrough BAMs for groups that failed concordance (kept as individual replicates)
+    passthrough_aligned_ch = check_and_merge_replicates.out.passthrough_bams
+      .map { cond, tpt, filt_bams, all_bams, spike_bams ->
+        // passthrough emits individual files per replicate; join back by filename pattern
+        [filt_bams].flatten().withIndex().collect { bam, i ->
+          def allbam  = [all_bams].flatten()[i]
+          def spikebam = [spike_bams].flatten()[i]
+          def sid = bam.name.replaceAll(/\.bam$/, '')
+          tuple(sid, bam, allbam, spikebam, cond, tpt, i + 1)
+        }
+      }
+      .flatMap()
+
+    // Combine merged + passthrough back into a single channel
+    aligned_ch = merged_aligned_ch.mix(passthrough_aligned_ch)
+
+    // Monitor
+    aligned_ch.subscribe { sid, _bam, _allbam, _spike, _cond, _time, _rep ->
+      if (params.verbose) log.info "STEP 6b | MERGE | ${sid} ready for track generation"
+    }
+
+  } // end if replicates.merge
 
 
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 7: Generate Coverage Tracks
   // ══════════════════════════════════════════════════════════════════════════
-  
+
   if (params.verbose) {
     log.info "─".multiply(80)
     log.info "STEP 7 | Generate Coverage Tracks"
@@ -567,7 +630,7 @@ workflow TrackTx {
   tracks_input_ch = aligned_ch.map { sid, filt_bam, all_bam, spike_bam, c, t, r ->
     tuple(sid, filt_bam, spike_bam, c, t, r)
   }
-  
+
   allmap_bam_ch = aligned_ch.map { sid, filt_bam, all_bam, spike_bam, c, t, r ->
     all_bam
   }
@@ -637,8 +700,9 @@ workflow TrackTx {
     log.info "─".multiply(80)
     log.info "STEP 9 | Normalize Tracks"
     log.info "─".multiply(80)
-    log.info "STEP 9 | CONFIG | Methods: CPM (counts per million), siCPM (spike-in CPM)"
+    log.info "STEP 9 | CONFIG | Methods: CPM, siCPM${params.norm?.gene_end_method && params.norm?.gene_end_method != 'none' ? ', gene-end (' + params.norm.gene_end_method + ')' : ''}"
     log.info "STEP 9 | CONFIG | Tracks: 3' primary, 3' allMap"
+    log.info "STEP 9 | CONFIG | Output structure: per-method subfolders (cpm/, sicpm/, gene_end/)"
   }
 
   // Prepare inputs - remove redundant metadata from joins for clarity
@@ -675,7 +739,8 @@ workflow TrackTx {
       tuple(sid, p3, n3, p5, n5, ap3, an3, ap5, an5, c, t, r, cm, genes)
     }
 
-  normalize_coverage_tracks(norm_input_ch, genome_fa_ch)
+  // Pass TES BED for gene-end normalization (broadcast to all samples via .first())
+  normalize_coverage_tracks(norm_input_ch, genome_fa_ch, tes_ch.first())
   
   norm_tracks_ch  = normalize_coverage_tracks.out.norm_tuple
   norm_factors_ch = norm_tracks_ch.map { sid, p3, n3, nf, c, t, r ->
@@ -832,10 +897,10 @@ workflow TrackTx {
     .join(functional_regions_bed_ch)
     .join(
       norm_tracks_ch.map { sid, pos3_cpm, neg3_cpm, factors, c, t, r ->
-        // Construct siCPM paths based on directory structure from normalize_coverage_tracks
+        // Construct siCPM paths — now in sicpm/3p/ subfolder (per-method structure)
         def normDir = "${params.output_dir}/05_normalized_tracks/${sid}"
-        def pos3_sicpm = file("${normDir}/3p/${sid}.3p.pos.sicpm.bedgraph")
-        def neg3_sicpm = file("${normDir}/3p/${sid}.3p.neg.sicpm.bedgraph")
+        def pos3_sicpm = file("${normDir}/sicpm/3p/${sid}.3p.pos.sicpm.bedgraph")
+        def neg3_sicpm = file("${normDir}/sicpm/3p/${sid}.3p.neg.sicpm.bedgraph")
         tuple(sid, tuple(pos3_cpm, neg3_cpm, pos3_sicpm, neg3_sicpm))
       }
     )
@@ -1005,10 +1070,11 @@ workflow TrackTx {
       def normDir = "${params.output_dir}/05_normalized_tracks/${sid}"
       def tracksDir = "${params.output_dir}/03_genome_tracks/${sid}"
       
-      def bw_pos3 = resolvePath("${normDir}/3p/${sid}.3p.pos.cpm.bw")
-      def bw_neg3 = resolvePath("${normDir}/3p/${sid}.3p.neg.cpm.bw")
-      def bw_allmap_pos3 = resolvePath("${normDir}/3p/${sid}.allMap.3p.pos.cpm.bw")
-      def bw_allmap_neg3 = resolvePath("${normDir}/3p/${sid}.allMap.3p.neg.cpm.bw")
+      // CPM BigWig paths — now in cpm/3p/ subfolder (per-method structure)
+      def bw_pos3 = resolvePath("${normDir}/cpm/3p/${sid}.3p.pos.cpm.bw")
+      def bw_neg3 = resolvePath("${normDir}/cpm/3p/${sid}.3p.neg.cpm.bw")
+      def bw_allmap_pos3 = resolvePath("${normDir}/cpm/3p/${sid}.allMap.3p.pos.cpm.bw")
+      def bw_allmap_neg3 = resolvePath("${normDir}/cpm/3p/${sid}.allMap.3p.neg.cpm.bw")
       
       def raw_allmap_pos3 = resolvePath("${tracksDir}/3p/${sid}.allMap.3p.pos.bedgraph")
       def raw_allmap_neg3 = resolvePath("${tracksDir}/3p/${sid}.allMap.3p.neg.bedgraph")

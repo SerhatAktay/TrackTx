@@ -416,8 +416,7 @@ results/
 ├── 00_sra_cache/                  # storeDir — raw FASTQs (SRA runs only)
 │   └── <SRR>/
 │       ├── <SRR>_R1.fastq[.gz]   # Persisted to survive work/ deletion
-│       ├── <SRR>_R2.fastq[.gz]   # (PE only)
-│       └── README_fastq.txt
+│       └── <SRR>_R2.fastq[.gz]   # (PE only)
 │
 ├── 02_alignments/                 # storeDir — BAMs and alignment artefacts
 │   └── <sample>/

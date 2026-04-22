@@ -688,6 +688,53 @@
     </div>
 
     <!-- ================================================================ -->
+    <!-- STEP 5b: REPLICATE MERGING -->
+    <!-- ================================================================ -->
+    <div class="box">
+      <h2 class="subtitle is-4"><span class="step">5b</span> Replicate Merging <span class="tag is-light ml-2">Optional</span></h2>
+      <p class="mb-4">Optionally merge biological replicates into a single BAM file before track generation. A concordance check (genome-wide Pearson or Spearman correlation) is run first — replicates are only merged if they are sufficiently correlated. This reduces file count and produces cleaner tracks, but eliminates replicate-level information from tracks (counts and normalization retain per-replicate data).</p>
+
+      <div class="help-box mb-3">
+        <strong>When to use:</strong> When you have 2+ replicates per condition and want consensus tracks for visualization. Concordant replicates (r ≥ threshold) are merged; discordant ones are kept separate with a warning.
+      </div>
+
+      <div class="field">
+        <label class="checkbox">
+          <input type="checkbox" id="repMerge" onchange="toggleRepMergeFields()">
+          <strong>Merge concordant replicates after alignment</strong>
+        </label>
+        <p class="help">When enabled, replicates grouped by condition + timepoint undergo a correlation check before BAM merging.</p>
+      </div>
+
+      <div id="repMergeFields" style="display:none" class="mt-4">
+        <div class="columns">
+          <div class="column is-one-third">
+            <div class="field">
+              <label class="label">Concordance Method</label>
+              <div class="select">
+                <select id="repConcordanceMethod">
+                  <option value="pearson" selected>Pearson (linear)</option>
+                  <option value="spearman">Spearman (rank-based)</option>
+                </select>
+              </div>
+              <p class="help">Pearson is standard for PRO-seq coverage; Spearman is more robust to outliers.</p>
+            </div>
+          </div>
+          <div class="column is-one-third">
+            <div class="field">
+              <label class="label">Minimum Correlation</label>
+              <input class="input small-input" id="repConcordanceMin" type="number" step="0.01" min="0.5" max="1.0" value="0.9">
+              <p class="help">Replicates below this threshold are NOT merged and a warning is emitted. Typical: 0.85–0.95.</p>
+            </div>
+          </div>
+        </div>
+        <div class="help-box">
+          <strong>Note:</strong> Requires <code>deepTools</code> (multiBamSummary + plotCorrelation) and <code>samtools merge</code>, both included in the TrackTx conda environment. Merged BAMs replace per-replicate BAMs for all downstream track steps; counts and normalization remain per-replicate.
+        </div>
+      </div>
+    </div>
+
+    <!-- ================================================================ -->
     <!-- STEP 6: ANALYSIS PARAMETERS -->
     <!-- ================================================================ -->
     <div class="box">
@@ -995,6 +1042,49 @@
           <p class="help">Enable if UCSC tools complain about sort order. Slower but safer.</p>
         </div>
       </div>
+
+      <div class="section-header mt-4">Gene-End Normalization <span class="tag is-light ml-2">Optional</span></div>
+      <div class="help-box mb-3">
+        An additional normalization method that corrects for sample-to-sample differences in transcriptional elongation efficiency — without requiring a spike-in. Outputs are written into a separate <code>gene_end/</code> subfolder alongside <code>cpm/</code> and <code>sicpm/</code>.
+        <br><br>
+        <strong>tes_window</strong> (recommended): Computes signal in a window just upstream of each TES. Polymerases at the gene end have elongated through the full gene body, so this signal is a proxy for elongation efficiency.
+        <br>
+        <strong>gene_body</strong>: Normalizes by the median signal density across expressed gene bodies (TSS+500 to TES−500). Robust to pausing differences but requires well-annotated genes with reasonable read depth.
+      </div>
+
+      <div class="columns">
+        <div class="column is-one-third">
+          <div class="field">
+            <label class="label">Gene-End Normalization Method</label>
+            <div class="select">
+              <select id="geneEndMethod" onchange="toggleGeneEndFields()">
+                <option value="none" selected>None (disabled)</option>
+                <option value="tes_window">TES window (recommended)</option>
+                <option value="gene_body">Gene body median</option>
+              </select>
+            </div>
+            <p class="help">Adds a third normalization method alongside CPM and siCPM.</p>
+          </div>
+        </div>
+        <div id="geneEndFields" style="display:none" class="column">
+          <div class="columns">
+            <div class="column">
+              <div class="field">
+                <label class="label">Window Size (bp) <span id="geneEndWindowLabel">upstream of TES</span></label>
+                <input class="input small-input" id="geneEndWindow" type="number" min="50" value="500">
+                <p class="help" id="geneEndWindowHelp">Size of the TES-proximal window used to sample per-sample signal. Default: 500 bp.</p>
+              </div>
+            </div>
+            <div class="column">
+              <div class="field">
+                <label class="label">Min Gene Body Reads</label>
+                <input class="input small-input" id="geneEndMinReads" type="number" min="1" value="10">
+                <p class="help">Genes with fewer reads in the reference region are excluded from the scaling calculation.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- ================================================================ -->
@@ -1153,6 +1243,24 @@ function toggleAdapterFields(){
   const use = $('#enableAdapters').checked;
   toggleBlock('adapterFields', use);
   if(use) setAdapterPreset();
+}
+
+function toggleRepMergeFields(){
+  const use = $('#repMerge').checked;
+  toggleBlock('repMergeFields', use);
+}
+
+function toggleGeneEndFields(){
+  const method = $('#geneEndMethod').value;
+  const show = (method !== 'none');
+  toggleBlock('geneEndFields', show);
+  if (show) {
+    const isTes = (method === 'tes_window');
+    $('#geneEndWindowLabel').textContent = isTes ? 'upstream of TES' : 'gene body margin (each end)';
+    $('#geneEndWindowHelp').textContent  = isTes
+      ? 'Size of the TES-proximal window used to sample per-sample signal. Default: 500 bp.'
+      : 'Bases excluded from each end of gene bodies (TSS+N to TES−N). Default: 500 bp.';
+  }
 }
 
 function setAdapterPreset(){
@@ -1421,11 +1529,18 @@ function buildYAML(){
     bedgraph:$('#trackBedGraph').checked
   };
 
-  const normEmitBW     = $('#normEmitBW').checked;
-  const normEmitSiCPM  = $('#normEmitSiCPM').checked;
-  const normEmitAllMap = $('#normEmitAllMap').checked;
-  const normForce5p    = $('#normForce5p').checked;
-  const forceSortBg    = $('#forceSortBg').checked;
+  const normEmitBW       = $('#normEmitBW').checked;
+  const normEmitSiCPM    = $('#normEmitSiCPM').checked;
+  const normEmitAllMap   = $('#normEmitAllMap').checked;
+  const normForce5p      = $('#normForce5p').checked;
+  const forceSortBg      = $('#forceSortBg').checked;
+  const geneEndMethod    = $('#geneEndMethod').value || 'none';
+  const geneEndWindow    = parseInt($('#geneEndWindow')?.value || '500', 10) || 500;
+  const geneEndMinReads  = parseInt($('#geneEndMinReads')?.value || '10', 10) || 10;
+
+  const repMerge             = $('#repMerge').checked;
+  const repConcordanceMethod = $('#repConcordanceMethod')?.value || 'pearson';
+  const repConcordanceMin    = parseFloat($('#repConcordanceMin')?.value || '0.9') || 0.9;
 
   // Build YAML
   let y = '';
@@ -1520,12 +1635,27 @@ function buildYAML(){
   y += `publish_references_gtf: ${$('#publishReferencesGtf').checked}   # false saves ~790 MB (genes/tss/tes kept)\n`;
   y += `publish_alignments: ${$('#publishAlignments').checked}   # false saves ~270 MB/sample\n\n`;
 
+  y += `# Replicate merging\n`;
+  y += `replicates:\n`;
+  y += `  merge: ${repMerge}\n`;
+  if(repMerge){
+    y += `  concordance_method: ${repConcordanceMethod}\n`;
+    y += `  concordance_min: ${repConcordanceMin}\n`;
+  }
+  y += `\n`;
+
   y += `# Normalization options\n`;
   y += `norm:\n`;
   y += `  emit_bw: ${normEmitBW}\n`;
   y += `  emit_sicpm: ${normEmitSiCPM}\n`;
   y += `  emit_allmap: ${normEmitAllMap}\n`;
-  y += `  emit_5p: ${!$('#emit5pTracks').checked ? 'false' : (normForce5p ? 'true' : 'null')}   # false = skip 5' tracks\n\n`;
+  y += `  emit_5p: ${!$('#emit5pTracks').checked ? 'false' : (normForce5p ? 'true' : 'null')}   # false = skip 5' tracks\n`;
+  y += `  gene_end_method: ${geneEndMethod}   # none | tes_window | gene_body\n`;
+  if(geneEndMethod !== 'none'){
+    y += `  gene_end_window: ${geneEndWindow}   # bp upstream of TES (tes_window) or each end of gene body\n`;
+    y += `  gene_end_min_reads: ${geneEndMinReads}   # min reads to include gene in scaling\n`;
+  }
+  y += `\n`;
 
   y += `force_sort_bedgraph: ${forceSortBg}\n\n`;
 

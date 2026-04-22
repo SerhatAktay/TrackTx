@@ -6,22 +6,17 @@
 //   Downloads and converts SRA accessions to FASTQ files
 //
 // Features:
-//   • Nextflow work/ caching - use -resume to reuse downloaded FASTQs
+//   • storeDir caching — outputs persist in results/00_sra_cache/<SRR>/ across work/ deletions
 //   • Multi-threaded conversion with fasterq-dump
 //   • Optional compression with pigz
 //   • Robust validation with header checks
-//   • Checksum generation (MD5 or SHA256)
-//   • Per-sample provenance documentation
 //
 // Workflow:
-//   1. Check for cached FASTQs (Nextflow -resume reuses work/ outputs)
-//   2. Prefetch SRA data (optional, best-effort)
-//   3. Convert with fasterq-dump (multi-threaded)
-//   4. Normalize filenames (_1/_2 → _R1/_R2)
-//   5. Optional compression with pigz
-//   6. Validate FASTQ format
-//   7. Generate checksums
-//   8. Create README with provenance
+//   1. Prefetch SRA data (optional, best-effort)
+//   2. Convert with fasterq-dump (multi-threaded)
+//   3. Normalize filenames (_1/_2 → _R1/_R2)
+//   4. Optional compression with pigz
+//   5. Validate FASTQ format
 //
 // Inputs:
 //   tuple(sample_id, sra_id, condition, timepoint, replicate, paired_end)
@@ -29,10 +24,7 @@
 // Outputs:
 //   ${params.output_dir}/00_sra_cache/<SRR>/
 //     ├── <SRR>_R1.fastq[.gz]        — Read 1 FASTQ  (persisted as storeDir cache)
-//     ├── <SRR>_R2.fastq[.gz]        — Read 2 FASTQ (PE only)
-//     ├── <SRR>_R1.fastq.md5         — Checksums
-//     ├── <SRR>_R2.fastq.md5         — Checksums (PE only)
-//     └── README_fastq.txt           — Provenance documentation
+//     └── <SRR>_R2.fastq[.gz]        — Read 2 FASTQ (PE only)
 //
 // Parameters:
 //   params.fastq_gzip       : Compress FASTQs with pigz (default: false)
@@ -74,10 +66,6 @@ process download_sra_samples {
           path("${sra_id}_R1.fastq"),
           path("${sra_id}_R2.fastq"),
           val(condition), val(timepoint), val(replicate)
-
-    path "${sra_id}*.md5",    optional: true, emit: checksums_md5
-    path "${sra_id}*.sha256", optional: true, emit: checksums_sha
-    path "README_fastq.txt",                  emit: readme
 
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
@@ -127,17 +115,11 @@ process download_sra_samples {
   SRA_MAX_SIZE="!{sraMaxSize}"
   SRA_SOURCE="!{sraSource}"
   
-  # storeDir handles caching at the Nextflow level — if outputs exist in 00_sra_cache/<SRR>/
-  # this script never runs. CACHE_DIR is kept as a fallback for manual inspection only.
-  CACHE_DIR="!{params.output_dir}/00_sra_cache/!{sra_id}"
-  mkdir -p "${CACHE_DIR}"
-
   echo "SRR | CONFIG | Sample ID: ${SAMPLE_ID}"
   echo "SRR | CONFIG | Accession: ${SRR}"
   echo "SRR | CONFIG | Layout: $([ "${IS_PE}" == "true" ] && echo "Paired-end" || echo "Single-end")"
   echo "SRR | CONFIG | Threads: ${THREADS}"
   echo "SRR | CONFIG | Compression: ${COMPRESS_FQ}"
-  echo "SRR | CONFIG | Cache directory: ${CACHE_DIR}"
 
   ###########################################################################
   # 2) VALIDATE TOOLS
@@ -165,30 +147,7 @@ process download_sra_samples {
   fi
 
   ###########################################################################
-  # 3) CHECK FOR CACHED FILES
-  ###########################################################################
-
-  echo "SRR | CACHE | Checking for existing FASTQs..."
-
-  CACHE_FOUND=0
-  for CACHED in "${CACHE_DIR}/${SRR}_R1.fastq" "${CACHE_DIR}/${SRR}_R1.fastq.gz" \
-                "${CACHE_DIR}/${SRR}_R2.fastq" "${CACHE_DIR}/${SRR}_R2.fastq.gz"; do
-    if [[ -e "${CACHED}" ]]; then
-      FILE_SIZE=$(stat -c%s "${CACHED}" 2>/dev/null || stat -f%z "${CACHED}" 2>/dev/null || echo "unknown")
-      echo "SRR | CACHE | Found: $(basename "${CACHED}") (${FILE_SIZE} bytes)"
-      ln -sf "${CACHED}" .
-      CACHE_FOUND=1
-    fi
-  done
-
-  if [[ ${CACHE_FOUND} -eq 1 ]]; then
-    echo "SRR | CACHE | Reusing cached FASTQs from previous run"
-  else
-    echo "SRR | CACHE | No cached FASTQs found, will download"
-  fi
-
-  ###########################################################################
-  # 4) DOWNLOAD SRA DATA
+  # 3) DOWNLOAD SRA DATA
   ###########################################################################
 
   # Only download if R1 doesn't exist yet
@@ -292,7 +251,7 @@ process download_sra_samples {
   fi
 
   ###########################################################################
-  # 5) OPTIONAL COMPRESSION
+  # 4) OPTIONAL COMPRESSION
   ###########################################################################
 
   if [[ "${COMPRESS_FQ}" == "true" ]]; then
@@ -322,7 +281,7 @@ process download_sra_samples {
   done
 
   ###########################################################################
-  # 6) VALIDATE OUTPUT FILES
+  # 5) VALIDATE OUTPUT FILES
   ###########################################################################
 
   echo "SRR | VALIDATE | Validating output FASTQ files..."
@@ -385,87 +344,7 @@ process download_sra_samples {
   fi
 
   ###########################################################################
-  # 7) GENERATE CHECKSUMS
-  ###########################################################################
-
-  echo "SRR | CHECKSUM | Generating checksums..."
-
-  # Generate checksum for R1
-  if command -v md5sum >/dev/null 2>&1; then
-    md5sum "${R1_FILE}" > "${R1_FILE}.md5"
-    echo "SRR | CHECKSUM | ${R1_FILE}.md5 created"
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "${R1_FILE}" > "${R1_FILE}.sha256"
-    echo "SRR | CHECKSUM | ${R1_FILE}.sha256 created"
-  else
-    echo "SRR | CHECKSUM | WARNING: No checksum tool available (md5sum/shasum)"
-  fi
-
-  # Generate checksum for R2 if exists
-  if [[ -n "${R2_FILE}" && -f "${R2_FILE}" ]]; then
-    if command -v md5sum >/dev/null 2>&1; then
-      md5sum "${R2_FILE}" > "${R2_FILE}.md5"
-      echo "SRR | CHECKSUM | ${R2_FILE}.md5 created"
-    elif command -v shasum >/dev/null 2>&1; then
-      shasum -a 256 "${R2_FILE}" > "${R2_FILE}.sha256"
-      echo "SRR | CHECKSUM | ${R2_FILE}.sha256 created"
-    fi
-  fi
-
-  ###########################################################################
-  # 8) CREATE README
-  ###########################################################################
-
-  echo "SRR | README | Creating provenance documentation..."
-
-  cat > README_fastq.txt <<'DOCEOF'
-================================================================================
-SRA FASTQ DOWNLOAD — !{sra_id}
-================================================================================
-
-SAMPLE INFORMATION
-────────────────────────────────────────────────────────────────────────────
-  Sample ID:    !{sample_id}
-  SRA Accession: !{sra_id}
-  Condition:    !{condition}
-  Timepoint:    !{timepoint}
-  Replicate:    !{replicate}
-  Layout:       !{paired_end == "true" ? "Paired-end" : "Single-end"}
-  Compression:  !{(params.fastq_gzip == null) ? "false" : (params.fastq_gzip as boolean ? "true" : "false")}
-  Downloaded:   $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-
-PIPELINE INFORMATION
-────────────────────────────────────────────────────────────────────────────
-  Pipeline:     TrackTx PRO-seq Analysis
-  Module:       02_download_sra_samples
-  Threads:      !{task.cpus}
-
-FILES
-────────────────────────────────────────────────────────────────────────────
-  R1: !{sra_id}_R1.fastq!{(params.fastq_gzip == null) ? "" : (params.fastq_gzip as boolean ? ".gz" : "")}
-  R2: !{paired_end == "true" ? sra_id + "_R2.fastq" + ((params.fastq_gzip == null) ? "" : (params.fastq_gzip as boolean ? ".gz" : "")) : "N/A (single-end)"}
-
-CACHING
-────────────────────────────────────────────────────────────────────────────
-  Files are stored via Nextflow storeDir in: output_dir/00_sra_cache/<SRR>/
-  Re-downloads are skipped as long as output files exist in the storeDir,
-  even after the work/ directory has been deleted between runs.
-
-NOTES
-────────────────────────────────────────────────────────────────────────────
-  • Files downloaded using SRA Toolkit (fasterq-dump)
-  • Checksums (MD5 or SHA256) generated for data integrity
-  • For access-controlled data (dbGaP), ensure SRA Toolkit is properly configured:
-      vdb-config --interactive
-      vdb-config --import <project.krt>
-
-================================================================================
-DOCEOF
-
-  echo "SRR | README | Documentation created"
-
-  ###########################################################################
-  # 9) SUMMARY
+  # 6) SUMMARY
   ###########################################################################
 
   echo "────────────────────────────────────────────────────────────────────────"
