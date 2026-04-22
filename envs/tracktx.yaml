@@ -60,8 +60,9 @@ dependencies:
 
   # ── Alignment & BAM ops ────────────────────────────────────────────────
   - bowtie2             # Aligner + bowtie2-build (index build step)
-  - samtools>=1.18      # faidx, BAM/SAM/CRAM ops
+  - samtools>=1.18      # faidx, BAM/SAM/CRAM ops + merge (replicate merging)
   - htslib>=1.18        # bgzip/tabix (optional compression in modules)
+  - deeptools>=3.5      # multiBamSummary + plotCorrelation (replicate concordance check)
 
   # ── Feature/interval tooling ───────────────────────────────────────────
   - bedtools            # genomecov + general interval ops
