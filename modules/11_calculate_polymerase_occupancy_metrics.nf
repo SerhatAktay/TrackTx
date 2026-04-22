@@ -831,8 +831,8 @@ DOCEOF
 
   if [[ -s pausing_index.tsv ]]; then
     PAUSING_COLS=$(head -1 pausing_index.tsv | awk -F'\t' '{print NF}')
-    if [[ ${PAUSING_COLS} -ne 7 ]]; then
-      echo "POL | WARNING | Pausing index has ${PAUSING_COLS} columns, expected 7"
+    if [[ ${PAUSING_COLS} -ne 8 ]]; then
+      echo "POL | WARNING | Pausing index has ${PAUSING_COLS} columns, expected 8"
     fi
   fi
 

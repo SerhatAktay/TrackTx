@@ -55,6 +55,7 @@ process check_and_merge_replicates {
           path(bam_files),
           path(allmap_bams),
           path(spike_bams)
+    val is_paired  // "true" or "false" — controls --extendReads in multiBamSummary
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:
@@ -77,8 +78,14 @@ process check_and_merge_replicates {
           emit: passthrough_bams,
           optional: true
 
-    path "concordance_report.tsv", emit: concordance_report
-    path "merge_replicates.log",   emit: log
+    // Use condition+timepoint in the filename so each parallel invocation
+    // produces a uniquely-named file.  main.nf collects and concatenates
+    // these into a single cohort concordance_report.tsv via collectFile.
+    // (Previously all conditions wrote to the same "concordance_report.tsv"
+    // in the shared _merged/ publishDir with overwrite: true, so only the
+    // last condition to finish survived.)
+    path "${conditionStr}_${timepointStr}_concordance.tsv", emit: concordance_report
+    path "merge_replicates.log",                            emit: log
 
   // ── Script ────────────────────────────────────────────────────────────────
   shell:
@@ -88,6 +95,7 @@ process check_and_merge_replicates {
   conditionStr      = condition.toString().replaceAll(/[^a-zA-Z0-9_-]/, '_')
   timepointStr      = timepoint.toString().replaceAll(/[^a-zA-Z0-9_-]/, '_')
   mergedPrefix      = "${conditionStr}_${timepointStr}_merged"
+  isPaired          = (is_paired?.toString() == 'true')
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -146,9 +154,9 @@ process check_and_merge_replicates {
     for f in "${ALLMAP_BAMS[@]:-}";   do [[ -f "$f" ]] && cp "$f" "passthrough/allmap/" ; done
     for f in "${SPIKE_BAMS[@]:-}";    do [[ -f "$f" ]] && cp "$f" "passthrough/spike/" ; done
     echo -e "condition\ttimepoint\tsamples\tmin_corr\tmethod\tmerged" \
-      > concordance_report.tsv
+      > !{conditionStr}_!{timepointStr}_concordance.tsv
     echo -e "${CONDITION}\t${TIMEPOINT}\t${SAMPLE_IDS[*]}\tNA\t${CONCORDANCE_METHOD}\tno_single" \
-      >> concordance_report.tsv
+      >> !{conditionStr}_!{timepointStr}_concordance.tsv
     echo "MERGE | SKIP | Single replicate — no merge needed."
     exit 0
   fi
@@ -165,13 +173,19 @@ process check_and_merge_replicates {
   MULTIBAM_NPZ="multiBamSummary_bins.npz"
   CORR_TABLE="correlation_matrix.tsv"
 
+  # --extendReads is a paired-end flag in deepTools: for SE data it either
+  # errors or produces empty bins, causing a spurious NA correlation.
+  # Only pass it when the library is actually paired-end.
+  EXTEND_FLAG=""
+  [[ "!{isPaired}" == "true" ]] && EXTEND_FLAG="--extendReads"
+
   multiBamSummary bins \
     --bamfiles "${FILTERED_BAMS[@]}" \
     --outFileName "${MULTIBAM_NPZ}" \
     --labels "${SAMPLE_IDS[@]}" \
     --binSize 10000 \
     --numberOfProcessors !{task.cpus} \
-    --extendReads 2>/dev/null || true
+    ${EXTEND_FLAG} 2>/dev/null || true
 
   # Extract correlation matrix from npz using plotCorrelation (outputs to stderr/stdout)
   plotCorrelation \
@@ -208,7 +222,7 @@ process check_and_merge_replicates {
     [[ "$PASSES" == "yes" ]] && WILL_MERGE=true
   fi
 
-  echo -e "condition\ttimepoint\tsamples\tmin_corr\tmethod\tmerged" > concordance_report.tsv
+  echo -e "condition\ttimepoint\tsamples\tmin_corr\tmethod\tmerged" > !{conditionStr}_!{timepointStr}_concordance.tsv
 
   if [[ "$WILL_MERGE" == true ]]; then
     echo "✓ Concordance passed (${MIN_CORR} >= ${CONCORDANCE_MIN}) — merging replicates."
@@ -248,7 +262,7 @@ process check_and_merge_replicates {
     fi
 
     echo -e "${CONDITION}\t${TIMEPOINT}\t${SAMPLE_IDS[*]}\t${MIN_CORR}\t${CONCORDANCE_METHOD}\tyes" \
-      >> concordance_report.tsv
+      >> !{conditionStr}_!{timepointStr}_concordance.tsv
     echo "MERGE | SUCCESS | ${MERGED_PREFIX} created"
 
   else
@@ -261,7 +275,7 @@ process check_and_merge_replicates {
     for f in "${SPIKE_BAMS[@]:-}";    do [[ -f "$f" ]] && cp "$f" "passthrough/spike/" ; done
 
     echo -e "${CONDITION}\t${TIMEPOINT}\t${SAMPLE_IDS[*]}\t${MIN_CORR}\t${CONCORDANCE_METHOD}\tno_failed" \
-      >> concordance_report.tsv
+      >> !{conditionStr}_!{timepointStr}_concordance.tsv
     echo "MERGE | SKIP | Concordance below threshold — individual replicates retained."
   fi
   '''

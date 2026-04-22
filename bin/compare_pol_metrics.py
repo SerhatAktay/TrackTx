@@ -807,7 +807,7 @@ def main():
     # Save merged table
     log("═" * 70, "")
     log("OUTPUT", f"Writing merged table: {args.out_merged}")
-    merged_df.to_csv(args.out_merged, sep="\t", index=False)
+    merged_df.to_csv(args.out_merged, sep="\t", index=False, na_rep="NA")
     
     merged_size = os.path.getsize(args.out_merged)
     log("OUTPUT", f"Written: {merged_size:,} bytes")

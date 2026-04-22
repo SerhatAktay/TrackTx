@@ -576,7 +576,7 @@ workflow TrackTx {
       .groupTuple(by: [0, 1])
       // → (condition, timepoint, [sample_ids], [filt_bams], [all_bams], [spike_bams])
 
-    check_and_merge_replicates(merge_input_ch)
+    check_and_merge_replicates(merge_input_ch, Channel.value(params.paired_end ? 'true' : 'false'))
 
     // Rebuild aligned_ch from merged BAMs (condition+timepoint collapsed to single entry)
     // merged_bams: (condition, timepoint, merged.bam, allMap.merged.bam, spikein.merged.bam)
@@ -602,6 +602,18 @@ workflow TrackTx {
 
     // Combine merged + passthrough back into a single channel
     aligned_ch = merged_aligned_ch.mix(passthrough_aligned_ch)
+
+    // Collect per-condition concordance TSVs into one cohort-level report.
+    // Each check_and_merge_replicates invocation writes a uniquely-named
+    // <condition>_<timepoint>_concordance.tsv; we concatenate them here so
+    // the full picture (all conditions, pass/fail) is preserved in one file.
+    check_and_merge_replicates.out.concordance_report
+      .collectFile(
+        name:     'concordance_report.tsv',
+        storeDir: "${params.output_dir}/02_alignments/_merged",
+        keepHeader: true,
+        newLine:    false
+      )
 
     // Monitor
     aligned_ch.subscribe { sid, _bam, _allbam, _spike, _cond, _time, _rep ->
@@ -988,9 +1000,13 @@ workflow TrackTx {
       tsv_file
     }
 
-  // Collect pol files in same sorted order as TSV for matching indices
-  pol_files_ch = pol_gene_ch
-    .toSortedList { a, b -> a[0] <=> b[0] }
+  // Collect pol files in same sorted order as TSV for matching indices.
+  // IMPORTANT: reuse pol_sorted (not pol_gene_ch) so both the TSV and the
+  // file list come from the exact same sorted collection.  Subscribing to
+  // pol_gene_ch a second time creates a separate queue consumer that races
+  // with the first one and can silently drop items (observed: one sample
+  // missing from aggregate when 12 samples were present).
+  pol_files_ch = pol_sorted
     .flatMap { sorted_list ->
       sorted_list.collect { sid, genes, c, t, r -> file(genes) }
     }
