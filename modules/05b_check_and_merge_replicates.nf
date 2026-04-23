@@ -207,7 +207,13 @@ process check_and_merge_replicates {
     --labels "${SAMPLE_IDS[@]}" \
     --numberOfProcessors !{task.cpus} \
     --minMappingQuality 10 \
-    ${EXTEND_FLAG} 2>/dev/null || true
+    ${EXTEND_FLAG} 2>&1 | tee multiBamSummary.log || true
+
+  if [[ ! -f "${MULTIBAM_NPZ}" ]]; then
+    echo "ERROR: multiBamSummary did not produce ${MULTIBAM_NPZ} — check multiBamSummary.log"
+    echo "Staged files in work dir:"
+    ls -lh *.bam *.bai *.bed 2>/dev/null || echo "  (none found)"
+  fi
 
   # Extract Pearson/Spearman correlation matrix.
   # Notes:
@@ -220,7 +226,7 @@ process check_and_merge_replicates {
     --whatToPlot scatterplot \
     --plotFile /dev/null \
     --outFileCorMatrix "${CORR_TABLE}" \
-    2>/dev/null || true
+    2>&1 | tee plotCorrelation.log || true
 
   # Parse minimum pairwise correlation from the matrix
   MIN_CORR="NA"
