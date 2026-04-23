@@ -55,7 +55,10 @@ process check_and_merge_replicates {
           path(bam_files),
           path(allmap_bams),
           path(spike_bams)
-    val is_paired  // "true" or "false" — controls --extendReads in multiBamSummary
+    val   is_paired  // "true" or "false" — controls --extendReads in multiBamSummary
+    path  tss_bed   // 1-bp TSS BED (from download_genome_annotations); used to build
+                    // ±500 bp TSS windows for multiBamSummary BED-file mode, which is
+                    // far more appropriate for sparse PRO-seq signal than genome-wide bins
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:
@@ -169,42 +172,64 @@ process check_and_merge_replicates {
     [[ -f "${bam}.bai" ]] || samtools index -@ !{task.cpus} "$bam"
   done
 
-  # Use deepTools multiBamSummary for genome-wide binned correlation
-  MULTIBAM_NPZ="multiBamSummary_bins.npz"
+  # ── Build ±500 bp TSS windows ─────────────────────────────────────────────
+  # The 1-bp TSS BED positions are extended so that multiBamSummary BED-file
+  # counts reads in the TSS ±500 bp window for each gene.
+  #
+  # Why BED-file mode instead of genome-wide bins?
+  # PRO-seq coverage is extremely sparse (mean depth ~0.4×).  At 10 kb bins
+  # virtually every bin is empty; Pearson correlation on the handful of
+  # non-zero bins is meaningless (and was returning 0 for all conditions).
+  # Counting directly over the 57k annotated TSS windows — where all PRO-seq
+  # signal actually lives — gives a biologically meaningful correlation.
+  TSS_BED="!{tss_bed}"
+  TSS_WINDOWS="tss_windows.bed"
+  awk 'BEGIN{OFS="\t"} NF>=3 {
+    s = ($2 >= 500) ? $2 - 500 : 0
+    e = $3 + 500
+    print $1, s, e, (NF>=4 ? $4 : "."), (NF>=5 ? $5 : "0"), (NF>=6 ? $6 : ".")
+  }' "${TSS_BED}" | LC_ALL=C sort -k1,1 -k2,2n > "${TSS_WINDOWS}"
+  TSS_WIN_COUNT=$(wc -l < "${TSS_WINDOWS}" | tr -d ' ')
+  echo "TSS windows built: ${TSS_WIN_COUNT} regions (±500 bp)"
+
+  # ── deepTools: count reads per TSS window ─────────────────────────────────
+  MULTIBAM_NPZ="multiBamSummary_tss.npz"
   CORR_TABLE="correlation_matrix.tsv"
 
-  # --extendReads is a paired-end flag in deepTools: for SE data it either
-  # errors or produces empty bins, causing a spurious NA correlation.
-  # Only pass it when the library is actually paired-end.
+  # --extendReads is only valid for paired-end libraries
   EXTEND_FLAG=""
   [[ "!{isPaired}" == "true" ]] && EXTEND_FLAG="--extendReads"
 
-  multiBamSummary bins \
+  multiBamSummary BED-file \
+    --BED "${TSS_WINDOWS}" \
     --bamfiles "${FILTERED_BAMS[@]}" \
     --outFileName "${MULTIBAM_NPZ}" \
     --labels "${SAMPLE_IDS[@]}" \
-    --binSize 10000 \
     --numberOfProcessors !{task.cpus} \
+    --minMappingQuality 10 \
     ${EXTEND_FLAG} 2>/dev/null || true
 
-  # Extract correlation matrix from npz using plotCorrelation (outputs to stderr/stdout)
+  # Extract Pearson/Spearman correlation matrix.
+  # Notes:
+  #  • --plotFile /dev/null  — required argument; we discard the scatter plot
+  #  • No --log1p            — raw counts give better Pearson on sparse PRO-seq
+  #  • No --skipZeros        — keep silent TSS regions; they are informative
   plotCorrelation \
     --corData "${MULTIBAM_NPZ}" \
     --corMethod "${CONCORDANCE_METHOD}" \
     --whatToPlot scatterplot \
+    --plotFile /dev/null \
     --outFileCorMatrix "${CORR_TABLE}" \
-    --skipZeros \
-    --log1p \
     2>/dev/null || true
 
   # Parse minimum pairwise correlation from the matrix
   MIN_CORR="NA"
   if [[ -f "${CORR_TABLE}" ]]; then
-    # Extract off-diagonal values (skip header, skip diagonal 1.0s)
+    # Extract off-diagonal values (skip header row, skip diagonal 1.0 entries)
     MIN_CORR=$(awk 'NR>1 {
       for (i=2; i<=NF; i++) {
         val = $i + 0
-        if (val < 0.9999 && val != "") {
+        if (val < 0.9999 && $i != "") {
           if (min == "" || val < min) min = val
         }
       }
