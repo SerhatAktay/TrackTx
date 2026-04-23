@@ -217,14 +217,14 @@ process check_and_merge_replicates {
 
   # Extract Pearson/Spearman correlation matrix.
   # Notes:
-  #  • --plotFile /dev/null  — required argument; we discard the scatter plot
+  #  • --plotFile writes a throwaway scatter PNG (required arg; /dev/null not writable here)
   #  • No --log1p            — raw counts give better Pearson on sparse PRO-seq
   #  • No --skipZeros        — keep silent TSS regions; they are informative
   plotCorrelation \
     --corData "${MULTIBAM_NPZ}" \
     --corMethod "${CONCORDANCE_METHOD}" \
     --whatToPlot scatterplot \
-    --plotFile /dev/null \
+    --plotFile correlation_scatter.png \
     --outFileCorMatrix "${CORR_TABLE}" \
     2>&1 | tee plotCorrelation.log || true
 
