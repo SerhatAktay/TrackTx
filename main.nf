@@ -576,7 +576,7 @@ workflow TrackTx {
       .groupTuple(by: [0, 1])
       // → (condition, timepoint, [sample_ids], [filt_bams], [all_bams], [spike_bams])
 
-    check_and_merge_replicates(merge_input_ch, Channel.value(params.paired_end ? 'true' : 'false'), tss_ch.first())
+    check_and_merge_replicates(merge_input_ch)
 
     // Rebuild aligned_ch from merged BAMs (condition+timepoint collapsed to single entry)
     // merged_bams: (condition, timepoint, merged.bam, allMap.merged.bam, spikein.merged.bam)

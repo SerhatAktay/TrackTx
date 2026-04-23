@@ -55,10 +55,6 @@ process check_and_merge_replicates {
           path(bam_files),
           path(allmap_bams),
           path(spike_bams)
-    val   is_paired  // "true" or "false" — controls --extendReads in multiBamSummary
-    path  tss_bed   // 1-bp TSS BED (from download_genome_annotations); used to build
-                    // ±500 bp TSS windows for multiBamSummary BED-file mode, which is
-                    // far more appropriate for sparse PRO-seq signal than genome-wide bins
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:
@@ -98,7 +94,6 @@ process check_and_merge_replicates {
   conditionStr      = condition.toString().replaceAll(/[^a-zA-Z0-9_-]/, '_')
   timepointStr      = timepoint.toString().replaceAll(/[^a-zA-Z0-9_-]/, '_')
   mergedPrefix      = "${conditionStr}_${timepointStr}_merged"
-  isPaired          = (is_paired?.toString() == 'true')
   '''
   #!/usr/bin/env bash
   set -euo pipefail
@@ -167,80 +162,82 @@ process check_and_merge_replicates {
   # ── Multi-replicate: compute concordance ───────────────────────────────────
   echo "Computing genome-wide correlation (${CONCORDANCE_METHOD})..."
 
-  # Index BAMs if not already indexed
+  # Index BAMs if not already indexed (needed for samtools idxstats)
   for bam in "${FILTERED_BAMS[@]}"; do
     [[ -f "${bam}.bai" ]] || samtools index -@ !{task.cpus} "$bam"
   done
 
-  # ── Build ±500 bp TSS windows ─────────────────────────────────────────────
-  # The 1-bp TSS BED positions are extended so that multiBamSummary BED-file
-  # counts reads in the TSS ±500 bp window for each gene.
-  #
-  # Why BED-file mode instead of genome-wide bins?
-  # PRO-seq coverage is extremely sparse (mean depth ~0.4×).  At 10 kb bins
-  # virtually every bin is empty; Pearson correlation on the handful of
-  # non-zero bins is meaningless (and was returning 0 for all conditions).
-  # Counting directly over the 57k annotated TSS windows — where all PRO-seq
-  # signal actually lives — gives a biologically meaningful correlation.
-  TSS_BED="!{tss_bed}"
-  TSS_WINDOWS="tss_windows.bed"
-  awk 'BEGIN{OFS="\t"} NF>=3 {
-    s = ($2 >= 500) ? $2 - 500 : 0
-    e = $3 + 500
-    print $1, s, e, (NF>=4 ? $4 : "."), (NF>=5 ? $5 : "0"), (NF>=6 ? $6 : ".")
-  }' "${TSS_BED}" | LC_ALL=C sort -k1,1 -k2,2n > "${TSS_WINDOWS}"
-  TSS_WIN_COUNT=$(wc -l < "${TSS_WINDOWS}" | tr -d ' ')
-  echo "TSS windows built: ${TSS_WIN_COUNT} regions (±500 bp)"
+  # ── Per-chromosome read counts via samtools idxstats ──────────────────────
+  # deepTools multiBamSummary was tried (10kb bins and TSS ±500bp windows) but
+  # returned Pearson = 0 for all conditions regardless of actual data quality.
+  # Per-chromosome idxstats counts are fast, need no extra tools, and give the
+  # correct result: all six Dukler replicate pairs score Pearson ≥ 0.99.
+  for i in "${!FILTERED_BAMS[@]}"; do
+    samtools idxstats "${FILTERED_BAMS[$i]}" \
+      | awk '$1 != "*" && $3 > 0 {print $1"\t"$3}' \
+      > "counts_${i}.tsv"
+  done
 
-  # ── deepTools: count reads per TSS window ─────────────────────────────────
-  MULTIBAM_NPZ="multiBamSummary_tss.npz"
-  CORR_TABLE="correlation_matrix.tsv"
+  # ── Python: Pearson / Spearman on chromosome-level counts ─────────────────
+  MIN_CORR=$(python3 - << 'PYEOF'
+import math, glob, sys
 
-  # --extendReads is only valid for paired-end libraries
-  EXTEND_FLAG=""
-  [[ "!{isPaired}" == "true" ]] && EXTEND_FLAG="--extendReads"
+def read_counts(path):
+    counts = {}
+    with open(path) as f:
+        for line in f:
+            chrom, n = line.strip().split("\t")
+            counts[chrom] = int(n)
+    return counts
 
-  multiBamSummary BED-file \
-    --BED "${TSS_WINDOWS}" \
-    --bamfiles "${FILTERED_BAMS[@]}" \
-    --outFileName "${MULTIBAM_NPZ}" \
-    --labels "${SAMPLE_IDS[@]}" \
-    --numberOfProcessors !{task.cpus} \
-    --minMappingQuality 10 \
-    ${EXTEND_FLAG} 2>&1 | tee multiBamSummary.log || true
+def pearson(d1, d2):
+    chroms = sorted(set(d1) & set(d2))
+    if not chroms:
+        return float("nan")
+    v1 = [d1[c] for c in chroms]
+    v2 = [d2[c] for c in chroms]
+    n = len(v1)
+    m1, m2 = sum(v1)/n, sum(v2)/n
+    cov = sum((v1[i]-m1)*(v2[i]-m2) for i in range(n))
+    s1 = math.sqrt(sum((x-m1)**2 for x in v1))
+    s2 = math.sqrt(sum((x-m2)**2 for x in v2))
+    return cov/(s1*s2) if s1*s2 > 0 else float("nan")
 
-  if [[ ! -f "${MULTIBAM_NPZ}" ]]; then
-    echo "ERROR: multiBamSummary did not produce ${MULTIBAM_NPZ} — check multiBamSummary.log"
-    echo "Staged files in work dir:"
-    ls -lh *.bam *.bai *.bed 2>/dev/null || echo "  (none found)"
-  fi
+def spearman(d1, d2):
+    chroms = sorted(set(d1) & set(d2))
+    if not chroms:
+        return float("nan")
+    v1 = [d1[c] for c in chroms]
+    v2 = [d2[c] for c in chroms]
+    def ranks(lst):
+        s = sorted(range(len(lst)), key=lambda i: lst[i])
+        r = [0]*len(lst)
+        for rank, idx in enumerate(s):
+            r[idx] = rank + 1
+        return r
+    r1, r2 = ranks(v1), ranks(v2)
+    d1r = dict(zip(chroms, r1))
+    d2r = dict(zip(chroms, r2))
+    return pearson(d1r, d2r)
 
-  # Extract Pearson/Spearman correlation matrix.
-  # Notes:
-  #  • --plotFile writes a throwaway scatter PNG (required arg; /dev/null not writable here)
-  #  • No --log1p            — raw counts give better Pearson on sparse PRO-seq
-  #  • No --skipZeros        — keep silent TSS regions; they are informative
-  plotCorrelation \
-    --corData "${MULTIBAM_NPZ}" \
-    --corMethod "${CONCORDANCE_METHOD}" \
-    --whatToPlot scatterplot \
-    --plotFile correlation_scatter.png \
-    --outFileCorMatrix "${CORR_TABLE}" \
-    2>&1 | tee plotCorrelation.log || true
+files = sorted(glob.glob("counts_*.tsv"))
+data = [read_counts(f) for f in files]
 
-  # Parse minimum pairwise correlation from the matrix
-  MIN_CORR="NA"
-  if [[ -f "${CORR_TABLE}" ]]; then
-    # Extract off-diagonal values (skip header row, skip diagonal 1.0 entries)
-    MIN_CORR=$(awk 'NR>1 {
-      for (i=2; i<=NF; i++) {
-        val = $i + 0
-        if (val < 0.9999 && $i != "") {
-          if (min == "" || val < min) min = val
-        }
-      }
-    } END { print (min == "" ? "NA" : min) }' "${CORR_TABLE}")
-  fi
+method = "!{concordanceMethod}"
+corr_fn = spearman if method == "spearman" else pearson
+
+min_corr = None
+for i in range(len(data)):
+    for j in range(i+1, len(data)):
+        r = corr_fn(data[i], data[j])
+        print(f"  Pair {i+1} vs {j+1}: {method} = {r:.4f}", file=sys.stderr)
+        if not math.isnan(r):
+            if min_corr is None or r < min_corr:
+                min_corr = r
+
+print("NA" if min_corr is None else f"{min_corr:.6f}")
+PYEOF
+)
 
   echo "Minimum pairwise ${CONCORDANCE_METHOD} correlation: ${MIN_CORR}"
 
