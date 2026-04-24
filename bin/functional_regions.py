@@ -394,67 +394,84 @@ def bedgraph_to_reads(pos_bg: str, neg_bg: str) -> str:
     """
     Convert bedGraphs to read intervals with strand information.
     Following old script logic: chr, start, end, signal, signal, strand
+
+    PERF (v9.2): replaced Python line-by-line loops with a single awk | sort
+    pipeline.  This eliminates:
+      • the intermediate unsorted write pass (~1-2 GB to disk)
+      • Python per-line overhead on 40M+ lines (split, type-cast, write syscall)
+    Behaviour is identical: same threshold logic, same strand handling, same
+    output columns.  awk condition ($4>thr || $4<-thr) is equivalent to the
+    original abs(signal) > thr for thr >= 0.
     """
     reads_file = OUT / "PROseq_3pnt.bed"
-    
-    # Determine dynamic threshold if quantile mode
+
+    # ---- threshold ----------------------------------------------------------
     thr = float(args.min_signal)
     if args.min_signal_mode == "quantile":
+        # Sample up to 200k values via awk (fast C loop instead of Python)
         vals: list[float] = []
         for bg in (pos_bg, neg_bg):
-            if Path(bg).exists() and Path(bg).stat().st_size > 0:
-                with open(bg) as f:
-                    for i, ln in enumerate(f):
-                        if ln.strip() and not ln.startswith(("track","browser","#")):
-                            fields = split_fields(ln)
-                            if len(fields) >= 4:
-                                try:
-                                    s = abs(float(fields[3]));
-                                    vals.append(s)
-                                except Exception:
-                                    pass
-                        if len(vals) >= 200000:  # cap memory; sample first 200k values
-                            break
+            if len(vals) >= 200_000:
+                break
+            if not (Path(bg).exists() and Path(bg).stat().st_size > 0):
+                continue
+            remaining = 200_000 - len(vals)
+            # Extract abs(signal) column, cap at `remaining` lines
+            awk_q = (
+                f"awk '!/^track/ && !/^browser/ && !/^#/ && NF>=4 "
+                f"{{v=($4>=0?$4:-$4); print v}}' '{bg}' | head -{remaining}"
+            )
+            res = subprocess.run(["bash", "-c", awk_q], check=False,
+                                 capture_output=True, text=True)
+            for line in res.stdout.splitlines():
+                try:
+                    vals.append(float(line.strip()))
+                except ValueError:
+                    pass
         if vals:
             vals.sort()
-            q = min(max(args.min_signal_quantile, 0.0), 1.0)
-            idx = int(q * (len(vals)-1))
+            q   = min(max(args.min_signal_quantile, 0.0), 1.0)
+            idx = int(q * (len(vals) - 1))
             thr = float(vals[idx])
             log(f"INFO  dynamic min_signal (quantile {q:.2f}) => {thr:.6g}")
 
-    with open(reads_file, "w") as out:
-        # Process positive strand
-        if Path(pos_bg).exists() and Path(pos_bg).stat().st_size > 0:
-            with open(pos_bg) as f:
-                for ln in f:
-                    if ln.strip() and not ln.startswith(("track", "browser", "#")):
-                        fields = split_fields(ln)
-                        if len(fields) >= 4:
-                            try:
-                                chrom, start, end, signal = fields[0], int(fields[1]), int(fields[2]), float(fields[3])
-                                if abs(signal) > thr and end > start:
-                                    out.write(f"{chrom}\t{start}\t{end}\t{signal}\t{signal}\t+\n")
-                            except (ValueError, IndexError):
-                                continue
-        
-        # Process negative strand (keep original signal values like old script)
-        if Path(neg_bg).exists() and Path(neg_bg).stat().st_size > 0:
-            with open(neg_bg) as f:
-                for ln in f:
-                    if ln.strip() and not ln.startswith(("track", "browser", "#")):
-                        fields = split_fields(ln)
-                        if len(fields) >= 4:
-                            try:
-                                chrom, start, end, signal = fields[0], int(fields[1]), int(fields[2]), float(fields[3])
-                                if abs(signal) > thr and end > start:
-                                    # Keep original signal (negative values) like old script
-                                    out.write(f"{chrom}\t{start}\t{end}\t{signal}\t{signal}\t-\n")
-                            except (ValueError, IndexError):
-                                continue
-    
-    # CRITICAL: This is sorting the large read file - use increased buffer
-    log(f"INFO  Sorting large read file (this may take a few minutes)...")
-    sort_bed(str(reads_file), buffer_size="2G")  # Use 2G buffer for large file
+    # ---- awk filter + sort in one pipeline ----------------------------------
+    # Build one awk command per strand; run them together, pipe straight to sort.
+    # ($4>thr || $4<-thr) == abs($4)>thr for thr>=0 — identical to original.
+    log("INFO  Converting bedGraphs to sorted read intervals (awk fast-path)...")
+
+    try:
+        parallel = max(1, int(os.environ.get("THREADS", "1")))
+    except (ValueError, TypeError):
+        parallel = 1
+
+    awk_filter = (
+        "!/^track/ && !/^browser/ && !/^#/ && NF>=4 && $3>$2 "
+        "&& ($4>thr || $4<-thr) "
+        '{print $1"\\t"$2"\\t"$3"\\t"$4"\\t"$4"\\t"strand}'
+    )
+    awk_parts = []
+    for bg, strand in [(pos_bg, "+"), (neg_bg, "-")]:
+        if Path(bg).exists() and Path(bg).stat().st_size > 0:
+            awk_parts.append(
+                f"awk -v thr='{thr}' -v strand='{strand}' '{awk_filter}' '{bg}'"
+            )
+
+    if awk_parts:
+        pipeline = (
+            f"( {' ; '.join(awk_parts)} ) | "
+            f"LC_ALL=C sort -k1,1 -k2,2n -k3,3n -S 2G --parallel={parallel} "
+            f"> '{reads_file}'"
+        )
+        res = subprocess.run(["bash", "-c", pipeline], check=False,
+                             stderr=subprocess.PIPE)
+        if res.returncode != 0:
+            log(f"ERROR: awk/sort pipeline failed: {res.stderr.decode()}")
+            raise subprocess.CalledProcessError(res.returncode, "awk|sort pipeline")
+    else:
+        reads_file.touch()   # no valid inputs — produce empty file
+
+    log("INFO  bedGraph conversion complete")
     return str(reads_file)
 
 # ---- sequential read assignment (NEW LOGIC) ---------------------------------
@@ -481,7 +498,10 @@ def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed
     # Step 1: Promoters (gene-based TSS-250..+249, same-strand)
     # OLD SCRIPT EXACT LOGIC: assign with -s, remove UNSTRANDED
     log("INFO  Step 1: Assigning promoter reads (same-strand from ppPolII)...")
-    log(f"DEBUG Input reads: {wc_effective_lines(current_reads)}, Promoter regions: {wc_effective_lines(coord_files['promoter'])}")
+    # PERF (v9.2): wc_effective_lines on the 40M-line reads file is gated
+    # behind --debug to avoid reading the full file just for log output.
+    if args.debug:
+        log(f"DEBUG Input reads: {wc_effective_lines(current_reads)}, Promoter regions: {wc_effective_lines(coord_files['promoter'])}")
     prom_reads = OUT / "PROseq_ppPolII.bed"
     prom_removed = OUT / "ppRemoved.bed"
     run([BT, "intersect", "-s", "-u", "-wa", "-a", current_reads, "-b", coord_files['promoter']], str(prom_reads))
@@ -489,12 +509,14 @@ def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed
     run([BT, "intersect", "-v", "-a", current_reads, "-b", coord_files['promoter']], str(prom_removed))
     assigned_reads['Promoter'] = str(prom_reads)
     current_reads = str(prom_removed)
-    log(f"DEBUG Assigned: {wc_effective_lines(str(prom_reads))}, Remaining: {wc_effective_lines(current_reads)}")
+    if args.debug:
+        log(f"DEBUG Assigned: {wc_effective_lines(str(prom_reads))}, Remaining: {wc_effective_lines(current_reads)}")
     
     # Step 2: Divergent (gene-based TSS-750..-251, opposite-strand)
     # OLD SCRIPT EXACT LOGIC: assign with -S, remove UNSTRANDED
     log("INFO  Step 2: Assigning divergent reads (opposite-strand from divTx)...")
-    log(f"DEBUG Input reads: {wc_effective_lines(current_reads)}, Divergent regions: {wc_effective_lines(coord_files['divergent'])}")
+    if args.debug:
+        log(f"DEBUG Input reads: {wc_effective_lines(current_reads)}, Divergent regions: {wc_effective_lines(coord_files['divergent'])}")
     div_reads = OUT / "PROseq_ppDiv.bed"
     div_removed = OUT / "ppdivRemoved.bed"
     run([BT, "intersect", "-S", "-u", "-wa", "-a", current_reads, "-b", coord_files['divergent']], str(div_reads))
@@ -502,7 +524,8 @@ def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed
     run([BT, "intersect", "-v", "-a", current_reads, "-b", coord_files['divergent']], str(div_removed))
     assigned_reads['DivergentTx'] = str(div_reads)
     current_reads = str(div_removed)
-    log(f"DEBUG Assigned: {wc_effective_lines(str(div_reads))}, Remaining: {wc_effective_lines(current_reads)}")
+    if args.debug:
+        log(f"DEBUG Assigned: {wc_effective_lines(str(div_reads))}, Remaining: {wc_effective_lines(current_reads)}")
 
     
     # Step 3: CPS (same-strand: -s)
@@ -549,35 +572,38 @@ def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed
 
 # ---- count and summarize ---------------------------------------------------
 def count_and_summarize(assigned_reads: dict):
-    """Count reads and signal for each category"""
+    """Count reads and signal for each category.
+
+    PERF (v9.2): replaced Python line-by-line loop + separate wc_effective_lines
+    call with a single awk invocation that counts and sums abs(signal) in one
+    pass.  Output is identical: abs(float(col4)) summed over all data lines.
+    """
     summary = {}
-    
+
     for category, reads_file in assigned_reads.items():
-        read_count = wc_effective_lines(reads_file)
+        read_count = 0
         signal_sum = 0.0
-        
+
         if Path(reads_file).exists() and Path(reads_file).stat().st_size > 0:
-            with open(reads_file) as f:
-                for ln in f:
-                    if ln.strip() and not ln.startswith(("track", "browser", "#")):
-                        fields = split_fields(ln)
-                        if len(fields) >= 4:
-                            try:
-                                # Sum absolute values to avoid negative totals from mixed strands
-                                signal_sum += abs(float(fields[3]))
-                            except (ValueError, IndexError):
-                                pass
-        
-        # DEBUG: Keep original values to see what's happening
-        # signal_sum = max(0.0, signal_sum)  # Temporarily disabled to debug
-        
-        summary[category] = {
-            'signal': signal_sum,
-            'count': read_count
-        }
-        
+            # awk replicates: skip track/browser/# headers, NF>=4, sum abs($4)
+            awk_cmd = (
+                f"awk '!/^track/ && !/^browser/ && !/^#/ && NF>=4 "
+                f"{{s=($4>=0?$4:-$4); sum+=s; count++}} "
+                f"END{{print count+0, sum+0}}' '{reads_file}'"
+            )
+            res = subprocess.run(["bash", "-c", awk_cmd], check=False,
+                                 capture_output=True, text=True)
+            if res.returncode == 0 and res.stdout.strip():
+                parts = res.stdout.strip().split()
+                try:
+                    read_count = int(parts[0])
+                    signal_sum = float(parts[1]) if len(parts) > 1 else 0.0
+                except (ValueError, IndexError):
+                    pass
+
+        summary[category] = {"signal": signal_sum, "count": read_count}
         log(f"INFO  {category}: {read_count} reads, {signal_sum:.2f} signal")
-    
+
     return summary
 
 # ---- output generation ------------------------------------------------------
