@@ -283,7 +283,7 @@ workflow TrackTx {
   
   download_genome_annotations()
   
-  gtf_ch   = download_genome_annotations.out[0]
+  gtf_ch   = download_genome_annotations.out.gtf
   genes_ch = download_genome_annotations.out.genes
   tss_ch   = download_genome_annotations.out.tss
   tes_ch   = download_genome_annotations.out.tes
@@ -751,8 +751,8 @@ workflow TrackTx {
       tuple(sid, p3, n3, p5, n5, ap3, an3, ap5, an5, c, t, r, cm, genes)
     }
 
-  // Pass TES BED for gene-end normalization (broadcast to all samples via .first())
-  normalize_coverage_tracks(norm_input_ch, genome_fa_ch, tes_ch.first())
+  // Pass TES BED for gene-end normalization (tes_ch is already a value channel)
+  normalize_coverage_tracks(norm_input_ch, genome_fa_ch, tes_ch)
   
   norm_tracks_ch  = normalize_coverage_tracks.out.norm_tuple
   norm_factors_ch = norm_tracks_ch.map { sid, p3, n3, nf, c, t, r ->

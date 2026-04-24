@@ -148,12 +148,35 @@ is_network_storage() {
 # CONTAINER DETECTION
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Check if Docker daemon is running (silent check)
+# Check if Docker daemon is running (silent check).
+# IMPORTANT: docker info can hang indefinitely if the daemon is in a bad state
+# (crashed but socket still present, zombie process, etc.).  A stuck docker info
+# call cannot be interrupted with Ctrl-C and can require a full computer restart
+# to clear.  Always wrap with a short timeout.
 docker_daemon_running() {
     if ! has_command docker; then
         return 1
     fi
-    docker info >/dev/null 2>&1
+    if has_command timeout; then
+        timeout 5s docker info >/dev/null 2>&1
+    elif has_command gtimeout; then
+        gtimeout 5s docker info >/dev/null 2>&1
+    else
+        # macOS without GNU coreutils: background + manual kill
+        docker info >/dev/null 2>&1 &
+        local pid=$!
+        local i=0
+        while kill -0 "$pid" 2>/dev/null && [[ $i -lt 5 ]]; do
+            sleep 1; i=$((i + 1))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            return 1
+        fi
+        wait "$pid" 2>/dev/null
+        return $?
+    fi
 }
 
 # Check if Docker can actually run containers (catches file-sharing, permission issues)
@@ -191,7 +214,14 @@ docker_can_run_containers() {
 detect_container_memory_gb() {
     local mem_bytes=""
     if docker_daemon_running; then
-        mem_bytes=$(docker info --format '{{.MemTotal}}' 2>/dev/null)
+        # Use the same timeout wrapper — docker info can hang here too
+        if has_command timeout; then
+            mem_bytes=$(timeout 5s docker info --format '{{.MemTotal}}' 2>/dev/null)
+        elif has_command gtimeout; then
+            mem_bytes=$(gtimeout 5s docker info --format '{{.MemTotal}}' 2>/dev/null)
+        else
+            mem_bytes=$(docker info --format '{{.MemTotal}}' 2>/dev/null)
+        fi
     elif has_command podman && podman info >/dev/null 2>&1; then
         mem_bytes=$(podman info --format '{{.Host.MemTotal}}' 2>/dev/null)
     fi
