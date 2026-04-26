@@ -280,6 +280,24 @@ def main():
 
     # ── summary stats ─────────────────────────────────────────────────────────
     divergent_regions = int(len(bed_div)) if not bed_div.empty else 0
+
+    # Divergent TX signal intensity and transcript length
+    # Non-standard BED column order: ID | chrom | start | end | signal | flag
+    # After read_bed6 assigns standard labels: "end"=start_pos, "name"=end_pos, "score"=signal
+    div_median_signal = None
+    div_mean_signal   = None
+    div_median_length = None
+    if not bed_div.empty:
+        scores = pd.to_numeric(bed_div["score"], errors="coerce").dropna()
+        if len(scores) > 0:
+            div_median_signal = round(float(np.median(scores)), 1)
+            div_mean_signal   = round(float(np.mean(scores)), 1)
+        end_pos   = pd.to_numeric(bed_div["name"], errors="coerce")
+        start_pos = pd.to_numeric(bed_div["end"],  errors="coerce")
+        lengths   = (end_pos - start_pos).dropna()
+        valid_len = lengths[lengths > 0]
+        if len(valid_len) > 0:
+            div_median_length = int(np.median(valid_len))
     # Exclude non-localized regions from total count
     if not region_counts_df.empty:
         mask = ~region_counts_df["region"].str.contains(unloc_pattern, case=False, na=False, regex=True)
@@ -343,6 +361,16 @@ def main():
     umi_output_reads = qc.get("umi_output_reads") if isinstance(qc, dict) else None
     umi_dedup_percent = qc.get("umi_deduplication_percent") if isinstance(qc, dict) else None
 
+    # Strand bias (from qc_pol.json — already computed by module 13)
+    strand_plus_reads    = qc.get("strand_plus_reads")    if isinstance(qc, dict) else None
+    strand_minus_reads   = qc.get("strand_minus_reads")   if isinstance(qc, dict) else None
+    strand_plus_fraction = qc.get("strand_plus_fraction") if isinstance(qc, dict) else None
+    if strand_plus_fraction is not None:
+        try:
+            strand_plus_fraction = round(float(strand_plus_fraction), 4)
+        except (ValueError, TypeError):
+            strand_plus_fraction = None
+
     def safe_int(x): 
         try: 
             v=int(x) 
@@ -388,6 +416,9 @@ def main():
         sample=SID, condition=COND, timepoint=TP, replicate=REP,
         metrics=dict(
             divergent_regions=int(divergent_regions),
+            divergent_median_signal=div_median_signal,
+            divergent_mean_signal=div_mean_signal,
+            divergent_median_length_bp=div_median_length,
             total_functional_regions=int(total_regions),
             reads_total_functional=float(reads_total_func),
             median_pausing_index=None if np.isnan(median_pausing) else float(median_pausing),
@@ -407,6 +438,9 @@ def main():
             umi_output_reads=umi_output_reads,
             umi_deduplication_percent=umi_dedup_percent,
             mean_coverage_depth=qc.get("mean_coverage_depth") if isinstance(qc, dict) else None,
+            strand_plus_reads=strand_plus_reads,
+            strand_minus_reads=strand_minus_reads,
+            strand_plus_fraction=strand_plus_fraction,
         ),
         regions=regions_list,
         tracks=dict(
@@ -435,6 +469,9 @@ def main():
         ("qc_total_reads_raw", row["qc"]["total_reads_raw"]),
         ("qc_dedup_reads_mapq_ge", row["qc"]["dedup_reads_mapq_ge"]),
         ("qc_duplicate_percent", row["qc"]["duplicate_percent"]),
+        ("qc_strand_plus_fraction", row["qc"]["strand_plus_fraction"]),
+        ("divergent_median_signal", row["metrics"]["divergent_median_signal"]),
+        ("divergent_median_length_bp", row["metrics"]["divergent_median_length_bp"]),
     ]
     pd.DataFrame(pairs, columns=["Metric","Value"]).to_csv(args.out_tsv, sep="\t", index=False)
 
@@ -729,6 +766,16 @@ def main():
         {kpi("Median density", (None if np.isnan(median_density) else round(median_density,3)), ("source: "+str(row['metrics'].get('density_source') or 'n/a') + (" — "+str(row['metrics'].get('density_reason')) if (np.isnan(median_density) and row['metrics'].get('density_reason')) else "")))}
         {kpi("CPM factor", row["metrics"]["cpm_factor"])}
         {kpi("siCPM factor", row["metrics"]["sicpm_factor"])}
+        {kpi("Strand balance (+ strand)",
+             None if strand_plus_fraction is None else f"{strand_plus_fraction:.1%}",
+             ("✓ balanced (45–55%)" if strand_plus_fraction is not None and 0.45 <= strand_plus_fraction <= 0.55
+              else ("⚠ outside expected range" if strand_plus_fraction is not None else "")))}
+        {kpi("Divergent TX median signal",
+             div_median_signal,
+             "median signal score per locus" if div_median_signal is not None else "n/a")}
+        {kpi("Divergent TX median length",
+             (f"{div_median_length:,} bp" if div_median_length is not None else None),
+             "median genomic span of divergent loci" if div_median_length is not None else "n/a")}
       </div>
 
       <h2>Functional regions — composition</h2>

@@ -68,6 +68,7 @@ process combine_reports_into_cohort {
   // Stage files with sequential names to avoid collisions (like metric_1, metric_2, etc.)
   input:
     path 'report_*.json'
+    path concordance_tsv, optional: true
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:
@@ -219,6 +220,16 @@ process combine_reports_into_cohort {
 
   COMBINE_START=$(date +%s)
 
+  # Optional concordance TSV from module 05b
+  CONCORDANCE_TSV="!{concordance_tsv}"
+  CONCORDANCE_ARG=""
+  if [[ -n "${CONCORDANCE_TSV}" && "${CONCORDANCE_TSV}" != "null" && -s "${CONCORDANCE_TSV}" ]]; then
+    CONCORDANCE_ARG="--concordance-tsv ${CONCORDANCE_TSV}"
+    echo "COHORT | CONFIG | Concordance TSV: ${CONCORDANCE_TSV}"
+  else
+    echo "COHORT | CONFIG | Concordance TSV: not provided"
+  fi
+
   set +e
   ${PYTHON_CMD} "${COMBINER_SCRIPT}" \
     --inputs "${JSON_FILES[@]}" \
@@ -229,7 +240,8 @@ process combine_reports_into_cohort {
     --pipeline-version "${PIPELINE_VERSION}" \
     --run-name "${RUN_NAME}" \
     --duration "${DURATION}" \
-    --profile "${PROFILE}"
+    --profile "${PROFILE}" \
+    ${CONCORDANCE_ARG}
   
   COMBINE_RC=$?
   set -e

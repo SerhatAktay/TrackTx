@@ -113,9 +113,28 @@ process download_genome_and_build_alignment_index {
   FASTA_DIGEST="${CACHE_DIR}/.${GENOME_ID}.fa.sha256"
   INDEX_PREFIX="${CACHE_DIR}/${GENOME_ID}"
 
+  # Resolve UCSC assembly ID — some genomes use a different ID in UCSC URLs
+  # than the shorthand used internally (e.g. dvir → droVir3).
+  UCSC_ID="${GENOME_ID}"
+  case "${GENOME_ID}" in
+    dvir)  UCSC_ID="droVir3" ;;   # Drosophila virilis
+    dsim)  UCSC_ID="droSim1" ;;   # Drosophila simulans
+    dyak)  UCSC_ID="droYak2" ;;   # Drosophila yakuba
+    dere)  UCSC_ID="droEre2"  ;;  # Drosophila erecta
+    dana)  UCSC_ID="droAna3"  ;;  # Drosophila ananassae
+    dpse)  UCSC_ID="droPer1"  ;;  # Drosophila persimilis
+    dper)  UCSC_ID="droPer1"  ;;  # Drosophila persimilis (alt shorthand)
+    dwil)  UCSC_ID="droWil1"  ;;  # Drosophila willistoni
+    dmoj)  UCSC_ID="droMoj3"  ;;  # Drosophila mojavensis
+    dgri)  UCSC_ID="droGri2"  ;;  # Drosophila grimshawi
+  esac
+  if [[ "${UCSC_ID}" != "${GENOME_ID}" ]]; then
+    echo "INDEX | CONFIG | UCSC alias: ${GENOME_ID} → ${UCSC_ID}"
+  fi
+
   # UCSC download URLs
-  URL_PRIMARY="https://hgdownload.soe.ucsc.edu/goldenPath/${GENOME_ID}/bigZips/${GENOME_ID}.fa.gz"
-  URL_FALLBACK="https://hgdownload.soe.ucsc.edu/goldenPath/${GENOME_ID}/bigZips/chromFa.tar.gz"
+  URL_PRIMARY="https://hgdownload.soe.ucsc.edu/goldenPath/${UCSC_ID}/bigZips/${UCSC_ID}.fa.gz"
+  URL_FALLBACK="https://hgdownload.soe.ucsc.edu/goldenPath/${UCSC_ID}/bigZips/chromFa.tar.gz"
 
   echo "INDEX | CONFIG | Genome ID: ${GENOME_ID}"
   echo "INDEX | CONFIG | Source: ${SOURCE}"

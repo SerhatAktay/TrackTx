@@ -1138,8 +1138,14 @@ workflow TrackTx {
   // Collect reports and stage with sequential names to avoid collisions
   per_sample_reports = report_json_ch
     .toSortedList { a, b -> a.name <=> b.name }
-  
-  combine_reports_into_cohort(per_sample_reports)
+
+  // Pass concordance report to cohort combiner if replicates were merged
+  concordance_for_cohort = (params.replicates?.merge == true)
+    ? Channel.fromPath("${params.output_dir}/02_alignments/_merged/concordance_report.tsv", checkIfExists: false)
+             .ifEmpty(file("NO_CONCORDANCE"))
+    : Channel.value(file("NO_CONCORDANCE"))
+
+  combine_reports_into_cohort(per_sample_reports, concordance_for_cohort)
 
 
 

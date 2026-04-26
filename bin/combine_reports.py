@@ -390,19 +390,21 @@ def normalize_sample_data(
         "timepoint": timepoint,
         "replicate": replicate,
         "divergent_regions": metrics.get("divergent_regions"),
+        "divergent_median_signal": metrics.get("divergent_median_signal"),
+        "divergent_median_length_bp": metrics.get("divergent_median_length_bp"),
         "total_regions": metrics.get("total_functional_regions") or metrics.get("total_regions"),
         "reads_total_functional": reads_total_functional,
         "median_pausing_index": (
-            metrics.get("median_pausing_index") if metrics.get("median_pausing_index") is not None 
+            metrics.get("median_pausing_index") if metrics.get("median_pausing_index") is not None
             else metrics.get("median_pi")
         ),
         "median_density": (
-            metrics.get("median_functional_cpm") if metrics.get("median_functional_cpm") is not None 
+            metrics.get("median_functional_cpm") if metrics.get("median_functional_cpm") is not None
             else metrics.get("median_density")
         ),
         "cpm_factor": metrics.get("cpm_factor"),
         "crpmsi_factor": (
-            metrics.get("sicpm_factor") if metrics.get("sicpm_factor") is not None 
+            metrics.get("sicpm_factor") if metrics.get("sicpm_factor") is not None
             else metrics.get("crpmsi_factor")
         ),
         "density_source": metrics.get("density_source"),
@@ -416,6 +418,8 @@ def normalize_sample_data(
         "umi_deduplication_enabled": qc.get("umi_deduplication_enabled", False),
         "umi_deduplication_percent": qc.get("umi_deduplication_percent"),
         "unlocalized_fraction": unloc_frac,
+        # Strand balance (from qc section, written by render_sample_report.py ≥ this commit)
+        "strand_plus_fraction": to_float(qc.get("strand_plus_fraction")) if qc else None,
         "func_totals": func_totals,
         "region_counts": region_counts,
         "region_length_totals": region_len_totals,
@@ -545,11 +549,13 @@ def build_cohort_dataframe(
     core_cols = [
         "sample_id", "condition", "timepoint", "replicate",
         "input_reads", "input_reads_source", "dedup_reads", "duplicate_percent",
-        "divergent_regions", "total_regions", "reads_total_functional",
+        "divergent_regions", "divergent_median_signal", "divergent_median_length_bp",
+        "total_regions", "reads_total_functional",
         "median_pausing_index", "median_density",
-        "cpm_factor", "crpmsi_factor", "unlocalized_fraction"
+        "cpm_factor", "crpmsi_factor", "unlocalized_fraction",
+        "strand_plus_fraction"
     ]
-    
+
     rows = []
     for sample in samples:
         # Start with core columns
@@ -618,9 +624,11 @@ def write_json_output(
     core_cols = [
         "sample_id", "condition", "timepoint", "replicate",
         "input_reads", "input_reads_source", "dedup_reads", "duplicate_percent",
-        "divergent_regions", "total_regions", "reads_total_functional",
+        "divergent_regions", "divergent_median_signal", "divergent_median_length_bp",
+        "total_regions", "reads_total_functional",
         "median_pausing_index", "median_density",
-        "cpm_factor", "crpmsi_factor", "unlocalized_fraction"
+        "cpm_factor", "crpmsi_factor", "unlocalized_fraction",
+        "strand_plus_fraction"
     ]
     
     all_columns = (
@@ -735,6 +743,7 @@ def generate_html_report(
     <a href="#pausing">⏸️ Pausing</a>
     <a href="#regions">🎯 Functional Regions</a>
     <a href="#normalization">📏 Normalization</a>
+    <a href="#concordance">🔗 Concordance</a>
     <a href="#methodology">📐 Calculation Methodology</a>
     <a href="#samples">📋 Sample Table</a>
     <a href="#files">📁 Files</a>
@@ -869,6 +878,21 @@ def generate_html_report(
         <div id="chart-dup-dist" class="viz-body"></div>
         <div class="distrib-summary" id="dup-stats"></div>
         <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">📊 Aggregate distribution - hover to see samples in each bin</p>
+      </div>
+      <div class="viz-card" style="grid-column: 1 / -1;">
+        <h3>Library Size Breakdown per Sample <span class="info-tip" title="Three read-count layers per sample: total input reads (raw), deduplicated reads passing MAPQ filter, and reads assigned to functional regions. Helps spot samples with extreme loss at any stage.">?</span></h3>
+        <div id="chart-library-size" class="viz-body" style="height:420px;"></div>
+        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">🔵 Input &nbsp; 🟢 Dedup (MAPQ≥) &nbsp; 🟠 Functional &nbsp;— hover for values</p>
+      </div>
+      <div class="viz-card">
+        <h3>Unlocalized Fraction per Sample <span class="info-tip" title="Fraction of reads NOT assigned to any annotated functional region. Values &lt;20% are typical; higher values may indicate contamination, rRNA, or incomplete annotation.">?</span></h3>
+        <div id="chart-unloc-per-sample" class="viz-body"></div>
+        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over bars to see sample IDs • Dashed line = 20% threshold</p>
+      </div>
+      <div class="viz-card">
+        <h3>Strand Balance (+ strand fraction) <span class="info-tip" title="Fraction of reads mapping to the positive strand at gene bodies. PRO-seq expects ~50% (45–55%). Strong deviations suggest strand-switching artefacts or adapter issues.">?</span></h3>
+        <div id="chart-strand-balance" class="viz-body"></div>
+        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover for sample IDs • Dashed lines = expected 45–55% range</p>
       </div>
     </div>
 
@@ -1110,6 +1134,27 @@ def generate_html_report(
         <h3>Normalization Factor CV by Condition <span class="info-tip" title="Coefficient of variation for normalization factors within each condition. Lower = more consistent.">?</span></h3>
         <div id="chart-norm-cv" class="viz-body"></div>
       </div>
+    </div>
+  </section>
+
+  <!-- SECTION: Replicate Concordance -->
+  <section class="layer" id="concordance">
+    <div class="layer-heading">
+      <h2>Replicate Concordance</h2>
+      <div class="subtitle">Pairwise correlation between replicates before merging</div>
+    </div>
+    <div class="help-box">
+      <strong>What is replicate concordance?</strong> Before BAMs are merged, TrackTx computes pairwise
+      Pearson or Spearman correlation of per-chromosome read counts between replicates. Pairs with
+      min(pairwise r) ≥ threshold are merged; others are kept separate.
+      <ul>
+        <li><strong>min_corr ≥ 0.9:</strong> Excellent — replicates merged</li>
+        <li><strong>min_corr 0.8–0.9:</strong> Moderate — review per-sample QC</li>
+        <li><strong>min_corr &lt; 0.8 or "no_failed":</strong> Poor concordance — replicates kept individual</li>
+      </ul>
+    </div>
+    <div id="concordance-table-container">
+      <p class="muted" style="padding:1rem;">No concordance data available — run pipeline with <code>params.replicates.merge = true</code>.</p>
     </div>
   </section>
 
@@ -1362,11 +1407,16 @@ def main():
         help="Execution profile for metadata"
     )
     parser.add_argument(
+        "--concordance-tsv",
+        default=None,
+        help="Optional concordance_report.tsv from module 05b replicate merging"
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {VERSION}"
     )
-    
+
     args = parser.parse_args()
     
     # Capture run command
@@ -1481,6 +1531,19 @@ def main():
     if args.out_regions:
         write_region_totals_tsv(region_totals, region_keys, args.out_regions)
     
+    # Load optional concordance TSV from module 05b replicate merging
+    concordance_rows: List[Dict[str, Any]] = []
+    if args.concordance_tsv and os.path.exists(args.concordance_tsv):
+        log("CONCORDANCE", f"Loading: {args.concordance_tsv}")
+        try:
+            conc_df = pd.read_csv(args.concordance_tsv, sep="\t")
+            concordance_rows = conc_df.to_dict("records")
+            log("CONCORDANCE", f"Loaded {len(concordance_rows)} concordance entries")
+        except Exception as e:
+            log_warning(f"Could not load concordance TSV: {e}")
+    else:
+        log_info("No concordance TSV provided — replicate concordance section will be omitted")
+
     # Generate HTML with embedded CSS/JS
     # (Keeping existing CSS and JS strings from original)
     log("═" * 70, "")
@@ -1490,7 +1553,8 @@ def main():
         "samples": samples,
         "region_totals": region_totals,
         "region_keys": region_keys,
-        "aggregate": aggregate
+        "aggregate": aggregate,
+        "concordance": concordance_rows,
     }), ensure_ascii=False)
     
     # Embedded Assets
@@ -2609,6 +2673,156 @@ def main():
             container.innerHTML = cards;
         })();
         
+        // ===== LIBRARY SIZE BREAKDOWN (new) =====
+        (function renderLibrarySizeChart() {
+            const container = document.getElementById('chart-library-size');
+            if (!container) return;
+            const sampleIds = rows.map(r => r.sample_id);
+            const inputVals  = rows.map(r => (r.input_reads  || 0) / 1e6);
+            const dedupVals  = rows.map(r => (r.dedup_reads  || 0) / 1e6);
+            const funcVals   = rows.map(r => (r.reads_total_functional || 0) / 1e6);
+            if (!inputVals.some(v => v > 0)) {
+                container.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No library size data available</div>';
+                return;
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = container.offsetWidth || 900;
+            canvas.height = container.offsetHeight || 420;
+            container.appendChild(canvas);
+            const ctx = canvas.getContext('2d');
+            const n = sampleIds.length;
+            const pad = { top: 30, right: 20, bottom: 120, left: 70 };
+            const w = canvas.width - pad.left - pad.right;
+            const h = canvas.height - pad.top - pad.bottom;
+            const groupW = w / n;
+            const barW = Math.max(4, Math.min(22, groupW / 4));
+            const maxVal = Math.max(...inputVals, ...dedupVals, ...funcVals, 0.1);
+            const colors = ['#3b82f6', '#10b981', '#f59e0b'];
+            const series = [inputVals, dedupVals, funcVals];
+            const labels = ['Input', 'Dedup (MAPQ≥)', 'Functional'];
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // Y grid
+            ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--line') || '#e5e7eb';
+            ctx.lineWidth = 1;
+            for (let i = 0; i <= 5; i++) {
+                const y = pad.top + h - (i / 5) * h;
+                ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(pad.left + w, y); ctx.stroke();
+                ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--muted') || '#6b7280';
+                ctx.font = '11px sans-serif';
+                ctx.textAlign = 'right';
+                ctx.fillText((maxVal * i / 5).toFixed(1) + 'M', pad.left - 6, y + 4);
+            }
+            // Bars
+            series.forEach((vals, si) => {
+                vals.forEach((v, i) => {
+                    const x = pad.left + i * groupW + (si - 1) * (barW + 2) + groupW / 2;
+                    const bh = (v / maxVal) * h;
+                    const y = pad.top + h - bh;
+                    ctx.fillStyle = colors[si];
+                    ctx.globalAlpha = 0.85;
+                    ctx.fillRect(x - barW / 2, y, barW, bh);
+                    ctx.globalAlpha = 1;
+                });
+            });
+            // X labels
+            ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--fg') || '#111';
+            ctx.font = '11px sans-serif';
+            ctx.textAlign = 'center';
+            sampleIds.forEach((sid, i) => {
+                const x = pad.left + i * groupW + groupW / 2;
+                ctx.save();
+                ctx.translate(x, pad.top + h + 10);
+                ctx.rotate(-Math.PI / 4);
+                ctx.fillText(sid.length > 20 ? sid.slice(0, 18) + '…' : sid, 0, 0);
+                ctx.restore();
+            });
+            // Legend
+            const legendX = pad.left;
+            labels.forEach((lbl, i) => {
+                ctx.fillStyle = colors[i]; ctx.fillRect(legendX + i * 120, 8, 14, 14);
+                ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--fg') || '#111';
+                ctx.font = '12px sans-serif'; ctx.textAlign = 'left';
+                ctx.fillText(lbl, legendX + i * 120 + 18, 20);
+            });
+            // Tooltip
+            canvas.addEventListener('mousemove', e => {
+                const rect = canvas.getBoundingClientRect();
+                const mx = e.clientX - rect.left;
+                const mi = Math.floor((mx - pad.left) / groupW);
+                if (mi >= 0 && mi < n) {
+                    canvas.title = `${sampleIds[mi]}\nInput: ${inputVals[mi].toFixed(2)}M\nDedup: ${dedupVals[mi].toFixed(2)}M\nFunctional: ${funcVals[mi].toFixed(2)}M`;
+                }
+            });
+        })();
+
+        // ===== UNLOCALIZED FRACTION PER SAMPLE (new) =====
+        (function renderUnlocChart() {
+            const container = document.getElementById('chart-unloc-per-sample');
+            if (!container) return;
+            const unlocRows = rows.filter(r => r.unlocalized_fraction != null);
+            if (!unlocRows.length) {
+                container.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No unlocalized fraction data</div>';
+                return;
+            }
+            const vals = unlocRows.map(r => (r.unlocalized_fraction || 0) * 100);
+            const sids = unlocRows.map(r => r.sample_id);
+            renderBarChart('chart-unloc-per-sample', vals, sids, () => '#8b5cf6');
+            // Draw 20% threshold line overlay
+            const canvas = container.querySelector('canvas');
+            if (canvas) {
+                const ctx = canvas.getContext('2d');
+                const maxVal = Math.max(...vals, 0.1);
+                const pad = { top: 30, right: 20, bottom: 100, left: 60 };
+                const h = canvas.height - pad.top - pad.bottom;
+                const threshold = 20;
+                if (threshold <= maxVal) {
+                    const ty = pad.top + h - (threshold / maxVal) * h;
+                    ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 2;
+                    ctx.setLineDash([6, 3]);
+                    ctx.beginPath(); ctx.moveTo(pad.left, ty); ctx.lineTo(canvas.width - pad.right, ty); ctx.stroke();
+                    ctx.setLineDash([]);
+                    ctx.fillStyle = '#ef4444'; ctx.font = '11px sans-serif';
+                    ctx.fillText('20%', canvas.width - pad.right + 2, ty + 4);
+                }
+            }
+        })();
+
+        // ===== STRAND BALANCE PER SAMPLE (new) =====
+        (function renderStrandChart() {
+            const container = document.getElementById('chart-strand-balance');
+            if (!container) return;
+            const strandRows = rows.filter(r => r.strand_plus_fraction != null && isFinite(r.strand_plus_fraction));
+            if (!strandRows.length) {
+                container.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No strand balance data — requires pipeline rerun with updated reports</div>';
+                return;
+            }
+            const vals = strandRows.map(r => (r.strand_plus_fraction || 0) * 100);
+            const sids = strandRows.map(r => r.sample_id);
+            renderBarChart('chart-strand-balance', vals, sids, (i) => {
+                const v = vals[i];
+                return (v >= 45 && v <= 55) ? '#10b981' : '#f59e0b';
+            });
+            // Draw 45% and 55% reference lines
+            const canvas = container.querySelector('canvas');
+            if (canvas) {
+                const ctx = canvas.getContext('2d');
+                const maxVal = Math.max(...vals, 60);
+                const pad = { top: 30, right: 20, bottom: 100, left: 60 };
+                const h = canvas.height - pad.top - pad.bottom;
+                [45, 55].forEach(thr => {
+                    if (thr <= maxVal) {
+                        const ty = pad.top + h - (thr / maxVal) * h;
+                        ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 1.5;
+                        ctx.setLineDash([5, 4]);
+                        ctx.beginPath(); ctx.moveTo(pad.left, ty); ctx.lineTo(canvas.width - pad.right, ty); ctx.stroke();
+                        ctx.setLineDash([]);
+                        ctx.fillStyle = '#3b82f6'; ctx.font = '11px sans-serif';
+                        ctx.fillText(thr + '%', canvas.width - pad.right + 2, ty + 4);
+                    }
+                });
+            }
+        })();
+
         // Render per-sample depth bar chart
         if (depths.length > 0) {
             const depthSampleIds = rows.filter(r => r.input_reads != null && r.input_reads > 0).map(r => r.sample_id);
@@ -2935,6 +3149,38 @@ def main():
             document.getElementById('chart-norm-cv').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No normalization data available</div>';
         }
         
+        // ===== CONCORDANCE SECTION (new) =====
+        (function renderConcordance() {
+            const container = document.getElementById('concordance-table-container');
+            if (!container) return;
+            const concordance = DATA.concordance || [];
+            if (!concordance.length) return; // leave default placeholder text
+            const cols = Object.keys(concordance[0]);
+            const statusColor = (v) => {
+                if (v === 'yes') return '#10b981';
+                if (v === 'no_failed') return '#ef4444';
+                if (v === 'no_single') return '#6b7280';
+                return '#f59e0b';
+            };
+            const corrColor = (v) => {
+                const n = parseFloat(v);
+                if (isNaN(n)) return '';
+                if (n >= 0.95) return 'color:#10b981;font-weight:700';
+                if (n >= 0.9)  return 'color:#f59e0b;font-weight:700';
+                return 'color:#ef4444;font-weight:700';
+            };
+            const header = '<tr>' + cols.map(c => `<th>${c}</th>`).join('') + '</tr>';
+            const body = concordance.map(row => {
+                return '<tr>' + cols.map(c => {
+                    const v = row[c];
+                    if (c === 'merged') return `<td style="color:${statusColor(v)};font-weight:600">${v}</td>`;
+                    if (c === 'min_corr') return `<td style="${corrColor(v)}">${v}</td>`;
+                    return `<td>${v != null ? v : '-'}</td>`;
+                }).join('') + '</tr>';
+            }).join('');
+            container.innerHTML = `<div class="table-wrap"><table><thead>${header}</thead><tbody>${body}</tbody></table></div>`;
+        })();
+
         // PI vs depth scatter plot
         const piVsDepthPairs = rows.filter(r => r.median_pausing_index != null && r.input_reads != null && isFinite(r.median_pausing_index) && r.input_reads > 0);
         if (piVsDepthPairs.length > 0) {
