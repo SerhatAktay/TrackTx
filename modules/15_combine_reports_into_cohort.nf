@@ -68,7 +68,7 @@ process combine_reports_into_cohort {
   // Stage files with sequential names to avoid collisions (like metric_1, metric_2, etc.)
   input:
     path 'report_*.json'
-    path concordance_tsv, optional: true
+    path concordance_tsv
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:
