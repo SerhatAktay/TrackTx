@@ -1,0 +1,888 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/serhataktay/tracktx/blob/main/nextflow_schema.json",
+  "title": "TrackTx pipeline parameters",
+  "description": "Nextflow pipeline for PRO-seq / GRO-seq nascent RNA analysis.",
+  "type": "object",
+  "$defs": {
+
+    "core_options": {
+      "title": "Core options",
+      "type": "object",
+      "fa_icon": "fas fa-terminal",
+      "description": "Required paths and fundamental run settings.",
+      "required": ["samplesheet", "output_dir", "reference_genome"],
+      "properties": {
+        "samplesheet": {
+          "type": "string",
+          "format": "file-path",
+          "exists": true,
+          "pattern": "^\\S+\\.csv$",
+          "description": "Path to the samplesheet CSV file.",
+          "help_text": "Columns: sample, condition (or treatment), timepoint, replicate, file1[, file2]. Paths in file1/file2 may be absolute or relative to the project directory.",
+          "fa_icon": "fas fa-file-csv"
+        },
+        "output_dir": {
+          "type": "string",
+          "format": "directory-path",
+          "description": "Directory where all results are written.",
+          "fa_icon": "fas fa-folder-open"
+        },
+        "experiment_name": {
+          "type": "string",
+          "default": "",
+          "description": "Human-readable label for this experiment (used in reports).",
+          "fa_icon": "fas fa-tag"
+        },
+        "control_label": {
+          "type": "string",
+          "default": "control",
+          "description": "Value in the condition column that identifies control samples.",
+          "help_text": "Used to orient differential / contrast analyses in the Pol-II metrics step.",
+          "fa_icon": "fas fa-flag"
+        },
+        "sample_source": {
+          "type": "string",
+          "default": "local",
+          "description": "Whether reads come from local files or are downloaded from SRA.",
+          "help_text": "'local' — file1/file2 in the samplesheet are paths to FASTQ files on disk. 'srr' — file1 is an SRR accession; the pipeline downloads FASTQs automatically.",
+          "enum": ["local", "srr"],
+          "fa_icon": "fas fa-database"
+        },
+        "paired_end": {
+          "type": "boolean",
+          "default": false,
+          "description": "Input reads are paired-end.",
+          "fa_icon": "fas fa-arrows-alt-h"
+        }
+      }
+    },
+
+    "sra_download_options": {
+      "title": "SRA download options",
+      "type": "object",
+      "fa_icon": "fas fa-download",
+      "description": "Settings for downloading FASTQ files from NCBI SRA. Only used when sample_source is 'srr'.",
+      "properties": {
+        "sra_download_source": {
+          "type": "string",
+          "default": "auto",
+          "description": "Download backend to use.",
+          "help_text": "'auto' tries NCBI first and falls back to ENA on failure. 'ncbi' forces NCBI only. 'ena' forces ENA (European Nucleotide Archive) only.",
+          "enum": ["auto", "ncbi", "ena"],
+          "fa_icon": "fas fa-server"
+        },
+        "sra_tmp": {
+          "type": "string",
+          "description": "Temporary directory for fasterq-dump intermediate files.",
+          "help_text": "Set this to a fast local disk path when the Nextflow work directory is on slow network storage. null = use the Nextflow work directory.",
+          "fa_icon": "fas fa-folder"
+        },
+        "sra_max_size": {
+          "type": "string",
+          "default": "200G",
+          "description": "Maximum file size for prefetch (passed as --max-size).",
+          "fa_icon": "fas fa-weight"
+        },
+        "fastq_gzip": {
+          "type": "boolean",
+          "default": false,
+          "description": "Compress downloaded FASTQs with pigz after conversion.",
+          "help_text": "Reduces disk usage for the raw FASTQ cache at the cost of ~10–20% extra runtime during the download step.",
+          "fa_icon": "fas fa-compress"
+        }
+      }
+    },
+
+    "reference_genome_options": {
+      "title": "Reference genome options",
+      "type": "object",
+      "fa_icon": "fas fa-dna",
+      "description": "Primary and spike-in genome assembly settings.",
+      "properties": {
+        "reference_genome": {
+          "type": "string",
+          "default": "hg38",
+          "description": "Reference genome assembly identifier.",
+          "help_text": "Built-in assemblies: hg38, hs1, mm10, mm39, dm6, ce11, danRer11, rn7, sacCer3. Set to 'other' and supply genome_fasta to use a custom FASTA.",
+          "fa_icon": "fas fa-book"
+        },
+        "genome_fasta": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Path to a custom genome FASTA. Required when reference_genome is 'other'.",
+          "fa_icon": "fas fa-file"
+        },
+        "spikein_genome": {
+          "type": "string",
+          "description": "Spike-in genome assembly identifier (same built-in list as reference_genome).",
+          "help_text": "Enables spike-in normalisation (siCPM). Set to 'other' and supply spikein_fasta for a custom spike-in. Omit or set to null to disable spike-in normalisation.",
+          "fa_icon": "fas fa-vial"
+        },
+        "spikein_fasta": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Path to a custom spike-in FASTA. Required when spikein_genome is 'other'.",
+          "fa_icon": "fas fa-file"
+        },
+        "genome_cache": {
+          "type": "string",
+          "default": "${projectDir}/.cache/genomes",
+          "description": "Directory where downloaded genome FASTAs and Bowtie2 indices are cached.",
+          "fa_icon": "fas fa-archive"
+        },
+        "force_rebuild": {
+          "type": "boolean",
+          "default": false,
+          "description": "Re-download and re-build the genome index even if it is already cached.",
+          "fa_icon": "fas fa-redo"
+        }
+      }
+    },
+
+    "annotation_options": {
+      "title": "Gene annotation options",
+      "type": "object",
+      "fa_icon": "fas fa-tag",
+      "description": "Settings for downloading or providing gene annotations (GTF).",
+      "properties": {
+        "annotation_source": {
+          "type": "string",
+          "default": "refseq",
+          "description": "Annotation source used when downloading a GTF automatically.",
+          "help_text": "'refseq' — UCSC RefSeq (recommended; chr-prefixed). 'ensembl' — Ensembl (no chr prefix by default). 'gencode' — GENCODE (human and mouse only).",
+          "enum": ["refseq", "ensembl", "gencode"],
+          "fa_icon": "fas fa-database"
+        },
+        "gtf_path": {
+          "type": "string",
+          "format": "file-path",
+          "description": "Path to a local GTF file. Overrides annotation_source.",
+          "fa_icon": "fas fa-file-alt"
+        },
+        "gtf_url": {
+          "type": "string",
+          "description": "URL of a GTF file to download. Overrides annotation_source.",
+          "fa_icon": "fas fa-link"
+        },
+        "annotation_exclude_biotypes": {
+          "type": "string",
+          "default": "",
+          "description": "Comma-separated biotypes to exclude from annotations (e.g. 'rRNA,tRNA,snRNA').",
+          "help_text": "Genes with these biotypes are removed before TSS/TES BED generation and are not used in any downstream step.",
+          "fa_icon": "fas fa-filter"
+        },
+        "annotation_chr_naming": {
+          "type": "string",
+          "default": "none",
+          "description": "Chromosome naming conversion applied to the downloaded GTF.",
+          "help_text": "'none' — no conversion (use as-is). 'add' — prepend 'chr' (Ensembl → UCSC). 'remove' — strip 'chr' (UCSC → Ensembl).",
+          "enum": ["none", "add", "remove"],
+          "fa_icon": "fas fa-exchange-alt"
+        }
+      }
+    },
+
+    "read_preprocessing_options": {
+      "title": "Read preprocessing options",
+      "type": "object",
+      "fa_icon": "fas fa-cut",
+      "description": "Adapter trimming, barcode removal, UMI extraction, and raw-read QC settings.",
+      "properties": {
+        "fastqc_raw": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run FastQC on raw (pre-trimming) reads in addition to trimmed reads.",
+          "help_text": "Set to false to skip FastQC on raw reads and save time when library quality is already known.",
+          "fa_icon": "fas fa-microscope"
+        },
+        "adapter_trimming": {
+          "type": "object",
+          "description": "Adapter trimming settings (cutadapt).",
+          "fa_icon": "fas fa-cut",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Enable adapter trimming with cutadapt."
+            },
+            "adapter1": {
+              "type": "string",
+              "default": "",
+              "description": "Adapter sequence for R1 (e.g. 'TGGAATTCTCGGGTGCCAAGG' for TruSeq small RNA)."
+            },
+            "adapter2": {
+              "type": "string",
+              "default": "",
+              "description": "Adapter sequence for R2. Only used in paired-end mode."
+            },
+            "minlen": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "description": "Hard minimum read length (bp) passed to cutadapt -m. 0 = auto-calculate from barcode + UMI lengths."
+            }
+          }
+        },
+        "barcode": {
+          "type": "object",
+          "description": "Inline barcode removal settings.",
+          "fa_icon": "fas fa-barcode",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Remove a fixed-length inline barcode from R1."
+            },
+            "length": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "description": "Barcode length in bp."
+            },
+            "location": {
+              "type": "integer",
+              "default": 5,
+              "description": "End of the read the barcode is on: 5 (5' end) or 3 (3' end).",
+              "enum": [5, 3]
+            },
+            "r2_enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Remove a fixed-length barcode from R2. Paired-end only."
+            },
+            "r2_length": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "description": "R2 barcode length in bp. Paired-end only."
+            },
+            "r2_location": {
+              "type": "integer",
+              "default": 5,
+              "description": "End of R2 the barcode is on: 5 or 3. Paired-end only.",
+              "enum": [5, 3]
+            }
+          }
+        },
+        "umi": {
+          "type": "object",
+          "description": "UMI extraction settings (umi_tools).",
+          "fa_icon": "fas fa-fingerprint",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Extract UMIs with umi_tools and append them to read names."
+            },
+            "length": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "description": "UMI length in bp."
+            },
+            "location": {
+              "type": "integer",
+              "default": 5,
+              "description": "End of the read the UMI is on: 5 (5' end) or 3 (3' end).",
+              "enum": [5, 3]
+            }
+          }
+        }
+      }
+    },
+
+    "quality_control_options": {
+      "title": "Quality control options",
+      "type": "object",
+      "fa_icon": "fas fa-check-circle",
+      "description": "Post-alignment QC metrics, MAPQ filtering, and failure thresholds.",
+      "properties": {
+        "qc": {
+          "type": "object",
+          "description": "Quality control settings.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Run FastQC on preprocessed reads."
+            },
+            "mapq": {
+              "type": "integer",
+              "default": 10,
+              "minimum": 0,
+              "maximum": 255,
+              "description": "Minimum MAPQ score for a read to be counted as mapped (samtools view -q)."
+            },
+            "dedup": {
+              "type": "boolean",
+              "default": true,
+              "description": "Deduplicate reads using UMI information before QC metrics. Requires umi.enabled."
+            },
+            "depth_max_cov": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "description": "Maximum coverage depth for samtools depth. 0 = unlimited."
+            },
+            "fail_map_rate_below": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Fail the pipeline if the overall mapping rate (%) falls below this value. Omit to disable.",
+              "help_text": "Example: set to 50 to fail the pipeline if fewer than 50% of reads map. null or omitting disables the check."
+            },
+            "fail_strand_min": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Fail the pipeline if either strand's read fraction falls below this value (0–1). Omit to disable.",
+              "help_text": "Example: 0.30 fails the pipeline if either strand carries less than 30% of reads — useful for detecting strand-swap or library prep failures."
+            }
+          }
+        }
+      }
+    },
+
+    "output_format_options": {
+      "title": "Output format options",
+      "type": "object",
+      "fa_icon": "fas fa-chart-bar",
+      "description": "Which track formats and normalisation methods to publish.",
+      "properties": {
+        "output": {
+          "type": "object",
+          "description": "Track format and normalisation output flags.",
+          "properties": {
+            "cpm": {
+              "type": "boolean",
+              "default": true,
+              "description": "Publish CPM-normalised tracks (counts-per-million)."
+            },
+            "crpmsi": {
+              "type": "boolean",
+              "default": true,
+              "description": "Publish siCPM-normalised tracks (spike-in CPM). Requires spikein_genome."
+            },
+            "raw_tracks": {
+              "type": "boolean",
+              "default": true,
+              "description": "Publish raw (unnormalised) bedGraph/BigWig tracks in 03_genome_tracks/."
+            },
+            "bigwig": {
+              "type": "boolean",
+              "default": true,
+              "description": "Publish BigWig files. Required by most genome browsers."
+            },
+            "bedgraph": {
+              "type": "boolean",
+              "default": true,
+              "description": "Publish bedGraph files alongside BigWigs. ~100 MB extra per sample."
+            }
+          }
+        },
+        "norm": {
+          "type": "object",
+          "description": "Normalisation method settings.",
+          "properties": {
+            "emit_bw": {
+              "type": "boolean",
+              "default": true,
+              "description": "Publish BigWig files for normalised tracks (CPM, siCPM)."
+            },
+            "emit_sicpm": {
+              "type": "boolean",
+              "default": true,
+              "description": "Compute and publish siCPM normalised tracks. Requires spikein_genome."
+            },
+            "emit_allmap": {
+              "type": "boolean",
+              "default": true,
+              "description": "Compute and publish all-mapper (multimapper-inclusive) tracks."
+            },
+            "emit_5p": {
+              "type": "boolean",
+              "description": "Compute 5'-end tracks. null = auto-detect based on library type.",
+              "help_text": "true = always generate 5' tracks. false = never generate 5' tracks. null (default) = auto-detect."
+            },
+            "gene_end_method": {
+              "type": "string",
+              "default": "none",
+              "description": "Gene-end normalisation method for transcript body scaling.",
+              "enum": ["none", "tes_window", "gene_body"],
+              "help_text": "'none' — disabled. 'tes_window' — scale by signal in a window upstream of TES. 'gene_body' — scale by total gene body signal."
+            },
+            "gene_end_window": {
+              "type": "integer",
+              "default": 500,
+              "minimum": 1,
+              "description": "Width (bp) of the TES window when gene_end_method is 'tes_window'."
+            },
+            "gene_end_min_reads": {
+              "type": "integer",
+              "default": 10,
+              "minimum": 0,
+              "description": "Minimum read count required to include a gene in gene_body scaling."
+            },
+            "timeout_bw": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Timeout (seconds) for bedGraphToBigWig conversion per track. Omit for no timeout.",
+              "help_text": "Increase on slow network storage if BigWig conversion times out."
+            }
+          }
+        }
+      }
+    },
+
+    "divergent_transcription_options": {
+      "title": "Divergent transcription detection",
+      "type": "object",
+      "fa_icon": "fas fa-project-diagram",
+      "description": "Algorithm parameters for the GMM-based divergent transcription peak caller.",
+      "properties": {
+        "advanced": {
+          "type": "object",
+          "description": "Advanced algorithm and preprocessing settings.",
+          "properties": {
+            "divergent_threshold": {
+              "type": "string",
+              "default": "auto",
+              "description": "Per-bin signal threshold for peak calling. 'auto' = calibrated from data.",
+              "help_text": "Set to a numeric string (e.g. '0.05') to override auto-calibration. 'auto' uses divergent_calibration_percentile to derive the threshold from the data."
+            },
+            "divergent_sum_thr": {
+              "type": "string",
+              "default": "auto",
+              "description": "Minimum total signal a peak must have. 'auto' = threshold × divergent_calibration_sum_multiplier."
+            },
+            "divergent_fdr": {
+              "type": "number",
+              "default": 0.08,
+              "minimum": 0,
+              "maximum": 1,
+              "description": "False discovery rate cutoff for the GMM-based peak classifier."
+            },
+            "divergent_calibration_percentile": {
+              "type": "number",
+              "default": 65.0,
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Percentile of per-bin signal used to set the auto threshold. Higher = stricter."
+            },
+            "divergent_calibration_sum_multiplier": {
+              "type": "number",
+              "default": 1.5,
+              "minimum": 0,
+              "description": "Auto sum_thr = auto threshold × this multiplier."
+            },
+            "divergent_calibration_background_lower": {
+              "type": "boolean",
+              "default": false,
+              "description": "Calibrate using only the lower 50% of bins (background estimate)."
+            },
+            "divergent_merge_gap": {
+              "type": "integer",
+              "default": 150,
+              "minimum": 0,
+              "description": "Merge adjacent divergent peaks separated by fewer than N bp."
+            },
+            "divergent_nt_window": {
+              "type": "integer",
+              "default": 1000,
+              "minimum": 1,
+              "description": "Maximum edge-to-edge gap (bp) allowed when pairing plus/minus peaks."
+            },
+            "divergent_balance": {
+              "type": "number",
+              "default": 0.0,
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Minimum signal balance ratio (plus / total) for a valid peak pair. 0.0 = no requirement."
+            },
+            "divergent_bin_gap": {
+              "type": "integer",
+              "default": 100,
+              "minimum": 1,
+              "description": "Maximum within-peak gap (bp). Bins further apart are split into separate peaks."
+            },
+            "divergent_qc": {
+              "type": "boolean",
+              "default": true,
+              "description": "Emit divergent transcription QC plots."
+            },
+            "prep_insert_minlen": {
+              "type": "integer",
+              "default": 12,
+              "minimum": 1,
+              "description": "Minimum insert length (bp) after all trimming. Reads shorter than this are discarded."
+            },
+            "cutadapt_extra": {
+              "type": "string",
+              "default": "",
+              "description": "Extra arguments appended verbatim to the cutadapt command.",
+              "fa_icon": "fas fa-plus"
+            },
+            "bowtie2_extra": {
+              "type": "string",
+              "default": "",
+              "description": "Extra arguments appended verbatim to the bowtie2 command.",
+              "fa_icon": "fas fa-plus"
+            }
+          }
+        }
+      }
+    },
+
+    "functional_region_options": {
+      "title": "Functional region options",
+      "type": "object",
+      "fa_icon": "fas fa-map-marked",
+      "description": "Geometry and signal thresholds for promoter, gene body, enhancer, and termination region assignment.",
+      "properties": {
+        "functional_regions": {
+          "type": "object",
+          "description": "Functional region geometry and signal settings.",
+          "properties": {
+            "prom_up": {
+              "type": "integer",
+              "default": 250,
+              "minimum": 0,
+              "description": "Promoter window: bp upstream of TSS included in the promoter region."
+            },
+            "prom_down": {
+              "type": "integer",
+              "default": 250,
+              "minimum": 0,
+              "description": "Promoter window: bp downstream of TSS included in the promoter region."
+            },
+            "div_inner": {
+              "type": "integer",
+              "default": 250,
+              "minimum": 0,
+              "description": "Inner boundary of the divergent transcription window (bp from TSS)."
+            },
+            "div_outer": {
+              "type": "integer",
+              "default": 750,
+              "minimum": 0,
+              "description": "Outer boundary of the divergent transcription window (bp from TSS)."
+            },
+            "tw_length": {
+              "type": "integer",
+              "default": 10000,
+              "minimum": 0,
+              "description": "Length of the termination window downstream of TES (bp)."
+            },
+            "min_signal": {
+              "type": "number",
+              "default": 0.0,
+              "minimum": 0,
+              "description": "Minimum signal for a region to be reported. 0.0 = report all regions."
+            },
+            "count_mode": {
+              "type": "string",
+              "default": "signal",
+              "description": "How to measure signal within a region.",
+              "enum": ["signal", "event"],
+              "help_text": "'signal' — sum of coverage (bedtools map -o sum). 'event' — count of read 3' ends."
+            },
+            "tss_active_pm": {
+              "type": "integer",
+              "default": 500,
+              "minimum": 0,
+              "description": "TSS active window: a gene is 'active' if a divergent peak falls within ±N bp of its TSS."
+            },
+            "allow_unstranded": {
+              "type": "boolean",
+              "default": true,
+              "description": "Allow genes without strand annotation to be included."
+            },
+            "div_fallback_enable": {
+              "type": "boolean",
+              "default": false,
+              "description": "Enable a fallback strategy for active-gene calling when no divergent peak is near the TSS."
+            },
+            "div_fallback_max_frac": {
+              "type": "number",
+              "default": 0.5,
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Signal fraction of the gene body above which the fallback is triggered."
+            },
+            "div_fallback_threshold": {
+              "type": "number",
+              "default": 0.0,
+              "minimum": 0,
+              "description": "Signal threshold used by the fallback algorithm."
+            },
+            "active_slop": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "description": "Extend the active region by N bp on each side."
+            },
+            "min_signal_quantile": {
+              "type": "number",
+              "default": 0.0,
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Percentile of per-gene signals used as a minimum-signal quantile filter."
+            }
+          }
+        }
+      }
+    },
+
+    "polymerase_metrics_options": {
+      "title": "Polymerase occupancy metrics",
+      "type": "object",
+      "fa_icon": "fas fa-chart-line",
+      "description": "Settings for Pol-II density, pausing index, and cohort-level summaries.",
+      "properties": {
+        "pol": {
+          "type": "object",
+          "description": "Pol-II occupancy metric settings.",
+          "properties": {
+            "contrasts": {
+              "type": "array",
+              "default": [],
+              "description": "Pairwise contrasts for differential Pol-II analysis.",
+              "help_text": "Each entry is a list: [condition_A, condition_B] or [condition_A, timepoint_A, condition_B, timepoint_B]. Example: [[\"control\", \"treated\"]].",
+              "items": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
+            "top_n": {
+              "type": "integer",
+              "default": 100,
+              "minimum": 1,
+              "description": "Number of top genes (by pausing index) to highlight in summary plots."
+            },
+            "plots": {
+              "type": "boolean",
+              "default": true,
+              "description": "Generate summary plots in the cohort report."
+            },
+            "dedup": {
+              "type": "boolean",
+              "default": true,
+              "description": "Deduplicate reads for Pol-II density calculation (uses UMI when available)."
+            }
+          }
+        }
+      }
+    },
+
+    "replicate_options": {
+      "title": "Replicate merging",
+      "type": "object",
+      "fa_icon": "fas fa-object-group",
+      "description": "Optional concordance-checked merging of biological replicates after alignment.",
+      "properties": {
+        "replicates": {
+          "type": "object",
+          "description": "Replicate concordance and merging settings.",
+          "properties": {
+            "merge": {
+              "type": "boolean",
+              "default": false,
+              "description": "Merge biological replicates after alignment.",
+              "help_text": "Before merging, pairwise concordance between all replicates is checked. Replicates below concordance_min are kept separate and a warning is emitted."
+            },
+            "concordance_min": {
+              "type": "number",
+              "default": 0.9,
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Minimum pairwise correlation required to allow merging."
+            },
+            "concordance_method": {
+              "type": "string",
+              "default": "pearson",
+              "description": "Correlation method used for concordance check.",
+              "enum": ["pearson", "spearman"]
+            }
+          }
+        }
+      }
+    },
+
+    "storage_options": {
+      "title": "Storage and publishing options",
+      "type": "object",
+      "fa_icon": "fas fa-save",
+      "description": "Controls which intermediate and final files are published to the results directory.",
+      "properties": {
+        "publish_mode": {
+          "type": "string",
+          "default": "link",
+          "description": "File-linking mode for publishDir.",
+          "help_text": "'link' — hard links (default; fast, no extra disk use). 'copy' — full copy (required for exFAT/USB/NAS drives where hard links fail). 'symlink' or 'move' are also valid Nextflow modes.",
+          "enum": ["link", "copy", "symlink", "move"],
+          "fa_icon": "fas fa-link"
+        },
+        "publish_sra_fastq": {
+          "type": "boolean",
+          "default": true,
+          "description": "Save raw downloaded SRA FASTQs to results/00_sra_cache/.",
+          "help_text": "false — raw FASTQs are cached in results/.sra_cache/ (hidden from results view), saving ~100 GB+ per dataset. The trimmed-FASTQ re-run check provides re-run safety regardless of this setting. Only applies when sample_source is 'srr'.",
+          "fa_icon": "fas fa-save"
+        },
+        "publish_trimmed_fastq": {
+          "type": "boolean",
+          "default": true,
+          "description": "Publish trimmed FASTQs to results/01_trimmed_fastq/. (~900 MB per sample)",
+          "help_text": "false — trimmed FASTQs stay in work/ until nextflow clean -f. WARNING: also disables the SRR re-run shortcut — the pipeline checks for trimmed FASTQs on re-run, so if they are not published they won't be found and downloads will repeat.",
+          "fa_icon": "fas fa-save"
+        },
+        "publish_alignments": {
+          "type": "boolean",
+          "default": true,
+          "description": "Publish BAM files to results/02_alignments/. (~270 MB per sample)",
+          "help_text": "false — BAMs stay in work/ until nextflow clean -f. All downstream steps still run.",
+          "fa_icon": "fas fa-save"
+        },
+        "publish_references_gtf": {
+          "type": "boolean",
+          "default": true,
+          "description": "Publish the full reference GTF to results/00_references/. (~790 MB, one-time)",
+          "help_text": "Derived files (genes.tsv, tss.bed, tes.bed) are always published regardless of this setting.",
+          "fa_icon": "fas fa-save"
+        }
+      }
+    },
+
+    "reporting_options": {
+      "title": "Reporting and logging",
+      "type": "object",
+      "fa_icon": "fas fa-file-alt",
+      "description": "HTML report content and terminal verbosity settings.",
+      "properties": {
+        "reports_plots": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "description": "Number of per-gene coverage plots to embed in HTML reports. 0 = no plots.",
+          "help_text": "Higher values increase report size significantly. Recommended range: 0–50.",
+          "fa_icon": "fas fa-image"
+        },
+        "verbose": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable step-by-step progress logging to the terminal.",
+          "fa_icon": "fas fa-comment"
+        },
+        "debug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable debug-level logging (very detailed; useful for troubleshooting).",
+          "hidden": true,
+          "fa_icon": "fas fa-bug"
+        },
+        "debug_report": {
+          "type": "boolean",
+          "default": false,
+          "description": "Emit extra debug information inside HTML reports.",
+          "hidden": true,
+          "fa_icon": "fas fa-bug"
+        }
+      }
+    },
+
+    "system_options": {
+      "title": "System and performance options",
+      "type": "object",
+      "fa_icon": "fas fa-cog",
+      "description": "Performance tuning, caching behaviour, and miscellaneous system settings.",
+      "properties": {
+        "assets_dir": {
+          "type": "string",
+          "default": "${projectDir}/assets",
+          "description": "Directory for pipeline sentinel/placeholder files. Rarely needs changing.",
+          "hidden": true,
+          "fa_icon": "fas fa-folder"
+        },
+        "preprocess_reads_lenient_cache": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use lenient cache checking for the preprocess_reads step.",
+          "help_text": "Hashes by file name + size instead of content. Enable on NFS/network storage where inode-based hashing causes spurious cache misses.",
+          "fa_icon": "fas fa-network-wired"
+        },
+        "force_sort_bedgraph": {
+          "type": "boolean",
+          "default": false,
+          "description": "Force bedGraph files to be sorted before BigWig conversion.",
+          "help_text": "Enable if you encounter 'bedGraph is not sorted' errors from bedGraphToBigWig.",
+          "fa_icon": "fas fa-sort"
+        },
+        "counts_allow_index_build": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow featureCounts to build its own index if a pre-built one is missing.",
+          "fa_icon": "fas fa-wrench"
+        }
+      }
+    },
+
+    "conda_options": {
+      "title": "Conda environment overrides",
+      "type": "object",
+      "fa_icon": "fas fa-leaf",
+      "description": "Override the conda environment used by specific modules. null = use the pipeline default (envs/tracktx.yaml).",
+      "properties": {
+        "conda_sra": {
+          "type": "string",
+          "description": "Conda environment override for the download_sra_samples module.",
+          "hidden": true,
+          "fa_icon": "fas fa-leaf"
+        },
+        "conda_norm": {
+          "type": "string",
+          "description": "Conda environment override for the normalize_coverage_tracks module.",
+          "hidden": true,
+          "fa_icon": "fas fa-leaf"
+        },
+        "conda_pol": {
+          "type": "string",
+          "description": "Conda environment override for calculate_polymerase_occupancy_metrics and summarize_polymerase_metrics.",
+          "hidden": true,
+          "fa_icon": "fas fa-leaf"
+        },
+        "conda_divergent": {
+          "type": "string",
+          "description": "Conda environment override for the detect_divergent_transcription module.",
+          "hidden": true,
+          "fa_icon": "fas fa-leaf"
+        },
+        "conda_fgr": {
+          "type": "string",
+          "description": "Conda environment override for the assign_signal_to_functional_regions module.",
+          "hidden": true,
+          "fa_icon": "fas fa-leaf"
+        }
+      }
+    }
+
+  },
+
+  "allOf": [
+    { "$ref": "#/$defs/core_options" },
+    { "$ref": "#/$defs/sra_download_options" },
+    { "$ref": "#/$defs/reference_genome_options" },
+    { "$ref": "#/$defs/annotation_options" },
+    { "$ref": "#/$defs/read_preprocessing_options" },
+    { "$ref": "#/$defs/quality_control_options" },
+    { "$ref": "#/$defs/output_format_options" },
+    { "$ref": "#/$defs/divergent_transcription_options" },
+    { "$ref": "#/$defs/functional_region_options" },
+    { "$ref": "#/$defs/polymerase_metrics_options" },
+    { "$ref": "#/$defs/replicate_options" },
+    { "$ref": "#/$defs/storage_options" },
+    { "$ref": "#/$defs/reporting_options" },
+    { "$ref": "#/$defs/system_options" },
+    { "$ref": "#/$defs/conda_options" }
+  ]
+}

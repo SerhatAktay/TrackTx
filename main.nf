@@ -348,35 +348,64 @@ workflow TrackTx {
   // STEP 3: Download SRR Data (optional)
   // ══════════════════════════════════════════════════════════════════════════
   
-  prepared_input_ch = null
-  
+  prepared_input_ch    = null
+  preexisting_clean_ch = Channel.empty()  // Trimmed FASTQs found on disk; bypass download + preprocess
+
   if (params.sample_source == 'srr') {
     if (params.verbose) {
       log.info "─".multiply(80)
       log.info "STEP 3 | Download SRR Data from NCBI"
       log.info "─".multiply(80)
     }
-    
+
     // Explicitly evaluate parameter to avoid closure comparison issues
     def isPairedEnd = params.paired_end ? true : false
-    
+    def outputDir   = params.output_dir.toString()
+
+    if (params.verbose) log.info "STEP 3 | CHECK | Scanning for pre-existing trimmed FASTQs in ${outputDir}/01_trimmed_fastq/"
+
+    // ── Pre-flight check: skip download + preprocess if trimmed FASTQs already exist ──────────
+    // When re-running after the work/ directory has been deleted, Nextflow can no longer resume
+    // from cached task outputs.  If final trimmed FASTQs are already present in results from a
+    // previous run, we reuse them directly and skip both download_sra_samples and
+    // preprocess_and_quality_filter_reads for those samples.
+    //
+    // NOTE: This check relies on publish_trimmed_fastq=true (default).  If publish_trimmed_fastq
+    // is set to false the trimmed FASTQs won't be in results/ and all samples will fall through to
+    // the normal download path.
+    samples_branched = samples_ch.branch { item ->
+      def sid        = item[0]
+      def r1_trimmed = file("${outputDir}/01_trimmed_fastq/${sid}/final_R1.fastq")
+      trimmed_exists: r1_trimmed.exists() && r1_trimmed.size() > 0
+      needs_download: true
+    }
+
+    // Path A — trimmed FASTQs already on disk: reuse them, skip download + preprocessing
+    preexisting_clean_ch = samples_branched.trimmed_exists.map { sid, reads, c, t, r ->
+      def r1 = file("${outputDir}/01_trimmed_fastq/${sid}/final_R1.fastq")
+      def r2 = file("${outputDir}/01_trimmed_fastq/${sid}/final_R2.fastq")
+      if (params.verbose) log.info "STEP 3 | SKIP | ${sid}: trimmed FASTQs found in results — skipping download and preprocessing"
+      tuple(sid, r1, r2, c, t, r)
+    }
+
+    // Path B — no trimmed FASTQs: run the normal download → preprocess pipeline
     download_sra_samples(
-      samples_ch.map { sid, reads, c, t, r ->
+      samples_branched.needs_download.map { sid, reads, c, t, r ->
         tuple(sid, reads[0], c, t, r, isPairedEnd)
       }
     )
-    
+
     prepared_input_ch = download_sra_samples.out[0].map { sid, fq1, fq2, c, t, r ->
       tuple(sid, [file(fq1), file(fq2)].findAll(), c, t, r)
     }
-    
+
     // Monitor downloads
     prepared_input_ch.subscribe { sid, _reads, _cond, _time, _rep ->
       if (params.verbose) log.info "STEP 3 | DOWNLOAD | ${sid} complete"
     }
-    
 
-    
+
+
   } else {
     if (params.verbose) {
       log.info "─".multiply(80)
@@ -399,12 +428,20 @@ workflow TrackTx {
     log.info "STEP 4 | CONFIG | Trimming and quality filtering enabled"
   }
   
-  (clean_fastq_ch, fastqc_ch) = preprocess_and_quality_filter_reads(
+  // Run preprocessing only on samples that need it — those whose trimmed FASTQs were not
+  // found on disk in STEP 3.  For SRR re-runs with an intact results/ folder, prepared_input_ch
+  // may be empty (all samples took the preexisting_clean_ch shortcut), which is fine.
+  (preprocessed_clean_ch, fastqc_ch) = preprocess_and_quality_filter_reads(
     prepared_input_ch,
     Channel.value(params.paired_end ? 'PE' : 'SE')
   )
 
-  // Monitor preprocessing - FIX: _r used twice before!
+  // Merge freshly preprocessed reads with any pre-existing trimmed FASTQs reused from results/.
+  // preexisting_clean_ch is Channel.empty() for local-FASTQ mode and for SRR runs where no
+  // trimmed FASTQs were found, so the mix is a no-op in those cases.
+  clean_fastq_ch = preprocessed_clean_ch.mix(preexisting_clean_ch)
+
+  // Monitor preprocessing completions (includes both fresh and reused paths)
   clean_fastq_ch.subscribe { sid, _r1, _r2opt, _cond, _time, _rep ->
     if (params.verbose) log.info "STEP 4 | CLEAN | ${sid} preprocessing complete"
   }
