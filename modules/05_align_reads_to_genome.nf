@@ -131,7 +131,8 @@ process align_reads_to_genome {
   SAMPLE_ID="!{sample_id}"
   GENOME_ID="!{genome_id}"
   SPIKE_ID="!{spike_id}"
-  
+  LIBRARY_TYPE='!{params.library_type ?: "proseq"}'
+
   R1="!{read1}"
   R2="!{read2}"
 
@@ -153,7 +154,7 @@ process align_reads_to_genome {
   echo "ALIGN | CONFIG | Sample ID: ${SAMPLE_ID}"
   echo "ALIGN | CONFIG | Genome: ${GENOME_ID}"
   echo "ALIGN | CONFIG | Spike-in: ${SPIKE_ID}"
-  echo "ALIGN | CONFIG | Library type: $([ "${IS_PE}" == "true" ] && echo "Paired-end" || echo "Single-end")"
+  echo "ALIGN | CONFIG | Library type: ${LIBRARY_TYPE} ($([ "${IS_PE}" == "true" ] && echo "Paired-end" || echo "Single-end"))"
   echo "ALIGN | CONFIG | Threads: ${THREADS} (Bowtie2: ${BT2_THREADS}, samtools: ${SAM_THREADS})"
   echo "ALIGN | CONFIG | R1: ${R1}"
   if [[ "${IS_PE}" == "true" ]]; then
@@ -343,34 +344,57 @@ PYEND
   echo "────────────────────────────────────────────────────────────────────────"
 
   if [[ "${IS_PE}" == "true" ]]; then
-    echo "ALIGN | PRIMARY | Mode: Paired-end with PRO-seq orientation (--ff)"
-    echo "ALIGN | PRIMARY | -1: original R2, -2: RC(R1)"
-    
-    bowtie2 -p "${BT2_THREADS}" \
-            --end-to-end \
-            --ff \
-            --no-unal \
-            -x "${GENOME_IDX}" \
-            -1 <(decompress "${R2}") \
-            -2 <(decompress "${R1}" | rc_stream) \
-            --un-conc unaligned_R%.fastq \
-            2> >(tee bowtie2_primary.log >&2) \
-    | samtools sort -@ "${SAM_THREADS}" -o "${SAMPLE_ID}_allMap.bam"
-    
+    if [[ "${LIBRARY_TYPE}" == "groseq" ]]; then
+      echo "ALIGN | PRIMARY | Mode: Paired-end GRO-seq (--fr, R1+R2 as-is)"
+      bowtie2 -p "${BT2_THREADS}" \
+              --end-to-end \
+              --fr \
+              --no-unal \
+              -x "${GENOME_IDX}" \
+              -1 <(decompress "${R1}") \
+              -2 <(decompress "${R2}") \
+              --un-conc unaligned_R%.fastq \
+              2> >(tee bowtie2_primary.log >&2) \
+      | samtools sort -@ "${SAM_THREADS}" -o "${SAMPLE_ID}_allMap.bam"
+    else
+      echo "ALIGN | PRIMARY | Mode: Paired-end PRO-seq (--ff, -1 R2, -2 RC(R1))"
+      bowtie2 -p "${BT2_THREADS}" \
+              --end-to-end \
+              --ff \
+              --no-unal \
+              -x "${GENOME_IDX}" \
+              -1 <(decompress "${R2}") \
+              -2 <(decompress "${R1}" | rc_stream) \
+              --un-conc unaligned_R%.fastq \
+              2> >(tee bowtie2_primary.log >&2) \
+      | samtools sort -@ "${SAM_THREADS}" -o "${SAMPLE_ID}_allMap.bam"
+    fi
+
     # Combine unaligned reads for spike-in
     cat unaligned_R1.fastq unaligned_R2.fastq > unaligned.fastq
-    
+
   else
-    echo "ALIGN | PRIMARY | Mode: Single-end with RC(R1)"
-    
-    bowtie2 -p "${BT2_THREADS}" \
-            --end-to-end \
-            --no-unal \
-            -x "${GENOME_IDX}" \
-            -U <(decompress "${R1}" | rc_stream) \
-            --un unaligned.fastq \
-            2> >(tee bowtie2_primary.log >&2) \
-    | samtools sort -@ "${SAM_THREADS}" -o "${SAMPLE_ID}_allMap.bam"
+    if [[ "${LIBRARY_TYPE}" == "groseq" ]]; then
+      echo "ALIGN | PRIMARY | Mode: Single-end GRO-seq (R1 as-is, no RC)"
+      bowtie2 -p "${BT2_THREADS}" \
+              --end-to-end \
+              --no-unal \
+              -x "${GENOME_IDX}" \
+              -U <(decompress "${R1}") \
+              --un unaligned.fastq \
+              2> >(tee bowtie2_primary.log >&2) \
+      | samtools sort -@ "${SAM_THREADS}" -o "${SAMPLE_ID}_allMap.bam"
+    else
+      echo "ALIGN | PRIMARY | Mode: Single-end PRO-seq (RC(R1))"
+      bowtie2 -p "${BT2_THREADS}" \
+              --end-to-end \
+              --no-unal \
+              -x "${GENOME_IDX}" \
+              -U <(decompress "${R1}" | rc_stream) \
+              --un unaligned.fastq \
+              2> >(tee bowtie2_primary.log >&2) \
+      | samtools sort -@ "${SAM_THREADS}" -o "${SAMPLE_ID}_allMap.bam"
+    fi
   fi
 
   # Verify allMap BAM
@@ -575,18 +599,22 @@ Documentation:
 PROCESSING DETAILS
 ────────────────────────────────────────────────────────────────────────────
 
-PRO-seq Convention:
+Library Type: !{params.library_type ?: "proseq"}
+
+PRO-seq mode (library_type=proseq):
   • R1 is reverse-complemented before alignment
   • This captures the 3' end of nascent RNA at polymerase position
-  • R2 (if PE) is aligned as-is
+  • Paired-end uses --ff orientation (-1 original_R2, -2 RC(R1))
+
+GRO-seq mode (library_type=groseq):
+  • R1 is aligned as-is (no reverse-complement)
+  • Reads already represent the nascent RNA strand (5' end, circularization prep)
+  • Paired-end uses --fr orientation (standard R1+R2)
 
 Paired-End Alignment:
-  • Uses --ff orientation flag (both mates on forward strand)
-  • Effective mate configuration: -1 original_R2, -2 RC(R1)
   • Unaligned read pairs combined for spike-in alignment
 
 Single-End Alignment:
-  • Aligns RC(R1) to genome
   • Unaligned reads saved for spike-in alignment
 
 Spike-in Alignment:

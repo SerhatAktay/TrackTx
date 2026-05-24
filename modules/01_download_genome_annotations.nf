@@ -6,16 +6,17 @@
 //   Downloads reference GTF annotation and generates derived gene catalogs
 //
 // Features:
-//   • Fetches GTF from multiple sources (local, custom URL, or UCSC)
+//   • Fetches GTF/GFF from multiple sources (custom path/URL, local dir, or UCSC)
+//   • Accepts .gtf, .gff, .gff3 (plain or .gz) for custom inputs
 //   • Generates gene catalog tables (genes.tsv, TSS.bed, TES.bed)
 //   • Caches artifacts for reuse across pipeline runs
 //   • Deterministic outputs with coordinate sorting
 //
 // Sources (in priority order):
-//   1. Local file (if exists in genomes/ directory)
-//   2. Custom path (if reference_genome='other' with --gtf_path)
-//   3. Custom URL (if reference_genome='other' with --gtf_url)
-//   4. UCSC (rsync → https fallback)
+//   1. Custom path  (--gtf_path)  — highest priority, any genome name
+//   2. Custom URL   (--gtf_url)   — second priority, any genome name
+//   3. Local file   (genomes/ directory)
+//   4. UCSC         (rsync → https fallback, named assemblies only)
 //
 // Inputs:
 //   None (driven by params)
@@ -25,9 +26,9 @@
 //     params.genome_cache     : cache directory for downloads
 //     params.assets_dir       : persistent artifact storage
 //
-//   Custom GTF (when reference_genome='other'):
-//     params.gtf_path : local file path
-//     params.gtf_url  : remote URL
+//   Custom annotation (any reference_genome value):
+//     params.gtf_path : local file path (.gtf, .gff, .gff3, or .gz variants)
+//     params.gtf_url  : remote URL   (.gtf, .gff, .gff3, or .gz variants)
 //
 // Outputs:
 //   ${params.output_dir}/00_references/${reference_genome}/
@@ -239,42 +240,27 @@ process download_genome_annotations {
     
     FETCH_SUCCESS=0
 
-    # ── Source 1: Local file in genomes/ directory ──
-    echo "GTF | FETCH | Checking for local GTF file..."
-    LOCAL_GTF_1="${CACHE_DIR}/local_genomes/${ASM}.gtf"
-    LOCAL_GTF_2="${CACHE_DIR}/local_genomes/${ASM}/${ASM}.gtf"
-    
-    if [[ -s "${LOCAL_GTF_1}" ]]; then
-      echo "GTF | FETCH | Found local GTF: ${LOCAL_GTF_1}"
-      cp -f "${LOCAL_GTF_1}" "${GTF_TEMP}"
-      FETCH_SUCCESS=1
-    elif [[ -s "${LOCAL_GTF_2}" ]]; then
-      echo "GTF | FETCH | Found local GTF: ${LOCAL_GTF_2}"
-      cp -f "${LOCAL_GTF_2}" "${GTF_TEMP}"
-      FETCH_SUCCESS=1
-    fi
-
-    # ── Source 2: Custom path (for reference_genome='other') ──
-    if [[ ${FETCH_SUCCESS} -eq 0 && "${ASM}" == "other" && -n "${CUSTOM_PATH}" ]]; then
+    # ── Source 1: Custom path (highest priority — overrides everything) ──
+    if [[ ${FETCH_SUCCESS} -eq 0 && -n "${CUSTOM_PATH}" ]]; then
       if [[ -e "${CUSTOM_PATH}" ]]; then
-        echo "GTF | FETCH | Using custom GTF path: ${CUSTOM_PATH}"
-        
+        echo "GTF | FETCH | Using custom annotation path: ${CUSTOM_PATH}"
+
         if [[ "${CUSTOM_PATH}" == *.gz ]]; then
-          echo "GTF | FETCH | Decompressing gzipped GTF..."
+          echo "GTF | FETCH | Decompressing gzipped file..."
           gzip -cd "${CUSTOM_PATH}" > "${GTF_TEMP}"
         else
           cp -f "${CUSTOM_PATH}" "${GTF_TEMP}"
         fi
         FETCH_SUCCESS=1
       else
-        tracktx_error "download_genome_annotations" "Custom GTF path does not exist: ${CUSTOM_PATH}" "Check --gtf_path parameter"
+        tracktx_error "download_genome_annotations" "Custom annotation path does not exist: ${CUSTOM_PATH}" "Check --gtf_path parameter (accepts .gtf, .gff, .gff3, or .gz variants)"
       fi
     fi
 
-    # ── Source 3: Custom URL (for reference_genome='other') ──
-    if [[ ${FETCH_SUCCESS} -eq 0 && "${ASM}" == "other" && -n "${CUSTOM_URL}" ]]; then
+    # ── Source 2: Custom URL (second priority — overrides local/UCSC) ──
+    if [[ ${FETCH_SUCCESS} -eq 0 && -n "${CUSTOM_URL}" ]]; then
       echo "GTF | FETCH | Downloading from custom URL: ${CUSTOM_URL}"
-      
+
       if [[ "${CUSTOM_URL}" == *.gz ]]; then
         echo "GTF | FETCH | Downloading and decompressing..."
         if curl -fsSL --retry 3 --retry-delay 4 "${CUSTOM_URL}" | gzip -cd > "${GTF_TEMP}"; then
@@ -293,7 +279,30 @@ process download_genome_annotations {
       fi
     fi
 
-    # ── Source 4: UCSC (rsync → https fallback) ──
+    # ── Source 3: Local file in genomes/ directory ──
+    if [[ ${FETCH_SUCCESS} -eq 0 ]]; then
+      echo "GTF | FETCH | Checking for local annotation file..."
+      LOCAL_GTF_1="${CACHE_DIR}/local_genomes/${ASM}.gtf"
+      LOCAL_GTF_2="${CACHE_DIR}/local_genomes/${ASM}/${ASM}.gtf"
+
+      if [[ -s "${LOCAL_GTF_1}" ]]; then
+        echo "GTF | FETCH | Found local file: ${LOCAL_GTF_1}"
+        cp -f "${LOCAL_GTF_1}" "${GTF_TEMP}"
+        FETCH_SUCCESS=1
+      elif [[ -s "${LOCAL_GTF_2}" ]]; then
+        echo "GTF | FETCH | Found local file: ${LOCAL_GTF_2}"
+        cp -f "${LOCAL_GTF_2}" "${GTF_TEMP}"
+        FETCH_SUCCESS=1
+      fi
+    fi
+
+    # ── Source 4: UCSC (rsync → https fallback, named assemblies only) ──
+    if [[ ${FETCH_SUCCESS} -eq 0 && "${ASM}" == "other" ]]; then
+      tracktx_error "download_genome_annotations" \
+        "reference_genome='other' but no --gtf_path or --gtf_url was supplied" \
+        "Set gtf_path or gtf_url in params.yaml, or use a named assembly (hg38, mm39, …)"
+    fi
+
     if [[ ${FETCH_SUCCESS} -eq 0 && "${ASM}" != "other" ]]; then
       echo "GTF | FETCH | Downloading from UCSC: ${ASM}"
 
