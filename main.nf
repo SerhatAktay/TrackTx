@@ -275,12 +275,22 @@ workflow TrackTx {
   // STEP 1: Download Annotations
   // ══════════════════════════════════════════════════════════════════════════
   
+  // Resolve optional custom annotation file (gtf_path).
+  // Declared here (before use) so Nextflow stages it into the container work
+  // directory — Docker/Singularity can then access it regardless of host path.
+  def assetsDir0 = params.assets_dir ?: "${projectDir}/assets"
+  def noGtfPath0 = "${assetsDir0}/NO_GTF"
+  if (!new File(noGtfPath0).exists()) new File(noGtfPath0).text = ''
+  def customAnnotationFile = (params.gtf_path?.trim())
+    ? file(params.gtf_path, checkIfExists: true)
+    : file(noGtfPath0)
+
   if (params.verbose) {
     log.info "─".multiply(80)
     log.info "STEP 1 | Download Genome Annotations"
     log.info "─".multiply(80)
   }
-  
+
   download_genome_annotations(Channel.value(customAnnotationFile))
 
   gtf_ch   = download_genome_annotations.out.gtf
@@ -464,11 +474,9 @@ workflow TrackTx {
   def noSpikeIdxPath = "${assetsDir}/EMPTY_SPIKE_INDEX.fa"
   
   // Create all placeholder files if they don't exist
-  def noGtfPath = "${assetsDir}/NO_GTF"
-
   [noR2Path, noBGPath, noBGPosPath, noBGNegPath,
    noBG5pPosPath, noBG5pNegPath, noBGAm5pPosPath, noBGAm5pNegPath,
-   noSpikeFaPath, noSpikeIdxPath, noGtfPath].each { path ->
+   noSpikeFaPath, noSpikeIdxPath].each { path ->
     if (!new File(path).exists()) {
       new File(path).text = ''
     }
@@ -476,14 +484,6 @@ workflow TrackTx {
   // Ensure FASTA-compatible content for spike-in placeholders
   new File(noSpikeFaPath).text  = ">none\nN\n"
   new File(noSpikeIdxPath).text = ">none_index\nN\n"
-
-  // Resolve optional custom annotation file.
-  // Declaring it as a path input causes Nextflow to stage (copy) the file into
-  // the container work directory, so Docker/Singularity can always access it
-  // regardless of where on the host the original file lives.
-  def customAnnotationFile = (params.gtf_path?.trim())
-    ? file(params.gtf_path, checkIfExists: true)
-    : file(noGtfPath)
 
   // Ensure R2 is always present (use sentinel for SE)
   clean_fastq_with_r2 = clean_fastq_ch.map { sid, r1, r2opt, c, t, r ->
