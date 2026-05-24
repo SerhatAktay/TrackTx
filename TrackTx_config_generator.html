@@ -127,7 +127,7 @@
     <!-- TITLE -->
     <h1 class="title is-3">TrackTx Configuration Generator</h1>
     <p class="subtitle is-6">
-      Build <span class="mono">params.yaml</span> and <span class="mono">samplesheet.csv</span> for the TrackTx PRO-seq pipeline.
+      Build <span class="mono">params.yaml</span> and <span class="mono">samplesheet.csv</span> for the TrackTx nascent RNA pipeline (PRO-seq &amp; GRO-seq).
       This tool walks you through all options with clear explanations.
     </p>
 
@@ -234,14 +234,14 @@
                 <input type="radio" name="read_type" value="SE" checked>
                 <strong>Single-End</strong> (R1 only)
               </label>
-              <p class="help is-dim ml-5">One FASTQ file per sample. Most PRO-seq is single-end.</p>
+              <p class="help is-dim ml-5">One FASTQ file per sample. Most PRO-seq and GRO-seq libraries are single-end.</p>
             </div>
             <div class="control mt-2">
               <label class="radio">
                 <input type="radio" name="read_type" value="PE">
                 <strong>Paired-End</strong> (R1 + R2)
               </label>
-              <p class="help is-dim ml-5">Two FASTQ files per sample. Less common for PRO-seq.</p>
+              <p class="help is-dim ml-5">Two FASTQ files per sample. Less common for nascent RNA protocols.</p>
             </div>
           </div>
         </div>
@@ -267,6 +267,25 @@
         </div>
       </div>
       
+      <!-- Library Type -->
+      <div class="field mt-4">
+        <label class="label">Library / Protocol Type</label>
+        <div class="control">
+          <label class="radio">
+            <input type="radio" name="library_type" value="proseq" checked>
+            <strong>PRO-seq</strong> (or PRO-cap, ChRO-seq, ligation-based)
+          </label>
+          <p class="help is-dim ml-5">R1 reads capture the <em>3′ end</em> of nascent RNA. R1 is reverse-complemented before alignment. Standard for most run-on experiments.</p>
+        </div>
+        <div class="control mt-2">
+          <label class="radio">
+            <input type="radio" name="library_type" value="groseq">
+            <strong>GRO-seq</strong> (circularization-based library prep)
+          </label>
+          <p class="help is-dim ml-5">R1 reads already represent the nascent RNA strand (5′ end). No reverse-complement is applied. Strandedness is opposite to PRO-seq.</p>
+        </div>
+      </div>
+
       <!-- Local file options -->
       <div id="localOptions" style="display:none" class="mt-4">
         <div class="section-header">Local FASTQ Files</div>
@@ -370,9 +389,9 @@
                 <optgroup label="Xenopus">
                   <option value="xenTro10">X. tropicalis (xenTro10)</option>
                 </optgroup>
-                <optgroup label="Other">
-                  <option value="TAIR10">Arabidopsis (TAIR10)</option>
-                  <option value="other">Custom genome (provide FASTA + GTF)</option>
+                <optgroup label="Other / Custom">
+                  <option value="TAIR10">Arabidopsis thaliana (TAIR10) — provide FASTA + annotation</option>
+                  <option value="other">Custom genome — provide FASTA + annotation</option>
                 </optgroup>
               </select>
             </div>
@@ -449,26 +468,28 @@
         </div>
       </div>
       
-      <!-- GTF for custom genome -->
+      <!-- GTF/GFF for custom genome -->
       <div id="gtfBlock" style="display:none" class="mt-4">
-        <div class="section-header">Gene Annotation (GTF) for Custom Genome</div>
+        <div class="section-header">Gene Annotation (GTF / GFF3) for Custom Genome</div>
         <div class="help-box">
-          <strong>Required for custom genomes:</strong> Provide either a local GTF file path OR a download URL. 
-          The pipeline uses this to identify genes, TSS, and TES positions. Gzipped GTF files are supported.
+          <strong>Required for custom genomes:</strong> Provide either a local annotation file path OR a download URL.
+          The pipeline uses this to identify genes, TSS, and TES positions.
+          Supported formats: <code>.gtf</code>, <code>.gff</code>, <code>.gff3</code> (plain or <code>.gz</code>).
+          If both path and URL are provided, the local file takes priority.
         </div>
         <div class="columns mt-3">
           <div class="column">
             <div class="field">
-              <label class="label">GTF File Path (preferred)</label>
-              <input class="input" type="text" id="gtf_path" placeholder="/path/to/annotations.gtf or .gtf.gz">
-              <p class="help">Local path to your GTF annotation file.</p>
+              <label class="label">Annotation File Path (preferred)</label>
+              <input class="input" type="text" id="gtf_path" placeholder="/path/to/annotations.gtf  or  .gff3  or  .gz">
+              <p class="help">Local path to your GTF or GFF3 annotation file. Gzipped OK.</p>
             </div>
           </div>
           <div class="column">
             <div class="field">
-              <label class="label">GTF URL (alternative)</label>
-              <input class="input" type="text" id="gtf_url" placeholder="https://server.com/annotations.gtf.gz">
-              <p class="help">URL to download GTF from. If both path and URL provided, path takes priority.</p>
+              <label class="label">Annotation URL (alternative)</label>
+              <input class="input" type="text" id="gtf_url" placeholder="https://server.com/annotations.gtf.gz  or  .gff3.gz">
+              <p class="help">URL to download the annotation from (Ensembl Plants, Phytozome, etc.).</p>
             </div>
           </div>
         </div>
@@ -1236,12 +1257,15 @@ function toggleBlock(id, show){
   el.style.display = (show === undefined) ? (el.style.display==='none'?'block':'none') : (show?'block':'none');
 }
 
+// Genomes that require a custom FASTA + annotation file (not built-in to the pipeline)
+const CUSTOM_GENOME_VALUES = new Set(['other', 'TAIR10']);
+
 function toggleOtherGenomeUpload(kind){
   if(kind==='ref'){
-    const show = ($('#ref_genome').value === 'other');
-    toggleBlock('refGenomeUpload', show);
-    toggleBlock('gtfBlock', show);
-    toggleBlock('annotationOptionsBlock', !show);
+    const isCustom = CUSTOM_GENOME_VALUES.has($('#ref_genome').value);
+    toggleBlock('refGenomeUpload', isCustom);
+    toggleBlock('gtfBlock', isCustom);
+    toggleBlock('annotationOptionsBlock', !isCustom);
   } else if(kind==='spike'){
     toggleBlock('spikeGenomeUpload', $('#spike_genome').value === 'other');
   }
@@ -1463,13 +1487,16 @@ function buildYAML(){
   const controlLabel = $('#control_label').value || 'Control';
   const assetsDir   = $('#assets_dir').value || './assets';
 
-  const refGenome   = $('#ref_genome').value;
-  const spikeGenome = $('#spike_genome').value;
-  const genomeFasta = (refGenome==='other') ? ($('#ref_genome_path').value.trim() || null) : null;
-  const spikeFasta  = (spikeGenome==='other') ? ($('#spikein_genome_path').value.trim() || null) : null;
+  const refGenome      = $('#ref_genome').value;
+  const spikeGenome    = $('#spike_genome').value;
+  const isCustomGenome = CUSTOM_GENOME_VALUES.has(refGenome);
+  const genomeFasta    = isCustomGenome ? ($('#ref_genome_path').value.trim() || null) : null;
+  const spikeFasta     = (spikeGenome==='other') ? ($('#spikein_genome_path').value.trim() || null) : null;
 
-  const gtfPath = (refGenome==='other') ? ($('#gtf_path').value.trim() || '') : '';
-  const gtfUrl  = (refGenome==='other') ? ($('#gtf_url').value.trim()  || '') : '';
+  const gtfPath = isCustomGenome ? ($('#gtf_path').value.trim() || '') : '';
+  const gtfUrl  = isCustomGenome ? ($('#gtf_url').value.trim()  || '') : '';
+
+  const libraryType = document.querySelector('input[name="library_type"]:checked')?.value || 'proseq';
 
   const fastqGzip = $('#fastq_gzip').checked;
   const sraTmp = $('#sra_tmp').value.trim() || null;
@@ -1565,6 +1592,7 @@ function buildYAML(){
   y += `samplesheet: ${mono(samplesheet)}\n`;
   y += `sample_source: ${mono(sampleSource)}\n`;
   y += `paired_end: ${pairedEnd}\n`;
+  y += `library_type: ${libraryType}${libraryType==='groseq' ? '  # GRO-seq: R1 aligned as-is (no reverse-complement)' : '  # PRO-seq: R1 reverse-complemented before alignment'}\n`;
   y += `output_dir: ${mono(outputDir)}\n`;
   y += `control_label: ${mono(controlLabel)}\n\n`;
 
@@ -1587,8 +1615,8 @@ function buildYAML(){
   y += `force_rebuild: false\n`;
   y += `preprocess_reads_lenient_cache: ${preprocessLenientCache}  # Set true for NFS/network storage\n\n`;
 
-  if(refGenome==='other'){
-    y += `# Custom genome annotation\n`;
+  if(isCustomGenome){
+    y += `# Custom genome annotation (GTF, GFF, or GFF3 — plain or .gz)\n`;
     y += `gtf_path: ${mono(gtfPath)}\n`;
     y += `gtf_url: ${mono(gtfUrl)}\n\n`;
   } else {
@@ -1725,8 +1753,8 @@ function buildCSV(){
 function fillPreview(){
   const y = buildYAML();
   let warn = '';
-  if($('#ref_genome').value==='other' && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
-    warn += "\n# WARNING: Custom genome requires gtf_path or gtf_url.\n";
+  if(CUSTOM_GENOME_VALUES.has($('#ref_genome').value) && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
+    warn += "\n# WARNING: This genome requires a custom annotation file. Set gtf_path or gtf_url.\n";
   }
   const analysisWarnings = collectAnalysisWarnings();
   if(analysisWarnings.length){
@@ -1749,8 +1777,8 @@ async function downloadZip(){
   });
   if(!hasData && !confirm('No sample data (SRR IDs or file paths) entered. Download anyway?')) return;
 
-  if($('#ref_genome').value === 'other' && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
-    alert('⚠️ Custom genome requires a GTF file. Provide gtf_path or gtf_url before running the pipeline.');
+  if(CUSTOM_GENOME_VALUES.has($('#ref_genome').value) && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
+    alert('⚠️ This genome requires an annotation file (GTF/GFF3). Provide gtf_path or gtf_url before running the pipeline.');
   }
 
   const analysisWarnings = collectAnalysisWarnings();
@@ -1787,8 +1815,8 @@ async function saveZipToLocation(){
   });
   if(!hasData && !confirm('No sample data (SRR IDs or file paths) entered. Save anyway?')) return;
 
-  if($('#ref_genome').value === 'other' && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
-    alert('⚠️ Custom genome requires a GTF file. Provide gtf_path or gtf_url before running the pipeline.');
+  if(CUSTOM_GENOME_VALUES.has($('#ref_genome').value) && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
+    alert('⚠️ This genome requires an annotation file (GTF/GFF3). Provide gtf_path or gtf_url before running the pipeline.');
   }
 
   const analysisWarnings2 = collectAnalysisWarnings();

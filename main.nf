@@ -281,8 +281,8 @@ workflow TrackTx {
     log.info "─".multiply(80)
   }
   
-  download_genome_annotations()
-  
+  download_genome_annotations(Channel.value(customAnnotationFile))
+
   gtf_ch   = download_genome_annotations.out.gtf
   genes_ch = download_genome_annotations.out.genes
   tss_ch   = download_genome_annotations.out.tss
@@ -464,9 +464,11 @@ workflow TrackTx {
   def noSpikeIdxPath = "${assetsDir}/EMPTY_SPIKE_INDEX.fa"
   
   // Create all placeholder files if they don't exist
+  def noGtfPath = "${assetsDir}/NO_GTF"
+
   [noR2Path, noBGPath, noBGPosPath, noBGNegPath,
    noBG5pPosPath, noBG5pNegPath, noBGAm5pPosPath, noBGAm5pNegPath,
-   noSpikeFaPath, noSpikeIdxPath].each { path ->
+   noSpikeFaPath, noSpikeIdxPath, noGtfPath].each { path ->
     if (!new File(path).exists()) {
       new File(path).text = ''
     }
@@ -474,6 +476,14 @@ workflow TrackTx {
   // Ensure FASTA-compatible content for spike-in placeholders
   new File(noSpikeFaPath).text  = ">none\nN\n"
   new File(noSpikeIdxPath).text = ">none_index\nN\n"
+
+  // Resolve optional custom annotation file.
+  // Declaring it as a path input causes Nextflow to stage (copy) the file into
+  // the container work directory, so Docker/Singularity can always access it
+  // regardless of where on the host the original file lives.
+  def customAnnotationFile = (params.gtf_path?.trim())
+    ? file(params.gtf_path, checkIfExists: true)
+    : file(noGtfPath)
 
   // Ensure R2 is always present (use sentinel for SE)
   clean_fastq_with_r2 = clean_fastq_ch.map { sid, r1, r2opt, c, t, r ->

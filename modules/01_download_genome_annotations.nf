@@ -54,7 +54,15 @@ process download_genome_annotations {
 
   // Persistent storage for caching across runs (includes annotation_source for cache key)
   storeDir   "${params.assets_dir ?: "${projectDir}/assets"}/annotation/${params.reference_genome}_${params.annotation_source ?: 'refseq'}_${params.annotation_exclude_biotypes ?: ''}_${params.annotation_chr_naming ?: 'none'}"
-  
+
+  // ── Inputs ────────────────────────────────────────────────────────────────
+  // custom_annotation: staged file from gtf_path (or NO_GTF sentinel when not set).
+  // Declaring it as a path input causes Nextflow to copy the file into the
+  // container's work directory, making it accessible regardless of where on
+  // the host it lives (external drive, home dir, etc.).
+  input:
+    path custom_annotation
+
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:
     path("${params.reference_genome}.gtf"),        emit: gtf
@@ -65,7 +73,9 @@ process download_genome_annotations {
   // ── Main Script ───────────────────────────────────────────────────────────
   shell:
   gtfGenomeCache     = (params.genome_cache ?: '/tmp/genomes_cache').toString()
-  gtfPath            = (params.gtf_path ?: '').toString()
+  // Use the staged filename if a real annotation file was provided (not the NO_GTF sentinel).
+  // The file is already in the work directory — just use its basename.
+  gtfPath            = (custom_annotation.name != 'NO_GTF') ? custom_annotation.name : ''
   gtfUrl             = (params.gtf_url ?: '').toString()
   gtfAnnotationSrc   = (params.annotation_source ?: 'refseq').toString()
   gtfExcludeBiotypes = (params.annotation_exclude_biotypes ?: '').toString()
@@ -253,7 +263,7 @@ process download_genome_annotations {
         fi
         FETCH_SUCCESS=1
       else
-        tracktx_error "download_genome_annotations" "Custom annotation path does not exist: ${CUSTOM_PATH}" "Check --gtf_path parameter (accepts .gtf, .gff, .gff3, or .gz variants)"
+        tracktx_error "download_genome_annotations" "Staged annotation file not found in work dir: ${CUSTOM_PATH}" "File staging may have failed — check that gtf_path exists on the host and the pipeline has read access"
       fi
     fi
 
