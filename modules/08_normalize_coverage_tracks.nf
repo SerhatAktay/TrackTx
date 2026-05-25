@@ -1066,12 +1066,15 @@ DOCEOF
 
   echo "NORMALIZE | VALIDATE | Validating outputs..."
 
-  # Count output files (scan all method subfolders)
-  CPM_BG_COUNT=$(find cpm -name "*.cpm.bedgraph" -type f 2>/dev/null | wc -l | tr -d ' ')
-  SICPM_BG_COUNT=$(find sicpm -name "*.sicpm.bedgraph" -type f 2>/dev/null | wc -l | tr -d ' ')
-  CPM_BW_COUNT=$(find cpm -name "*.cpm.bw" -type f 2>/dev/null | wc -l | tr -d ' ')
-  SICPM_BW_COUNT=$(find sicpm -name "*.sicpm.bw" -type f 2>/dev/null | wc -l | tr -d ' ')
-  GENE_END_BG_COUNT=$(find gene_end -name "*.gene_end.bedgraph" -type f 2>/dev/null | wc -l | tr -d ' ')
+  # Count output files (scan all method subfolders).
+  # Each find is guarded with || true so a missing directory (e.g. gene_end/
+  # when GENE_END_METHOD=none, or sicpm/ when no spike-in) does not propagate
+  # a non-zero exit through the pipefail pipeline and trigger the ERR trap.
+  CPM_BG_COUNT=$( (find cpm      -name "*.cpm.bedgraph"      -type f 2>/dev/null || true) | wc -l | tr -d ' ')
+  SICPM_BG_COUNT=$((find sicpm   -name "*.sicpm.bedgraph"    -type f 2>/dev/null || true) | wc -l | tr -d ' ')
+  CPM_BW_COUNT=$( (find cpm      -name "*.cpm.bw"            -type f 2>/dev/null || true) | wc -l | tr -d ' ')
+  SICPM_BW_COUNT=$((find sicpm   -name "*.sicpm.bw"          -type f 2>/dev/null || true) | wc -l | tr -d ' ')
+  GENE_END_BG_COUNT=$((find gene_end -name "*.gene_end.bedgraph" -type f 2>/dev/null || true) | wc -l | tr -d ' ')
   MANIFEST_LINES=$(wc -l < tracks_manifest.tsv | tr -d ' ')
 
   echo "NORMALIZE | VALIDATE | CPM bedGraphs: ${CPM_BG_COUNT}"
