@@ -260,7 +260,14 @@ def count_reads_pysam(bed_path: Path, bam_path: str, region_type: str) -> Dict[s
         return count_reads_bedtools(bed_path, bam_path, region_type)
     
     log_info(f"Counting {region_type} reads with pysam...")
-    
+
+    # Verify BAM index exists — pysam.count() silently returns 0 for every region
+    # without an index, producing entirely incorrect output with no error raised.
+    bam_p = Path(bam_path)
+    if not (bam_p.with_suffix(".bai").exists() or Path(bam_path + ".bai").exists()):
+        log_warning(f"BAM index (.bai) not found for {bam_path} — falling back to bedtools")
+        return count_reads_bedtools(bed_path, bam_path, region_type)
+
     try:
         bamfile = pysam.AlignmentFile(bam_path, "rb")
         counts = {}
@@ -271,25 +278,32 @@ def count_reads_pysam(bed_path: Path, bam_path: str, region_type: str) -> Dict[s
         total_regions = len(regions)
         log_info(f"Processing {total_regions:,} {region_type} regions...")
         
+        skipped_chroms = set()
         for i, line in enumerate(regions, 1):
             fields = line.strip().split("\t")
             if len(fields) < 4:
                 continue
-            
+
             chrom, start, end, gene_id = fields[0], int(fields[1]), int(fields[2]), fields[3]
-            
+
             # Progress indicator every 5000 regions
             if i % 5000 == 0:
                 log_progress(region_type.upper(), i, total_regions)
-            
+
             try:
                 count = bamfile.count(contig=chrom, start=start, stop=end)
                 counts[gene_id] = counts.get(gene_id, 0) + count
             except Exception:
-                # Chromosome not in BAM, skip silently
+                # Chromosome not in BAM or region query failed — count stays 0
+                skipped_chroms.add(chrom)
                 continue
-        
+
         bamfile.close()
+        if skipped_chroms:
+            log_warning(
+                f"{region_type}: {len(skipped_chroms)} chromosome(s) not found in BAM "
+                f"(counts forced to 0): {', '.join(sorted(skipped_chroms))}"
+            )
         log_info(f"Counted reads for {len(counts):,} genes in {region_type}")
         return counts
         
@@ -416,11 +430,11 @@ def parse_gtf_file(
             offset = max(body_offset_min, int(gene_length * body_offset_frac))
             
             if strand == "+":
-                body_lo = tss + offset
+                body_lo = min(tss + offset, end)  # Clamp: never let body_lo exceed gene end
                 body_hi = end
             else:
                 body_lo = start
-                body_hi = tss - offset
+                body_hi = max(start, tss - offset)  # Clamp: never let body_hi fall below body_lo
             
             body_lo = max(0, body_lo)
             body_len = max(0, body_hi - body_lo)
@@ -448,7 +462,9 @@ def parse_gtf_file(
     # Union of distant transcripts produced 90+ Mb TSS windows and wrong PIs.
     log("PARSE", "Aggregating transcript coordinates per gene (longest transcript)...")
     genes = []
-    max_tss_span = 1000   # Reject genes with TSS window > 1 kb (indicates bad aggregation)
+    # TSS span should be ~2*tss_window (slightly less near chrom start due to max(0,...) clamping).
+    # Allow 10 bp slack for that edge case. Anything much larger indicates bad aggregation.
+    max_tss_span = 2 * tss_window + 10
     max_body_span = 500_000  # Cap body at 500 kb; longer suggests multi-locus gene
     
     for gene_id, data in gene_data.items():
@@ -473,9 +489,9 @@ def parse_gtf_file(
                 body_hi = body_lo + max_body_span
             else:
                 body_lo = max(0, body_hi - max_body_span)
-            body_len = body_hi - body_lo  # Ensure consistency after coord adjustment
+            body_len = max(0, body_hi - body_lo)  # Ensure consistency after coord adjustment
         else:
-            body_len = body_hi - body_lo  # Recompute in case of float rounding
+            body_len = max(0, body_hi - body_lo)  # Guard against negative lengths (short genes on - strand)
 
         genes.append((
             gene_id,
@@ -656,8 +672,9 @@ def write_output_files(
                 else float("nan")
             )
             
-            # Truncation flag
-            is_truncated = int(body_count == 0 or body_len == 0)
+            # Truncation flag: reflects geometry only (gene too short to have a valid body
+            # region after TSS offset). body_count==0 alone just means no reads — not truncated.
+            is_truncated = int(body_len == 0)
             
             # CPM and densities
             tss_cpm = tss_count / cpm_denom
