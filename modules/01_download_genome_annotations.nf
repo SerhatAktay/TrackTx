@@ -169,6 +169,7 @@ process download_genome_annotations {
         hg19|GRCh37) HTTPS_URL="https://ftp.ensembl.org/pub/release-113/gtf/homo_sapiens/Homo_sapiens.GRCh37.87.gtf.gz" ;;
         mm39|GRCm39) HTTPS_URL="https://ftp.ensembl.org/pub/release-113/gtf/mus_musculus/Mus_musculus.GRCm39.113.gtf.gz" ;;
         mm10|GRCm38) HTTPS_URL="https://ftp.ensembl.org/pub/release-113/gtf/mus_musculus/Mus_musculus.GRCm38.102.gtf.gz" ;;
+        TAIR10)       HTTPS_URL="https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-59/gtf/arabidopsis_thaliana/Arabidopsis_thaliana.TAIR10.59.gtf.gz" ;;
         *) echo "GTF | WARNING | Ensembl not configured for ${ASM}, falling back to RefSeq" ;;
       esac
       RSYNC_URL=""

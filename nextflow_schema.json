@@ -54,6 +54,14 @@
           "default": false,
           "description": "Input reads are paired-end.",
           "fa_icon": "fas fa-arrows-alt-h"
+        },
+        "library_type": {
+          "type": "string",
+          "default": "proseq",
+          "description": "Library preparation protocol. Controls read strand orientation during alignment.",
+          "help_text": "'proseq' (default) — PRO-seq / TT-seq: reads are reverse-complemented before alignment because the sequenced strand is the template strand opposite to the nascent RNA. 'groseq' — GRO-seq / GRO-cap / csRNA-seq: reads are aligned as-is because they directly represent the nascent RNA strand. Using the wrong mode maps every read to the wrong strand.",
+          "enum": ["proseq", "groseq"],
+          "fa_icon": "fas fa-flask"
         }
       }
     },

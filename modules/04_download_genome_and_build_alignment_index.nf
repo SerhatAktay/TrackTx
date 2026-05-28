@@ -136,6 +136,15 @@ process download_genome_and_build_alignment_index {
   URL_PRIMARY="https://hgdownload.soe.ucsc.edu/goldenPath/${UCSC_ID}/bigZips/${UCSC_ID}.fa.gz"
   URL_FALLBACK="https://hgdownload.soe.ucsc.edu/goldenPath/${UCSC_ID}/bigZips/chromFa.tar.gz"
 
+  # Non-UCSC genomes — override download URLs for assemblies not hosted by UCSC
+  case "${GENOME_ID}" in
+    TAIR10)
+      URL_PRIMARY="https://ftp.ensemblgenomes.ebi.ac.uk/pub/plants/release-59/fasta/arabidopsis_thaliana/dna/Arabidopsis_thaliana.TAIR10.dna.toplevel.fa.gz"
+      URL_FALLBACK=""
+      echo "INDEX | CONFIG | TAIR10: using Ensembl Plants FTP (not UCSC)"
+      ;;
+  esac
+
   echo "INDEX | CONFIG | Genome ID: ${GENOME_ID}"
   echo "INDEX | CONFIG | Source: ${SOURCE}"
   echo "INDEX | CONFIG | Threads: ${THREADS}"
