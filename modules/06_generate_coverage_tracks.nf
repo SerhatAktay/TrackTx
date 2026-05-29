@@ -67,15 +67,6 @@ process generate_coverage_tracks {
                // Exclude BAM files from publishing - they already exist in 02_alignments/
                if (name.endsWith('.bam') || name.endsWith('.bam.bai')) return null
                // Skip entire folder when output.raw_tracks: false (~150 MB saved)
-<<<<<<< Updated upstream
-               if (params.output?.raw_tracks == false) return null
-               // Skip 5' tracks when norm.emit_5p: false (~75 MB saved)
-               if (params.norm?.emit_5p == false && (pathStr.contains('5p/') || name.contains('.5p.'))) return null
-               // Skip allMap tracks when norm.emit_allmap: false (~25 MB in 03)
-               if (params.norm?.emit_allmap == false && name.contains('allMap')) return null
-               // Skip bedGraphs when output.bedgraph: false (BigWigs sufficient for genome browsers)
-               if (params.output?.bedgraph == false && name.endsWith('.bedgraph')) return null
-=======
                if (params.get('output')?.get('raw_tracks')?.toString() == 'false') return null
                // Skip 5' tracks when norm.emit_5p: false (~75 MB saved)
                if (params.get('norm')?.get('emit_5p')?.toString() == 'false' && (pathStr.contains('5p/') || name.contains('.5p.'))) return null
@@ -83,7 +74,6 @@ process generate_coverage_tracks {
                if (params.get('norm')?.get('emit_allmap')?.toString() == 'false' && name.contains('allMap')) return null
                // Skip bedGraphs when output.bedgraph: false (BigWigs sufficient for genome browsers)
                if (params.get('output')?.get('bedgraph')?.toString() == 'false' && name.endsWith('.bedgraph')) return null
->>>>>>> Stashed changes
                return name
              }
 
@@ -560,12 +550,6 @@ process generate_coverage_tracks {
   echo "TRACKS | 3P | Generating 3' end coverage tracks..."
   echo "────────────────────────────────────────────────────────────────────────"
 
-<<<<<<< Updated upstream
-  # Main BAM
-  echo "TRACKS | 3P | Processing main BAM..."
-  if ! generate_coverage "${INPUT_BAM}" "3" "3p/${SAMPLE_ID}.3p"; then
-    tracktx_error "generate_coverage_tracks" "Failed to generate 3' coverage from main BAM" "Check tracks.log in work dir"
-=======
   # All four jobs are independent (different BAM inputs, different output
   # prefixes) and each is single-threaded, so they run concurrently on
   # separate cores.  Log output will be interleaved; each job identifies
@@ -586,7 +570,6 @@ process generate_coverage_tracks {
 
   if [[ ${COVERAGE_FAILED} -ne 0 ]]; then
     tracktx_error "generate_coverage_tracks" "One or more coverage generation jobs failed" "Check tracks.log for per-job error messages"
->>>>>>> Stashed changes
   fi
 
   # AllMap BAM

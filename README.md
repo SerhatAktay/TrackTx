@@ -16,7 +16,6 @@
 
 ## 📚 Contents
 
-- [🎉 What's New in v1.2.0](#-whats-new-in-v120)
 - [⚡ Quick Start](#-quick-start)
 - [🧪 Testing the Pipeline](#-testing-the-pipeline)
 - [📊 What Does TrackTx Do?](#-what-does-tracktx-do)
@@ -33,41 +32,6 @@
 
 ---
 
-## 🎉 What's New in v1.2.0
-
-### 🔬 Statistical Divergent Transcription Detection
-- **Gaussian Mixture Models (GMM)** with FDR control for high-confidence region calling
-- **Auto-calibration**: No manual threshold tuning needed - set to `auto` and go!
-- **Beta-Binomial models** for robust background estimation
-- Replaces threshold-based detection with statistically-driven approach
-- Comprehensive QC reports with score distributions
-
-### 📊 Comprehensive Cohort Reporting
-- **8 detailed analysis sections** with extensive explanations:
-  - Quality Control Analysis with outlier detection
-  - Divergent Transcription patterns across conditions
-  - Pol II Pausing Index distributions and comparisons
-  - Functional Region composition analysis
-  - Normalization factor validation
-  - Sample-level interactive metrics table
-- **Beautiful modern UI** with smooth navigation and responsive design
-- **Interactive visualizations** with histograms, distributions, and comparisons
-- **By-condition analysis** for all major metrics
-- **Replicate consistency checks** (coefficient of variation)
-
-### 🎨 Enhanced Configuration Generator
-- **Extensive explanatory text** for every setting
-- **More spacious layout** for better readability
-- **Logical organization** with related settings grouped together
-- **Bold section headers** for easier navigation
-- **Inline help** explaining when/why to use each option
-- Updated for the latest parameters and best practices
-
-### 🐛 Pipeline Improvements
-- Fixed caching issues with divergent detection parameters
-- Better handling of UMI and barcode processing
-- Improved parameter validation and error messages
-- Enhanced documentation throughout
 
 ---
 
@@ -216,17 +180,6 @@ graph LR
     F --> G[📊 Comprehensive Reports]
 ```
 
-<<<<<<< Updated upstream
-**Key Features:**
-- 🎯 **Automated**: From raw reads to publication-ready figures
-- 🚀 **Fast**: Optimized for any system (laptop → HPC)
-- 📊 **Comprehensive**: Alignment, tracks, divergent transcription, Pol-II metrics
-- ⚖️ **Quantitative**: Spike-in normalization for cross-sample comparisons
-- 🎨 **Beautiful**: Interactive HTML reports with extensive visualizations
-- 🔬 **Statistical**: GMM-based divergent detection with FDR control
-- 📈 **Insightful**: Cohort-wide analysis with by-condition comparisons
-- 💡 **Guided**: Extensive explanations and quality assessment throughout
-=======
 **Key capabilities:**
 
 - **Automated** — raw reads to publication-ready outputs in one command
@@ -240,7 +193,7 @@ graph LR
 
 ## 🔬 Pipeline Modules
 
-TrackTx runs 16 modules in sequence. Here is what each one does.
+TrackTx runs 17 modules in sequence. Here is what each one does.
 
 **01 — Download Genome Annotations**
 Downloads GTF gene annotation files from Ensembl, RefSeq, or GENCODE for the chosen reference genome. Annotations drive gene-body boundary calls, divergent transcription pairing, and functional region assignment throughout the pipeline.
@@ -256,6 +209,9 @@ Downloads the reference (and spike-in) genome FASTA, then builds a `bowtie2` ali
 
 **05 — Align Reads to Genome**
 Aligns cleaned reads to the reference genome with `bowtie2` (end-to-end mode). Spike-in reads are aligned separately to derive normalization factors. Outputs include coordinate-sorted, indexed BAM files for primary, all-mapping, and spike-in alignments. BAMs and alignment artefacts are stored via `storeDir` at `{output_dir}/02_alignments/{sample_id}/`, so alignment is skipped for any sample whose BAM already exists there — even across runs where `work/` has been cleared. To force realignment for a sample, delete its folder: `rm -rf {output_dir}/02_alignments/{sample_id}`.
+
+**05b — Check and Merge Replicates** *(optional)*
+When replicate merging is enabled (`replicates.merge: true`), performs a pairwise Pearson correlation check across BAMs using `deepTools multiBamSummary`. Replicate groups that meet the concordance threshold are merged into a single BAM before coverage track generation, with a concordance TSV written for the cohort report.
 
 **06 — Generate Coverage Tracks**
 Produces strand-specific 3′-end and 5′-end coverage tracks in bedGraph format using `bedtools genomecov`. Four independent coverage jobs (3p positive, 3p negative, 5p positive, 5p negative) run in parallel. Each bedGraph is pre-sorted inline and converted to BigWig format for use in genome browsers. For paired-end libraries, only Read 2 (the RC(R1) mate carrying the nascent RNA 3′ end = polymerase position) is used for coverage, preventing noise from the R2 mate's 3′ end contaminating the tracks.
@@ -285,11 +241,10 @@ Calculates per-sample alignment QC: total and mapped read counts, duplicate rate
 Produces an interactive HTML report for each sample, summarising QC metrics, coverage distributions, divergent transcription statistics, and Pol II pausing results, with inline visualizations.
 
 **15 — Combine Reports into Cohort**
-Merges all per-sample outputs into a single cohort-level HTML dashboard. Includes by-condition QC comparisons, divergent transcription patterns, Pol II pausing distributions, functional region composition, normalization factor validation, replicate consistency (coefficient of variation), and an interactive sample metrics table. Also generates a landing `index.html` with links to all outputs including the new cohort QC folder.
+The final step — runs after module 16 so it can incorporate signal-QC outputs into the landing page. Merges all per-sample JSON reports into a cohort-level HTML dashboard (global_summary.html) covering: by-condition QC comparisons, divergent transcription patterns, Pol II pausing distributions, functional region composition, normalization factor validation, replicate consistency (coefficient of variation), and an interactive sample metrics table. Also generates a modern `index.html` landing page at the output root that embeds the run-on efficiency table, KPI stats, and links to all outputs.
 
 **16 — Cohort QC and Visualization**
-Final cohort-level quality control module that runs once all samples are complete. Produces: (1) a **MultiQC** HTML report aggregating all alignment logs, flagstats, and trimming statistics into a single QC dashboard; (2) **deepTools** PCA plot and Pearson correlation heatmap computed from CPM-normalized 3′ BigWigs using 10 kb genome-wide bins; (3) an **IGV session XML** file that loads all sample tracks in one click, colour-coded by condition; and (4) a **run-on efficiency table** reporting the median 5′/3′ bedGraph signal ratio across long gene bodies per sample — values close to 1.0 indicate efficient NRO run-on.
->>>>>>> Stashed changes
+Cohort-level signal QC module that runs after all per-sample tracks are ready, and before module 15 so its outputs feed the landing page. Produces: (1) a **MultiQC** HTML report aggregating all alignment logs, flagstats, and trimming statistics into a single QC dashboard; (2) **deepTools** PCA plot and Pearson correlation heatmap computed from CPM-normalized 3′ BigWigs using 10 kb genome-wide bins; (3) an **IGV session XML** file that loads all sample tracks in one click, colour-coded by condition; and (4) a **run-on efficiency table** reporting the median 5′/3′ bedGraph signal ratio across long gene bodies per sample — values close to 1.0 indicate efficient NRO run-on.
 
 ---
 
@@ -301,7 +256,7 @@ You need **Nextflow** (the workflow engine) plus **one** of Docker or Conda (for
 
 | Requirement | Purpose | Install |
 |-------------|---------|---------|
-| **Nextflow** (≥24.04.0) | Runs the pipeline | See below |
+| **Nextflow** (≥26.04.0) | Runs the pipeline | See below |
 | **Docker Desktop** | Easiest—packages all tools | [Get Docker](https://docs.docker.com/get-docker/) |
 | **Miniconda** | Alternative if Docker unavailable | [Get Miniconda](https://docs.conda.io/en/latest/miniconda.html) |
 
@@ -319,7 +274,7 @@ sudo mv nextflow /usr/local/bin/   # Linux/macOS
 
 **Verify:**
 ```bash
-nextflow -version   # Must show 24.04.0 or higher
+nextflow -version   # Must show 26.04.0 or higher
 docker --version   # If using Docker
 conda --version    # If using Conda
 ```
@@ -807,7 +762,7 @@ Java file-lock conflict. Common causes and fixes:
 3. **USB drive with exFAT/FAT32 (macOS) / OverlappingFileLockException:** exFAT and FAT32 do not support file locking. **Fix:** Use `./run_pipeline.sh --external-drive` — it puts cache, temp, and work (~10–50 GB) on local (`~/tmp/tracktx_cache`, `~/tmp/tracktx_work`); results stay on your project. Ensure ~20–50 GB free on internal drive. Or reformat the USB to **APFS** or **Mac OS Extended**.
 4. **NFS / network / cloud-synced storage:** File locking is unreliable on NFS, SMB, iCloud, Dropbox. Set work dir to internal disk or a USB drive formatted as APFS/ext4: `export NXF_WORK=/tmp/nextflow-work` or `export NXF_WORK=/Volumes/MySSD/nextflow-work` (macOS, SSD must be APFS/HFS+).
 5. **Conda profile:** Multiple tasks can contend on the conda cache. Try `./run_pipeline.sh -profile docker`, or set `export NXF_CONDA_CACHEDIR=/tmp/conda-$USER-$$` before running.
-6. **Upgrade Nextflow:** Pipeline requires ≥24.04.0; older versions have locking issues.
+6. **Upgrade Nextflow:** Pipeline requires ≥26.04.0; older versions have locking issues.
 
 **"matplotlib is building a font cache" seems stuck:**
 - Matplotlib scans system fonts on first import (30s–2min). **umi_tools** (preprocess, coverage) and report/aggregate tasks use it.

@@ -266,11 +266,6 @@ def count_reads_pysam(bed_path: Path, bam_path: str, region_type: str) -> Dict[s
     except ImportError:
         log_warning("pysam not available, using bedtools intersect")
         return count_reads_bedtools(bed_path, bam_path, region_type)
-<<<<<<< Updated upstream
-    
-    log_info(f"Counting {region_type} reads with pysam...")
-    
-=======
 
     log_info(f"Counting {region_type} reads with pysam (strand-specific)...")
 
@@ -281,7 +276,6 @@ def count_reads_pysam(bed_path: Path, bam_path: str, region_type: str) -> Dict[s
         log_warning(f"BAM index (.bai) not found for {bam_path} — falling back to bedtools")
         return count_reads_bedtools(bed_path, bam_path, region_type)
 
->>>>>>> Stashed changes
     try:
         bamfile = pysam.AlignmentFile(bam_path, "rb")
         counts = {}
@@ -290,23 +284,13 @@ def count_reads_pysam(bed_path: Path, bam_path: str, region_type: str) -> Dict[s
             regions = [line for line in f if line.strip() and not line.startswith(("#", "track", "browser"))]
 
         total_regions = len(regions)
-<<<<<<< Updated upstream
-        log_info(f"Processing {total_regions:,} {region_type} regions...")
-        
-=======
         log_info(f"Processing {total_regions:,} {region_type} regions (strand-aware)...")
 
         skipped_chroms: set = set()
->>>>>>> Stashed changes
         for i, line in enumerate(regions, 1):
             fields = line.strip().split("\t")
             if len(fields) < 4:
                 continue
-<<<<<<< Updated upstream
-            
-            chrom, start, end, gene_id = fields[0], int(fields[1]), int(fields[2]), fields[3]
-            
-=======
 
             chrom    = fields[0]
             start    = int(fields[1])
@@ -315,7 +299,6 @@ def count_reads_pysam(bed_path: Path, bam_path: str, region_type: str) -> Dict[s
             # BED strand column is col 6 (index 5); default to '+' if absent
             strand   = fields[5] if len(fields) >= 6 else "+"
 
->>>>>>> Stashed changes
             # Progress indicator every 5000 regions
             if i % 5000 == 0:
                 log_progress(region_type.upper(), i, total_regions)
@@ -335,11 +318,7 @@ def count_reads_pysam(bed_path: Path, bam_path: str, region_type: str) -> Dict[s
                         count += 1
                 counts[gene_id] = counts.get(gene_id, 0) + count
             except Exception:
-<<<<<<< Updated upstream
-                # Chromosome not in BAM, skip silently
-=======
                 skipped_chroms.add(chrom)
->>>>>>> Stashed changes
                 continue
         
         bamfile.close()
@@ -542,15 +521,6 @@ def parse_gtf_file(
             offset      = max(effective_offset_min, int(gene_length * body_offset_frac))
 
             if strand == "+":
-<<<<<<< Updated upstream
-                body_lo = tss + offset
-                body_hi = end
-            else:
-                body_lo = start
-                body_hi = tss - offset
-            
-            body_lo = max(0, body_lo)
-=======
                 body_lo = min(tss + offset, end)
                 body_hi = end
             else:
@@ -558,7 +528,6 @@ def parse_gtf_file(
                 body_hi = max(start, tss - offset)
 
             body_lo  = max(0, body_lo)
->>>>>>> Stashed changes
             body_len = max(0, body_hi - body_lo)
             tss_lo   = max(0, tss - tss_window)
             tss_hi   = tss + tss_window
@@ -570,14 +539,6 @@ def parse_gtf_file(
     # Swap gene_data to the windowed version for the aggregation step below
     gene_data = gene_data_with_windows
 
-    # ── dummy assignment so the old per-line offset line is no longer needed ─
-    # (kept for clarity; the real offset logic is in Pass 2 above)
-    if False:  # pragma: no cover
-        gene_length = 0
-        offset = max(effective_offset_min, int(gene_length * body_offset_frac))
-            
-            if strand == "+":
-                body_lo = min(tss + offset, end)  # Clamp: never let body_lo exceed gene end
     # Aggregate transcripts per gene
     # Use LONGEST transcript per gene (by body length) instead of union to avoid
     # huge bogus spans from genes with dispersed transcripts (e.g. chrY PAR).

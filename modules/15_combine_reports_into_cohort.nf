@@ -67,8 +67,6 @@ process combine_reports_into_cohort {
   // Stage files with sequential names to avoid collisions (like metric_1, metric_2, etc.)
   input:
     path 'report_*.json'
-<<<<<<< Updated upstream
-=======
     path concordance_tsv
     // Module 16 outputs — staged here so the landing page can embed/link them.
     // Files named "NO_FILE" are sentinel placeholders for optional outputs.
@@ -77,7 +75,6 @@ process combine_reports_into_cohort {
     path qc_runon_tsv
     path qc_pca_plot
     path qc_corr_heatmap
->>>>>>> Stashed changes
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:

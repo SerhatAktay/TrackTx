@@ -205,65 +205,12 @@ Paths are relative to: ${projectDir}"""
     }
   }
 
-<<<<<<< Updated upstream
-if (params.verbose) log.info "PIPELINE | VALIDATE | Parameter validation complete"
-
-// ============================================================================
-// MODULE IMPORTS
-// ============================================================================
-
-def MOD = "${projectDir}/modules"
-
-include { download_genome_annotations                             } from "${MOD}/01_download_genome_annotations.nf"
-include { download_sra_samples                                   } from "${MOD}/02_download_sra_samples.nf"
-include { preprocess_and_quality_filter_reads                    } from "${MOD}/03_preprocess_and_quality_filter_reads.nf"
-include { download_genome_and_build_alignment_index as build_index } from "${MOD}/04_download_genome_and_build_alignment_index.nf"
-include { download_genome_and_build_alignment_index as spike_index } from "${MOD}/04_download_genome_and_build_alignment_index.nf"
-include { align_reads_to_genome                                  } from "${MOD}/05_align_reads_to_genome.nf"
-include { generate_coverage_tracks                               } from "${MOD}/06_generate_coverage_tracks.nf"
-include { quantify_reads_per_gene                                } from "${MOD}/07_quantify_reads_per_gene.nf"
-include { normalize_coverage_tracks                              } from "${MOD}/08_normalize_coverage_tracks.nf"
-include { detect_divergent_transcription                         } from "${MOD}/09_detect_divergent_transcription.nf"
-include { score_enhancer_vs_gene                                 } from "${MOD}/10a_score_enhancer_vs_gene.nf"
-include { assign_signal_to_functional_regions                    } from "${MOD}/10_assign_signal_to_functional_regions.nf"
-include { calculate_polymerase_occupancy_metrics                 } from "${MOD}/11_calculate_polymerase_occupancy_metrics.nf"
-include { summarize_polymerase_metrics                           } from "${MOD}/12_summarize_polymerase_metrics.nf"
-include { quality_control_aligned_reads                          } from "${MOD}/13_quality_control_aligned_reads.nf"
-include { generate_per_sample_reports                            } from "${MOD}/14_generate_per_sample_reports.nf"
-include { combine_reports_into_cohort                            } from "${MOD}/15_combine_reports_into_cohort.nf"
-
-if (params.verbose) log.info "PIPELINE | IMPORT | All modules loaded successfully"
-
-// Resolve local FASTQ path: use as-is if absolute, else relative to projectDir
-def resolveLocalPath(path) {
-  if (!path?.trim()) return null
-  def p = path.trim()
-  def f = new File(p)
-  return f.isAbsolute() ? file(p) : file("${projectDir}/${p}")
-}
-
-// ============================================================================
-// MAIN WORKFLOW
-// ============================================================================
-
-workflow TrackTx {
-
-  if (params.verbose) {
-    log.info "════════════════════════════════════════════════════════════════════════"
-    log.info "WORKFLOW | Starting TrackTx Analysis"
-    log.info "════════════════════════════════════════════════════════════════════════"
-  }
-=======
   if (params.verbose) log.info "PIPELINE | VALIDATE | Parameter validation complete"
   if (params.verbose) log.info "PIPELINE | IMPORT | All modules loaded successfully"
->>>>>>> Stashed changes
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 1: Download Annotations
   // ══════════════════════════════════════════════════════════════════════════
-<<<<<<< Updated upstream
-  
-=======
 
   def assetsDir0  = params.assets_dir ?: "${projectDir}/assets"
   def noGtfPath0  = "${assetsDir0}/NO_GTF"
@@ -272,25 +219,13 @@ workflow TrackTx {
     ? file(params.gtf_path, checkIfExists: true)
     : file(noGtfPath0)
 
->>>>>>> Stashed changes
   if (params.verbose) {
     log.info "-".multiply(80)
     log.info "STEP 1 | Download Genome Annotations"
     log.info "-".multiply(80)
   }
-<<<<<<< Updated upstream
-  
-  download_genome_annotations()
-  
-  gtf_ch   = download_genome_annotations.out[0]
-  genes_ch = download_genome_annotations.out.genes
-  tss_ch   = download_genome_annotations.out.tss
-  tes_ch   = download_genome_annotations.out.tes
-  
-=======
 
   download_genome_annotations(channel.value(customAnnotationFile))
->>>>>>> Stashed changes
 
   def gtf_ch   = download_genome_annotations.out.gtf
   def genes_ch = download_genome_annotations.out.genes
@@ -344,28 +279,16 @@ workflow TrackTx {
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 3: Download SRR Data (optional)
   // ══════════════════════════════════════════════════════════════════════════
-<<<<<<< Updated upstream
-  
-  prepared_input_ch = null
-  
-=======
 
   def prepared_input_ch    = null
   def preexisting_clean_ch = channel.empty()
 
->>>>>>> Stashed changes
   if (params.sample_source == 'srr') {
     if (params.verbose) {
       log.info "-".multiply(80)
       log.info "STEP 3 | Download SRR Data from NCBI"
       log.info "-".multiply(80)
     }
-<<<<<<< Updated upstream
-    
-    // Explicitly evaluate parameter to avoid closure comparison issues
-    def isPairedEnd = params.paired_end ? true : false
-    
-=======
 
     def isPairedEnd = params.paired_end ? true : false
     def outputDir   = params.output_dir.toString()
@@ -386,7 +309,6 @@ workflow TrackTx {
       tuple(sid, r1, r2, c, t, r)
     }
 
->>>>>>> Stashed changes
     download_sra_samples(
       samples_ch.map { sid, reads, c, t, r ->
         tuple(sid, reads[0], c, t, r, isPairedEnd)
@@ -396,21 +318,12 @@ workflow TrackTx {
     prepared_input_ch = download_sra_samples.out[0].map { sid, fq1, fq2, c, t, r ->
       tuple(sid, [file(fq1), file(fq2)].findAll(), c, t, r)
     }
-<<<<<<< Updated upstream
-    
-    // Monitor downloads
-=======
 
->>>>>>> Stashed changes
     prepared_input_ch.subscribe { sid, _reads, _cond, _time, _rep ->
       if (params.verbose) log.info "STEP 3 | DOWNLOAD | ${sid} complete"
     }
     
 
-<<<<<<< Updated upstream
-    
-=======
->>>>>>> Stashed changes
   } else {
     if (params.verbose) {
       log.info "-".multiply(80)
@@ -430,23 +343,14 @@ workflow TrackTx {
     log.info "-".multiply(80)
     log.info "STEP 4 | CONFIG | Mode: ${params.paired_end ? 'Paired-end' : 'Single-end'}"
   }
-<<<<<<< Updated upstream
-  
-  (clean_fastq_ch, fastqc_ch) = preprocess_and_quality_filter_reads(
-=======
 
   def (preprocessed_clean_ch, fastqc_ch) = preprocess_and_quality_filter_reads(
->>>>>>> Stashed changes
     prepared_input_ch,
     channel.value(params.paired_end ? 'PE' : 'SE')
   )
 
-<<<<<<< Updated upstream
-  // Monitor preprocessing - FIX: _r used twice before!
-=======
   def clean_fastq_ch = preprocessed_clean_ch.mix(preexisting_clean_ch)
 
->>>>>>> Stashed changes
   clean_fastq_ch.subscribe { sid, _r1, _r2opt, _cond, _time, _rep ->
     if (params.verbose) log.info "STEP 4 | CLEAN | ${sid} preprocessing complete"
   }
@@ -463,21 +367,6 @@ workflow TrackTx {
   def noBG5pNegPath   = "${assetsDir}/EMPTY_5P_NEG.bedgraph"
   def noBGAm5pPosPath = "${assetsDir}/EMPTY_AM5P_POS.bedgraph"
   def noBGAm5pNegPath = "${assetsDir}/EMPTY_AM5P_NEG.bedgraph"
-<<<<<<< Updated upstream
-  // Placeholder for align when no spike-in (avoids Channel.empty() causing 0 invocations)
-  def noSpikeFaPath = "${assetsDir}/EMPTY_SPIKE.fa"
-  
-  // Create all placeholder files if they don't exist
-  [noR2Path, noBGPath, noBGPosPath, noBGNegPath, 
-   noBG5pPosPath, noBG5pNegPath, noBGAm5pPosPath, noBGAm5pNegPath].each { path ->
-    if (!new File(path).exists()) {
-      new File(path).text = ''
-    }
-  }
-  if (!new File(noSpikeFaPath).exists()) {
-    new File(noSpikeFaPath).text = ">none\nN\n"
-  }
-=======
   def noSpikeFaPath   = "${assetsDir}/EMPTY_SPIKE.fa"
   def noSpikeIdxPath  = "${assetsDir}/EMPTY_SPIKE_INDEX.fa"
 
@@ -488,7 +377,6 @@ workflow TrackTx {
   }
   new File(noSpikeFaPath).text  = ">none\nN\n"
   new File(noSpikeIdxPath).text = ">none_index\nN\n"
->>>>>>> Stashed changes
 
   def clean_fastq_with_r2 = clean_fastq_ch.map { sid, r1, r2opt, c, t, r ->
     def r2_file = (r2opt && file(r2opt).exists() && file(r2opt).size() > 0)
@@ -507,12 +395,7 @@ workflow TrackTx {
     log.info "-".multiply(80)
   }
 
-<<<<<<< Updated upstream
-  // Primary genome
-  reference_fa = params.reference_genome == 'other'
-=======
   def reference_fa = params.reference_genome == 'other'
->>>>>>> Stashed changes
     ? file(params.genome_fasta)
     : file("${projectDir}/genomes/${params.reference_genome}.fa")
 
@@ -531,21 +414,11 @@ workflow TrackTx {
 
   if (params.verbose) log.info "STEP 5 | INDEX | Primary genome index built"
 
-<<<<<<< Updated upstream
-  // Spike-in genome (optional)
-  // CRITICAL: When no spike-in, use placeholder channels (not Channel.empty()) so align_reads
-  // receives one value per input and runs. Empty channels cause 0 invocations → downstream fails at Step 13.
-  def noSpikeFa = file(noSpikeFaPath)
-  spike_meta_ch = Channel.value(tuple('none', 'none', noSpikeFa))
-  spike_idx_ch  = Channel.value(noSpikeFa)
-  
-=======
   def noSpikeFa  = file(noSpikeFaPath)
   def noSpikeIdx = file(noSpikeIdxPath)
   def spike_meta_ch = channel.value(tuple('none', 'none', noSpikeFa))
   def spike_idx_ch  = channel.value(noSpikeIdx)
 
->>>>>>> Stashed changes
   if (params.spikein_genome && params.spikein_genome != 'None') {
     if (params.verbose) log.info "STEP 5 | INDEX | Spike-in genome: ${params.spikein_genome}"
 
@@ -588,19 +461,6 @@ workflow TrackTx {
     spike_idx_ch,
     params.paired_end ?: false
   )
-<<<<<<< Updated upstream
-  
-  aligned_ch = align_reads_to_genome.out[0]
-  
-  // Monitor alignments
-  aligned_ch.subscribe { sid, _bam, _allbam, _spike, _cond, _time, _rep ->
-    if (params.verbose) log.info "STEP 6 | ALIGN | ${sid} alignment complete"
-  }
-  
-  // aligned_ch: (sample_id, sample.bam, sample_allMap.bam, spikein.bam, condition, timepoint, replicate)
-
-
-=======
 
   def aligned_ch = align_reads_to_genome.out[0]
 
@@ -661,7 +521,6 @@ workflow TrackTx {
       if (params.verbose) log.info "STEP 6b | MERGE | ${sid} ready for track generation"
     }
   }
->>>>>>> Stashed changes
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 7: Generate Coverage Tracks
@@ -678,13 +537,8 @@ workflow TrackTx {
   def tracks_input_ch = aligned_ch.map { sid, filt_bam, all_bam, spike_bam, c, t, r ->
     tuple(sid, filt_bam, spike_bam, c, t, r)
   }
-<<<<<<< Updated upstream
-  
-  allmap_bam_ch = aligned_ch.map { sid, filt_bam, all_bam, spike_bam, c, t, r ->
-=======
 
   def allmap_bam_ch = aligned_ch.map { sid, filt_bam, all_bam, spike_bam, c, t, r ->
->>>>>>> Stashed changes
     all_bam
   }
 
@@ -748,13 +602,7 @@ workflow TrackTx {
   if (params.verbose) {
     log.info "-".multiply(80)
     log.info "STEP 9 | Normalize Tracks"
-<<<<<<< Updated upstream
-    log.info "─".multiply(80)
-    log.info "STEP 9 | CONFIG | Methods: CPM (counts per million), siCPM (spike-in CPM)"
-    log.info "STEP 9 | CONFIG | Tracks: 3' primary, 3' allMap"
-=======
     log.info "-".multiply(80)
->>>>>>> Stashed changes
   }
 
   def norm_main_kv = tracks_ch.map { sid, bam, spk, p3, n3, p5, n5, c, t, r ->
@@ -787,17 +635,10 @@ workflow TrackTx {
       tuple(sid, p3, n3, p5, n5, ap3, an3, ap5, an5, c, t, r, cm, genes)
     }
 
-<<<<<<< Updated upstream
-  normalize_coverage_tracks(norm_input_ch, genome_fa_ch)
-  
-  norm_tracks_ch  = normalize_coverage_tracks.out.norm_tuple
-  norm_factors_ch = norm_tracks_ch.map { sid, p3, n3, nf, c, t, r ->
-=======
   normalize_coverage_tracks(norm_input_ch, genome_fa_ch, tes_ch)
 
   def norm_tracks_ch  = normalize_coverage_tracks.out.norm_tuple
   def norm_factors_ch = norm_tracks_ch.map { sid, p3, n3, nf, c, t, r ->
->>>>>>> Stashed changes
     tuple(sid, nf, c, t, r)
   }
 
@@ -853,45 +694,9 @@ workflow TrackTx {
   // ══════════════════════════════════════════════════════════════════════════
 
   if (params.verbose) {
-<<<<<<< Updated upstream
-    log.info "─".multiply(80)
-    log.info "STEP 11 | Score Divergent Sites (Enhancer vs Gene)"
-    log.info "─".multiply(80)
-    log.info "STEP 11 | PURPOSE | Attach continuous enhancer_score ∈ [0,1] to each divergent site"
-  }
-
-  enhancer_score_ch = score_enhancer_vs_gene(
-    divergent_tx_ch,
-    genes_ch,
-    tss_ch
-  ).scores
-
-  // Simple monitor
-  enhancer_score_ch.subscribe { sid, bed_scored, features_tsv, _cond, _time, _rep ->
-    def n = 0
-    if (file(bed_scored).exists() && file(bed_scored).size() > 0) {
-      n = file(bed_scored).readLines().findAll { !it.startsWith('#') }.size()
-    }
-    if (params.verbose) log.info "STEP 11 | COMPLETE | ${sid} → ${n} divergent sites scored (enhancer_score)"
-  }
-
-
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // STEP 12: Call Functional Regions
-  // ══════════════════════════════════════════════════════════════════════════
-  
-  if (params.verbose) {
-    log.info "─".multiply(80)
-    log.info "STEP 12 | Call Functional Regions"
-    log.info "─".multiply(80)
-    log.info "STEP 12 | CONFIG | Input: Divergent transcription regions + RAW tracks"
-    log.info "STEP 12 | CONFIG | Output: Promoter, enhancer, gene body annotations"
-=======
     log.info "-".multiply(80)
     log.info "STEP 11 | Call Functional Regions"
     log.info "-".multiply(80)
->>>>>>> Stashed changes
   }
 
   def func_input_ch = divergent_tx_ch
@@ -937,21 +742,13 @@ workflow TrackTx {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // STEP 13: Calculate Pol-II Metrics
+  // STEP 12: Calculate Pol-II Metrics
   // ══════════════════════════════════════════════════════════════════════════
 
   if (params.verbose) {
-<<<<<<< Updated upstream
-    log.info "─".multiply(80)
-    log.info "STEP 13 | Calculate Pol-II Metrics"
-    log.info "─".multiply(80)
-    log.info "STEP 13 | CONFIG | Metrics: Density, pausing index, traveling ratio"
-    log.info "STEP 13 | CONFIG | Input: Normalized CPM/siCPM tracks + functional regions"
-=======
     log.info "-".multiply(80)
     log.info "STEP 12 | Calculate Pol-II Metrics"
     log.info "-".multiply(80)
->>>>>>> Stashed changes
   }
 
   def pol_input_ch = generate_coverage_tracks.out.bam_for_tracks
@@ -961,16 +758,9 @@ workflow TrackTx {
     .join(functional_regions_bed_ch)
     .join(
       norm_tracks_ch.map { sid, pos3_cpm, neg3_cpm, factors, c, t, r ->
-<<<<<<< Updated upstream
-        // Construct siCPM paths based on directory structure from normalize_coverage_tracks
-        def normDir = "${params.output_dir}/05_normalized_tracks/${sid}"
-        def pos3_sicpm = file("${normDir}/3p/${sid}.3p.pos.sicpm.bedgraph")
-        def neg3_sicpm = file("${normDir}/3p/${sid}.3p.neg.sicpm.bedgraph")
-=======
         def normDir     = "${params.output_dir}/05_normalized_tracks/${sid}"
         def pos3_sicpm  = file("${normDir}/sicpm/3p/${sid}.3p.pos.sicpm.bedgraph")
         def neg3_sicpm  = file("${normDir}/sicpm/3p/${sid}.3p.neg.sicpm.bedgraph")
->>>>>>> Stashed changes
         tuple(sid, tuple(pos3_cpm, neg3_cpm, pos3_sicpm, neg3_sicpm))
       }
     )
@@ -987,20 +777,13 @@ workflow TrackTx {
   def pol_pausing_ch = calculate_polymerase_occupancy_metrics.out.pausing
 
   // ══════════════════════════════════════════════════════════════════════════
-  // STEP 14: Summarize Pol-II Metrics (Cohort-Level)
+  // STEP 13: Summarize Pol-II Metrics (Cohort-Level)
   // ══════════════════════════════════════════════════════════════════════════
 
   if (params.verbose) {
-<<<<<<< Updated upstream
-    log.info "─".multiply(80)
-    log.info "STEP 14 | Summarize Pol-II Metrics"
-    log.info "─".multiply(80)
-    log.info "STEP 14 | PURPOSE | Cohort-level aggregation and visualization"
-=======
     log.info "-".multiply(80)
     log.info "STEP 13 | Summarize Pol-II Metrics"
     log.info "-".multiply(80)
->>>>>>> Stashed changes
   }
 
   def pol_sorted = pol_gene_ch
@@ -1045,7 +828,7 @@ workflow TrackTx {
       if (clean_lines.size() == 1) {
         def rawCount  = lines.size() - 1
         def rejectMsg = rejected ? "\n  Rejected rows (first 5): ${rejected.take(5).join('\n  ')}" : ''
-        error """STEP 13 | ERROR | No valid samples in Pol-II aggregate TSV
+        error """STEP 12 | ERROR | No valid samples in Pol-II aggregate TSV
 Raw data rows: ${rawCount} | Valid after parse: ${clean_lines.size() - 1}${rejectMsg}
 This usually means no samples reached calculate_polymerase_occupancy_metrics."""
       }
@@ -1055,13 +838,7 @@ This usually means no samples reached calculate_polymerase_occupancy_metrics."""
       tsv_file
     }
 
-<<<<<<< Updated upstream
-  // Collect pol files in same sorted order as TSV for matching indices
-  pol_files_ch = pol_gene_ch
-    .toSortedList { a, b -> a[0] <=> b[0] }
-=======
   def pol_files_ch = pol_sorted
->>>>>>> Stashed changes
     .flatMap { sorted_list ->
       sorted_list.collect { sid, genes, c, t, r -> file(genes) }
     }
@@ -1069,20 +846,13 @@ This usually means no samples reached calculate_polymerase_occupancy_metrics."""
   summarize_polymerase_metrics(samples_tsv, pol_files_ch.collect())
 
   // ══════════════════════════════════════════════════════════════════════════
-  // STEP 15: Quality Control
+  // STEP 14: Quality Control
   // ══════════════════════════════════════════════════════════════════════════
 
   if (params.verbose) {
-<<<<<<< Updated upstream
-    log.info "─".multiply(80)
-    log.info "STEP 15 | Quality Control Analysis"
-    log.info "─".multiply(80)
-    log.info "STEP 15 | CONFIG | Metrics: Mapping rates, strand bias, coverage depth"
-=======
     log.info "-".multiply(80)
     log.info "STEP 14 | Quality Control Analysis"
     log.info "-".multiply(80)
->>>>>>> Stashed changes
   }
 
   def qc_input_ch = aligned_ch
@@ -1106,20 +876,13 @@ This usually means no samples reached calculate_polymerase_occupancy_metrics."""
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // STEP 16: Generate Per-Sample Reports
+  // STEP 15: Generate Per-Sample Reports
   // ══════════════════════════════════════════════════════════════════════════
 
   if (params.verbose) {
-<<<<<<< Updated upstream
-    log.info "─".multiply(80)
-    log.info "STEP 16 | Generate Per-Sample Reports"
-    log.info "─".multiply(80)
-    log.info "STEP 16 | CONFIG | Format: HTML with embedded plots"
-=======
     log.info "-".multiply(80)
     log.info "STEP 15 | Generate Per-Sample Reports"
     log.info "-".multiply(80)
->>>>>>> Stashed changes
   }
 
   def resolvePath = { path ->
@@ -1142,24 +905,12 @@ This usually means no samples reached calculate_polymerase_occupancy_metrics."""
       def (c, t, r) = meta
       def normDir   = "${params.output_dir}/05_normalized_tracks/${sid}"
       def tracksDir = "${params.output_dir}/03_genome_tracks/${sid}"
-<<<<<<< Updated upstream
-      
-      def bw_pos3 = resolvePath("${normDir}/3p/${sid}.3p.pos.cpm.bw")
-      def bw_neg3 = resolvePath("${normDir}/3p/${sid}.3p.neg.cpm.bw")
-      def bw_allmap_pos3 = resolvePath("${normDir}/3p/${sid}.allMap.3p.pos.cpm.bw")
-      def bw_allmap_neg3 = resolvePath("${normDir}/3p/${sid}.allMap.3p.neg.cpm.bw")
-      
-      def raw_allmap_pos3 = resolvePath("${tracksDir}/3p/${sid}.allMap.3p.pos.bedgraph")
-      def raw_allmap_neg3 = resolvePath("${tracksDir}/3p/${sid}.allMap.3p.neg.bedgraph")
-      
-=======
       def bw_pos3          = resolvePath("${normDir}/cpm/3p/${sid}.3p.pos.cpm.bw")
       def bw_neg3          = resolvePath("${normDir}/cpm/3p/${sid}.3p.neg.cpm.bw")
       def bw_allmap_pos3   = resolvePath("${normDir}/cpm/3p/${sid}.allMap.3p.pos.cpm.bw")
       def bw_allmap_neg3   = resolvePath("${normDir}/cpm/3p/${sid}.allMap.3p.neg.cpm.bw")
       def raw_allmap_pos3  = resolvePath("${tracksDir}/3p/${sid}.allMap.3p.pos.bedgraph")
       def raw_allmap_neg3  = resolvePath("${tracksDir}/3p/${sid}.allMap.3p.neg.bedgraph")
->>>>>>> Stashed changes
       tuple(
         sid,
         div_bed, fsum, dens, paus,
@@ -1187,25 +938,14 @@ This usually means no samples reached calculate_polymerase_occupancy_metrics."""
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-<<<<<<< Updated upstream
-  // STEP 17: Combine Reports
-=======
   // STEP 16: Cohort QC — MultiQC, deepTools PCA/Correlation, IGV, Run-on
   // (runs first so its outputs feed into the final landing page in Step 17)
->>>>>>> Stashed changes
   // ══════════════════════════════════════════════════════════════════════════
 
   if (params.verbose) {
-<<<<<<< Updated upstream
-    log.info "─".multiply(80)
-    log.info "STEP 17 | Combine Reports"
-    log.info "─".multiply(80)
-    log.info "STEP 17 | PURPOSE | Generate cohort-level summary report"
-=======
     log.info "-".multiply(80)
     log.info "STEP 16 | Cohort QC — MultiQC / deepTools / IGV / Run-on Efficiency"
     log.info "-".multiply(80)
->>>>>>> Stashed changes
   }
 
   // Collect per-sample BigWig and bedGraph paths in a consistent order.
@@ -1274,16 +1014,11 @@ This usually means no samples reached calculate_polymerase_occupancy_metrics."""
 
   def per_sample_reports = report_json_ch
     .toSortedList { a, b -> a.name <=> b.name }
-<<<<<<< Updated upstream
-  
-  combine_reports_into_cohort(per_sample_reports)
-=======
 
   def concordance_for_cohort = (params.replicates?.merge == true)
     ? channel.fromPath("${params.output_dir}/02_alignments/_merged/concordance_report.tsv", checkIfExists: false)
              .ifEmpty(file("NO_CONCORDANCE"))
     : channel.value(file("NO_CONCORDANCE"))
->>>>>>> Stashed changes
 
   // Optional outputs from module 16 — use sentinel file when not produced
   // (e.g. deepTools plots require ≥2 samples; MultiQC may not be installed)
