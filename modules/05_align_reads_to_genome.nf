@@ -40,7 +40,7 @@ process align_reads_to_genome {
   label      'conda'
   cache      'deep'  // Ignore resource allocation changes for better caching
 
-  publishDir "${params.output_dir}/02_alignments/${sample_id}",
+  publishDir { "${params.output_dir}/02_alignments/${sample_id}" },
              mode: params.publish_mode,
              overwrite: true,
              saveAs: { filename ->

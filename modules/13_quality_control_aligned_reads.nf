@@ -78,7 +78,7 @@ process quality_control_aligned_reads {
   label      'conda'
   cache      'deep'
 
-  publishDir "${params.output_dir}/10_qc/${sample_id}",
+  publishDir { "${params.output_dir}/10_qc/${sample_id}" },
              mode: params.publish_mode,
              overwrite: true
 

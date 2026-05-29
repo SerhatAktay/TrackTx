@@ -55,7 +55,7 @@ process quantify_reads_per_gene {
   label      'conda'
   cache      'deep'
 
-  publishDir "${params.output_dir}/04_counts/${sid}",
+  publishDir { "${params.output_dir}/04_counts/${sid}" },
              mode: params.publish_mode,
              overwrite: true
 

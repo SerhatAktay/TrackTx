@@ -66,7 +66,7 @@ process normalize_coverage_tracks {
   label      'conda'
   cache      'deep'
 
-  publishDir "${params.output_dir}/05_normalized_tracks/${sample_id}",
+  publishDir { "${params.output_dir}/05_normalized_tracks/${sample_id}" },
              mode: params.publish_mode,
              overwrite: true,
              saveAs: { filename ->

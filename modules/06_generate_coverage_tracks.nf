@@ -58,7 +58,7 @@ process generate_coverage_tracks {
   label      'conda'
   cache      'deep'
 
-  publishDir "${params.output_dir}/03_genome_tracks/${sample_id}",
+  publishDir { "${params.output_dir}/03_genome_tracks/${sample_id}" },
              mode: params.publish_mode,
              overwrite: true,
              saveAs: { filename ->

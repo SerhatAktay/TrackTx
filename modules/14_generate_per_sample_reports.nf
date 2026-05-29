@@ -64,7 +64,7 @@ process generate_per_sample_reports {
   label      'conda'
   cache      'deep'
 
-  publishDir "${params.output_dir}/11_reports/samples/${sample_id}",
+  publishDir { "${params.output_dir}/11_reports/samples/${sample_id}" },
              mode: params.publish_mode,
              overwrite: true
 

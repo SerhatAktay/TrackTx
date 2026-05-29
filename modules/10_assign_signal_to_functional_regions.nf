@@ -69,7 +69,7 @@ process assign_signal_to_functional_regions {
   label      'conda'
   cache      'deep'
 
-  publishDir "${params.output_dir}/07_functional_regions/${sample_id}",
+  publishDir { "${params.output_dir}/07_functional_regions/${sample_id}" },
              mode: params.publish_mode,
              overwrite: true
 

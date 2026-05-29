@@ -62,7 +62,7 @@ process calculate_polymerase_occupancy_metrics {
   label      'conda'
   cache      'deep'
 
-  publishDir "${params.output_dir}/08_pol_metrics/${sid}",
+  publishDir { "${params.output_dir}/08_pol_metrics/${sid}" },
              mode: params.publish_mode,
              overwrite: true
 
