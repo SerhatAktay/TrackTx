@@ -43,6 +43,20 @@ def resolveLocalPath(path) {
   return f.isAbsolute() ? file(p) : file("${projectDir}/${p}")
 }
 
+// Resolve samplesheet input file path; returns File or null
+def resolveSamplesheetPath(p, projectDir) {
+  if (!p?.trim()) return null
+  def s = p.trim()
+  def f = new File(s)
+  return f.isAbsolute() ? f : new File(projectDir.toString(), s)
+}
+
+// Resolve an expected output path; returns path string or empty string if absent
+def resolveOutputPath(path) {
+  def f = file(path)
+  return f.exists() ? f.toString() : ''
+}
+
 // ============================================================================
 // MODULE IMPORTS
 // Paths inlined (def MOD = ... was a top-level statement, not allowed in strict)
@@ -180,15 +194,9 @@ Debug mode:       ${params.debug ?: false}
       dataRows.eachWithIndex { line, i ->
         def cols   = line.split(',', -1).collect { col -> col?.trim() }
         def sample = cols.size() > sampleIdx ? cols[sampleIdx] : ''
-        def resolve = { p ->
-          if (!p?.trim()) return null
-          def s = p.trim()
-          def f = new File(s)
-          return f.isAbsolute() ? f : new File(projectDir.toString(), s)
-        }
-        def f1 = cols.size() > file1Idx ? resolve(cols[file1Idx]) : null
+        def f1 = cols.size() > file1Idx ? resolveSamplesheetPath(cols[file1Idx], projectDir) : null
         def f2 = (params.paired_end && file2Idx != null && file2Idx >= 0 && cols.size() > file2Idx)
-          ? resolve(cols[file2Idx]) : null
+          ? resolveSamplesheetPath(cols[file2Idx], projectDir) : null
         if (f1 && !f1.exists()) missing << "${sample}: file1 not found: ${f1}"
         if (f2 && !f2.exists()) missing << "${sample}: file2 not found: ${f2}"
       }
@@ -885,10 +893,7 @@ This usually means no samples reached calculate_polymerase_occupancy_metrics."""
     log.info "-".multiply(80)
   }
 
-  def resolvePath = { path ->
-    def f = file(path)
-    f.exists() ? f.toString() : ''
-  }
+
 
   def report_input_ch = aligned_ch
     .map { sid, bam, all, spike, c, t, r ->
@@ -905,12 +910,12 @@ This usually means no samples reached calculate_polymerase_occupancy_metrics."""
       def (c, t, r) = meta
       def normDir   = "${params.output_dir}/05_normalized_tracks/${sid}"
       def tracksDir = "${params.output_dir}/03_genome_tracks/${sid}"
-      def bw_pos3          = resolvePath("${normDir}/cpm/3p/${sid}.3p.pos.cpm.bw")
-      def bw_neg3          = resolvePath("${normDir}/cpm/3p/${sid}.3p.neg.cpm.bw")
-      def bw_allmap_pos3   = resolvePath("${normDir}/cpm/3p/${sid}.allMap.3p.pos.cpm.bw")
-      def bw_allmap_neg3   = resolvePath("${normDir}/cpm/3p/${sid}.allMap.3p.neg.cpm.bw")
-      def raw_allmap_pos3  = resolvePath("${tracksDir}/3p/${sid}.allMap.3p.pos.bedgraph")
-      def raw_allmap_neg3  = resolvePath("${tracksDir}/3p/${sid}.allMap.3p.neg.bedgraph")
+      def bw_pos3          = resolveOutputPath("${normDir}/cpm/3p/${sid}.3p.pos.cpm.bw")
+      def bw_neg3          = resolveOutputPath("${normDir}/cpm/3p/${sid}.3p.neg.cpm.bw")
+      def bw_allmap_pos3   = resolveOutputPath("${normDir}/cpm/3p/${sid}.allMap.3p.pos.cpm.bw")
+      def bw_allmap_neg3   = resolveOutputPath("${normDir}/cpm/3p/${sid}.allMap.3p.neg.cpm.bw")
+      def raw_allmap_pos3  = resolveOutputPath("${tracksDir}/3p/${sid}.allMap.3p.pos.bedgraph")
+      def raw_allmap_neg3  = resolveOutputPath("${tracksDir}/3p/${sid}.allMap.3p.neg.bedgraph")
       tuple(
         sid,
         div_bed, fsum, dens, paus,
