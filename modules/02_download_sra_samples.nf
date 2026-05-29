@@ -42,7 +42,6 @@
 //
 // ============================================================================
 
-nextflow.enable.dsl = 2
 
 process download_sra_samples {
 
@@ -51,6 +50,7 @@ process download_sra_samples {
   cache      'deep'
   conda      (params.conda_sra ?: "${projectDir}/envs/tracktx.yaml")
   
+<<<<<<< Updated upstream
   // NOTE: Raw FASTQ files are NOT published here to save disk space (~100GB+)
   // They are intermediate files that get processed by preprocess_and_quality_filter_reads
   // Only the final trimmed/processed FASTQs are published by preprocess_and_quality_filter_reads
@@ -69,6 +69,19 @@ process download_sra_samples {
                }
                return null  // Don't publish raw FASTQs
              }
+=======
+  // storeDir persists raw FASTQs so that re-runs skip the download entirely — even after
+  // the work/ directory has been deleted. Cache is keyed per SRA accession so adding new
+  // samples never invalidates existing downloads.
+  //
+  // publish_sra_fastq=true  (default): cache in results/00_sra_cache/<SRR>/  — visible in results
+  // publish_sra_fastq=false          : cache in results/.sra_cache/<SRR>/    — hidden from results
+  //   In false mode the primary re-run safeguard is the trimmed-FASTQ check in main.nf (STEP 3).
+  //   The hidden .sra_cache/ acts as a secondary fallback. Clean it up with: rm -rf results/.sra_cache/
+  storeDir { params.get('publish_sra_fastq')?.toString() != 'false'
+      ? "${params.output_dir}/00_sra_cache/${sra_id}"
+      : "${params.output_dir}/.sra_cache/${sra_id}" }
+>>>>>>> Stashed changes
 
   // ── Inputs ────────────────────────────────────────────────────────────────
   input:

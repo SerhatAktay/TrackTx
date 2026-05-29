@@ -4,7 +4,7 @@
 
 **A powerful Nextflow pipeline for PRO-seq and nascent RNA-seq analysis**
 
-[![Nextflow](https://img.shields.io/badge/nextflow%20DSL2-%E2%89%A524.04.0-23aa62.svg)](https://www.nextflow.io/)
+[![Nextflow](https://img.shields.io/badge/nextflow%20DSL2-%E2%89%A526.04.0-23aa62.svg)](https://www.nextflow.io/)
 [![Docker](https://img.shields.io/badge/docker-supported-0db7ed.svg)](https://www.docker.com/)
 [![Conda](https://img.shields.io/badge/conda-supported-green.svg)](https://conda.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -216,6 +216,7 @@ graph LR
     F --> G[📊 Comprehensive Reports]
 ```
 
+<<<<<<< Updated upstream
 **Key Features:**
 - 🎯 **Automated**: From raw reads to publication-ready figures
 - 🚀 **Fast**: Optimized for any system (laptop → HPC)
@@ -225,6 +226,70 @@ graph LR
 - 🔬 **Statistical**: GMM-based divergent detection with FDR control
 - 📈 **Insightful**: Cohort-wide analysis with by-condition comparisons
 - 💡 **Guided**: Extensive explanations and quality assessment throughout
+=======
+**Key capabilities:**
+
+- **Automated** — raw reads to publication-ready outputs in one command
+- **Flexible** — handles SE and PE data, UMIs, barcodes, and spike-in normalization
+- **Statistical** — divergent transcription detection with Gaussian Mixture Models and FDR control, no manual thresholding required
+- **Quantitative** — CPM and spike-in CPM (siCPM) normalization for cross-sample comparisons
+- **Comprehensive** — per-sample HTML reports plus a cohort-wide dashboard
+- **Scalable** — runs identically on a laptop, workstation, or HPC cluster
+
+---
+
+## 🔬 Pipeline Modules
+
+TrackTx runs 16 modules in sequence. Here is what each one does.
+
+**01 — Download Genome Annotations**
+Downloads GTF gene annotation files from Ensembl, RefSeq, or GENCODE for the chosen reference genome. Annotations drive gene-body boundary calls, divergent transcription pairing, and functional region assignment throughout the pipeline.
+
+**02 — Download SRA Samples**
+Retrieves FASTQ files from NCBI SRA or the European Nucleotide Archive (ENA) when `sample_source: srr` is set. Uses `fasterq-dump` with multi-threaded conversion and falls back to parallel ENA downloads automatically. Raw FASTQs are stored via Nextflow's `storeDir` at `{output_dir}/00_sra_cache/{SRR}/`, so re-downloads are skipped as long as those files exist — even after the `work/` directory has been deleted between runs.
+
+**03 — Preprocess and Quality Filter Reads**
+Trims adapter sequences, removes barcodes, and applies a minimum length filter in a single `cutadapt` pass. UMI extraction with `umi_tools` follows if enabled. FastQC runs on both raw and cleaned reads to confirm quality before alignment.
+
+**04 — Download Genome and Build Alignment Index**
+Downloads the reference (and spike-in) genome FASTA, then builds a `bowtie2` alignment index. Pre-built indexes are cached and reused across runs.
+
+**05 — Align Reads to Genome**
+Aligns cleaned reads to the reference genome with `bowtie2` (end-to-end mode). Spike-in reads are aligned separately to derive normalization factors. Outputs include coordinate-sorted, indexed BAM files for primary, all-mapping, and spike-in alignments. BAMs and alignment artefacts are stored via `storeDir` at `{output_dir}/02_alignments/{sample_id}/`, so alignment is skipped for any sample whose BAM already exists there — even across runs where `work/` has been cleared. To force realignment for a sample, delete its folder: `rm -rf {output_dir}/02_alignments/{sample_id}`.
+
+**06 — Generate Coverage Tracks**
+Produces strand-specific 3′-end and 5′-end coverage tracks in bedGraph format using `bedtools genomecov`. Four independent coverage jobs (3p positive, 3p negative, 5p positive, 5p negative) run in parallel. Each bedGraph is pre-sorted inline and converted to BigWig format for use in genome browsers. For paired-end libraries, only Read 2 (the RC(R1) mate carrying the nascent RNA 3′ end = polymerase position) is used for coverage, preventing noise from the R2 mate's 3′ end contaminating the tracks.
+
+**07 — Quantify Reads Per Gene**
+Counts uniquely aligned reads overlapping each gene using `samtools idxstats` and gene coordinate intervals. Produces a counts master file that drives CPM and siCPM normalization factor calculation in the next module.
+
+**08 — Normalize Coverage Tracks**
+Scales raw bedGraph signal to CPM (counts per million mapped reads) and siCPM (spike-in CPM) using pre-computed factors. Positive and negative strand tracks are normalized in parallel. Outputs both bedGraph and BigWig formats for all track sets (3p, 5p, main, and allMap).
+
+**09 — Detect Divergent Transcription**
+The statistical core of the pipeline. Pairs upstream antisense peaks with downstream sense peaks, computes a suite of features (signal balance, local enrichment, strand specificity), and fits a two-component Gaussian Mixture Model to separate signal from noise. Divergent regions passing the FDR threshold are written as a BED file with confidence scores. No manual thresholds are required — set `divergent_threshold: auto` and the calibration percentile handles it.
+
+**10 — Assign Signal to Functional Regions**
+Assigns normalized coverage to a hierarchical set of genomic functional regions: active promoters, gene bodies, cleavage and polyadenylation sites, enhancers, termination windows, and non-localized signal. Each position is assigned to exactly one region by sequential masking, so the categories are mutually exclusive.
+
+**11 — Calculate Polymerase Occupancy Metrics**
+Computes two complementary views of Pol II occupancy. The density metrics approach sums normalized bedGraph signal over each functional region. The gene metrics approach operates on the filtered BAM directly, computing per-gene TSS-window and gene-body coverage from which pausing indices (PI = TSS density / body density) are derived. Both approaches run in parallel so neither waits on the other. Read counting is strand-specific so only sense-strand reads contribute to each gene's TSS and body counts, eliminating contamination from antisense transcription at convergent loci. The gene-body offset is automatically calibrated from the gene-length distribution in the annotation (25th-percentile-based), so the pipeline works correctly for compact genomes such as *D. melanogaster* and *C. elegans* without manual parameter tuning.
+
+**12 — Summarize Polymerase Metrics**
+Aggregates per-sample Pol II metrics across the cohort into summary TSVs — pausing index distributions, region density tables, and normalization factor comparisons — for use in the cohort report.
+
+**13 — Quality Control Aligned Reads**
+Calculates per-sample alignment QC: total and mapped read counts, duplicate rates, MAPQ pass rates, strand balance (critical for PRO-seq validation), fragment length distribution (PE only), and mean genome coverage depth. Results feed the per-sample HTML reports and cohort outlier detection.
+
+**14 — Generate Per-Sample Reports**
+Produces an interactive HTML report for each sample, summarising QC metrics, coverage distributions, divergent transcription statistics, and Pol II pausing results, with inline visualizations.
+
+**15 — Combine Reports into Cohort**
+Merges all per-sample outputs into a single cohort-level HTML dashboard. Includes by-condition QC comparisons, divergent transcription patterns, Pol II pausing distributions, functional region composition, normalization factor validation, replicate consistency (coefficient of variation), and an interactive sample metrics table. Also generates a landing `index.html` with links to all outputs including the new cohort QC folder.
+
+**16 — Cohort QC and Visualization**
+Final cohort-level quality control module that runs once all samples are complete. Produces: (1) a **MultiQC** HTML report aggregating all alignment logs, flagstats, and trimming statistics into a single QC dashboard; (2) **deepTools** PCA plot and Pearson correlation heatmap computed from CPM-normalized 3′ BigWigs using 10 kb genome-wide bins; (3) an **IGV session XML** file that loads all sample tracks in one click, colour-coded by condition; and (4) a **run-on efficiency table** reporting the median 5′/3′ bedGraph signal ratio across long gene bodies per sample — values close to 1.0 indicate efficient NRO run-on.
+>>>>>>> Stashed changes
 
 ---
 

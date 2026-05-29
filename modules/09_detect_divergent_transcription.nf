@@ -83,7 +83,6 @@
 //
 // ============================================================================
 
-nextflow.enable.dsl = 2
 
 process detect_divergent_transcription {
 

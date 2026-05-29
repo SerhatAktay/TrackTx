@@ -18,7 +18,7 @@
 //   3. Divergent Transcription Summary (loci count, characteristics)
 //   4. Functional Region Composition (promoter, body, CPS, etc.)
 //   5. Pol-II Density Distribution (signal per region type)
-//   6. Pausing Index Statistics (distribution, top genes)
+//   6. Pausing Index Statistics (strand-specific counting; auto body-offset for any organism)
 //   7. Normalization Factors (CPM, siCPM)
 //   8. Track File Links (for UCSC/IGV browsers)
 //
@@ -57,7 +57,6 @@
 //
 // ============================================================================
 
-nextflow.enable.dsl = 2
 
 process generate_per_sample_reports {
 
@@ -624,10 +623,12 @@ REPORT CONTENTS DETAILS
    • Total signal quantification
 
 6. Pausing Index
-   • Per-gene pausing indices
+   • Per-gene pausing indices (strand-specific: only sense-strand reads counted)
    • Distribution statistics
    • Top paused genes
-   • Length-normalized vs raw
+   • Length-normalized (pi_len_norm, recommended) vs raw (pi_raw)
+   • Body offset auto-calibrated from gene-length distribution
+     (works correctly for compact genomes: Drosophila, C. elegans, etc.)
 
 7. Normalization
    • CPM factors

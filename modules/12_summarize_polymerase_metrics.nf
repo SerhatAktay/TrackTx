@@ -56,7 +56,6 @@
 //
 // ============================================================================
 
-nextflow.enable.dsl = 2
 
 process summarize_polymerase_metrics {
 

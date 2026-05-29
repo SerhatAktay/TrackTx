@@ -71,7 +71,6 @@
 //
 // ============================================================================
 
-nextflow.enable.dsl = 2
 
 process quality_control_aligned_reads {
 

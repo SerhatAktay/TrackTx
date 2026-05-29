@@ -43,7 +43,6 @@
 //
 // ============================================================================
 
-nextflow.enable.dsl = 2
 
 process download_genome_and_build_alignment_index {
 

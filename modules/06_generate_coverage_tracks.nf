@@ -51,7 +51,6 @@
 //
 // ============================================================================
 
-nextflow.enable.dsl = 2
 
 process generate_coverage_tracks {
 
@@ -68,6 +67,7 @@ process generate_coverage_tracks {
                // Exclude BAM files from publishing - they already exist in 02_alignments/
                if (name.endsWith('.bam') || name.endsWith('.bam.bai')) return null
                // Skip entire folder when output.raw_tracks: false (~150 MB saved)
+<<<<<<< Updated upstream
                if (params.output?.raw_tracks == false) return null
                // Skip 5' tracks when norm.emit_5p: false (~75 MB saved)
                if (params.norm?.emit_5p == false && (pathStr.contains('5p/') || name.contains('.5p.'))) return null
@@ -75,6 +75,15 @@ process generate_coverage_tracks {
                if (params.norm?.emit_allmap == false && name.contains('allMap')) return null
                // Skip bedGraphs when output.bedgraph: false (BigWigs sufficient for genome browsers)
                if (params.output?.bedgraph == false && name.endsWith('.bedgraph')) return null
+=======
+               if (params.get('output')?.get('raw_tracks')?.toString() == 'false') return null
+               // Skip 5' tracks when norm.emit_5p: false (~75 MB saved)
+               if (params.get('norm')?.get('emit_5p')?.toString() == 'false' && (pathStr.contains('5p/') || name.contains('.5p.'))) return null
+               // Skip allMap tracks when norm.emit_allmap: false (~25 MB in 03)
+               if (params.get('norm')?.get('emit_allmap')?.toString() == 'false' && name.contains('allMap')) return null
+               // Skip bedGraphs when output.bedgraph: false (BigWigs sufficient for genome browsers)
+               if (params.get('output')?.get('bedgraph')?.toString() == 'false' && name.endsWith('.bedgraph')) return null
+>>>>>>> Stashed changes
                return name
              }
 
@@ -469,6 +478,51 @@ process generate_coverage_tracks {
   samtools index -@ ${THREADS} bam_for_downstream.bam
 
   ###########################################################################
+  # 4b) PE MATE FILTERING FOR 3'/5' COVERAGE TRACKS
+  ###########################################################################
+  #
+  # PRO-seq PE alignment layout (from module 05):
+  #   bowtie2 --ff  -1 R2  -2 RC(R1)
+  # In the BAM this becomes:
+  #   Read1 (flag 64)  = original R2  → 5' end of fragment, NOT the Pol II position
+  #   Read2 (flag 128) = RC(R1)       → 3' end of nascent RNA = Pol II position ✓
+  #
+  # Using the full paired BAM for -3 coverage would add one noise hit (from
+  # Read1/R2) for every correct Pol II hit (from Read2/RC(R1)), distorting track
+  # shapes. For SE data both reads carry signal, so no filtering is needed.
+  #
+  # The allMap BAM is handled the same way so allMap tracks stay comparable.
+
+  BAM_FOR_COVERAGE="${INPUT_BAM}"
+  ALLMAP_BAM_FOR_COVERAGE="${ALLMAP_BAM}"
+
+  if [[ "${IS_PE}" == "true" ]]; then
+    echo "────────────────────────────────────────────────────────────────────────"
+    echo "TRACKS | PE_FILTER | Paired-end: extracting Read2 (RC(R1)) only for coverage tracks..."
+    echo "TRACKS | PE_FILTER | (flag 128 = second-in-pair = the nascent RNA 3'-end read)"
+    echo "────────────────────────────────────────────────────────────────────────"
+
+    samtools view -@ "${THREADS}" -f 128 -b "${INPUT_BAM}" \
+      | samtools sort -@ "${THREADS}" -o pe_r2_main.bam
+    samtools index -@ "${THREADS}" pe_r2_main.bam
+
+    samtools view -@ "${THREADS}" -f 128 -b "${ALLMAP_BAM}" \
+      | samtools sort -@ "${THREADS}" -o pe_r2_allmap.bam
+    samtools index -@ "${THREADS}" pe_r2_allmap.bam
+
+    R2_MAIN_COUNT=$(samtools view -c -F 4 pe_r2_main.bam)
+    R2_ALLMAP_COUNT=$(samtools view -c -F 4 pe_r2_allmap.bam)
+    echo "TRACKS | PE_FILTER | Main BAM Read2 count:   ${R2_MAIN_COUNT}"
+    echo "TRACKS | PE_FILTER | AllMap BAM Read2 count: ${R2_ALLMAP_COUNT}"
+
+    BAM_FOR_COVERAGE="pe_r2_main.bam"
+    ALLMAP_BAM_FOR_COVERAGE="pe_r2_allmap.bam"
+    echo "TRACKS | PE_FILTER | Coverage tracks will use Read2-only BAMs"
+  else
+    echo "TRACKS | PE_FILTER | Single-end mode: using full BAM for coverage"
+  fi
+
+  ###########################################################################
   # 5) PREPARE GENOME SIZES
   ###########################################################################
 
@@ -476,8 +530,9 @@ process generate_coverage_tracks {
   echo "TRACKS | GENOME | Extracting chromosome sizes..."
   echo "────────────────────────────────────────────────────────────────────────"
 
-  # Get chromosome sizes from BAM header (more reliable than FASTA)
-  samtools view -H "${INPUT_BAM}" | \
+  # Get chromosome sizes from BAM header (more reliable than FASTA).
+  # Use BAM_FOR_COVERAGE so the sizes match the BAM we'll actually feed to bedtools.
+  samtools view -H "${BAM_FOR_COVERAGE}" | \
     grep '^@SQ' | \
     cut -f2,3 | \
     sed 's/SN://g' | \
@@ -505,10 +560,33 @@ process generate_coverage_tracks {
   echo "TRACKS | 3P | Generating 3' end coverage tracks..."
   echo "────────────────────────────────────────────────────────────────────────"
 
+<<<<<<< Updated upstream
   # Main BAM
   echo "TRACKS | 3P | Processing main BAM..."
   if ! generate_coverage "${INPUT_BAM}" "3" "3p/${SAMPLE_ID}.3p"; then
     tracktx_error "generate_coverage_tracks" "Failed to generate 3' coverage from main BAM" "Check tracks.log in work dir"
+=======
+  # All four jobs are independent (different BAM inputs, different output
+  # prefixes) and each is single-threaded, so they run concurrently on
+  # separate cores.  Log output will be interleaved; each job identifies
+  # itself via its BAM filename in the TRACKS | COVERAGE messages.
+  # Use the PE-filtered BAMs (Read2-only) in PE mode; full BAMs in SE mode.
+  pids=()
+  generate_coverage "${BAM_FOR_COVERAGE}"        "3" "3p/${SAMPLE_ID}.3p"        & pids+=($!)
+  generate_coverage "${ALLMAP_BAM_FOR_COVERAGE}" "3" "3p/${SAMPLE_ID}.allMap.3p" & pids+=($!)
+  generate_coverage "${BAM_FOR_COVERAGE}"        "5" "5p/${SAMPLE_ID}.5p"        & pids+=($!)
+  generate_coverage "${ALLMAP_BAM_FOR_COVERAGE}" "5" "5p/${SAMPLE_ID}.allMap.5p" & pids+=($!)
+
+  # Wait for all jobs; collect failures rather than exiting on the first one
+  # so all error messages appear in the log before tracktx_error aborts.
+  COVERAGE_FAILED=0
+  for pid in "${pids[@]}"; do
+    wait "${pid}" || COVERAGE_FAILED=1
+  done
+
+  if [[ ${COVERAGE_FAILED} -ne 0 ]]; then
+    tracktx_error "generate_coverage_tracks" "One or more coverage generation jobs failed" "Check tracks.log for per-job error messages"
+>>>>>>> Stashed changes
   fi
 
   # AllMap BAM

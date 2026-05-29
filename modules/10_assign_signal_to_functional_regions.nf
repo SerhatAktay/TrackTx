@@ -62,7 +62,6 @@
 //
 // ============================================================================
 
-nextflow.enable.dsl = 2
 
 process assign_signal_to_functional_regions {
 

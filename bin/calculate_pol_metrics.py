@@ -238,61 +238,114 @@ def get_mapped_read_count(bam_path: str) -> int:
 
 def count_reads_pysam(bed_path: Path, bam_path: str, region_type: str) -> Dict[str, int]:
     """
-    Count reads in BED regions using pysam (memory efficient)
-    
+    Count strand-specific reads in BED regions using pysam (memory efficient).
+
+    The BED file must have a strand column (col 6).  Only reads whose mapping
+    strand matches the gene strand are counted, eliminating contamination from
+    antisense transcription at convergently-oriented loci or nearby enhancers.
+
+    Strand logic for PRO-seq (after RC(R1) alignment):
+      Gene +  →  count reads that are NOT reverse (forward-strand reads)
+      Gene -  →  count reads that ARE  reverse  (reverse-strand reads)
+
     Args:
-        bed_path: Path to BED file with regions
+        bed_path: Path to BED file with regions (must include strand col 6)
         region_type: Description of regions (for logging)
         bam_path: Path to BAM file
-        
+
     Returns:
         Dictionary mapping gene_id to read count
     """
     if not bed_path.exists() or bed_path.stat().st_size == 0:
         log_warning(f"Empty {region_type} BED file")
         return {}
-    
+
     # Try pysam first (preferred)
     try:
         import pysam
     except ImportError:
         log_warning("pysam not available, using bedtools intersect")
         return count_reads_bedtools(bed_path, bam_path, region_type)
+<<<<<<< Updated upstream
     
     log_info(f"Counting {region_type} reads with pysam...")
     
+=======
+
+    log_info(f"Counting {region_type} reads with pysam (strand-specific)...")
+
+    # Verify BAM index exists — pysam.fetch() needs an index; without it every
+    # region returns 0 with no error raised.
+    bam_p = Path(bam_path)
+    if not (bam_p.with_suffix(".bai").exists() or Path(bam_path + ".bai").exists()):
+        log_warning(f"BAM index (.bai) not found for {bam_path} — falling back to bedtools")
+        return count_reads_bedtools(bed_path, bam_path, region_type)
+
+>>>>>>> Stashed changes
     try:
         bamfile = pysam.AlignmentFile(bam_path, "rb")
         counts = {}
-        
+
         with open(bed_path) as f:
             regions = [line for line in f if line.strip() and not line.startswith(("#", "track", "browser"))]
-        
+
         total_regions = len(regions)
+<<<<<<< Updated upstream
         log_info(f"Processing {total_regions:,} {region_type} regions...")
         
+=======
+        log_info(f"Processing {total_regions:,} {region_type} regions (strand-aware)...")
+
+        skipped_chroms: set = set()
+>>>>>>> Stashed changes
         for i, line in enumerate(regions, 1):
             fields = line.strip().split("\t")
             if len(fields) < 4:
                 continue
+<<<<<<< Updated upstream
             
             chrom, start, end, gene_id = fields[0], int(fields[1]), int(fields[2]), fields[3]
             
+=======
+
+            chrom    = fields[0]
+            start    = int(fields[1])
+            end      = int(fields[2])
+            gene_id  = fields[3]
+            # BED strand column is col 6 (index 5); default to '+' if absent
+            strand   = fields[5] if len(fields) >= 6 else "+"
+
+>>>>>>> Stashed changes
             # Progress indicator every 5000 regions
             if i % 5000 == 0:
                 log_progress(region_type.upper(), i, total_regions)
             
             try:
-                count = bamfile.count(contig=chrom, start=start, stop=end)
+                count = 0
+                for read in bamfile.fetch(contig=chrom, start=start, stop=end):
+                    # Skip unmapped, secondary, and supplementary
+                    if read.is_unmapped or read.is_secondary or read.is_supplementary:
+                        continue
+                    # Strand match: PRO-seq RC(R1) alignment
+                    #   + strand gene → read maps to forward strand (not reverse)
+                    #   - strand gene → read maps to reverse strand
+                    if strand == "+" and not read.is_reverse:
+                        count += 1
+                    elif strand == "-" and read.is_reverse:
+                        count += 1
                 counts[gene_id] = counts.get(gene_id, 0) + count
             except Exception:
+<<<<<<< Updated upstream
                 # Chromosome not in BAM, skip silently
+=======
+                skipped_chroms.add(chrom)
+>>>>>>> Stashed changes
                 continue
         
         bamfile.close()
         log_info(f"Counted reads for {len(counts):,} genes in {region_type}")
         return counts
-        
+
     except Exception as e:
         log_error(f"pysam counting failed: {e}")
         log_info("Falling back to bedtools intersect")
@@ -300,21 +353,24 @@ def count_reads_pysam(bed_path: Path, bam_path: str, region_type: str) -> Dict[s
 
 def count_reads_bedtools(bed_path: Path, bam_path: str, region_type: str) -> Dict[str, int]:
     """
-    Count reads using bedtools intersect (fallback method)
-    
+    Count strand-specific reads using bedtools intersect (fallback method).
+
+    Uses -s flag so only sense-strand reads are counted, matching the pysam
+    strand-specific logic above.
+
     Args:
-        bed_path: Path to BED file
+        bed_path: Path to BED file (must include strand col 6)
         bam_path: Path to BAM file
         region_type: Description of regions
-        
+
     Returns:
         Dictionary mapping gene_id to read count
     """
-    log_info(f"Counting {region_type} reads with bedtools...")
-    
+    log_info(f"Counting {region_type} reads with bedtools (strand-specific)...")
+
     result = run_command(
-        ["bedtools", "intersect", "-c", "-a", str(bed_path), "-b", bam_path],
-        f"Counting {region_type} overlaps"
+        ["bedtools", "intersect", "-c", "-s", "-a", str(bed_path), "-b", bam_path],
+        f"Counting {region_type} overlaps (strand-specific)"
     )
     
     counts = {}
@@ -337,6 +393,52 @@ def count_reads_bedtools(bed_path: Path, bam_path: str, region_type: str) -> Dic
 # GTF PARSING
 # =============================================================================
 
+def auto_body_offset(
+    gene_lengths: List[int],
+    user_offset_min: int,
+    body_offset_frac: float
+) -> int:
+    """
+    Choose an organism-aware body offset from the gene-length distribution.
+
+    Strategy:
+      - Compute the 25th percentile of gene lengths across all parsed features.
+      - Use max(user_offset_min, P25 * 0.20) as the effective offset_min.
+      - This scales the offset down automatically for compact genomes
+        (Drosophila ~3–4 kb median, C. elegans ~2 kb) while leaving human/mouse
+        (median ~30 kb) unchanged.
+      - A hard floor of 200 bp is kept so the offset never collapses to zero.
+      - The caller still applies body_offset_frac on top of this minimum.
+
+    Args:
+        gene_lengths: List of gene lengths (bp) from the GTF
+        user_offset_min: Value passed via --body-offset-min (default 2000)
+        body_offset_frac: Fraction of gene length also used as offset floor
+
+    Returns:
+        Effective body_offset_min (int bp)
+    """
+    if not gene_lengths:
+        return user_offset_min
+
+    arr = sorted(gene_lengths)
+    p25_idx = max(0, int(len(arr) * 0.25) - 1)
+    p25 = arr[p25_idx]
+    median_idx = len(arr) // 2
+    median = arr[median_idx]
+
+    # Scale offset to 20% of P25, but never below 200 bp
+    auto_min = max(200, int(p25 * 0.20))
+    effective = min(user_offset_min, auto_min)   # take smaller of user & auto
+
+    log_info(
+        f"Gene length distribution: P25={p25:,} bp, median={median:,} bp "
+        f"→ auto body_offset_min={auto_min:,} bp "
+        f"(user requested {user_offset_min:,}; using {effective:,})"
+    )
+    return effective
+
+
 def parse_gtf_file(
     gtf_path: str,
     feature_types: set,
@@ -345,77 +447,102 @@ def parse_gtf_file(
     body_offset_frac: float
 ) -> List[Tuple]:
     """
-    Parse GTF file and extract gene coordinates
-    
+    Parse GTF file and extract gene coordinates.
+
+    Body offset is auto-calibrated from the gene-length distribution so the
+    pipeline works correctly for compact genomes (Drosophila, C. elegans) as
+    well as human/mouse without requiring organism-specific parameter tuning.
+
     Args:
         gtf_path: Path to GTF file
         feature_types: Set of acceptable feature types
         tss_window: TSS window size (±bp)
-        body_offset_min: Minimum body offset (bp)
+        body_offset_min: Minimum body offset requested by user (bp); may be
+                         reduced automatically for small-genome organisms
         body_offset_frac: Body offset as fraction of gene length
-        
+
     Returns:
-        List of tuples: (gene_id, gene_name, chrom, strand, 
+        List of tuples: (gene_id, gene_name, chrom, strand,
                         tss_lo, tss_hi, body_lo, body_hi, body_len)
     """
     log("PARSE", f"Reading GTF: {gtf_path}")
-    
-    # Store transcript data per gene
-    gene_data = {}  # gene_id -> {gname, chrom, strand, transcripts[]}
-    
+
+    # ── Pass 1: collect raw feature records ──────────────────────────────────
+    # We store raw coordinates first so we can auto-calibrate the body offset
+    # from the gene-length distribution before committing to final windows.
+
+    # gene_id -> {gname, chrom, strand, raw_transcripts: [(start,end), ...]}
+    gene_data: Dict = {}
     line_count = 0
     feature_count = 0
-    
+
     with open_text_file(gtf_path) as f:
         for line in f:
             line_count += 1
-            
-            # Progress indicator
+
             if line_count % 100000 == 0:
                 log_info(f"Parsed {line_count:,} GTF lines...")
-            
-            # Skip comments and empty lines
+
             if not line.strip() or line.startswith("#"):
                 continue
-            
-            # Parse line
+
             fields = line.rstrip("\n").split("\t")
             if len(fields) < 9:
                 continue
-            
-            # Check feature type
+
             feature_type = fields[2]
             if feature_type not in feature_types:
                 continue
-            
+
             feature_count += 1
-            
-            # Extract coordinates
-            chrom = fields[0]
+
+            chrom  = fields[0]
             strand = fields[6]
-            
+
             try:
                 start = int(fields[3])
-                end = int(fields[4])
+                end   = int(fields[4])
             except ValueError:
                 log_warning(f"Invalid coordinates at line {line_count}")
                 continue
-            
+
             if end <= start:
                 log_warning(f"Invalid region (end <= start) at line {line_count}")
                 continue
-            
-            # Parse attributes
-            attrs = parse_gtf_attributes(fields[8])
-            gene_id = attrs["gene_id"]
+
+            attrs     = parse_gtf_attributes(fields[8])
+            gene_id   = attrs["gene_id"]
             gene_name = attrs["gene_name"]
-            
-            # Calculate TSS and body coordinates
-            tss = start if strand == "+" else end
+
+            if gene_id not in gene_data:
+                gene_data[gene_id] = {
+                    "gname": gene_name, "chrom": chrom, "strand": strand,
+                    "raw": []
+                }
+            gene_data[gene_id]["raw"].append((start, end))
+
+    log("PARSE", f"Processed {line_count:,} GTF lines; {feature_count:,} features for {len(gene_data):,} genes")
+
+    # ── Auto-calibrate body_offset_min from gene-length distribution ─────────
+    all_lengths = [max(1, e - s) for d in gene_data.values() for s, e in d["raw"]]
+    effective_offset_min = auto_body_offset(all_lengths, body_offset_min, body_offset_frac)
+
+    # ── Pass 2: compute TSS/body windows with calibrated offset ──────────────
+    # (Re-uses gene_data populated above; no second file read needed.)
+    gene_data_with_windows: Dict = {}
+    for gene_id, d in gene_data.items():
+        gene_data_with_windows[gene_id] = {
+            "gname": d["gname"], "chrom": d["chrom"], "strand": d["strand"],
+            "transcripts": []
+        }
+        for start, end in d["raw"]:
+            strand = d["strand"]
+            tss         = start if strand == "+" else end
             gene_length = max(1, end - start)
-            offset = max(body_offset_min, int(gene_length * body_offset_frac))
-            
+            offset      = max(effective_offset_min, int(gene_length * body_offset_frac))
+
             if strand == "+":
+<<<<<<< Updated upstream
                 body_lo = tss + offset
                 body_hi = end
             else:
@@ -423,25 +550,34 @@ def parse_gtf_file(
                 body_hi = tss - offset
             
             body_lo = max(0, body_lo)
+=======
+                body_lo = min(tss + offset, end)
+                body_hi = end
+            else:
+                body_lo = start
+                body_hi = max(start, tss - offset)
+
+            body_lo  = max(0, body_lo)
+>>>>>>> Stashed changes
             body_len = max(0, body_hi - body_lo)
+            tss_lo   = max(0, tss - tss_window)
+            tss_hi   = tss + tss_window
+
+            gene_data_with_windows[gene_id]["transcripts"].append(
+                (tss_lo, tss_hi, body_lo, body_hi, body_len)
+            )
+
+    # Swap gene_data to the windowed version for the aggregation step below
+    gene_data = gene_data_with_windows
+
+    # ── dummy assignment so the old per-line offset line is no longer needed ─
+    # (kept for clarity; the real offset logic is in Pass 2 above)
+    if False:  # pragma: no cover
+        gene_length = 0
+        offset = max(effective_offset_min, int(gene_length * body_offset_frac))
             
-            tss_lo = max(0, tss - tss_window)
-            tss_hi = tss + tss_window
-            
-            # Store transcript
-            if gene_id not in gene_data:
-                gene_data[gene_id] = {
-                    'gname': gene_name,
-                    'chrom': chrom,
-                    'strand': strand,
-                    'transcripts': []
-                }
-            
-            gene_data[gene_id]['transcripts'].append((tss_lo, tss_hi, body_lo, body_hi, body_len))
-    
-    log("PARSE", f"Processed {line_count:,} GTF lines")
-    log("PARSE", f"Found {feature_count:,} matching features")
-    
+            if strand == "+":
+                body_lo = min(tss + offset, end)  # Clamp: never let body_lo exceed gene end
     # Aggregate transcripts per gene
     # Use LONGEST transcript per gene (by body length) instead of union to avoid
     # huge bogus spans from genes with dispersed transcripts (e.g. chrY PAR).

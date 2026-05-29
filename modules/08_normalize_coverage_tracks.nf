@@ -59,7 +59,6 @@
 //
 // ============================================================================
 
-nextflow.enable.dsl = 2
 
 process normalize_coverage_tracks {
 
@@ -73,7 +72,11 @@ process normalize_coverage_tracks {
              saveAs: { filename ->
                def name = filename instanceof Path ? filename.getFileName().toString() : filename.toString()
                // Skip bedGraphs when output.bedgraph: false (BigWigs sufficient for genome browsers)
+<<<<<<< Updated upstream
                if (params.output?.bedgraph == false && name.endsWith('.bedgraph')) return null
+=======
+               if (params.get('output')?.get('bedgraph')?.toString() == 'false' && name.endsWith('.bedgraph')) return null
+>>>>>>> Stashed changes
                return name
              }
 

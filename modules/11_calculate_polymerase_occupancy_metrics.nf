@@ -55,7 +55,6 @@
 //
 // ============================================================================
 
-nextflow.enable.dsl = 2
 
 process calculate_polymerase_occupancy_metrics {
 

@@ -59,7 +59,6 @@
 //
 // ============================================================================
 
-nextflow.enable.dsl = 2
 
 process preprocess_and_quality_filter_reads {
 
@@ -71,7 +70,11 @@ process preprocess_and_quality_filter_reads {
              mode: params.publish_mode,
              overwrite: true,
              saveAs: { filename ->
+<<<<<<< Updated upstream
                if (params.publish_trimmed_fastq == false) return null  // Skip entire folder to save ~900 MB/sample
+=======
+               if (params.get('publish_trimmed_fastq')?.toString() == 'false') return null  // Skip entire folder to save ~900 MB/sample
+>>>>>>> Stashed changes
                def name = filename instanceof Path ? filename.getFileName().toString() : filename.toString()
                // Only publish processed outputs, NOT the raw input FASTQ files
                // This prevents duplicating large raw FASTQ files in the results folder

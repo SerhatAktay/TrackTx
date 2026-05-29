@@ -42,7 +42,6 @@
 //
 // ============================================================================
 
-nextflow.enable.dsl = 2
 
 process download_genome_annotations {
 

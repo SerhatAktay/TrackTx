@@ -50,7 +50,6 @@
 //
 // ============================================================================
 
-nextflow.enable.dsl = 2
 
 process combine_reports_into_cohort {
 
@@ -68,6 +67,17 @@ process combine_reports_into_cohort {
   // Stage files with sequential names to avoid collisions (like metric_1, metric_2, etc.)
   input:
     path 'report_*.json'
+<<<<<<< Updated upstream
+=======
+    path concordance_tsv
+    // Module 16 outputs — staged here so the landing page can embed/link them.
+    // Files named "NO_FILE" are sentinel placeholders for optional outputs.
+    path qc_multiqc_html
+    path qc_igv_session
+    path qc_runon_tsv
+    path qc_pca_plot
+    path qc_corr_heatmap
+>>>>>>> Stashed changes
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:
@@ -308,241 +318,379 @@ process combine_reports_into_cohort {
   fi
 
   ###########################################################################
-  # 9) CREATE LANDING PAGE
+  # 9) CREATE LANDING PAGE  (Python-generated; embeds run-on data + KPIs)
   ###########################################################################
 
-  echo "COHORT | LANDING | Creating landing page..."
+  echo "COHORT | LANDING | Generating landing page..."
 
   ROOT_DIR="!{params.output_dir}"
   INDEX_HTML="${ROOT_DIR}/index.html"
-  
-  # Relative paths from root
-  COHORT_REL="11_reports/cohort/global_summary.html"
-  REPORTS_REL="reports/"
-  NF_REPORT_REL="nf_report.html"
-  NF_TIMELINE_REL="nf_timeline.html"
-  NF_DAG_REL="nf_dag.png"
-  NF_TRACE_REL="trace/trace.txt"
 
-  cat > "${INDEX_HTML}" <<'LANDINGEOF'
-<!DOCTYPE html>
+  # Resolve staged module-16 file paths (sentinel "NO_FILE" = optional/absent)
+  QC_MULTIQC="!{qc_multiqc_html}"
+  QC_IGV="!{qc_igv_session}"
+  QC_RUNON="!{qc_runon_tsv}"
+  QC_PCA="!{qc_pca_plot}"
+  QC_CORR="!{qc_corr_heatmap}"
+
+  # Write the generator to a temp file (avoids nested-heredoc issues)
+  GEN_PY="/tmp/gen_landing_$$.py"
+  cat > "${GEN_PY}" <<'PYEOF'
+#!/usr/bin/env python3
+"""TrackTx landing-page generator — called from module 15 shell."""
+import csv, json, os, sys
+from datetime import datetime, timezone
+
+ROOT_DIR  = os.environ["ROOT_DIR"]
+INDEX_OUT = os.path.join(ROOT_DIR, "index.html")
+VER       = os.environ.get("PIPELINE_VERSION", "dev")
+RUN_NAME  = os.environ.get("RUN_NAME",  "unnamed")
+DURATION  = os.environ.get("DURATION",  "unknown")
+PROFILE   = os.environ.get("PROFILE",   "unknown")
+TIMESTAMP = os.environ.get("TIMESTAMP", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"))
+
+QC_MULTIQC = os.environ.get("QC_MULTIQC", "")
+QC_IGV     = os.environ.get("QC_IGV",     "")
+QC_RUNON   = os.environ.get("QC_RUNON",   "")
+QC_PCA     = os.environ.get("QC_PCA",     "")
+QC_CORR    = os.environ.get("QC_CORR",    "")
+
+def present(p):
+    return bool(p) and p != "NO_FILE" and os.path.isfile(p) and os.path.getsize(p) > 0
+
+# ── KPIs from cohort JSON ────────────────────────────────────────────────────
+kpis = dict(n_samples="?", n_conditions="?", conditions=[], median_div="?", median_pi="?")
+cj   = "global_summary.json"
+if os.path.isfile(cj):
+    try:
+        data    = json.load(open(cj))
+        samples = data.get("samples", [])
+        kpis["n_samples"]    = len(samples)
+        conds = sorted(set(s.get("condition","?") for s in samples))
+        kpis["n_conditions"] = len(conds)
+        kpis["conditions"]   = conds
+        div_v = sorted(x for s in samples
+                       for x in [s.get("divergent_regions", s.get("div_regions"))]
+                       if x is not None)
+        if div_v:
+            kpis["median_div"] = f"{div_v[len(div_v)//2]:,}"
+        pi_v = sorted(x for s in samples
+                      for x in [s.get("pi_median_len_norm", s.get("pi_median"))]
+                      if x is not None)
+        if pi_v:
+            kpis["median_pi"] = f"{pi_v[len(pi_v)//2]:.2f}"
+    except Exception as e:
+        print(f"WARNING: cohort JSON parse error: {e}", file=sys.stderr)
+
+# ── Run-on efficiency table ──────────────────────────────────────────────────
+def runon_html():
+    if not present(QC_RUNON):
+        return "<p class='unavail'>Run-on efficiency data not available.</p>"
+    try:
+        with open(QC_RUNON, newline="") as f:
+            rows = list(csv.DictReader(f, delimiter="\t"))
+        if not rows:
+            return "<p class='unavail'>Run-on efficiency file is empty.</p>"
+        hdrs = list(rows[0].keys())
+
+        def badge(v):
+            il = v.lower()
+            cls = ("badge-excellent" if "excellent" in il else
+                   "badge-good"      if "good"      in il else
+                   "badge-moderate"  if "moderate"  in il else
+                   "badge-poor"      if "poor"      in il else "")
+            return f"<span class='badge {cls}'>{v}</span>"
+
+        th  = "".join(f"<th>{h.replace('_',' ').title()}</th>" for h in hdrs)
+        trs = []
+        for row in rows:
+            cells = []
+            for h in hdrs:
+                v = row.get(h, "")
+                if h == "interpretation":
+                    cells.append(f"<td>{badge(v)}</td>")
+                elif h in ("ratio_5p_3p","efficiency_5p_3p","run_on_ratio"):
+                    try:    cells.append(f"<td><strong>{float(v):.3f}</strong></td>")
+                    except: cells.append(f"<td>{v}</td>")
+                else:
+                    cells.append(f"<td>{v}</td>")
+            trs.append("<tr>" + "".join(cells) + "</tr>")
+        return (f"<div class='table-wrap'><table class='data-table'>"
+                f"<thead><tr>{th}</tr></thead>"
+                f"<tbody>{''.join(trs)}</tbody></table></div>")
+    except Exception as e:
+        return f"<p class='unavail'>Could not read run-on TSV: {e}</p>"
+
+# ── Link card helper ─────────────────────────────────────────────────────────
+def card(href, icon, title, desc, ok=True):
+    if ok:
+        return (f"<a href='{href}' class='link-card'>"
+                f"<div class='card-icon'>{icon}</div>"
+                f"<div class='card-body'><h3>{title}</h3><p>{desc}</p></div>"
+                f"</a>")
+    return (f"<div class='link-card unavailable'>"
+            f"<div class='card-icon'>{icon}</div>"
+            f"<div class='card-body'>"
+            f"<h3>{title} <span class='card-badge'>not available</span></h3>"
+            f"<p>{desc}</p></div></div>")
+
+cond_pills = "".join(f"<span class='cond-pill'>{c}</span>"
+                     for c in kpis["conditions"])
+cond_row   = (f"<div class='conditions-row'>{cond_pills}</div>"
+              if kpis["conditions"] else "")
+
+html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TrackTx Pipeline Results</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>TrackTx &middot; {RUN_NAME}</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, 
-                   "Helvetica Neue", Arial, sans-serif;
-      line-height: 1.6;
-      color: #333;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      min-height: 100vh;
-      padding: 2rem;
-    }
-    .container {
-      max-width: 900px;
-      margin: 0 auto;
-      background: white;
-      border-radius: 12px;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-      overflow: hidden;
-    }
-    .header {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
-      padding: 3rem 2rem;
-      text-align: center;
-    }
-    .header h1 {
-      font-size: 2.5rem;
-      margin-bottom: 0.5rem;
-      font-weight: 700;
-    }
-    .header p {
-      font-size: 1.1rem;
-      opacity: 0.9;
-    }
-    .content {
-      padding: 2rem;
-    }
-    .section {
-      margin-bottom: 2.5rem;
-    }
-    .section h2 {
-      font-size: 1.5rem;
-      color: #667eea;
-      margin-bottom: 1rem;
-      padding-bottom: 0.5rem;
-      border-bottom: 2px solid #e0e0e0;
-    }
-    .link-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-      gap: 1rem;
-      margin-top: 1rem;
-    }
-    .link-card {
-      display: block;
-      padding: 1.5rem;
-      background: #f8f9fa;
-      border: 2px solid #e0e0e0;
-      border-radius: 8px;
-      text-decoration: none;
-      color: inherit;
-      transition: all 0.3s ease;
-    }
-    .link-card:hover {
-      border-color: #667eea;
-      background: #f0f4ff;
-      transform: translateY(-2px);
-      box-shadow: 0 4px 12px rgba(102,126,234,0.15);
-    }
-    .link-card h3 {
-      font-size: 1.1rem;
-      color: #667eea;
-      margin-bottom: 0.5rem;
-    }
-    .link-card p {
-      font-size: 0.9rem;
-      color: #666;
-    }
-    .meta {
-      background: #f8f9fa;
-      padding: 1.5rem;
-      border-radius: 8px;
-      font-size: 0.9rem;
-      color: #666;
-    }
-    .meta-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 1rem;
-    }
-    .meta-item {
-      display: flex;
-      flex-direction: column;
-    }
-    .meta-label {
-      font-weight: 600;
-      color: #333;
-      margin-bottom: 0.25rem;
-    }
-    .footer {
-      text-align: center;
-      padding: 1.5rem;
-      color: #999;
-      font-size: 0.85rem;
-      border-top: 1px solid #e0e0e0;
-    }
+    :root{{--bg:#0f1117;--surface:#1a1d27;--surface2:#232636;--border:#2e3248;
+          --accent:#6c8ef5;--accent2:#4ecdc4;--text:#e8eaf0;--muted:#7b82a0;}}
+    *{{margin:0;padding:0;box-sizing:border-box;}}
+    body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Inter",sans-serif;
+          background:var(--bg);color:var(--text);line-height:1.6;min-height:100vh;}}
+    /* Hero */
+    .hero{{background:linear-gradient(135deg,#1a1d27 0%,#0f1117 60%);
+           border-bottom:1px solid var(--border);padding:3rem 2rem 2.5rem;text-align:center;}}
+    .hero-eyebrow{{font-size:.75rem;letter-spacing:.15em;text-transform:uppercase;
+                   color:var(--accent);margin-bottom:.75rem;}}
+    .hero h1{{font-size:2.4rem;font-weight:700;
+              background:linear-gradient(90deg,var(--accent),var(--accent2));
+              -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+              background-clip:text;margin-bottom:.5rem;}}
+    .hero-meta{{color:var(--muted);font-size:.9rem;}}
+    .hero-meta span{{margin:0 .5rem;}}
+    /* KPI bar */
+    .kpi-bar{{display:flex;justify-content:center;flex-wrap:wrap;
+              background:var(--surface);border-bottom:1px solid var(--border);}}
+    .kpi{{flex:1;min-width:140px;padding:1.25rem 1.5rem;text-align:center;
+          border-right:1px solid var(--border);}}
+    .kpi:last-child{{border-right:none;}}
+    .kpi-value{{font-size:2rem;font-weight:700;color:var(--accent);
+                line-height:1;margin-bottom:.3rem;}}
+    .kpi-label{{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;
+                color:var(--muted);}}
+    /* Conditions */
+    .conditions-row{{display:flex;flex-wrap:wrap;gap:.5rem;justify-content:center;
+                     padding:1rem 2rem;background:var(--surface);
+                     border-bottom:1px solid var(--border);}}
+    .cond-pill{{background:var(--surface2);border:1px solid var(--border);
+                border-radius:999px;padding:.2rem .85rem;font-size:.8rem;
+                color:var(--accent2);}}
+    /* Layout */
+    .main{{max-width:1100px;margin:0 auto;padding:2.5rem 2rem;}}
+    /* Section headers */
+    .section-header{{display:flex;align-items:center;gap:.75rem;
+                     margin:2.5rem 0 1.25rem;}}
+    .section-header h2{{font-size:1rem;font-weight:600;letter-spacing:.08em;
+                        text-transform:uppercase;color:var(--muted);white-space:nowrap;}}
+    .section-header::after{{content:"";flex:1;height:1px;background:var(--border);}}
+    /* Card grid */
+    .card-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:1rem;}}
+    .link-card{{display:flex;align-items:flex-start;gap:1rem;padding:1.25rem;
+                background:var(--surface);border:1px solid var(--border);
+                border-radius:10px;text-decoration:none;color:var(--text);
+                transition:border-color .2s,transform .2s,box-shadow .2s;}}
+    .link-card:hover{{border-color:var(--accent);transform:translateY(-2px);
+                      box-shadow:0 6px 20px rgba(108,142,245,.15);}}
+    .link-card.unavailable{{opacity:.42;cursor:not-allowed;}}
+    .card-icon{{font-size:1.6rem;line-height:1;flex-shrink:0;}}
+    .card-body h3{{font-size:.95rem;font-weight:600;color:var(--accent);margin-bottom:.25rem;}}
+    .link-card.unavailable .card-body h3{{color:var(--muted);}}
+    .card-body p{{font-size:.82rem;color:var(--muted);line-height:1.4;}}
+    .card-badge{{display:inline-block;font-size:.65rem;font-weight:600;
+                 text-transform:uppercase;letter-spacing:.05em;
+                 background:var(--surface2);color:var(--muted);
+                 border:1px solid var(--border);border-radius:4px;
+                 padding:.1rem .4rem;vertical-align:middle;margin-left:.4rem;}}
+    /* Run-on section */
+    .runon-section{{background:var(--surface);border:1px solid var(--border);
+                    border-radius:10px;padding:1.5rem;}}
+    .runon-header{{display:flex;align-items:center;gap:.75rem;margin-bottom:1.25rem;}}
+    .runon-header h3{{font-size:1rem;font-weight:600;}}
+    .runon-header p{{font-size:.82rem;color:var(--muted);margin-left:auto;}}
+    /* Table */
+    .table-wrap{{overflow-x:auto;}}
+    .data-table{{width:100%;border-collapse:collapse;font-size:.875rem;}}
+    .data-table th{{text-align:left;padding:.6rem 1rem;background:var(--surface2);
+                    color:var(--muted);font-size:.75rem;font-weight:600;
+                    letter-spacing:.06em;text-transform:uppercase;
+                    border-bottom:1px solid var(--border);}}
+    .data-table td{{padding:.7rem 1rem;border-bottom:1px solid var(--border);}}
+    .data-table tr:last-child td{{border-bottom:none;}}
+    .data-table tr:hover td{{background:var(--surface2);}}
+    /* Badges */
+    .badge{{display:inline-block;font-size:.75rem;font-weight:600;
+            padding:.2rem .65rem;border-radius:999px;white-space:nowrap;}}
+    .badge-excellent{{background:rgba(76,175,130,.18);color:#4caf82;}}
+    .badge-good{{background:rgba(108,142,245,.18);color:#6c8ef5;}}
+    .badge-moderate{{background:rgba(245,197,66,.18);color:#f5c542;}}
+    .badge-poor{{background:rgba(224,90,90,.18);color:#e05a5a;}}
+    .unavail{{color:var(--muted);font-size:.9rem;padding:.75rem 0;}}
+    /* Info grid */
+    .info-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:1rem;}}
+    .info-item{{background:var(--surface);border:1px solid var(--border);
+                border-radius:8px;padding:1rem 1.25rem;}}
+    .info-label{{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;
+                 color:var(--muted);margin-bottom:.35rem;}}
+    .info-value{{font-size:.95rem;font-weight:600;word-break:break-all;}}
+    /* Footer */
+    .footer{{text-align:center;padding:2rem;color:var(--muted);font-size:.8rem;
+             border-top:1px solid var(--border);margin-top:3rem;}}
+    code{{background:var(--surface2);padding:.1rem .35rem;border-radius:3px;
+          font-size:.85em;color:var(--accent2);}}
   </style>
 </head>
 <body>
-  <div class="container">
-    <div class="header">
-      <h1>TrackTx Pipeline Results</h1>
-      <p>PRO-seq Analysis Pipeline</p>
-    </div>
-    
-    <div class="content">
-      <div class="section">
-        <h2>Analysis Reports</h2>
-        <div class="link-grid">
-          <a href="COHORT_REL" class="link-card">
-            <h3>📊 Cohort Summary</h3>
-            <p>Aggregated metrics across all samples</p>
-          </a>
-          <a href="REPORTS_REL" class="link-card">
-            <h3>📄 Sample Reports</h3>
-            <p>Individual per-sample analysis reports</p>
-          </a>
-        </div>
-      </div>
-
-      <div class="section">
-        <h2>Pipeline Reports</h2>
-        <p style="font-size:0.9rem;color:var(--muted);margin-bottom:1rem;">Optional: generated with -with-report, -with-timeline, -with-dag. Links may 404 if not used.</p>
-        <div class="link-grid">
-          <a href="NF_REPORT_REL" class="link-card">
-            <h3>📈 Execution Report</h3>
-            <p>Nextflow execution summary</p>
-          </a>
-          <a href="NF_TIMELINE_REL" class="link-card">
-            <h3>⏱️ Timeline</h3>
-            <p>Task execution timeline</p>
-          </a>
-          <a href="NF_DAG_REL" class="link-card">
-            <h3>🔀 Workflow DAG</h3>
-            <p>Pipeline execution graph</p>
-          </a>
-          <a href="NF_TRACE_REL" class="link-card">
-            <h3>📝 Trace Log</h3>
-            <p>Detailed execution trace</p>
-          </a>
-        </div>
-      </div>
-
-      <div class="section">
-        <h2>Pipeline Information</h2>
-        <div class="meta">
-          <div class="meta-grid">
-            <div class="meta-item">
-              <span class="meta-label">Pipeline</span>
-              <span>TrackTx PRO-seq</span>
-            </div>
-            <div class="meta-item">
-              <span class="meta-label">Version</span>
-              <span>PIPELINE_VERSION</span>
-            </div>
-            <div class="meta-item">
-              <span class="meta-label">Run Name</span>
-              <span>RUN_NAME</span>
-            </div>
-            <div class="meta-item">
-              <span class="meta-label">Duration</span>
-              <span>DURATION</span>
-            </div>
-            <div class="meta-item">
-              <span class="meta-label">Profile</span>
-              <span>PROFILE</span>
-            </div>
-            <div class="meta-item">
-              <span class="meta-label">Completed</span>
-              <span>TIMESTAMP</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="footer">
-      Generated by TrackTx Pipeline • TIMESTAMP
+  <div class="hero">
+    <div class="hero-eyebrow">TrackTx PRO-seq Analysis Pipeline</div>
+    <h1>Run Results</h1>
+    <div class="hero-meta">
+      <span>&#128203; {RUN_NAME}</span>
+      <span>&middot;</span>
+      <span>v{VER}</span>
+      <span>&middot;</span>
+      <span>&#9200; {DURATION}</span>
+      <span>&middot;</span>
+      <span>&#128197; {TIMESTAMP}</span>
     </div>
   </div>
+
+  <div class="kpi-bar">
+    <div class="kpi">
+      <div class="kpi-value">{kpis["n_samples"]}</div>
+      <div class="kpi-label">Samples</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value">{kpis["n_conditions"]}</div>
+      <div class="kpi-label">Conditions</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value">{kpis["median_div"]}</div>
+      <div class="kpi-label">Median Divergent Sites</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value">{kpis["median_pi"]}</div>
+      <div class="kpi-label">Median Pausing Index</div>
+    </div>
+  </div>
+
+  {cond_row}
+
+  <div class="main">
+
+    <div class="section-header"><h2>Analysis Reports</h2></div>
+    <div class="card-grid">
+      {card("11_reports/cohort/global_summary.html","&#128202;","Cohort Summary",
+            "Aggregated metrics, QC charts, and Pol&nbsp;II pausing across all samples")}
+      {card("12_cohort_qc/multiqc/multiqc_report.html","&#128300;","MultiQC Report",
+            "Alignment rates, trimming stats, and library QC for all samples",
+            present(QC_MULTIQC))}
+    </div>
+
+    <div class="section-header"><h2>Signal QC</h2></div>
+    <div class="card-grid">
+      {card("12_cohort_qc/deeptools/pca_plot.pdf","&#128201;","PCA Plot",
+            "Sample clustering from genome-wide 3&prime; BigWig signal (deepTools)",
+            present(QC_PCA))}
+      {card("12_cohort_qc/deeptools/correlation_heatmap.pdf","&#128279;","Correlation Heatmap",
+            "Pearson correlation between all samples (deepTools)",
+            present(QC_CORR))}
+      {card("12_cohort_qc/igv_session.xml","&#129520;","IGV Session",
+            "All tracks colour-coded by condition &mdash; drag into IGV to open",
+            present(QC_IGV))}
+    </div>
+
+    <div class="section-header"><h2>Per-Sample Reports</h2></div>
+    <div class="card-grid">
+      {card("11_reports/","&#128196;","Sample Reports",
+            "Individual HTML reports: divergent TX sites, Pol&nbsp;II metrics, region composition")}
+    </div>
+
+    <div class="section-header"><h2>Run-on Efficiency</h2></div>
+    <div class="runon-section">
+      <div class="runon-header">
+        <span style="font-size:1.4rem">&#9879;</span>
+        <h3>5&prime; / 3&prime; Signal Ratio</h3>
+        <p>Measures nascent RNA synthesis quality over gene bodies &ge;&thinsp;10&thinsp;kb</p>
+      </div>
+      {runon_html()}
+    </div>
+
+    <div class="section-header"><h2>Pipeline Execution</h2></div>
+    <p style="color:var(--muted);font-size:.82rem;margin-bottom:1rem;">
+      Generated with <code>-with-report</code>, <code>-with-timeline</code>,
+      <code>-with-dag</code>. Links may be unavailable if flags were not used.
+    </p>
+    <div class="card-grid">
+      {card("nf_report.html","&#128200;","Execution Report","CPU, memory, and I/O usage per task")}
+      {card("nf_timeline.html","&#9200;","Timeline","Task execution timeline")}
+      {card("nf_dag.png","&#128256;","Workflow DAG","Pipeline execution graph")}
+      {card("trace/trace.txt","&#128221;","Trace Log","Detailed per-process execution log")}
+    </div>
+
+    <div class="section-header"><h2>Pipeline Information</h2></div>
+    <div class="info-grid">
+      <div class="info-item">
+        <div class="info-label">Pipeline</div>
+        <div class="info-value">TrackTx PRO-seq</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Version</div>
+        <div class="info-value">{VER}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Run Name</div>
+        <div class="info-value">{RUN_NAME}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Duration</div>
+        <div class="info-value">{DURATION}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Profile</div>
+        <div class="info-value">{PROFILE}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Completed</div>
+        <div class="info-value">{TIMESTAMP}</div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    TrackTx PRO-seq Analysis Pipeline &nbsp;&middot;&nbsp; {TIMESTAMP}
+  </div>
 </body>
-</html>
-LANDINGEOF
+</html>"""
 
-  # Substitute variables
-  sed -i.bak \
-    -e "s|COHORT_REL|${COHORT_REL}|g" \
-    -e "s|REPORTS_REL|${REPORTS_REL}|g" \
-    -e "s|NF_REPORT_REL|${NF_REPORT_REL}|g" \
-    -e "s|NF_TIMELINE_REL|${NF_TIMELINE_REL}|g" \
-    -e "s|NF_DAG_REL|${NF_DAG_REL}|g" \
-    -e "s|NF_TRACE_REL|${NF_TRACE_REL}|g" \
-    -e "s|PIPELINE_VERSION|${PIPELINE_VERSION}|g" \
-    -e "s|RUN_NAME|${RUN_NAME}|g" \
-    -e "s|DURATION|${DURATION}|g" \
-    -e "s|PROFILE|${PROFILE}|g" \
-    -e "s|TIMESTAMP|${TIMESTAMP}|g" \
-    "${INDEX_HTML}"
-  
-  rm -f "${INDEX_HTML}.bak"
+os.makedirs(ROOT_DIR, exist_ok=True)
+with open(INDEX_OUT, "w") as f:
+    f.write(html)
+print(f"Landing page written: {INDEX_OUT}")
+PYEOF
 
-  echo "COHORT | LANDING | Landing page created: ${INDEX_HTML}"
+  # Run the generator, passing all values as environment variables
+  ROOT_DIR="${ROOT_DIR}" \
+  PIPELINE_VERSION="${PIPELINE_VERSION}" \
+  RUN_NAME="${RUN_NAME}" \
+  DURATION="${DURATION}" \
+  PROFILE="${PROFILE}" \
+  TIMESTAMP="${TIMESTAMP}" \
+  QC_MULTIQC="${QC_MULTIQC}" \
+  QC_IGV="${QC_IGV}" \
+  QC_RUNON="${QC_RUNON}" \
+  QC_PCA="${QC_PCA}" \
+  QC_CORR="${QC_CORR}" \
+  ${PYTHON_CMD} "${GEN_PY}" || \
+    echo "COHORT | WARNING | Landing page generation failed (check Python errors above)"
+
+  rm -f "${GEN_PY}"
+
+  echo "COHORT | LANDING | Landing page: ${INDEX_HTML}"
 
   ###########################################################################
   # 10) CREATE README
