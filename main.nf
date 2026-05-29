@@ -233,7 +233,7 @@ Paths are relative to: ${projectDir}"""
     log.info "-".multiply(80)
   }
 
-  download_genome_annotations(channel.value(customAnnotationFile))
+  download_genome_annotations()
 
   def gtf_ch   = download_genome_annotations.out.gtf
   def genes_ch = download_genome_annotations.out.genes
@@ -643,7 +643,7 @@ Paths are relative to: ${projectDir}"""
       tuple(sid, p3, n3, p5, n5, ap3, an3, ap5, an5, c, t, r, cm, genes)
     }
 
-  normalize_coverage_tracks(norm_input_ch, genome_fa_ch, tes_ch)
+  normalize_coverage_tracks(norm_input_ch, genome_fa_ch)
 
   def norm_tracks_ch  = normalize_coverage_tracks.out.norm_tuple
   def norm_factors_ch = norm_tracks_ch.map { sid, p3, n3, nf, c, t, r ->
