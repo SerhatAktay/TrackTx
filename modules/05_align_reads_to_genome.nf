@@ -254,7 +254,7 @@ PYEND
   mkdir -p bt2_index
 
   # Stage genome index
-  GENOME_INDEX_LIST='!{(genome_bt2 instanceof List) ? genome_bt2.collect{it.toString()}.join(' ') : genome_bt2.toString()}'
+  GENOME_INDEX_LIST='!{(genome_bt2 instanceof List) ? genome_bt2.collect{ f -> f.toString() }.join(' ') : genome_bt2.toString()}'
   if [[ -n "${GENOME_INDEX_LIST}" ]]; then
     # shellcheck disable=SC2086
     cp -f ${GENOME_INDEX_LIST} bt2_index/
@@ -263,7 +263,7 @@ PYEND
   GENOME_IDX="bt2_index/${GENOME_ID}"
 
   # Stage spike-in index (if provided)
-  SPIKE_INDEX_LIST='!{(spike_bt2 instanceof List) ? spike_bt2.collect{it.toString()}.join(' ') : spike_bt2.toString()}'
+  SPIKE_INDEX_LIST='!{(spike_bt2 instanceof List) ? spike_bt2.collect{ f -> f.toString() }.join(' ') : spike_bt2.toString()}'
   SPIKE_IDX=""
   if [[ -n "${SPIKE_ID}" && "${SPIKE_ID}" != "none" && -n "${SPIKE_INDEX_LIST}" ]]; then
     # Verify all spike-in index files exist before copying (helps diagnose staging/disk-space issues)

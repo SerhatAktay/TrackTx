@@ -48,24 +48,24 @@ def resolveLocalPath(path) {
 // Paths inlined (def MOD = ... was a top-level statement, not allowed in strict)
 // ============================================================================
 
-include { download_genome_annotations                               } from "${projectDir}/modules/01_download_genome_annotations.nf"
-include { download_sra_samples                                      } from "${projectDir}/modules/02_download_sra_samples.nf"
-include { preprocess_and_quality_filter_reads                       } from "${projectDir}/modules/03_preprocess_and_quality_filter_reads.nf"
-include { download_genome_and_build_alignment_index as build_index  } from "${projectDir}/modules/04_download_genome_and_build_alignment_index.nf"
-include { download_genome_and_build_alignment_index as spike_index  } from "${projectDir}/modules/04_download_genome_and_build_alignment_index.nf"
-include { align_reads_to_genome                                     } from "${projectDir}/modules/05_align_reads_to_genome.nf"
-include { check_and_merge_replicates                                } from "${projectDir}/modules/05b_check_and_merge_replicates.nf"
-include { generate_coverage_tracks                                  } from "${projectDir}/modules/06_generate_coverage_tracks.nf"
-include { quantify_reads_per_gene                                   } from "${projectDir}/modules/07_quantify_reads_per_gene.nf"
-include { normalize_coverage_tracks                                 } from "${projectDir}/modules/08_normalize_coverage_tracks.nf"
-include { detect_divergent_transcription                            } from "${projectDir}/modules/09_detect_divergent_transcription.nf"
-include { assign_signal_to_functional_regions                       } from "${projectDir}/modules/10_assign_signal_to_functional_regions.nf"
-include { calculate_polymerase_occupancy_metrics                    } from "${projectDir}/modules/11_calculate_polymerase_occupancy_metrics.nf"
-include { summarize_polymerase_metrics                              } from "${projectDir}/modules/12_summarize_polymerase_metrics.nf"
-include { quality_control_aligned_reads                             } from "${projectDir}/modules/13_quality_control_aligned_reads.nf"
-include { generate_per_sample_reports                               } from "${projectDir}/modules/14_generate_per_sample_reports.nf"
-include { combine_reports_into_cohort                               } from "${projectDir}/modules/15_combine_reports_into_cohort.nf"
-include { cohort_qc_and_viz                                         } from "${projectDir}/modules/16_cohort_qc_and_viz.nf"
+include { download_genome_annotations                               } from './modules/01_download_genome_annotations.nf'
+include { download_sra_samples                                      } from './modules/02_download_sra_samples.nf'
+include { preprocess_and_quality_filter_reads                       } from './modules/03_preprocess_and_quality_filter_reads.nf'
+include { download_genome_and_build_alignment_index as build_index  } from './modules/04_download_genome_and_build_alignment_index.nf'
+include { download_genome_and_build_alignment_index as spike_index  } from './modules/04_download_genome_and_build_alignment_index.nf'
+include { align_reads_to_genome                                     } from './modules/05_align_reads_to_genome.nf'
+include { check_and_merge_replicates                                } from './modules/05b_check_and_merge_replicates.nf'
+include { generate_coverage_tracks                                  } from './modules/06_generate_coverage_tracks.nf'
+include { quantify_reads_per_gene                                   } from './modules/07_quantify_reads_per_gene.nf'
+include { normalize_coverage_tracks                                 } from './modules/08_normalize_coverage_tracks.nf'
+include { detect_divergent_transcription                            } from './modules/09_detect_divergent_transcription.nf'
+include { assign_signal_to_functional_regions                       } from './modules/10_assign_signal_to_functional_regions.nf'
+include { calculate_polymerase_occupancy_metrics                    } from './modules/11_calculate_polymerase_occupancy_metrics.nf'
+include { summarize_polymerase_metrics                              } from './modules/12_summarize_polymerase_metrics.nf'
+include { quality_control_aligned_reads                             } from './modules/13_quality_control_aligned_reads.nf'
+include { generate_per_sample_reports                               } from './modules/14_generate_per_sample_reports.nf'
+include { combine_reports_into_cohort                               } from './modules/15_combine_reports_into_cohort.nf'
+include { cohort_qc_and_viz                                         } from './modules/16_cohort_qc_and_viz.nf'
 
 // ============================================================================
 // MAIN WORKFLOW
@@ -164,21 +164,21 @@ Debug mode:       ${params.debug ?: false}
   }
 
   def samplesheetLines = samplesheetFile.readLines()
-  def dataRows         = samplesheetLines.drop(1).findAll { it.trim() }
+  def dataRows         = samplesheetLines.drop(1).findAll { row -> row.trim() }
   if (dataRows.isEmpty()) {
     error "PIPELINE | ERROR | Samplesheet has no data rows. Expected format: sample,condition,timepoint,replicate,file1,file2"
   }
 
   // Fail-fast: validate input files exist for local samples
   if (params.sample_source != 'srr') {
-    def header   = samplesheetLines[0]?.split(',')?.collect { it.trim() }
-    def sampleIdx = header?.findIndexOf { it?.toLowerCase() == 'sample' }
-    def file1Idx  = header?.findIndexOf { it?.toLowerCase() == 'file1' }
-    def file2Idx  = header?.findIndexOf { it?.toLowerCase() == 'file2' }
+    def header   = samplesheetLines[0]?.split(',')?.collect { col -> col.trim() }
+    def sampleIdx = header?.findIndexOf { col -> col?.toLowerCase() == 'sample' }
+    def file1Idx  = header?.findIndexOf { col -> col?.toLowerCase() == 'file1' }
+    def file2Idx  = header?.findIndexOf { col -> col?.toLowerCase() == 'file2' }
     if (sampleIdx != null && sampleIdx >= 0 && file1Idx != null && file1Idx >= 0) {
       def missing = []
       dataRows.eachWithIndex { line, i ->
-        def cols   = line.split(',', -1).collect { it?.trim() }
+        def cols   = line.split(',', -1).collect { col -> col?.trim() }
         def sample = cols.size() > sampleIdx ? cols[sampleIdx] : ''
         def resolve = { p ->
           if (!p?.trim()) return null
