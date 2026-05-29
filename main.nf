@@ -71,7 +71,7 @@ include { cohort_qc_and_viz                                         } from "${pr
 // MAIN WORKFLOW
 // ============================================================================
 
-workflow TrackTx {
+workflow {
 
   // ── Nested param defaults (complex/conditional — must live inside workflow) ─
 
@@ -87,7 +87,7 @@ workflow TrackTx {
     ════════════════════════════════════════════════════════════════════════
 
     Usage:
-      nextflow run main.nf -entry TrackTx -profile docker \\
+      nextflow run main.nf -profile docker \\
         --samplesheet samples.csv \\
         --reference_genome hg38 \\
         --output_dir results/

@@ -1228,7 +1228,6 @@ main() {
 
     local CMD=(
         nextflow run main.nf
-        -entry TrackTx
         -profile "$PROFILE"
         --samplesheet "$SAMPLESHEET"
     )
