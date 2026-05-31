@@ -56,7 +56,7 @@ process download_genome_and_build_alignment_index {
   // Optional: Publish lightweight reference files to results (disabled by default to save space)
   // Reference files remain available in assets/ for pipeline use
   // Enable with: --publish_references true
-  publishDir "${params.output_dir}/00_references/${genome_id}",
+  publishDir { "${params.output_dir}/00_references/${genome_id}" },
     mode: params.publish_mode,
     enabled: { params.get('publish_references', false) },
     saveAs: { filename ->
