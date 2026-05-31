@@ -56,10 +56,9 @@ process download_genome_and_build_alignment_index {
   // Optional: Publish lightweight reference files to results (disabled by default to save space)
   // Reference files remain available in assets/ for pipeline use
   // Enable with: --publish_references true
-  publishDir { [
-    path: "${params.output_dir}/00_references/${genome_id}",
+  publishDir "${params.output_dir}/00_references/${genome_id}",
     mode: params.publish_mode,
-    enabled: params.get('publish_references', false),
+    enabled: { params.get('publish_references', false) },
     saveAs: { filename ->
       def name = filename instanceof Path ? filename.getFileName().toString() : filename.toString()
       // Exclude .bt2 index files from publishing (keep in assets only)
@@ -68,7 +67,6 @@ process download_genome_and_build_alignment_index {
       }
       return name
     }
-  ] }
 
   // ── Inputs ────────────────────────────────────────────────────────────────
   input:
