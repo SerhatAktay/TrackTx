@@ -66,7 +66,7 @@ process download_genome_annotations {
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:
-    path("${params.reference_genome}.gtf")
+    path("${params.reference_genome}.gtf"),       emit: gtf
     path("${params.reference_genome}.genes.tsv"), emit: genes
     path("${params.reference_genome}.tss.bed"),   emit: tss
     path("${params.reference_genome}.tes.bed"),   emit: tes
