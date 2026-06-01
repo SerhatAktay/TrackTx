@@ -311,6 +311,14 @@ process download_sra_samples {
     fi
   done
 
+  # Single-end: no R2 exists, but the output tuple requires ${SRR}_R2.fastq.
+  # Emit an empty placeholder so the output binds and the channel emits;
+  # downstream (clean_fastq_with_r2) swaps an empty R2 for the NO_R2 sentinel.
+  if [[ ! -e "${SRR}_R2.fastq" && ! -e "${SRR}_R2.fastq.gz" ]]; then
+    : > "${SRR}_R2.fastq"
+    echo "SRR | OUTPUT | Single-end input — created empty ${SRR}_R2.fastq placeholder"
+  fi
+
   ###########################################################################
   # 6) VALIDATE OUTPUT FILES
   ###########################################################################
@@ -380,27 +388,26 @@ process download_sra_samples {
 
   echo "SRR | CHECKSUM | Generating checksums..."
 
-  # Generate checksum for R1
-  if command -v md5sum >/dev/null 2>&1; then
-    md5sum "${R1_FILE}" > "${R1_FILE}.md5"
-    echo "SRR | CHECKSUM | ${R1_FILE}.md5 created"
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "${R1_FILE}" > "${R1_FILE}.sha256"
-    echo "SRR | CHECKSUM | ${R1_FILE}.sha256 created"
-  else
-    echo "SRR | CHECKSUM | WARNING: No checksum tool available (md5sum/shasum)"
-  fi
-
-  # Generate checksum for R2 if exists
-  if [[ -n "${R2_FILE}" && -f "${R2_FILE}" ]]; then
+  # Generate both md5 and sha256 independently so the declared optional
+  # outputs (*.md5 and *.sha256) always match what is produced.
+  gen_checksums() {
+    local f="$1"
+    [[ -z "${f}" || ! -f "${f}" ]] && return 0
+    local made=0
     if command -v md5sum >/dev/null 2>&1; then
-      md5sum "${R2_FILE}" > "${R2_FILE}.md5"
-      echo "SRR | CHECKSUM | ${R2_FILE}.md5 created"
-    elif command -v shasum >/dev/null 2>&1; then
-      shasum -a 256 "${R2_FILE}" > "${R2_FILE}.sha256"
-      echo "SRR | CHECKSUM | ${R2_FILE}.sha256 created"
+      md5sum "${f}" > "${f}.md5"; echo "SRR | CHECKSUM | ${f}.md5 created"; made=1
     fi
-  fi
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum "${f}" > "${f}.sha256"; echo "SRR | CHECKSUM | ${f}.sha256 created"; made=1
+    elif command -v shasum >/dev/null 2>&1; then
+      shasum -a 256 "${f}" > "${f}.sha256"; echo "SRR | CHECKSUM | ${f}.sha256 created"; made=1
+    fi
+    [[ ${made} -eq 0 ]] && echo "SRR | CHECKSUM | WARNING: No checksum tool available (md5sum/sha256sum/shasum)"
+    return 0
+  }
+
+  gen_checksums "${R1_FILE}"
+  gen_checksums "${R2_FILE}"
 
   ###########################################################################
   # 8) CREATE README
