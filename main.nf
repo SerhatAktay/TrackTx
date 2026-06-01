@@ -222,6 +222,7 @@ Paths are relative to: ${projectDir}"""
 
   def assetsDir0  = params.assets_dir ?: "${projectDir}/assets"
   def noGtfPath0  = "${assetsDir0}/NO_GTF"
+  new File(assetsDir0).mkdirs()
   if (!new File(noGtfPath0).exists()) new File(noGtfPath0).text = ''
   def customAnnotationFile = (params.gtf_path?.trim())
     ? file(params.gtf_path, checkIfExists: true)
