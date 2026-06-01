@@ -81,7 +81,7 @@ process quantify_reads_per_gene {
   export LC_ALL=C
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > quantify_reads_per_gene.log
+  exec > >(tee -a quantify_reads_per_gene.log)
   exec 2> >(tee -a quantify_reads_per_gene.log >&2)
 
   tracktx_error() {

@@ -107,7 +107,7 @@ process assign_signal_to_functional_regions {
   export LC_ALL=C
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > functional_regions.log
+  exec > >(tee -a functional_regions.log)
   exec 2> >(tee -a functional_regions.log >&2)
 
   tracktx_error() {

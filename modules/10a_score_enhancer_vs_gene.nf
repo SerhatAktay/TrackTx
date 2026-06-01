@@ -63,7 +63,7 @@ process score_enhancer_vs_gene {
   set -euo pipefail
   export LC_ALL=C
 
-  exec > "enhancer_score.log"
+  exec > >(tee -a "enhancer_score.log")
   exec 2> >(tee -a "enhancer_score.log" >&2)
 
   SAMPLE_ID="!{sample_id}"

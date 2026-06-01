@@ -122,7 +122,9 @@ process preprocess_and_quality_filter_reads {
   export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > preprocess_reads.log
+  # tee stdout (not plain redirect) so .command.out also receives the live
+  # "PREP |" progress — otherwise the monitor has nothing to tail for this process.
+  exec > >(tee preprocess_reads.log)
   exec 2> >(tee -a preprocess_reads.log >&2)
 
   tracktx_error() {

@@ -129,7 +129,7 @@ process normalize_coverage_tracks {
   export LC_ALL=C
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > normalize_coverage_tracks.log
+  exec > >(tee -a normalize_coverage_tracks.log)
   exec 2> >(tee -a normalize_coverage_tracks.log >&2)
 
   tracktx_error() {
