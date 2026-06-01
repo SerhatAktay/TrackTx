@@ -467,7 +467,7 @@ DOCEOF
   echo "────────────────────────────────────────────────────────────────────────"
   echo "SRR | SUMMARY | Download complete for ${SRR}"
   echo "SRR | SUMMARY | R1: ${R1_FILE} (${R1_SIZE} bytes)"
-  if [[ -n "${R2_FILE}" ]]; then
+  if [[ -n "${R2_FILE}" && -n "${R2_SIZE:-}" ]]; then
     echo "SRR | SUMMARY | R2: ${R2_FILE} (${R2_SIZE} bytes)"
   fi
   echo "────────────────────────────────────────────────────────────────────────"
