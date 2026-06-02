@@ -275,8 +275,17 @@ process generate_coverage_tracks {
     echo "TRACKS | BIGWIG | Converting: $(basename ${bedgraph}) → $(basename ${bigwig})"
     
     # Sort bedGraph (required for bedGraphToBigWig)
+    # Cap per-sort memory and spill to disk: with several coverage jobs running
+    # in parallel on large (T2T) genomes, unbounded in-memory sorts can exhaust
+    # RAM and get OOM-killed, leaving a truncated bedGraph. Sort to a temp file
+    # and only replace the original on success so a killed sort can't corrupt it.
     echo "TRACKS | BIGWIG | Sorting bedGraph..."
-    LC_ALL=C sort -k1,1 -k2,2n -o "${bedgraph}" "${bedgraph}"
+    if ! LC_ALL=C sort -S "${SORT_MEM:-512M}" -T . -k1,1 -k2,2n "${bedgraph}" > "${bedgraph}.sorted"; then
+      echo "TRACKS | ERROR | sort failed (likely OOM) for: ${bedgraph}"
+      rm -f "${bedgraph}.sorted"
+      return 1
+    fi
+    mv -f "${bedgraph}.sorted" "${bedgraph}"
     
     local line_count=$(wc -l < "${bedgraph}" | tr -d ' ')
     echo "TRACKS | BIGWIG | Sorted bedGraph: ${line_count} lines"

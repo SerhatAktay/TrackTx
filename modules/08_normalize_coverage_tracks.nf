@@ -423,7 +423,14 @@ PYSCRIPT
     # Optional sorting
     if [[ ${FORCE_SORT} -eq 1 ]]; then
       echo "NORMALIZE | BIGWIG | Sorting bedGraph..."
-      LC_ALL=C sort -k1,1 -k2,2n -o "${bedgraph}" "${bedgraph}"
+      # Cap memory + spill to disk to avoid OOM kills on large (T2T) genomes;
+      # sort to a temp file so a killed sort can't leave a truncated bedGraph.
+      if ! LC_ALL=C sort -S "${SORT_MEM:-512M}" -T . -k1,1 -k2,2n "${bedgraph}" > "${bedgraph}.sorted"; then
+        echo "NORMALIZE | ERROR | sort failed (likely OOM) for: ${bedgraph}"
+        rm -f "${bedgraph}.sorted"
+        return 1
+      fi
+      mv -f "${bedgraph}.sorted" "${bedgraph}"
     fi
     
     # Count lines
