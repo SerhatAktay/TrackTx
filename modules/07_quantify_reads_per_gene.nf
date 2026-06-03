@@ -74,8 +74,8 @@ process quantify_reads_per_gene {
     path "quantify_reads_per_gene.log", emit: log
 
   // ── Main Script ───────────────────────────────────────────────────────────
-  shell:
-  '''
+  script:
+  """
   #!/usr/bin/env bash
   set -euo pipefail
   export LC_ALL=C
@@ -98,37 +98,37 @@ process quantify_reads_per_gene {
   }
   trap 'tracktx_error "quantify_reads_per_gene" "Unexpected process failure" "Check quantify_reads_per_gene.log in work dir"' ERR
 
-  TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "COUNTS | START | sample=!{sid} | ts=${TIMESTAMP}"
+  echo "COUNTS | START | sample=${sid} | ts=\${TIMESTAMP}"
   echo "════════════════════════════════════════════════════════════════════════"
 
   ###########################################################################
   # 1) CONFIGURATION
   ###########################################################################
 
-  SAMPLE_ID="!{sid}"
-  THREADS=!{task.cpus}
+  SAMPLE_ID="${sid}"
+  THREADS=${task.cpus}
   
-  MAIN_BAM="!{main_bam}"
-  ALLMAP_BAM="!{allmap_bam}"
-  SPIKE_IN="!{spike_in}"
+  MAIN_BAM="${main_bam}"
+  ALLMAP_BAM="${allmap_bam}"
+  SPIKE_IN="${spike_in}"
   
-  CONDITION="!{cond}"
-  TIMEPOINT="!{tp}"
-  REPLICATE="!{rep}"
+  CONDITION="${cond}"
+  TIMEPOINT="${tp}"
+  REPLICATE="${rep}"
   
-  ALLOW_INDEX_BUILD="!{params.get('counts_allow_index_build', false) ? 'true' : 'false'}"
+  ALLOW_INDEX_BUILD="${params.get('counts_allow_index_build', false) ? 'true' : 'false'}"
 
-  echo "COUNTS | CONFIG | Sample ID: ${SAMPLE_ID}"
-  echo "COUNTS | CONFIG | Condition: ${CONDITION}"
-  echo "COUNTS | CONFIG | Timepoint: ${TIMEPOINT}"
-  echo "COUNTS | CONFIG | Replicate: ${REPLICATE}"
-  echo "COUNTS | CONFIG | Threads: ${THREADS}"
-  echo "COUNTS | CONFIG | Allow index build: ${ALLOW_INDEX_BUILD}"
-  echo "COUNTS | CONFIG | Main BAM: ${MAIN_BAM}"
-  echo "COUNTS | CONFIG | AllMap BAM: ${ALLMAP_BAM}"
-  echo "COUNTS | CONFIG | Spike-in: ${SPIKE_IN}"
+  echo "COUNTS | CONFIG | Sample ID: \${SAMPLE_ID}"
+  echo "COUNTS | CONFIG | Condition: \${CONDITION}"
+  echo "COUNTS | CONFIG | Timepoint: \${TIMEPOINT}"
+  echo "COUNTS | CONFIG | Replicate: \${REPLICATE}"
+  echo "COUNTS | CONFIG | Threads: \${THREADS}"
+  echo "COUNTS | CONFIG | Allow index build: \${ALLOW_INDEX_BUILD}"
+  echo "COUNTS | CONFIG | Main BAM: \${MAIN_BAM}"
+  echo "COUNTS | CONFIG | AllMap BAM: \${ALLMAP_BAM}"
+  echo "COUNTS | CONFIG | Spike-in: \${SPIKE_IN}"
 
   ###########################################################################
   # 2) VALIDATE TOOLS
@@ -139,8 +139,8 @@ process quantify_reads_per_gene {
   if ! command -v samtools >/dev/null 2>&1; then
     tracktx_error "quantify_reads_per_gene" "samtools not found in PATH" "Install samtools or use -profile docker"
   fi
-  SAMTOOLS_VERSION=$(samtools --version 2>&1 | head -1 || echo "unknown")
-  echo "COUNTS | VALIDATE | samtools: ${SAMTOOLS_VERSION}"
+  SAMTOOLS_VERSION=\$(samtools --version 2>&1 | head -1 || echo "unknown")
+  echo "COUNTS | VALIDATE | samtools: \${SAMTOOLS_VERSION}"
 
   ###########################################################################
   # 3) VALIDATE INPUTS
@@ -149,25 +149,25 @@ process quantify_reads_per_gene {
   echo "COUNTS | VALIDATE | Checking input files..."
 
   # Main BAM is required
-  if [[ ! -s "${MAIN_BAM}" ]]; then
-    tracktx_error "quantify_reads_per_gene" "Main BAM missing or empty: ${MAIN_BAM}" "Check align_reads_to_genome produced sample.bam"
+  if [[ ! -s "\${MAIN_BAM}" ]]; then
+    tracktx_error "quantify_reads_per_gene" "Main BAM missing or empty: \${MAIN_BAM}" "Check align_reads_to_genome produced sample.bam"
   fi
 
-  MAIN_SIZE=$(stat -c%s "${MAIN_BAM}" 2>/dev/null || stat -f%z "${MAIN_BAM}" 2>/dev/null || echo "unknown")
-  echo "COUNTS | VALIDATE | Main BAM: ${MAIN_SIZE} bytes"
+  MAIN_SIZE=\$(stat -c%s "\${MAIN_BAM}" 2>/dev/null || stat -f%z "\${MAIN_BAM}" 2>/dev/null || echo "unknown")
+  echo "COUNTS | VALIDATE | Main BAM: \${MAIN_SIZE} bytes"
 
   # AllMap BAM (optional but should exist)
-  if [[ -s "${ALLMAP_BAM}" ]]; then
-    ALLMAP_SIZE=$(stat -c%s "${ALLMAP_BAM}" 2>/dev/null || stat -f%z "${ALLMAP_BAM}" 2>/dev/null || echo "unknown")
-    echo "COUNTS | VALIDATE | AllMap BAM: ${ALLMAP_SIZE} bytes"
+  if [[ -s "\${ALLMAP_BAM}" ]]; then
+    ALLMAP_SIZE=\$(stat -c%s "\${ALLMAP_BAM}" 2>/dev/null || stat -f%z "\${ALLMAP_BAM}" 2>/dev/null || echo "unknown")
+    echo "COUNTS | VALIDATE | AllMap BAM: \${ALLMAP_SIZE} bytes"
   else
     echo "COUNTS | VALIDATE | WARNING: AllMap BAM missing or empty (will report 0 reads)"
   fi
 
   # Spike-in BAM (optional)
-  if [[ "${SPIKE_IN}" != "-" && -s "${SPIKE_IN}" ]]; then
-    SPIKE_SIZE=$(stat -c%s "${SPIKE_IN}" 2>/dev/null || stat -f%z "${SPIKE_IN}" 2>/dev/null || echo "unknown")
-    echo "COUNTS | VALIDATE | Spike-in BAM: ${SPIKE_SIZE} bytes"
+  if [[ "\${SPIKE_IN}" != "-" && -s "\${SPIKE_IN}" ]]; then
+    SPIKE_SIZE=\$(stat -c%s "\${SPIKE_IN}" 2>/dev/null || stat -f%z "\${SPIKE_IN}" 2>/dev/null || echo "unknown")
+    echo "COUNTS | VALIDATE | Spike-in BAM: \${SPIKE_SIZE} bytes"
   else
     echo "COUNTS | VALIDATE | No spike-in BAM (will report 0 reads)"
   fi
@@ -178,49 +178,49 @@ process quantify_reads_per_gene {
 
   # Ensure BAM has index, creating if allowed
   ensure_index() {
-    local bam="$1"
-    local bai="${bam}.bai"
+    local bam="\$1"
+    local bai="\${bam}.bai"
     
-    if [[ ! -s "${bam}" ]]; then
-      tracktx_error "quantify_reads_per_gene" "BAM file missing or empty: ${bam}" "Check input BAM paths"
+    if [[ ! -s "\${bam}" ]]; then
+      tracktx_error "quantify_reads_per_gene" "BAM file missing or empty: \${bam}" "Check input BAM paths"
     fi
     
-    if [[ -s "${bai}" ]]; then
-      echo "COUNTS | INDEX | Found existing index: ${bai}"
+    if [[ -s "\${bai}" ]]; then
+      echo "COUNTS | INDEX | Found existing index: \${bai}"
       return 0
     fi
     
-    if [[ "${ALLOW_INDEX_BUILD}" == "true" ]]; then
-      echo "COUNTS | INDEX | Creating index for: ${bam}"
-      samtools index -@ "${THREADS}" "${bam}"
+    if [[ "\${ALLOW_INDEX_BUILD}" == "true" ]]; then
+      echo "COUNTS | INDEX | Creating index for: \${bam}"
+      samtools index -@ "\${THREADS}" "\${bam}"
       
-      if [[ -s "${bai}" ]]; then
-        echo "COUNTS | INDEX | Successfully created: ${bai}"
+      if [[ -s "\${bai}" ]]; then
+        echo "COUNTS | INDEX | Successfully created: \${bai}"
         return 0
       else
-        tracktx_error "quantify_reads_per_gene" "Failed to create index: ${bai}" "Check BAM file integrity"
+        tracktx_error "quantify_reads_per_gene" "Failed to create index: \${bai}" "Check BAM file integrity"
       fi
     else
-      tracktx_error "quantify_reads_per_gene" "Index missing: ${bai}" "Set params.counts_allow_index_build=true to auto-build"
+      tracktx_error "quantify_reads_per_gene" "Index missing: \${bai}" "Set params.counts_allow_index_build=true to auto-build"
     fi
   }
 
   # Count mapped reads using samtools idxstats
   # Excludes unmapped reads (contig = '*')
   count_mapped_reads() {
-    local bam="$1"
-    local label="$2"
+    local bam="\$1"
+    local label="\$2"
     
     # Send log messages to stderr
-    echo "COUNTS | COUNT | Counting mapped reads in ${label}..." >&2
+    echo "COUNTS | COUNT | Counting mapped reads in \${label}..." >&2
     
     # Sum column 3 (mapped reads) for all contigs except '*' (unmapped)
-    local count=$(samtools idxstats "${bam}" | \
-                  awk '$1!="*" {sum+=$3} END{print (sum?sum:0)}')
+    local count=\$(samtools idxstats "\${bam}" | \\
+                  awk '\$1!="*" {sum+=\$3} END{print (sum?sum:0)}')
     
-    echo "COUNTS | COUNT | ${label}: ${count} mapped reads" >&2
+    echo "COUNTS | COUNT | \${label}: \${count} mapped reads" >&2
     # Only echo the count to stdout (for variable capture)
-    echo "${count}"
+    echo "\${count}"
   }
 
   ###########################################################################
@@ -229,8 +229,8 @@ process quantify_reads_per_gene {
 
   echo "COUNTS | MAIN | Processing main BAM..."
 
-  ensure_index "${MAIN_BAM}"
-  MAIN_READS=$(count_mapped_reads "${MAIN_BAM}" "Main BAM")
+  ensure_index "\${MAIN_BAM}"
+  MAIN_READS=\$(count_mapped_reads "\${MAIN_BAM}" "Main BAM")
 
   ###########################################################################
   # 6) COUNT ALLMAP BAM READS
@@ -238,9 +238,9 @@ process quantify_reads_per_gene {
 
   echo "COUNTS | ALLMAP | Processing allMap BAM..."
 
-  if [[ -s "${ALLMAP_BAM}" ]]; then
-    ensure_index "${ALLMAP_BAM}"
-    ALLMAP_READS=$(count_mapped_reads "${ALLMAP_BAM}" "AllMap BAM")
+  if [[ -s "\${ALLMAP_BAM}" ]]; then
+    ensure_index "\${ALLMAP_BAM}"
+    ALLMAP_READS=\$(count_mapped_reads "\${ALLMAP_BAM}" "AllMap BAM")
   else
     echo "COUNTS | ALLMAP | WARNING: AllMap BAM missing, reporting 0 reads"
     ALLMAP_READS=0
@@ -252,10 +252,10 @@ process quantify_reads_per_gene {
 
   echo "COUNTS | SPIKE | Processing spike-in BAM..."
 
-  if [[ "${SPIKE_IN}" != "-" && -s "${SPIKE_IN}" ]]; then
+  if [[ "\${SPIKE_IN}" != "-" && -s "\${SPIKE_IN}" ]]; then
     # Try to ensure index, but don't fail if it can't be created
-    if ensure_index "${SPIKE_IN}" 2>/dev/null || [[ -s "${SPIKE_IN}.bai" ]]; then
-      SPIKE_READS=$(count_mapped_reads "${SPIKE_IN}" "Spike-in BAM")
+    if ensure_index "\${SPIKE_IN}" 2>/dev/null || [[ -s "\${SPIKE_IN}.bai" ]]; then
+      SPIKE_READS=\$(count_mapped_reads "\${SPIKE_IN}" "Spike-in BAM")
     else
       echo "COUNTS | SPIKE | WARNING: Could not index spike-in BAM, reporting 0"
       SPIKE_READS=0
@@ -272,12 +272,12 @@ process quantify_reads_per_gene {
   echo "COUNTS | OUTPUT | Writing counts to TSV..."
 
   # Use printf to create proper tab-delimited TSV
-  printf "sample\tmain_reads\tallmap_reads\tspike_reads\treplicate\tcondition\ttimepoint\n" > "${SAMPLE_ID}.counts.tsv"
-  printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "${SAMPLE_ID}" "${MAIN_READS}" "${ALLMAP_READS}" "${SPIKE_READS}" "${REPLICATE}" "${CONDITION}" "${TIMEPOINT}" >> "${SAMPLE_ID}.counts.tsv"
+  printf "sample\\tmain_reads\\tallmap_reads\\tspike_reads\\treplicate\\tcondition\\ttimepoint\\n" > "\${SAMPLE_ID}.counts.tsv"
+  printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" "\${SAMPLE_ID}" "\${MAIN_READS}" "\${ALLMAP_READS}" "\${SPIKE_READS}" "\${REPLICATE}" "\${CONDITION}" "\${TIMEPOINT}" >> "\${SAMPLE_ID}.counts.tsv"
 
-  if [[ -s "${SAMPLE_ID}.counts.tsv" ]]; then
-    TSV_SIZE=$(stat -c%s "${SAMPLE_ID}.counts.tsv" 2>/dev/null || stat -f%z "${SAMPLE_ID}.counts.tsv" 2>/dev/null || echo "unknown")
-    echo "COUNTS | OUTPUT | Created: ${SAMPLE_ID}.counts.tsv (${TSV_SIZE} bytes)"
+  if [[ -s "\${SAMPLE_ID}.counts.tsv" ]]; then
+    TSV_SIZE=\$(stat -c%s "\${SAMPLE_ID}.counts.tsv" 2>/dev/null || stat -f%z "\${SAMPLE_ID}.counts.tsv" 2>/dev/null || echo "unknown")
+    echo "COUNTS | OUTPUT | Created: \${SAMPLE_ID}.counts.tsv (\${TSV_SIZE} bytes)"
   else
     tracktx_error "quantify_reads_per_gene" "Failed to create counts TSV" "Check quantify_reads_per_gene.log in work dir"
   fi
@@ -290,7 +290,7 @@ process quantify_reads_per_gene {
 
   cat > README_counts.txt <<'DOCEOF'
 ================================================================================
-READ COUNTS — !{sid}
+READ COUNTS — ${sid}
 ================================================================================
 
 OVERVIEW
@@ -301,7 +301,7 @@ OVERVIEW
 
 FILES
 ────────────────────────────────────────────────────────────────────────────
-  !{sid}.counts.tsv       — Read counts in TSV format
+  ${sid}.counts.tsv       — Read counts in TSV format
   README_counts.txt       — This documentation
   quantify_reads_per_gene.log — Processing log
 
@@ -355,16 +355,16 @@ Spike-in Reads (spike_reads):
 
 SAMPLE METADATA
 ────────────────────────────────────────────────────────────────────────────
-  Sample:     !{sid}
-  Condition:  !{cond}
-  Timepoint:  !{tp}
-  Replicate:  !{rep}
+  Sample:     ${sid}
+  Condition:  ${cond}
+  Timepoint:  ${tp}
+  Replicate:  ${rep}
 
 CURRENT COUNTS
 ────────────────────────────────────────────────────────────────────────────
-  Main reads:   ${MAIN_READS}
-  AllMap reads: ${ALLMAP_READS}
-  Spike reads:  ${SPIKE_READS}
+  Main reads:   \${MAIN_READS}
+  AllMap reads: \${ALLMAP_READS}
+  Spike reads:  \${SPIKE_READS}
 
 DOWNSTREAM USAGE
 ────────────────────────────────────────────────────────────────────────────
@@ -388,7 +388,7 @@ DOWNSTREAM USAGE
 
 INDEXING STRATEGY
 ────────────────────────────────────────────────────────────────────────────
-  Auto-index: !{params.get('counts_allow_index_build', false) ? 'Enabled' : 'Disabled'}
+  Auto-index: ${params.get('counts_allow_index_build', false) ? 'Enabled' : 'Disabled'}
   
   If disabled (default):
     • Requires .bai files to exist
@@ -433,8 +433,8 @@ FILE FORMAT COMPATIBILITY
 GENERATED
 ────────────────────────────────────────────────────────────────────────────
   Pipeline: TrackTx PRO-seq
-  Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Sample: !{sid}
+  Date: \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+  Sample: ${sid}
   Module: 07_quantify_reads_per_gene
 
 ================================================================================
@@ -449,25 +449,25 @@ DOCEOF
   echo "COUNTS | VALIDATE | Verifying outputs..."
 
   # Validate TSV has expected format
-  if [[ ! -s "${SAMPLE_ID}.counts.tsv" ]]; then
+  if [[ ! -s "\${SAMPLE_ID}.counts.tsv" ]]; then
     tracktx_error "quantify_reads_per_gene" "Output TSV missing or empty" "Check quantify_reads_per_gene.log in work dir"
   fi
 
   # Check TSV has 2 lines (header + data)
-  LINE_COUNT=$(wc -l < "${SAMPLE_ID}.counts.tsv" | tr -d ' ')
-  echo "COUNTS | VALIDATE | TSV has ${LINE_COUNT} lines"
+  LINE_COUNT=\$(wc -l < "\${SAMPLE_ID}.counts.tsv" | tr -d ' ')
+  echo "COUNTS | VALIDATE | TSV has \${LINE_COUNT} lines"
   # Temporarily disabled strict validation
-  # if [[ ${LINE_COUNT} -ne 2 ]]; then
-  #   echo "COUNTS | ERROR | TSV should have exactly 2 lines, found ${LINE_COUNT}"
+  # if [[ \${LINE_COUNT} -ne 2 ]]; then
+  #   echo "COUNTS | ERROR | TSV should have exactly 2 lines, found \${LINE_COUNT}"
   #   exit 1
   # fi
 
   # Check TSV has 7 columns
-  COLUMN_COUNT=$(head -2 "${SAMPLE_ID}.counts.tsv" | tail -1 | awk -F'\t' '{print NF}')
-  echo "COUNTS | VALIDATE | TSV has ${COLUMN_COUNT} columns"
+  COLUMN_COUNT=\$(head -2 "\${SAMPLE_ID}.counts.tsv" | tail -1 | awk -F'\\t' '{print NF}')
+  echo "COUNTS | VALIDATE | TSV has \${COLUMN_COUNT} columns"
   # Temporarily disabled strict validation
-  # if [[ ${COLUMN_COUNT} -ne 7 ]]; then
-  #   echo "COUNTS | ERROR | TSV should have 7 columns, found ${COLUMN_COUNT}"
+  # if [[ \${COLUMN_COUNT} -ne 7 ]]; then
+  #   echo "COUNTS | ERROR | TSV should have 7 columns, found \${COLUMN_COUNT}"
   #   exit 1
   # fi
 
@@ -478,27 +478,27 @@ DOCEOF
   ###########################################################################
 
   echo "────────────────────────────────────────────────────────────────────────"
-  echo "COUNTS | SUMMARY | Sample: ${SAMPLE_ID}"
-  echo "COUNTS | SUMMARY | Main reads: ${MAIN_READS}"
-  echo "COUNTS | SUMMARY | AllMap reads: ${ALLMAP_READS}"
-  echo "COUNTS | SUMMARY | Spike-in reads: ${SPIKE_READS}"
+  echo "COUNTS | SUMMARY | Sample: \${SAMPLE_ID}"
+  echo "COUNTS | SUMMARY | Main reads: \${MAIN_READS}"
+  echo "COUNTS | SUMMARY | AllMap reads: \${ALLMAP_READS}"
+  echo "COUNTS | SUMMARY | Spike-in reads: \${SPIKE_READS}"
   
   # Calculate ratio
-  if [[ ${MAIN_READS} -gt 0 ]]; then
-    ALLMAP_RATIO=$(awk -v a="${ALLMAP_READS}" -v m="${MAIN_READS}" 'BEGIN{printf "%.2f", a/m}')
-    echo "COUNTS | SUMMARY | AllMap/Main ratio: ${ALLMAP_RATIO}"
+  if [[ \${MAIN_READS} -gt 0 ]]; then
+    ALLMAP_RATIO=\$(awk -v a="\${ALLMAP_READS}" -v m="\${MAIN_READS}" 'BEGIN{printf "%.2f", a/m}')
+    echo "COUNTS | SUMMARY | AllMap/Main ratio: \${ALLMAP_RATIO}"
   fi
   
-  if [[ ${SPIKE_READS} -gt 0 && ${MAIN_READS} -gt 0 ]]; then
-    SPIKE_PCT=$(awk -v s="${SPIKE_READS}" -v m="${MAIN_READS}" 'BEGIN{printf "%.2f", (s*100.0)/m}')
-    echo "COUNTS | SUMMARY | Spike-in %: ${SPIKE_PCT}%"
+  if [[ \${SPIKE_READS} -gt 0 && \${MAIN_READS} -gt 0 ]]; then
+    SPIKE_PCT=\$(awk -v s="\${SPIKE_READS}" -v m="\${MAIN_READS}" 'BEGIN{printf "%.2f", (s*100.0)/m}')
+    echo "COUNTS | SUMMARY | Spike-in %: \${SPIKE_PCT}%"
   fi
   
   echo "────────────────────────────────────────────────────────────────────────"
 
-  TIMESTAMP_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP_END=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "COUNTS | COMPLETE | sample=${SAMPLE_ID} | ts=${TIMESTAMP_END}"
+  echo "COUNTS | COMPLETE | sample=\${SAMPLE_ID} | ts=\${TIMESTAMP_END}"
   echo "════════════════════════════════════════════════════════════════════════"
-  '''
+  """
 }

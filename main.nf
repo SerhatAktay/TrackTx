@@ -89,8 +89,8 @@ workflow {
 
   // ── Nested param defaults (complex/conditional — must live inside workflow) ─
 
-  def qcParams  = params.qc  instanceof Map ? params.qc  : [:]
-  def polParams = params.pol instanceof Map ? params.pol : [:]
+  def _qcParams  = params.qc  instanceof Map ? params.qc  : [:]
+  def _polParams = params.pol instanceof Map ? params.pol : [:]
 
   // ── Help message ───────────────────────────────────────────────────────────
 
@@ -191,7 +191,7 @@ Debug mode:       ${params.debug ?: false}
     def file2Idx  = header?.findIndexOf { col -> col?.toLowerCase() == 'file2' }
     if (sampleIdx != null && sampleIdx >= 0 && file1Idx != null && file1Idx >= 0) {
       def missing = []
-      dataRows.eachWithIndex { line, i ->
+      dataRows.eachWithIndex { line, _i ->
         def cols   = line.split(',', -1).collect { col -> col?.trim() }
         def sample = cols.size() > sampleIdx ? cols[sampleIdx] : ''
         def f1 = cols.size() > file1Idx ? resolveSamplesheetPath(cols[file1Idx], projectDir) : null
@@ -224,7 +224,7 @@ Paths are relative to: ${projectDir}"""
   def noGtfPath0  = "${assetsDir0}/NO_GTF"
   new File(assetsDir0).mkdirs()
   if (!new File(noGtfPath0).exists()) new File(noGtfPath0).text = ''
-  def customAnnotationFile = (params.gtf_path?.trim())
+  def _customAnnotationFile = (params.gtf_path?.trim())
     ? file(params.gtf_path, checkIfExists: true)
     : file(noGtfPath0)
 
@@ -311,7 +311,7 @@ Paths are relative to: ${projectDir}"""
       needs_download: true
     }
 
-    preexisting_clean_ch = samples_branched.trimmed_exists.map { sid, reads, c, t, r ->
+    preexisting_clean_ch = samples_branched.trimmed_exists.map { sid, _reads, c, t, r ->
       def r1 = file("${outputDir}/01_trimmed_fastq/${sid}/final_R1.fastq")
       def r2 = file("${outputDir}/01_trimmed_fastq/${sid}/final_R2.fastq")
       if (params.verbose) log.info "STEP 3 | SKIP | ${sid}: trimmed FASTQs found in results — skipping download and preprocessing"
@@ -353,7 +353,7 @@ Paths are relative to: ${projectDir}"""
     log.info "STEP 4 | CONFIG | Mode: ${params.paired_end ? 'Paired-end' : 'Single-end'}"
   }
 
-  def (preprocessed_clean_ch, fastqc_ch) = preprocess_and_quality_filter_reads(
+  def (preprocessed_clean_ch, _fastqc_ch) = preprocess_and_quality_filter_reads(
     prepared_input_ch,
     channel.value(params.paired_end ? 'PE' : 'SE')
   )
@@ -491,7 +491,7 @@ Paths are relative to: ${projectDir}"""
     }
 
     def merge_input_ch = aligned_ch
-      .map { sid, filt_bam, all_bam, spike_bam, c, t, r ->
+      .map { sid, filt_bam, all_bam, spike_bam, c, t, _r ->
         tuple(c, t, sid, filt_bam, all_bam, spike_bam ?: file('NO_SPIKE'))
       }
       .groupTuple(by: [0, 1])
@@ -541,13 +541,13 @@ Paths are relative to: ${projectDir}"""
     log.info "-".multiply(80)
   }
 
-  def genome_fa_ch = ref_meta_ch.map { id, prov, fa -> fa }
+  def genome_fa_ch = ref_meta_ch.map { _id, _prov, fa -> fa }
 
-  def tracks_input_ch = aligned_ch.map { sid, filt_bam, all_bam, spike_bam, c, t, r ->
+  def tracks_input_ch = aligned_ch.map { sid, filt_bam, _all_bam, spike_bam, c, t, r ->
     tuple(sid, filt_bam, spike_bam, c, t, r)
   }
 
-  def allmap_bam_ch = aligned_ch.map { sid, filt_bam, all_bam, spike_bam, c, t, r ->
+  def allmap_bam_ch = aligned_ch.map { _sid, _filt_bam, all_bam, _spike_bam, _c, _t, _r ->
     all_bam
   }
 
@@ -565,12 +565,12 @@ Paths are relative to: ${projectDir}"""
   def tracks_ch        = generate_coverage_tracks.out.track_tuple
   def dedup_stats_ch   = generate_coverage_tracks.out.dedup_stats
 
-  tracks_ch.subscribe { sid, _fb, _sb, p3, n3, _p5, _n5, _cond, _time, _rep ->
+  tracks_ch.subscribe { sid, _fb, _sb, _p3, _n3, _p5, _n5, _cond, _time, _rep ->
     if (params.verbose) log.info "STEP 7 | TRACKS | ${sid} → 3' tracks generated"
   }
 
   if (params.debug) {
-    tracks_ch.view { sid, fb, sb, p3, n3, p5, n5, c, t, r ->
+    tracks_ch.view { sid, _fb, _sb, p3, n3, p5, n5, _c, _t, _r ->
       "DEBUG | TRACKS | ${sid} | 3p: ${p3}, ${n3} | 5p: ${p5 ?: 'N/A'}, ${n5 ?: 'N/A'}"
     }
   }
@@ -592,7 +592,7 @@ Paths are relative to: ${projectDir}"""
   )
 
   def counts_master = counts_tsvs.counts
-    .map { sid, tsv, c, t, r -> tsv }
+    .map { _sid, tsv, _c, _t, _r -> tsv }
     .collectFile(
       name:      'counts_master.tsv',
       storeDir:  "${params.output_dir}/04_counts",
@@ -614,7 +614,7 @@ Paths are relative to: ${projectDir}"""
     log.info "-".multiply(80)
   }
 
-  def norm_main_kv = tracks_ch.map { sid, bam, spk, p3, n3, p5, n5, c, t, r ->
+  def norm_main_kv = tracks_ch.map { sid, _bam, _spk, p3, n3, p5, n5, c, t, r ->
     def p3_file = file(p3)
     def n3_file = file(n3)
     def p5_file = (p5 && file(p5).exists() && file(p5).size() > 0) ? file(p5) : file(noBG5pPosPath)
@@ -622,11 +622,11 @@ Paths are relative to: ${projectDir}"""
     tuple(sid, tuple(p3_file, n3_file, p5_file, n5_file, c, t, r))
   }
 
-  def norm_allmap3_kv = allmap3p_pair_ch.map { sid, ap3, an3, bwp, bwn, c, t, r ->
+  def norm_allmap3_kv = allmap3p_pair_ch.map { sid, ap3, an3, _bwp, _bwn, _c, _t, _r ->
     tuple(sid, tuple(file(ap3), file(an3)))
   }
 
-  def norm_allmap5_kv = allmap5p_pair_ch.map { sid, ap5, an5, bwp, bwn, c, t, r ->
+  def norm_allmap5_kv = allmap5p_pair_ch.map { sid, ap5, an5, _bwp, _bwn, _c, _t, _r ->
     def ap5_file = (ap5 && file(ap5).exists() && file(ap5).size() > 0) ? file(ap5) : file(noBGAm5pPosPath)
     def an5_file = (an5 && file(an5).exists() && file(an5).size() > 0) ? file(an5) : file(noBGAm5pNegPath)
     tuple(sid, tuple(ap5_file, an5_file))
@@ -647,7 +647,7 @@ Paths are relative to: ${projectDir}"""
   normalize_coverage_tracks(norm_input_ch, genome_fa_ch)
 
   def norm_tracks_ch  = normalize_coverage_tracks.out.norm_tuple
-  def norm_factors_ch = norm_tracks_ch.map { sid, p3, n3, nf, c, t, r ->
+  def norm_factors_ch = norm_tracks_ch.map { sid, _p3, _n3, nf, c, t, r ->
     tuple(sid, nf, c, t, r)
   }
 
@@ -666,7 +666,7 @@ Paths are relative to: ${projectDir}"""
   }
 
   def divergent_input_ch = bw3p_pair_ch
-    .map { sid, pos3_bg, neg3_bg, bwp, bwn, c, t, r ->
+    .map { sid, pos3_bg, neg3_bg, _bwp, _bwn, c, t, r ->
       tuple(sid, pos3_bg, neg3_bg, c, t, r)
     }
 
@@ -713,13 +713,13 @@ Paths are relative to: ${projectDir}"""
       tuple(sid, tuple(div_bed, c, t, r))
     }
     .join(
-      tracks_ch.map { sid, bam, spk, pos3_raw, neg3_raw, p5, n5, c, t, r ->
+      tracks_ch.map { sid, _bam, _spk, pos3_raw, neg3_raw, _p5, _n5, c, t, r ->
         tuple(sid, tuple(pos3_raw, neg3_raw, c, t, r))
       }
     )
     .map { sid, div_data, track_data ->
       def (div_bed, c, t, r) = div_data
-      def (pos3_raw, neg3_raw, c2, t2, r2) = track_data
+      def (pos3_raw, neg3_raw, _c2, _t2, _r2) = track_data
       tuple(sid, div_bed, pos3_raw, neg3_raw, file(noBGPosPath), file(noBGNegPath), c, t, r)
     }
 
@@ -734,11 +734,11 @@ Paths are relative to: ${projectDir}"""
 
   def functional_regions_ch = assign_signal_to_functional_regions.out.main
 
-  def functional_regions_bed_ch = functional_regions_ch.map { sid, bed, fsum, c, t, r ->
+  def functional_regions_bed_ch = functional_regions_ch.map { sid, bed, _fsum, _c, _t, _r ->
     tuple(sid, bed)
   }
 
-  def functional_regions_sum_ch = functional_regions_ch.map { sid, bed, fsum, c, t, r ->
+  def functional_regions_sum_ch = functional_regions_ch.map { sid, _bed, fsum, c, t, r ->
     tuple(sid, fsum, c, t, r)
   }
 
@@ -766,7 +766,7 @@ Paths are relative to: ${projectDir}"""
     }
     .join(functional_regions_bed_ch)
     .join(
-      norm_tracks_ch.map { sid, pos3_cpm, neg3_cpm, factors, c, t, r ->
+      norm_tracks_ch.map { sid, pos3_cpm, neg3_cpm, _factors, _c, _t, _r ->
         def normDir     = "${params.output_dir}/05_normalized_tracks/${sid}"
         def pos3_sicpm  = file("${normDir}/sicpm/3p/${sid}.3p.pos.sicpm.bedgraph")
         def neg3_sicpm  = file("${normDir}/sicpm/3p/${sid}.3p.neg.sicpm.bedgraph")
@@ -801,7 +801,7 @@ Paths are relative to: ${projectDir}"""
   def samples_lines = pol_sorted
     .flatMap { sorted_list ->
       sorted_list.withIndex().collect { item, idx ->
-        def (sid, genes, c, t, r) = item
+        def (sid, _genes, c, t, r) = item
         "${sid}\t${c ?: 'NA'}\t${t ?: 'NA'}\t${r ?: '1'}\tmetric_${idx + 1}"
       }
     }
@@ -849,7 +849,7 @@ This usually means no samples reached calculate_polymerase_occupancy_metrics."""
 
   def pol_files_ch = pol_sorted
     .flatMap { sorted_list ->
-      sorted_list.collect { sid, genes, c, t, r -> file(genes) }
+      sorted_list.collect { _sid, genes, _c, _t, _r -> file(genes) }
     }
 
   summarize_polymerase_metrics(samples_tsv, pol_files_ch.collect())
@@ -865,10 +865,10 @@ This usually means no samples reached calculate_polymerase_occupancy_metrics."""
   }
 
   def qc_input_ch = aligned_ch
-    .map { sid, bam, all, spike, c, t, r ->
+    .map { sid, bam, _all, _spike, c, t, r ->
       tuple(sid, tuple(bam, c, t, r))
     }
-    .join(dedup_stats_ch.map { sid, dedup_stats, c, t, r ->
+    .join(dedup_stats_ch.map { sid, dedup_stats, _c, _t, _r ->
       tuple(sid, dedup_stats)
     })
     .map { sid, bam_data, dedup_stats ->
@@ -897,16 +897,16 @@ This usually means no samples reached calculate_polymerase_occupancy_metrics."""
 
 
   def report_input_ch = aligned_ch
-    .map { sid, bam, all, spike, c, t, r ->
+    .map { sid, _bam, _all, _spike, c, t, r ->
       tuple(sid, tuple(c ?: 'NA', t ?: 'NA', r ?: '1'))
     }
-    .join(divergent_tx_ch.map  { sid, bed, c, t, r   -> tuple(sid, bed) })
-    .join(functional_regions_sum_ch.map { sid, fsum, c, t, r -> tuple(sid, fsum) })
-    .join(pol_density_ch.map   { sid, dens, c, t, r  -> tuple(sid, dens) })
-    .join(pol_pausing_ch.map   { sid, paus, c, t, r  -> tuple(sid, paus) })
-    .join(norm_factors_ch.map  { sid, nf, c, t, r    -> tuple(sid, nf) })
-    .join(dedup_stats_ch.map   { sid, dedup, c, t, r -> tuple(sid, dedup) })
-    .join(qc_json_meta_ch.map  { sid, qc, c, t, r    -> tuple(sid, qc) })
+    .join(divergent_tx_ch.map  { sid, bed, _c, _t, _r   -> tuple(sid, bed) })
+    .join(functional_regions_sum_ch.map { sid, fsum, _c, _t, _r -> tuple(sid, fsum) })
+    .join(pol_density_ch.map   { sid, dens, _c, _t, _r  -> tuple(sid, dens) })
+    .join(pol_pausing_ch.map   { sid, paus, _c, _t, _r  -> tuple(sid, paus) })
+    .join(norm_factors_ch.map  { sid, nf, _c, _t, _r    -> tuple(sid, nf) })
+    .join(dedup_stats_ch.map   { sid, dedup, _c, _t, _r -> tuple(sid, dedup) })
+    .join(qc_json_meta_ch.map  { sid, qc, _c, _t, _r    -> tuple(sid, qc) })
     .map { sid, meta, div_bed, fsum, dens, paus, norm, dedup, qc ->
       def (c, t, r) = meta
       def normDir   = "${params.output_dir}/05_normalized_tracks/${sid}"
@@ -928,8 +928,8 @@ This usually means no samples reached calculate_polymerase_occupancy_metrics."""
     }
 
   if (params.debug) {
-    report_input_ch.view { sid, div, fsum, dens, paus, norm, dedup, qc,
-                                ap, an, bwp, bwn, bwap, bwan, c, t, r ->
+    report_input_ch.view { sid, div, fsum, dens, paus, _norm, _dedup, _qc,
+                                _ap, _an, _bwp, _bwn, _bwap, _bwan, _c, _t, _r ->
       "DEBUG | REPORT | ${sid} | Files: div=${div.name}, fsum=${fsum.name}, " +
       "dens=${dens.name}, paus=${paus.name}"
     }
@@ -962,20 +962,20 @@ This usually means no samples reached calculate_polymerase_occupancy_metrics."""
   // After joins the cohort_tracks_ch tuple is:
   //   (sid, p3bg, n3bg, bwp, bwn, c, t, r, p5bg, n5bg, bwap, bwan)
   def cohort_tracks_ch = bw3p_pair_ch
-    .join(bw5p_pair_ch.map     { sid, p5bg, n5bg, bwp5, bwn5, c, t, r -> tuple(sid, p5bg, n5bg) })
-    .join(allmap3p_pair_ch.map { sid, ap3,  an3,  bwap, bwan, c, t, r -> tuple(sid, bwap, bwan) })
+    .join(bw5p_pair_ch.map     { sid, p5bg, n5bg, _bwp5, _bwn5, _c, _t, _r -> tuple(sid, p5bg, n5bg) })
+    .join(allmap3p_pair_ch.map { sid, _ap3,  _an3,  bwap, bwan, _c, _t, _r -> tuple(sid, bwap, bwan) })
 
   // Gather across all samples into sorted lists (toSortedList by sample_id)
-  def cohort_bw_pos3    = cohort_tracks_ch.map { sid, p3bg, n3bg, bwp, bwn, c, t, r, p5bg, n5bg, bwap, bwan -> bwp.toString()   }.toSortedList()
-  def cohort_bw_neg3    = cohort_tracks_ch.map { sid, p3bg, n3bg, bwp, bwn, c, t, r, p5bg, n5bg, bwap, bwan -> bwn.toString()   }.toSortedList()
-  def cohort_bw_ampos3  = cohort_tracks_ch.map { sid, p3bg, n3bg, bwp, bwn, c, t, r, p5bg, n5bg, bwap, bwan -> bwap.toString()  }.toSortedList()
-  def cohort_bw_amneg3  = cohort_tracks_ch.map { sid, p3bg, n3bg, bwp, bwn, c, t, r, p5bg, n5bg, bwap, bwan -> bwan.toString()  }.toSortedList()
-  def cohort_sample_ids = cohort_tracks_ch.map { sid, p3bg, n3bg, bwp, bwn, c, t, r, p5bg, n5bg, bwap, bwan -> sid              }.toSortedList()
-  def cohort_conditions = cohort_tracks_ch.map { sid, p3bg, n3bg, bwp, bwn, c, t, r, p5bg, n5bg, bwap, bwan -> c ?: 'unknown'  }.toSortedList()
-  def cohort_pos3_bg    = cohort_tracks_ch.map { sid, p3bg, n3bg, bwp, bwn, c, t, r, p5bg, n5bg, bwap, bwan -> p3bg.toString()  }.toSortedList()
-  def cohort_neg3_bg    = cohort_tracks_ch.map { sid, p3bg, n3bg, bwp, bwn, c, t, r, p5bg, n5bg, bwap, bwan -> n3bg.toString()  }.toSortedList()
-  def cohort_pos5_bg    = cohort_tracks_ch.map { sid, p3bg, n3bg, bwp, bwn, c, t, r, p5bg, n5bg, bwap, bwan -> p5bg.toString()  }.toSortedList()
-  def cohort_neg5_bg    = cohort_tracks_ch.map { sid, p3bg, n3bg, bwp, bwn, c, t, r, p5bg, n5bg, bwap, bwan -> n5bg.toString()  }.toSortedList()
+  def cohort_bw_pos3    = cohort_tracks_ch.map { _sid, _p3bg, _n3bg, bwp, _bwn, _c, _t, _r, _p5bg, _n5bg, _bwap, _bwan -> bwp.toString()   }.toSortedList()
+  def cohort_bw_neg3    = cohort_tracks_ch.map { _sid, _p3bg, _n3bg, _bwp, bwn, _c, _t, _r, _p5bg, _n5bg, _bwap, _bwan -> bwn.toString()   }.toSortedList()
+  def cohort_bw_ampos3  = cohort_tracks_ch.map { _sid, _p3bg, _n3bg, _bwp, _bwn, _c, _t, _r, _p5bg, _n5bg, bwap, _bwan -> bwap.toString()  }.toSortedList()
+  def cohort_bw_amneg3  = cohort_tracks_ch.map { _sid, _p3bg, _n3bg, _bwp, _bwn, _c, _t, _r, _p5bg, _n5bg, _bwap, bwan -> bwan.toString()  }.toSortedList()
+  def cohort_sample_ids = cohort_tracks_ch.map { sid, _p3bg, _n3bg, _bwp, _bwn, _c, _t, _r, _p5bg, _n5bg, _bwap, _bwan -> sid              }.toSortedList()
+  def cohort_conditions = cohort_tracks_ch.map { _sid, _p3bg, _n3bg, _bwp, _bwn, c, _t, _r, _p5bg, _n5bg, _bwap, _bwan -> c ?: 'unknown'  }.toSortedList()
+  def cohort_pos3_bg    = cohort_tracks_ch.map { _sid, p3bg, _n3bg, _bwp, _bwn, _c, _t, _r, _p5bg, _n5bg, _bwap, _bwan -> p3bg.toString()  }.toSortedList()
+  def cohort_neg3_bg    = cohort_tracks_ch.map { _sid, _p3bg, n3bg, _bwp, _bwn, _c, _t, _r, _p5bg, _n5bg, _bwap, _bwan -> n3bg.toString()  }.toSortedList()
+  def cohort_pos5_bg    = cohort_tracks_ch.map { _sid, _p3bg, _n3bg, _bwp, _bwn, _c, _t, _r, p5bg, _n5bg, _bwap, _bwan -> p5bg.toString()  }.toSortedList()
+  def cohort_neg5_bg    = cohort_tracks_ch.map { _sid, _p3bg, _n3bg, _bwp, _bwn, _c, _t, _r, _p5bg, n5bg, _bwap, _bwan -> n5bg.toString()  }.toSortedList()
 
   // Collect all QC log files staged into a single directory for MultiQC.
   // Includes: bowtie2 logs, flagstats, trimming logs — all already emitted

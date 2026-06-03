@@ -122,8 +122,8 @@ process normalize_coverage_tracks {
     path "normalize_coverage_tracks.log", emit: log
 
   // ── Main Script ───────────────────────────────────────────────────────────
-  shell:
-  '''
+  script:
+  """
   #!/usr/bin/env bash
   set -euo pipefail
   export LC_ALL=C
@@ -146,70 +146,70 @@ process normalize_coverage_tracks {
   }
   trap 'tracktx_error "normalize_coverage_tracks" "Unexpected process failure" "Check normalize_coverage_tracks.log in work dir"' ERR
 
-  TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "NORMALIZE | START | sample=!{sample_id} | ts=${TIMESTAMP}"
+  echo "NORMALIZE | START | sample=${sample_id} | ts=\${TIMESTAMP}"
   echo "════════════════════════════════════════════════════════════════════════"
 
   ###########################################################################
   # 1) CONFIGURATION
   ###########################################################################
 
-  SAMPLE_ID="!{sample_id}"
-  CONDITION="!{condition}"
-  TIMEPOINT="!{timepoint}"
-  REPLICATE="!{replicate}"
-  THREADS=!{task.cpus}
+  SAMPLE_ID="${sample_id}"
+  CONDITION="${condition}"
+  TIMEPOINT="${timepoint}"
+  REPLICATE="${replicate}"
+  THREADS=${task.cpus}
   
-  COUNTS_MASTER="!{counts_master_tsv}"
-  GENOME_FA="!{genome_fa}"
+  COUNTS_MASTER="${counts_master_tsv}"
+  GENOME_FA="${genome_fa}"
   
   # Input bedGraphs
-  POS3="!{pos3_bg}"
-  NEG3="!{neg3_bg}"
-  POS5="!{pos5_bg}"
-  NEG5="!{neg5_bg}"
-  AM3P_POS="!{am3p_pos_bg}"
-  AM3P_NEG="!{am3p_neg_bg}"
-  AM5P_POS="!{am5p_pos_bg}"
-  AM5P_NEG="!{am5p_neg_bg}"
+  POS3="${pos3_bg}"
+  NEG3="${neg3_bg}"
+  POS5="${pos5_bg}"
+  NEG5="${neg5_bg}"
+  AM3P_POS="${am3p_pos_bg}"
+  AM3P_NEG="${am3p_neg_bg}"
+  AM5P_POS="${am5p_pos_bg}"
+  AM5P_NEG="${am5p_neg_bg}"
 
   # Feature flags
-  EMIT_BW=$([[ "!{params.norm?.emit_bw}" == "false" ]] && echo 0 || echo 1)
-  EMIT_SICPM=$([[ "!{params.norm?.emit_sicpm}" == "false" ]] && echo 0 || echo 1)
-  EMIT_ALLMAP=$([[ "!{params.norm?.emit_allmap}" == "false" ]] && echo 0 || echo 1)
-  FORCE_SORT=$([[ "!{params.force_sort_bedgraph}" == "true" ]] && echo 1 || echo 0)
+  EMIT_BW=\$([[ "${params.norm?.emit_bw}" == "false" ]] && echo 0 || echo 1)
+  EMIT_SICPM=\$([[ "${params.norm?.emit_sicpm}" == "false" ]] && echo 0 || echo 1)
+  EMIT_ALLMAP=\$([[ "${params.norm?.emit_allmap}" == "false" ]] && echo 0 || echo 1)
+  FORCE_SORT=\$([[ "${params.force_sort_bedgraph}" == "true" ]] && echo 1 || echo 0)
   
-  CONTROL_LABEL="!{params.control_label ?: 'CTRL'}"
-  TIMEOUT_BW=!{params.norm?.timeout_bw ?: 900}
+  CONTROL_LABEL="${params.control_label ?: 'CTRL'}"
+  TIMEOUT_BW=${params.norm?.timeout_bw ?: 900}
 
   # Auto-detect 5' track generation
-  EMIT_5P_SETTING="!{params.norm?.emit_5p}"
-  if [[ "${EMIT_5P_SETTING}" == "true" ]]; then
+  EMIT_5P_SETTING="${params.norm?.emit_5p}"
+  if [[ "\${EMIT_5P_SETTING}" == "true" ]]; then
     EMIT_5P=1
-  elif [[ "${EMIT_5P_SETTING}" == "false" ]]; then
+  elif [[ "\${EMIT_5P_SETTING}" == "false" ]]; then
     EMIT_5P=0
   else
     # Auto mode: enable if 5' inputs exist
-    if [[ -e "${POS5}" || -e "${NEG5}" ]]; then
+    if [[ -e "\${POS5}" || -e "\${NEG5}" ]]; then
       EMIT_5P=1
     else
       EMIT_5P=0
     fi
   fi
 
-  echo "NORMALIZE | CONFIG | Sample ID: ${SAMPLE_ID}"
-  echo "NORMALIZE | CONFIG | Condition: ${CONDITION}"
-  echo "NORMALIZE | CONFIG | Timepoint: ${TIMEPOINT}"
-  echo "NORMALIZE | CONFIG | Replicate: ${REPLICATE}"
-  echo "NORMALIZE | CONFIG | Threads: ${THREADS}"
-  echo "NORMALIZE | CONFIG | Control label: ${CONTROL_LABEL}"
-  echo "NORMALIZE | CONFIG | Emit BigWig: $([ ${EMIT_BW} -eq 1 ] && echo "yes" || echo "no")"
-  echo "NORMALIZE | CONFIG | Emit siCPM: $([ ${EMIT_SICPM} -eq 1 ] && echo "yes" || echo "no")"
-  echo "NORMALIZE | CONFIG | Emit allMap: $([ ${EMIT_ALLMAP} -eq 1 ] && echo "yes" || echo "no")"
-  echo "NORMALIZE | CONFIG | Emit 5' tracks: $([ ${EMIT_5P} -eq 1 ] && echo "yes" || echo "no (auto)")"
-  echo "NORMALIZE | CONFIG | Force bedGraph sort: $([ ${FORCE_SORT} -eq 1 ] && echo "yes" || echo "no")"
-  echo "NORMALIZE | CONFIG | BigWig timeout: ${TIMEOUT_BW}s"
+  echo "NORMALIZE | CONFIG | Sample ID: \${SAMPLE_ID}"
+  echo "NORMALIZE | CONFIG | Condition: \${CONDITION}"
+  echo "NORMALIZE | CONFIG | Timepoint: \${TIMEPOINT}"
+  echo "NORMALIZE | CONFIG | Replicate: \${REPLICATE}"
+  echo "NORMALIZE | CONFIG | Threads: \${THREADS}"
+  echo "NORMALIZE | CONFIG | Control label: \${CONTROL_LABEL}"
+  echo "NORMALIZE | CONFIG | Emit BigWig: \$([ \${EMIT_BW} -eq 1 ] && echo "yes" || echo "no")"
+  echo "NORMALIZE | CONFIG | Emit siCPM: \$([ \${EMIT_SICPM} -eq 1 ] && echo "yes" || echo "no")"
+  echo "NORMALIZE | CONFIG | Emit allMap: \$([ \${EMIT_ALLMAP} -eq 1 ] && echo "yes" || echo "no")"
+  echo "NORMALIZE | CONFIG | Emit 5' tracks: \$([ \${EMIT_5P} -eq 1 ] && echo "yes" || echo "no (auto)")"
+  echo "NORMALIZE | CONFIG | Force bedGraph sort: \$([ \${FORCE_SORT} -eq 1 ] && echo "yes" || echo "no")"
+  echo "NORMALIZE | CONFIG | BigWig timeout: \${TIMEOUT_BW}s"
 
   # Create output directories
   mkdir -p 3p 5p
@@ -222,25 +222,25 @@ process normalize_coverage_tracks {
   echo "NORMALIZE | VALIDATE | Checking input files..."
 
   # Validate counts master file
-  if [[ ! -s "${COUNTS_MASTER}" ]]; then
-    tracktx_error "normalize_coverage_tracks" "Counts master file missing or empty: ${COUNTS_MASTER}" "Check quantify_reads_per_gene produced counts TSV"
+  if [[ ! -s "\${COUNTS_MASTER}" ]]; then
+    tracktx_error "normalize_coverage_tracks" "Counts master file missing or empty: \${COUNTS_MASTER}" "Check quantify_reads_per_gene produced counts TSV"
   fi
 
-  COUNTS_SIZE=$(stat -c%s "${COUNTS_MASTER}" 2>/dev/null || stat -f%z "${COUNTS_MASTER}" 2>/dev/null || echo "unknown")
-  COUNTS_LINES=$(wc -l < "${COUNTS_MASTER}" | tr -d ' ')
-  echo "NORMALIZE | VALIDATE | Counts master: ${COUNTS_SIZE} bytes (${COUNTS_LINES} lines)"
+  COUNTS_SIZE=\$(stat -c%s "\${COUNTS_MASTER}" 2>/dev/null || stat -f%z "\${COUNTS_MASTER}" 2>/dev/null || echo "unknown")
+  COUNTS_LINES=\$(wc -l < "\${COUNTS_MASTER}" | tr -d ' ')
+  echo "NORMALIZE | VALIDATE | Counts master: \${COUNTS_SIZE} bytes (\${COUNTS_LINES} lines)"
 
   # Validate input bedGraphs
   INPUT_COUNT=0
-  for BG in "${POS3}" "${NEG3}" "${AM3P_POS}" "${AM3P_NEG}"; do
-    if [[ -s "${BG}" ]]; then
-      INPUT_COUNT=$((INPUT_COUNT + 1))
-      BG_SIZE=$(stat -c%s "${BG}" 2>/dev/null || stat -f%z "${BG}" 2>/dev/null || echo "unknown")
-      echo "NORMALIZE | VALIDATE | Input bedGraph: $(basename ${BG}) (${BG_SIZE} bytes)"
+  for BG in "\${POS3}" "\${NEG3}" "\${AM3P_POS}" "\${AM3P_NEG}"; do
+    if [[ -s "\${BG}" ]]; then
+      INPUT_COUNT=\$((INPUT_COUNT + 1))
+      BG_SIZE=\$(stat -c%s "\${BG}" 2>/dev/null || stat -f%z "\${BG}" 2>/dev/null || echo "unknown")
+      echo "NORMALIZE | VALIDATE | Input bedGraph: \$(basename \${BG}) (\${BG_SIZE} bytes)"
     fi
   done
 
-  echo "NORMALIZE | VALIDATE | Found ${INPUT_COUNT} non-empty input bedGraphs"
+  echo "NORMALIZE | VALIDATE | Found \${INPUT_COUNT} non-empty input bedGraphs"
 
   # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
   if command -v micromamba >/dev/null 2>&1; then
@@ -252,19 +252,19 @@ process normalize_coverage_tracks {
   fi
 
   # Validate tools
-  if ! ${PYTHON_CMD} --version >/dev/null 2>&1; then
-    tracktx_error "normalize_coverage_tracks" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker or install Python"
+  if ! \${PYTHON_CMD} --version >/dev/null 2>&1; then
+    tracktx_error "normalize_coverage_tracks" "Python not found (tried: \${PYTHON_CMD})" "Use -profile docker or install Python"
   fi
-  echo "NORMALIZE | VALIDATE | python: $(${PYTHON_CMD} --version 2>&1)"
+  echo "NORMALIZE | VALIDATE | python: \$(\${PYTHON_CMD} --version 2>&1)"
   if ! command -v awk >/dev/null 2>&1; then
     tracktx_error "normalize_coverage_tracks" "Required tool not found: awk" "Use -profile docker"
   fi
-  echo "NORMALIZE | VALIDATE | awk: $(which awk)"
-  if [[ ${EMIT_BW} -eq 1 ]] && ! command -v bedGraphToBigWig >/dev/null 2>&1; then
+  echo "NORMALIZE | VALIDATE | awk: \$(which awk)"
+  if [[ \${EMIT_BW} -eq 1 ]] && ! command -v bedGraphToBigWig >/dev/null 2>&1; then
     tracktx_error "normalize_coverage_tracks" "bedGraphToBigWig not found (required for BigWig)" "Install UCSC tools or use -profile docker"
   fi
-  if [[ ${EMIT_BW} -eq 1 ]]; then
-    echo "NORMALIZE | VALIDATE | bedGraphToBigWig: $(which bedGraphToBigWig)"
+  if [[ \${EMIT_BW} -eq 1 ]]; then
+    echo "NORMALIZE | VALIDATE | bedGraphToBigWig: \$(which bedGraphToBigWig)"
   fi
 
   ###########################################################################
@@ -274,7 +274,7 @@ process normalize_coverage_tracks {
   echo "NORMALIZE | FACTORS | Computing CPM and siCPM scaling factors..."
 
   # Python script to compute factors from counts master
-  ${PYTHON_CMD} - "${COUNTS_MASTER}" "${SAMPLE_ID}" "${CONTROL_LABEL}" > factors.tmp <<'PYSCRIPT'
+  \${PYTHON_CMD} - "\${COUNTS_MASTER}" "\${SAMPLE_ID}" "\${CONTROL_LABEL}" > factors.tmp <<'PYSCRIPT'
 import sys
 import csv
 
@@ -284,7 +284,7 @@ control_label = sys.argv[3].strip().lower()
 
 # Read counts file
 with open(counts_file, 'r') as f:
-    reader = csv.DictReader(f, delimiter='\t')
+    reader = csv.DictReader(f, delimiter='\\t')
     rows = list(reader)
 
 # Helper function for case-insensitive comparison
@@ -299,7 +299,7 @@ for row in rows:
         break
 
 if sample_row is None:
-    print("0.0000000000\t0.0000000000")
+    print("0.0000000000\\t0.0000000000")
     sys.exit(0)
 
 # Extract sample counts
@@ -342,24 +342,24 @@ if control_row and sample_spike > 0:
 else:
     fac_sicpm = 0.0
 
-print(f"{fac_cpm:.10f}\t{fac_sicpm:.10f}")
+print(f"{fac_cpm:.10f}\\t{fac_sicpm:.10f}")
 PYSCRIPT
 
   # Read computed factors
   read -r FAC_CPM FAC_SICPM < factors.tmp
 
-  echo "NORMALIZE | FACTORS | CPM factor: ${FAC_CPM}"
-  echo "NORMALIZE | FACTORS | siCPM factor: ${FAC_SICPM}"
+  echo "NORMALIZE | FACTORS | CPM factor: \${FAC_CPM}"
+  echo "NORMALIZE | FACTORS | siCPM factor: \${FAC_SICPM}"
 
   # Validate CPM factor
-  if awk -v x="${FAC_CPM}" 'BEGIN{exit (x>0?0:1)}'; then
+  if awk -v x="\${FAC_CPM}" 'BEGIN{exit (x>0?0:1)}'; then
     echo "NORMALIZE | FACTORS | CPM normalization enabled"
   else
     tracktx_error "normalize_coverage_tracks" "Cannot compute CPM (sample reads = 0)" "Check quantify_reads_per_gene output and counts TSV"
   fi
 
   # Check siCPM availability
-  if awk -v x="${FAC_SICPM}" 'BEGIN{exit (x>0?0:1)}'; then
+  if awk -v x="\${FAC_SICPM}" 'BEGIN{exit (x>0?0:1)}'; then
     echo "NORMALIZE | FACTORS | siCPM normalization enabled"
     SICPM_AVAILABLE=1
   else
@@ -375,28 +375,28 @@ PYSCRIPT
   echo "NORMALIZE | GENOME | Preparing chromosome sizes..."
 
   # Check for existing .fai
-  GENOME_FA_SRC="!{genome_fa.toString()}"
-  if [[ -s "${GENOME_FA_SRC}.fai" && ! -s "${GENOME_FA}.fai" ]]; then
-    ln -sf "${GENOME_FA_SRC}.fai" "${GENOME_FA}.fai" 2>/dev/null || true
+  GENOME_FA_SRC="${genome_fa.toString()}"
+  if [[ -s "\${GENOME_FA_SRC}.fai" && ! -s "\${GENOME_FA}.fai" ]]; then
+    ln -sf "\${GENOME_FA_SRC}.fai" "\${GENOME_FA}.fai" 2>/dev/null || true
   fi
 
   # Create genome.sizes
-  if [[ -s "${GENOME_FA}.fai" ]]; then
+  if [[ -s "\${GENOME_FA}.fai" ]]; then
     echo "NORMALIZE | GENOME | Using existing FASTA index"
-    cut -f1,2 "${GENOME_FA}.fai" > genome.sizes
+    cut -f1,2 "\${GENOME_FA}.fai" > genome.sizes
   else
     echo "NORMALIZE | GENOME | Creating FASTA index..."
-    samtools faidx "${GENOME_FA}"
-    cut -f1,2 "${GENOME_FA}.fai" > genome.sizes
+    samtools faidx "\${GENOME_FA}"
+    cut -f1,2 "\${GENOME_FA}.fai" > genome.sizes
   fi
 
   # Sort and validate genome.sizes
   LC_ALL=C sort -k1,1 -u -o genome.sizes genome.sizes
 
-  CHR_COUNT=$(wc -l < genome.sizes | tr -d ' ')
-  TOTAL_SIZE=$(awk '{sum+=$2} END{print sum}' genome.sizes)
-  echo "NORMALIZE | GENOME | Chromosomes: ${CHR_COUNT}"
-  echo "NORMALIZE | GENOME | Total size: ${TOTAL_SIZE} bp"
+  CHR_COUNT=\$(wc -l < genome.sizes | tr -d ' ')
+  TOTAL_SIZE=\$(awk '{sum+=\$2} END{print sum}' genome.sizes)
+  echo "NORMALIZE | GENOME | Chromosomes: \${CHR_COUNT}"
+  echo "NORMALIZE | GENOME | Total size: \${TOTAL_SIZE} bp"
 
   ###########################################################################
   # 5) HELPER FUNCTIONS
@@ -404,139 +404,144 @@ PYSCRIPT
 
   # Convert bedGraph to BigWig
   make_bigwig() {
-    local bedgraph="$1"
-    local bigwig="$2"
+    local bedgraph="\$1"
+    local bigwig="\$2"
     
-    if [[ ! -s "${bedgraph}" ]]; then
-      echo "NORMALIZE | BIGWIG | Empty input, creating empty BigWig: $(basename ${bigwig})"
-      : > "${bigwig}"
+    if [[ ! -s "\${bedgraph}" ]]; then
+      echo "NORMALIZE | BIGWIG | Empty input, creating empty BigWig: \$(basename \${bigwig})"
+      : > "\${bigwig}"
       return 0
     fi
     
-    if [[ ${EMIT_BW} -eq 0 ]]; then
-      : > "${bigwig}"
+    if [[ \${EMIT_BW} -eq 0 ]]; then
+      : > "\${bigwig}"
       return 0
     fi
     
-    echo "NORMALIZE | BIGWIG | Converting: $(basename ${bedgraph}) → $(basename ${bigwig})"
+    echo "NORMALIZE | BIGWIG | Converting: \$(basename \${bedgraph}) → \$(basename \${bigwig})"
     
     # Optional sorting
-    if [[ ${FORCE_SORT} -eq 1 ]]; then
+    if [[ \${FORCE_SORT} -eq 1 ]]; then
       echo "NORMALIZE | BIGWIG | Sorting bedGraph..."
-      # Cap memory + spill to disk to avoid OOM kills on large (T2T) genomes;
-      # sort to a temp file so a killed sort can't leave a truncated bedGraph.
-      if ! LC_ALL=C sort -S "${SORT_MEM:-512M}" -T . -k1,1 -k2,2n "${bedgraph}" > "${bedgraph}.sorted"; then
-        echo "NORMALIZE | ERROR | sort failed (likely OOM) for: ${bedgraph}"
-        rm -f "${bedgraph}.sorted"
+      # Give sort most of the task's RAM so it stays in memory instead of spilling
+      # thousands of tiny temp files to disk (catastrophic on slow/USB work dirs).
+      # Falls back to disk only if truly needed, using a fast temp dir (never the
+      # USB-backed work dir via "-T ."). Override with SORT_MEM / SORT_TMPDIR.
+      : "\${SORT_MEM:=\$(( ${task.memory.toGiga()} * 70 / 100 ))G}"
+      : "\${SORT_TMP:=\${SORT_TMPDIR:-/tmp}}"
+      mkdir -p "\${SORT_TMP}" 2>/dev/null || SORT_TMP=/tmp
+      if ! LC_ALL=C sort -S "\${SORT_MEM}" -T "\${SORT_TMP}" -k1,1 -k2,2n "\${bedgraph}" > "\${bedgraph}.sorted"; then
+        echo "NORMALIZE | ERROR | sort failed (likely OOM) for: \${bedgraph}"
+        rm -f "\${bedgraph}.sorted"
         return 1
       fi
-      mv -f "${bedgraph}.sorted" "${bedgraph}"
+      mv -f "\${bedgraph}.sorted" "\${bedgraph}"
     fi
     
     # Count lines
-    LINE_COUNT=$(awk 'BEGIN{n=0} $0!~/^(track|browser|#)/{n++} END{print n}' "${bedgraph}")
-    echo "NORMALIZE | BIGWIG | bedGraph lines: ${LINE_COUNT}"
+    LINE_COUNT=\$(awk 'BEGIN{n=0} \$0!~/^(track|browser|#)/{n++} END{print n}' "\${bedgraph}")
+    echo "NORMALIZE | BIGWIG | bedGraph lines: \${LINE_COUNT}"
     
     # Convert with timeout
-    if timeout "${TIMEOUT_BW}" bedGraphToBigWig "${bedgraph}" genome.sizes "${bigwig}"; then
-      BW_SIZE=$(stat -c%s "${bigwig}" 2>/dev/null || stat -f%z "${bigwig}" 2>/dev/null || echo "unknown")
-      echo "NORMALIZE | BIGWIG | Created: $(basename ${bigwig}) (${BW_SIZE} bytes)"
+    if timeout "\${TIMEOUT_BW}" bedGraphToBigWig "\${bedgraph}" genome.sizes "\${bigwig}"; then
+      BW_SIZE=\$(stat -c%s "\${bigwig}" 2>/dev/null || stat -f%z "\${bigwig}" 2>/dev/null || echo "unknown")
+      echo "NORMALIZE | BIGWIG | Created: \$(basename \${bigwig}) (\${BW_SIZE} bytes)"
     else
       echo "NORMALIZE | BIGWIG | WARNING: Conversion failed or timed out, creating empty BigWig"
-      : > "${bigwig}"
+      : > "\${bigwig}"
     fi
   }
 
   # Normalize bedGraph (single-pass CPM + siCPM)
   normalize_bedgraph() {
-    local input_bg="$1"
-    local end_label="$2"      # "3p" or "5p"
-    local strand="$3"          # "pos" or "neg"
-    local set_label="$4"       # "main" or "allMap"
+    local input_bg="\$1"
+    local end_label="\$2"      # "3p" or "5p"
+    local strand="\$3"          # "pos" or "neg"
+    local set_label="\$4"       # "main" or "allMap"
     
     # Build output file names
     local set_suffix=""
-    if [[ "${set_label}" == "allMap" ]]; then
+    if [[ "\${set_label}" == "allMap" ]]; then
       set_suffix=".allMap"
     fi
     
-    local prefix="${SAMPLE_ID}${set_suffix}.${end_label}.${strand}"
-    local out_cpm_bg="${end_label}/${prefix}.cpm.bedgraph"
-    local out_cpm_bw="${end_label}/${prefix}.cpm.bw"
-    local out_sicpm_bg="${end_label}/${prefix}.sicpm.bedgraph"
-    local out_sicpm_bw="${end_label}/${prefix}.sicpm.bw"
+    local prefix="\${SAMPLE_ID}\${set_suffix}.\${end_label}.\${strand}"
+    local out_cpm_bg="\${end_label}/\${prefix}.cpm.bedgraph"
+    local out_cpm_bw="\${end_label}/\${prefix}.cpm.bw"
+    local out_sicpm_bg="\${end_label}/\${prefix}.sicpm.bedgraph"
+    local out_sicpm_bw="\${end_label}/\${prefix}.sicpm.bw"
     
-    echo "NORMALIZE | SCALE | Processing: ${end_label} ${set_label} ${strand}"
+    echo "NORMALIZE | SCALE | Processing: \${end_label} \${set_label} \${strand}"
     
-    if [[ ! -s "${input_bg}" ]]; then
+    if [[ ! -s "\${input_bg}" ]]; then
       echo "NORMALIZE | SCALE | WARNING: Input empty, creating empty outputs"
-      : > "${out_cpm_bg}"
-      : > "${out_cpm_bw}"
-      : > "${out_sicpm_bg}"
-      : > "${out_sicpm_bw}"
+      : > "\${out_cpm_bg}"
+      : > "\${out_cpm_bw}"
+      : > "\${out_sicpm_bg}"
+      : > "\${out_sicpm_bw}"
       return 0
     fi
     
     # Count input lines
-    INPUT_LINES=$(awk 'BEGIN{n=0} $0!~/^(track|browser|#)/{n++} END{print n}' "${input_bg}")
-    echo "NORMALIZE | SCALE | Input lines: ${INPUT_LINES}"
+    INPUT_LINES=\$(awk 'BEGIN{n=0} \$0!~/^(track|browser|#)/{n++} END{print n}' "\${input_bg}")
+    echo "NORMALIZE | SCALE | Input lines: \${INPUT_LINES}"
     
     # Normalize with awk (single pass for both CPM and siCPM)
-    START_TIME=$(date +%s)
+    START_TIME=\$(date +%s)
     
-    if [[ ${EMIT_SICPM} -eq 1 && ${SICPM_AVAILABLE} -eq 1 ]]; then
+    if [[ \${EMIT_SICPM} -eq 1 && \${SICPM_AVAILABLE} -eq 1 ]]; then
       echo "NORMALIZE | SCALE | Writing CPM and siCPM..."
-      awk -v fc="${FAC_CPM}" -v fs="${FAC_SICPM}" -v OFS='\t' '
-        (NF>=4) && ($0!~/^(track|browser|#)/) {
-          cpm_val = $4 * fc
-          sicpm_val = $4 * fs
-          print $1, $2, $3, cpm_val > "'"${out_cpm_bg}"'"
-          print $1, $2, $3, sicpm_val > "'"${out_sicpm_bg}"'"
+      awk -v fc="\${FAC_CPM}" -v fs="\${FAC_SICPM}" -v OFS='\\t' '
+        (NF>=4) && (\$0!~/^(track|browser|#)/) {
+          cpm_val = \$4 * fc
+          sicpm_val = \$4 * fs
+          print \$1, \$2, \$3, cpm_val > "'"\${out_cpm_bg}"'"
+          print \$1, \$2, \$3, sicpm_val > "'"\${out_sicpm_bg}"'"
         }
-      ' "${input_bg}"
+      ' "\${input_bg}"
     else
       echo "NORMALIZE | SCALE | Writing CPM only..."
-      awk -v fc="${FAC_CPM}" -v OFS='\t' '
-        (NF>=4) && ($0!~/^(track|browser|#)/) {
-          print $1, $2, $3, $4 * fc
+      awk -v fc="\${FAC_CPM}" -v OFS='\\t' '
+        (NF>=4) && (\$0!~/^(track|browser|#)/) {
+          print \$1, \$2, \$3, \$4 * fc
         }
-      ' "${input_bg}" > "${out_cpm_bg}"
-      : > "${out_sicpm_bg}"
+      ' "\${input_bg}" > "\${out_cpm_bg}"
+      : > "\${out_sicpm_bg}"
     fi
     
-    END_TIME=$(date +%s)
-    ELAPSED=$((END_TIME - START_TIME))
-    if [[ ${ELAPSED} -lt 1 ]]; then ELAPSED=1; fi
-    RATE=$((INPUT_LINES / ELAPSED))
+    END_TIME=\$(date +%s)
+    ELAPSED=\$((END_TIME - START_TIME))
+    if [[ \${ELAPSED} -lt 1 ]]; then ELAPSED=1; fi
+    RATE=\$((INPUT_LINES / ELAPSED))
     
-    echo "NORMALIZE | SCALE | Normalization complete in ${ELAPSED}s (~${RATE} lines/s)"
+    echo "NORMALIZE | SCALE | Normalization complete in \${ELAPSED}s (~\${RATE} lines/s)"
     
     # Report output sizes
-    CPM_LINES=$(wc -l < "${out_cpm_bg}" 2>/dev/null | tr -d ' ' || echo 0)
-    CPM_SIZE=$(stat -c%s "${out_cpm_bg}" 2>/dev/null || stat -f%z "${out_cpm_bg}" 2>/dev/null || echo "unknown")
-    echo "NORMALIZE | SCALE | CPM bedGraph: ${CPM_LINES} lines (${CPM_SIZE} bytes)"
+    CPM_LINES=\$(wc -l < "\${out_cpm_bg}" 2>/dev/null | tr -d ' ' || echo 0)
+    CPM_SIZE=\$(stat -c%s "\${out_cpm_bg}" 2>/dev/null || stat -f%z "\${out_cpm_bg}" 2>/dev/null || echo "unknown")
+    echo "NORMALIZE | SCALE | CPM bedGraph: \${CPM_LINES} lines (\${CPM_SIZE} bytes)"
     
-    if [[ -s "${out_sicpm_bg}" ]]; then
-      SICPM_LINES=$(wc -l < "${out_sicpm_bg}" 2>/dev/null | tr -d ' ' || echo 0)
-      SICPM_SIZE=$(stat -c%s "${out_sicpm_bg}" 2>/dev/null || stat -f%z "${out_sicpm_bg}" 2>/dev/null || echo "unknown")
-      echo "NORMALIZE | SCALE | siCPM bedGraph: ${SICPM_LINES} lines (${SICPM_SIZE} bytes)"
+    if [[ -s "\${out_sicpm_bg}" ]]; then
+      SICPM_LINES=\$(wc -l < "\${out_sicpm_bg}" 2>/dev/null | tr -d ' ' || echo 0)
+      SICPM_SIZE=\$(stat -c%s "\${out_sicpm_bg}" 2>/dev/null || stat -f%z "\${out_sicpm_bg}" 2>/dev/null || echo "unknown")
+      echo "NORMALIZE | SCALE | siCPM bedGraph: \${SICPM_LINES} lines (\${SICPM_SIZE} bytes)"
     fi
     
     # Convert to BigWig
-    make_bigwig "${out_cpm_bg}" "${out_cpm_bw}"
-    if [[ -s "${out_sicpm_bg}" ]]; then
-      make_bigwig "${out_sicpm_bg}" "${out_sicpm_bw}"
+    make_bigwig "\${out_cpm_bg}" "\${out_cpm_bw}"
+    if [[ -s "\${out_sicpm_bg}" ]]; then
+      make_bigwig "\${out_sicpm_bg}" "\${out_sicpm_bw}"
     else
-      : > "${out_sicpm_bw}"
+      : > "\${out_sicpm_bw}"
     fi
     
     # Add to manifest
-    echo -e "${SAMPLE_ID}\t${end_label}\t${set_label}\t${strand}\tcpm\t${out_cpm_bg}" >> tracks_manifest.tsv
-    if [[ -s "${out_sicpm_bg}" ]]; then
-      echo -e "${SAMPLE_ID}\t${end_label}\t${set_label}\t${strand}\tsicpm\t${out_sicpm_bg}" >> tracks_manifest.tsv
+    echo -e "\${SAMPLE_ID}\\t\${end_label}\\t\${set_label}\\t\${strand}\\tcpm\\t\${out_cpm_bg}" >> tracks_manifest.tsv
+    if [[ -s "\${out_sicpm_bg}" ]]; then
+      echo -e "\${SAMPLE_ID}\\t\${end_label}\\t\${set_label}\\t\${strand}\\tsicpm\\t\${out_sicpm_bg}" >> tracks_manifest.tsv
     fi
     
-    echo "NORMALIZE | SCALE | Complete: ${end_label} ${set_label} ${strand}"
+    echo "NORMALIZE | SCALE | Complete: \${end_label} \${set_label} \${strand}"
   }
 
   ###########################################################################
@@ -548,8 +553,8 @@ PYSCRIPT
   # Initialize manifest
   : > tracks_manifest.tsv
 
-  normalize_bedgraph "${POS3}" "3p" "pos" "main"
-  normalize_bedgraph "${NEG3}" "3p" "neg" "main"
+  normalize_bedgraph "\${POS3}" "3p" "pos" "main"
+  normalize_bedgraph "\${NEG3}" "3p" "neg" "main"
 
   echo "NORMALIZE | MAIN3P | Main 3' tracks complete"
 
@@ -557,11 +562,11 @@ PYSCRIPT
   # 7) NORMALIZE MAIN 5' TRACKS (if enabled)
   ###########################################################################
 
-  if [[ ${EMIT_5P} -eq 1 ]]; then
+  if [[ \${EMIT_5P} -eq 1 ]]; then
     echo "NORMALIZE | MAIN5P | Normalizing main 5' tracks..."
     
-    normalize_bedgraph "${POS5}" "5p" "pos" "main"
-    normalize_bedgraph "${NEG5}" "5p" "neg" "main"
+    normalize_bedgraph "\${POS5}" "5p" "pos" "main"
+    normalize_bedgraph "\${NEG5}" "5p" "neg" "main"
     
     echo "NORMALIZE | MAIN5P | Main 5' tracks complete"
   else
@@ -572,11 +577,11 @@ PYSCRIPT
   # 8) NORMALIZE ALLMAP 3' TRACKS (if enabled)
   ###########################################################################
 
-  if [[ ${EMIT_ALLMAP} -eq 1 ]]; then
+  if [[ \${EMIT_ALLMAP} -eq 1 ]]; then
     echo "NORMALIZE | ALLMAP3P | Normalizing allMap 3' tracks..."
     
-    normalize_bedgraph "${AM3P_POS}" "3p" "pos" "allMap"
-    normalize_bedgraph "${AM3P_NEG}" "3p" "neg" "allMap"
+    normalize_bedgraph "\${AM3P_POS}" "3p" "pos" "allMap"
+    normalize_bedgraph "\${AM3P_NEG}" "3p" "neg" "allMap"
     
     echo "NORMALIZE | ALLMAP3P | AllMap 3' tracks complete"
   else
@@ -587,11 +592,11 @@ PYSCRIPT
   # 9) NORMALIZE ALLMAP 5' TRACKS (if both enabled)
   ###########################################################################
 
-  if [[ ${EMIT_ALLMAP} -eq 1 && ${EMIT_5P} -eq 1 ]]; then
+  if [[ \${EMIT_ALLMAP} -eq 1 && \${EMIT_5P} -eq 1 ]]; then
     echo "NORMALIZE | ALLMAP5P | Normalizing allMap 5' tracks..."
     
-    normalize_bedgraph "${AM5P_POS}" "5p" "pos" "allMap"
-    normalize_bedgraph "${AM5P_NEG}" "5p" "neg" "allMap"
+    normalize_bedgraph "\${AM5P_POS}" "5p" "pos" "allMap"
+    normalize_bedgraph "\${AM5P_NEG}" "5p" "neg" "allMap"
     
     echo "NORMALIZE | ALLMAP5P | AllMap 5' tracks complete"
   else
@@ -606,8 +611,8 @@ PYSCRIPT
 
   cat > normalization_factors.tsv <<FACTOREOF
 method  factor
-CPM ${FAC_CPM}
-siCPM ${FAC_SICPM}
+CPM \${FAC_CPM}
+siCPM \${FAC_SICPM}
 FACTOREOF
 
   echo "NORMALIZE | OUTPUT | Normalization factors written"
@@ -619,8 +624,8 @@ FACTOREOF
   echo "NORMALIZE | LEGACY | Creating legacy symlinks for compatibility..."
 
   # Legacy symlinks for downstream compatibility
-  ln -sf "${SAMPLE_ID}.3p.pos.cpm.bedgraph" "3p/${SAMPLE_ID}_pos3_cpm.bedgraph"
-  ln -sf "${SAMPLE_ID}.3p.neg.cpm.bedgraph" "3p/${SAMPLE_ID}_neg3_cpm.bedgraph"
+  ln -sf "\${SAMPLE_ID}.3p.pos.cpm.bedgraph" "3p/\${SAMPLE_ID}_pos3_cpm.bedgraph"
+  ln -sf "\${SAMPLE_ID}.3p.neg.cpm.bedgraph" "3p/\${SAMPLE_ID}_neg3_cpm.bedgraph"
 
   echo "NORMALIZE | LEGACY | Legacy symlinks created"
 
@@ -632,7 +637,7 @@ FACTOREOF
 
   cat > README_normalization.txt <<'DOCEOF'
 ================================================================================
-NORMALIZED TRACKS — !{sample_id}
+NORMALIZED TRACKS — ${sample_id}
 ================================================================================
 
 OVERVIEW
@@ -664,50 +669,50 @@ siCPM (Spike-in Normalized CPM):
 
 CONTROL SELECTION (for siCPM)
 ────────────────────────────────────────────────────────────────────────────
-  Priority 1: Condition = "${CONTROL_LABEL}" AND Replicate = 1
+  Priority 1: Condition = "\${CONTROL_LABEL}" AND Replicate = 1
   Priority 2: First sample with spike_reads > 0 (fallback)
 
 SAMPLE INFORMATION
 ────────────────────────────────────────────────────────────────────────────
-  Sample:     !{sample_id}
-  Condition:  !{condition}
-  Timepoint:  !{timepoint}
-  Replicate:  !{replicate}
+  Sample:     ${sample_id}
+  Condition:  ${condition}
+  Timepoint:  ${timepoint}
+  Replicate:  ${replicate}
 
 NORMALIZATION FACTORS
 ────────────────────────────────────────────────────────────────────────────
-  CPM factor:   ${FAC_CPM}
-  siCPM factor: ${FAC_SICPM}
+  CPM factor:   \${FAC_CPM}
+  siCPM factor: \${FAC_SICPM}
   
-  $([ ${SICPM_AVAILABLE} -eq 0 ] && echo "  Note: siCPM disabled (factor = 0)" || echo "  siCPM enabled and available")
+  \$([ \${SICPM_AVAILABLE} -eq 0 ] && echo "  Note: siCPM disabled (factor = 0)" || echo "  siCPM enabled and available")
 
 FILES
 ────────────────────────────────────────────────────────────────────────────
 
 Main 3' Tracks (Always Generated):
-  3p/!{sample_id}.3p.pos.cpm.bedgraph       — Positive strand CPM
-  3p/!{sample_id}.3p.neg.cpm.bedgraph       — Negative strand CPM
-  3p/!{sample_id}.3p.pos.cpm.bw             — BigWig format
-  3p/!{sample_id}.3p.neg.cpm.bw             — BigWig format
-  3p/!{sample_id}.3p.pos.sicpm.bedgraph     — Positive strand siCPM
-  3p/!{sample_id}.3p.neg.sicpm.bedgraph     — Negative strand siCPM
-  3p/!{sample_id}.3p.pos.sicpm.bw           — BigWig format
-  3p/!{sample_id}.3p.neg.sicpm.bw           — BigWig format
+  3p/${sample_id}.3p.pos.cpm.bedgraph       — Positive strand CPM
+  3p/${sample_id}.3p.neg.cpm.bedgraph       — Negative strand CPM
+  3p/${sample_id}.3p.pos.cpm.bw             — BigWig format
+  3p/${sample_id}.3p.neg.cpm.bw             — BigWig format
+  3p/${sample_id}.3p.pos.sicpm.bedgraph     — Positive strand siCPM
+  3p/${sample_id}.3p.neg.sicpm.bedgraph     — Negative strand siCPM
+  3p/${sample_id}.3p.pos.sicpm.bw           — BigWig format
+  3p/${sample_id}.3p.neg.sicpm.bw           — BigWig format
 
 Main 5' Tracks (PE Only):
-  5p/!{sample_id}.5p.*.cpm.bedgraph         — CPM normalized
-  5p/!{sample_id}.5p.*.cpm.bw               — BigWig format
-  5p/!{sample_id}.5p.*.sicpm.bedgraph       — siCPM normalized
-  5p/!{sample_id}.5p.*.sicpm.bw             — BigWig format
+  5p/${sample_id}.5p.*.cpm.bedgraph         — CPM normalized
+  5p/${sample_id}.5p.*.cpm.bw               — BigWig format
+  5p/${sample_id}.5p.*.sicpm.bedgraph       — siCPM normalized
+  5p/${sample_id}.5p.*.sicpm.bw             — BigWig format
 
 AllMap Tracks (if emit_allmap=true):
-  3p/!{sample_id}.allMap.3p.*.cpm.bedgraph
-  3p/!{sample_id}.allMap.3p.*.sicpm.bedgraph
+  3p/${sample_id}.allMap.3p.*.cpm.bedgraph
+  3p/${sample_id}.allMap.3p.*.sicpm.bedgraph
   (Plus corresponding BigWig files)
 
 Legacy Symlinks (for compatibility):
-  3p/!{sample_id}_pos3_cpm.bedgraph → 3p/!{sample_id}.3p.pos.cpm.bedgraph
-  3p/!{sample_id}_neg3_cpm.bedgraph → 3p/!{sample_id}.3p.neg.cpm.bedgraph
+  3p/${sample_id}_pos3_cpm.bedgraph → 3p/${sample_id}.3p.pos.cpm.bedgraph
+  3p/${sample_id}_neg3_cpm.bedgraph → 3p/${sample_id}.3p.neg.cpm.bedgraph
 
 Metadata:
   normalization_factors.tsv — CPM and siCPM scaling factors
@@ -725,8 +730,8 @@ PROCESSING NOTES
   • Single-pass scaling: CPM and siCPM computed together for efficiency
   • No coordinate clipping needed (validated by generate_coverage_tracks module)
   • Negative strand values preserved from upstream mirroring
-  • BigWig timeout: ${TIMEOUT_BW} seconds
-  • Optional bedGraph sorting: $([ ${FORCE_SORT} -eq 1 ] && echo "enabled" || echo "disabled")
+  • BigWig timeout: \${TIMEOUT_BW} seconds
+  • Optional bedGraph sorting: \$([ \${FORCE_SORT} -eq 1 ] && echo "enabled" || echo "disabled")
 
 TRACKS MANIFEST
 ────────────────────────────────────────────────────────────────────────────
@@ -772,13 +777,13 @@ Troubleshooting:
 
 PARAMETERS USED
 ────────────────────────────────────────────────────────────────────────────
-  Emit BigWig:      $([ ${EMIT_BW} -eq 1 ] && echo "Yes" || echo "No")
-  Emit siCPM:       $([ ${EMIT_SICPM} -eq 1 ] && echo "Yes" || echo "No")
-  Emit allMap:      $([ ${EMIT_ALLMAP} -eq 1 ] && echo "Yes" || echo "No")
-  Emit 5' tracks:   $([ ${EMIT_5P} -eq 1 ] && echo "Yes" || echo "No (auto)")
-  Control label:    ${CONTROL_LABEL}
-  BigWig timeout:   ${TIMEOUT_BW}s
-  Force sort:       $([ ${FORCE_SORT} -eq 1 ] && echo "Yes" || echo "No")
+  Emit BigWig:      \$([ \${EMIT_BW} -eq 1 ] && echo "Yes" || echo "No")
+  Emit siCPM:       \$([ \${EMIT_SICPM} -eq 1 ] && echo "Yes" || echo "No")
+  Emit allMap:      \$([ \${EMIT_ALLMAP} -eq 1 ] && echo "Yes" || echo "No")
+  Emit 5' tracks:   \$([ \${EMIT_5P} -eq 1 ] && echo "Yes" || echo "No (auto)")
+  Control label:    \${CONTROL_LABEL}
+  BigWig timeout:   \${TIMEOUT_BW}s
+  Force sort:       \$([ \${FORCE_SORT} -eq 1 ] && echo "Yes" || echo "No")
 
 DOWNSTREAM MODULES
 ────────────────────────────────────────────────────────────────────────────
@@ -791,8 +796,8 @@ DOWNSTREAM MODULES
 GENERATED
 ────────────────────────────────────────────────────────────────────────────
   Pipeline: TrackTx PRO-seq
-  Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Sample: !{sample_id}
+  Date: \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+  Sample: ${sample_id}
   Module: 08_normalize_coverage_tracks
 
 ================================================================================
@@ -807,27 +812,27 @@ DOCEOF
   echo "NORMALIZE | VALIDATE | Validating outputs..."
 
   # Count output files
-  CPM_BG_COUNT=$(find 3p 5p -name "*.cpm.bedgraph" -type f 2>/dev/null | wc -l | tr -d ' ')
-  SICPM_BG_COUNT=$(find 3p 5p -name "*.sicpm.bedgraph" -type f 2>/dev/null | wc -l | tr -d ' ')
-  CPM_BW_COUNT=$(find 3p 5p -name "*.cpm.bw" -type f 2>/dev/null | wc -l | tr -d ' ')
-  SICPM_BW_COUNT=$(find 3p 5p -name "*.sicpm.bw" -type f 2>/dev/null | wc -l | tr -d ' ')
-  MANIFEST_LINES=$(wc -l < tracks_manifest.tsv | tr -d ' ')
+  CPM_BG_COUNT=\$(find 3p 5p -name "*.cpm.bedgraph" -type f 2>/dev/null | wc -l | tr -d ' ')
+  SICPM_BG_COUNT=\$(find 3p 5p -name "*.sicpm.bedgraph" -type f 2>/dev/null | wc -l | tr -d ' ')
+  CPM_BW_COUNT=\$(find 3p 5p -name "*.cpm.bw" -type f 2>/dev/null | wc -l | tr -d ' ')
+  SICPM_BW_COUNT=\$(find 3p 5p -name "*.sicpm.bw" -type f 2>/dev/null | wc -l | tr -d ' ')
+  MANIFEST_LINES=\$(wc -l < tracks_manifest.tsv | tr -d ' ')
 
-  echo "NORMALIZE | VALIDATE | CPM bedGraphs: ${CPM_BG_COUNT}"
-  echo "NORMALIZE | VALIDATE | siCPM bedGraphs: ${SICPM_BG_COUNT}"
-  echo "NORMALIZE | VALIDATE | CPM BigWigs: ${CPM_BW_COUNT}"
-  echo "NORMALIZE | VALIDATE | siCPM BigWigs: ${SICPM_BW_COUNT}"
-  echo "NORMALIZE | VALIDATE | Manifest entries: ${MANIFEST_LINES}"
+  echo "NORMALIZE | VALIDATE | CPM bedGraphs: \${CPM_BG_COUNT}"
+  echo "NORMALIZE | VALIDATE | siCPM bedGraphs: \${SICPM_BG_COUNT}"
+  echo "NORMALIZE | VALIDATE | CPM BigWigs: \${CPM_BW_COUNT}"
+  echo "NORMALIZE | VALIDATE | siCPM BigWigs: \${SICPM_BW_COUNT}"
+  echo "NORMALIZE | VALIDATE | Manifest entries: \${MANIFEST_LINES}"
 
   # Check critical files exist
-  for file in \
-    "3p/${SAMPLE_ID}.3p.pos.cpm.bedgraph" \
-    "3p/${SAMPLE_ID}.3p.neg.cpm.bedgraph" \
-    "normalization_factors.tsv" \
+  for file in \\
+    "3p/\${SAMPLE_ID}.3p.pos.cpm.bedgraph" \\
+    "3p/\${SAMPLE_ID}.3p.neg.cpm.bedgraph" \\
+    "normalization_factors.tsv" \\
     "tracks_manifest.tsv"; do
     
-    if [[ ! -s "${file}" ]]; then
-      tracktx_error "normalize_coverage_tracks" "Missing or empty critical file: ${file}" "Check normalize_coverage_tracks.log in work dir"
+    if [[ ! -s "\${file}" ]]; then
+      tracktx_error "normalize_coverage_tracks" "Missing or empty critical file: \${file}" "Check normalize_coverage_tracks.log in work dir"
     fi
   done
 
@@ -839,21 +844,21 @@ DOCEOF
   ###########################################################################
 
   # Calculate total output size
-  TOTAL_SIZE=$(du -sh . 2>/dev/null | cut -f1 || echo "unknown")
+  TOTAL_SIZE=\$(du -sh . 2>/dev/null | cut -f1 || echo "unknown")
 
   echo "────────────────────────────────────────────────────────────────────────"
-  echo "NORMALIZE | SUMMARY | Sample: ${SAMPLE_ID}"
-  echo "NORMALIZE | SUMMARY | CPM factor: ${FAC_CPM}"
-  echo "NORMALIZE | SUMMARY | siCPM factor: ${FAC_SICPM}"
-  echo "NORMALIZE | SUMMARY | CPM bedGraphs: ${CPM_BG_COUNT}"
-  echo "NORMALIZE | SUMMARY | siCPM bedGraphs: ${SICPM_BG_COUNT}"
-  echo "NORMALIZE | SUMMARY | BigWig files: $((CPM_BW_COUNT + SICPM_BW_COUNT))"
-  echo "NORMALIZE | SUMMARY | Total output: ${TOTAL_SIZE}"
+  echo "NORMALIZE | SUMMARY | Sample: \${SAMPLE_ID}"
+  echo "NORMALIZE | SUMMARY | CPM factor: \${FAC_CPM}"
+  echo "NORMALIZE | SUMMARY | siCPM factor: \${FAC_SICPM}"
+  echo "NORMALIZE | SUMMARY | CPM bedGraphs: \${CPM_BG_COUNT}"
+  echo "NORMALIZE | SUMMARY | siCPM bedGraphs: \${SICPM_BG_COUNT}"
+  echo "NORMALIZE | SUMMARY | BigWig files: \$((CPM_BW_COUNT + SICPM_BW_COUNT))"
+  echo "NORMALIZE | SUMMARY | Total output: \${TOTAL_SIZE}"
   echo "────────────────────────────────────────────────────────────────────────"
 
-  TIMESTAMP_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP_END=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "NORMALIZE | COMPLETE | sample=${SAMPLE_ID} | ts=${TIMESTAMP_END}"
+  echo "NORMALIZE | COMPLETE | sample=\${SAMPLE_ID} | ts=\${TIMESTAMP_END}"
   echo "════════════════════════════════════════════════════════════════════════"
-  '''
+  """
 }

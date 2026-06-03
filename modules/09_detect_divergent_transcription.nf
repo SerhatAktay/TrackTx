@@ -127,8 +127,8 @@ process detect_divergent_transcription {
     path "divergent.log",                                  emit: log
 
   // ── Main Script ───────────────────────────────────────────────────────────
-  shell:
-  '''
+  script:
+  """
   #!/usr/bin/env bash
   set -eu
   export LC_ALL=C
@@ -143,7 +143,7 @@ process detect_divergent_transcription {
 
   # Standardized error reporting (surfaces clearly in Nextflow "Command error")
   tracktx_error() {
-    local module="$1" problem="$2" fix="$3" code="${4:-1}"
+    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
     echo "" >&2
     echo "═══════════════════════════════════════════════════════════════════════" >&2
     echo "TRACKTX ERROR" >&2
@@ -155,58 +155,58 @@ process detect_divergent_transcription {
     exit "\$code"
   }
 
-  TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "DIVERGENT | START | sample=!{sample_id} | ts=${TIMESTAMP}"
+  echo "DIVERGENT | START | sample=${sample_id} | ts=\${TIMESTAMP}"
   echo "════════════════════════════════════════════════════════════════════════"
 
   ###########################################################################
   # 1) CONFIGURATION
   ###########################################################################
 
-  SAMPLE_ID="!{sample_id}"
-  CONDITION="!{condition}"
-  TIMEPOINT="!{timepoint}"
-  REPLICATE="!{replicate}"
-  THREADS=!{task.cpus}
+  SAMPLE_ID="${sample_id}"
+  CONDITION="${condition}"
+  TIMEPOINT="${timepoint}"
+  REPLICATE="${replicate}"
+  THREADS=${task.cpus}
 
-  POS_BG="!{pos_bg}"
-  NEG_BG="!{neg_bg}"
+  POS_BG="${pos_bg}"
+  NEG_BG="${neg_bg}"
   
-  DETECTOR_SCRIPT="!{projectDir}/bin/detect_divergent_transcription.py"
+  DETECTOR_SCRIPT="${projectDir}/bin/detect_divergent_transcription.py"
 
   # Detection parameters (passed as process inputs for cache control)
-  THRESHOLD="!{threshold}"
-  SUM_THR="!{sum_thr}"
-  FDR=!{fdr}
-  NT_WINDOW=!{nt_window}
-  BALANCE=!{balance}
-  BIN_GAP=!{bin_gap}
-  CAL_PERCENTILE=!{calibration_percentile}
-  CAL_SUM_MULT=!{calibration_sum_multiplier}
-  CAL_BG_LOWER=!{calibration_background_lower}
-  MERGE_GAP=!{merge_gap}
+  THRESHOLD="${threshold}"
+  SUM_THR="${sum_thr}"
+  FDR=${fdr}
+  NT_WINDOW=${nt_window}
+  BALANCE=${balance}
+  BIN_GAP=${bin_gap}
+  CAL_PERCENTILE=${calibration_percentile}
+  CAL_SUM_MULT=${calibration_sum_multiplier}
+  CAL_BG_LOWER=${calibration_background_lower}
+  MERGE_GAP=${merge_gap}
 
   # Feature flags
-  DO_QC=$([[ "!{params.advanced?.divergent_qc}" == "false" ]] && echo 0 || echo 1)
+  DO_QC=\$([[ "${params.advanced?.divergent_qc}" == "false" ]] && echo 0 || echo 1)
 
-  echo "DIVERGENT | CONFIG | Sample ID: ${SAMPLE_ID}"
-  echo "DIVERGENT | CONFIG | Condition: ${CONDITION}"
-  echo "DIVERGENT | CONFIG | Timepoint: ${TIMEPOINT}"
-  echo "DIVERGENT | CONFIG | Replicate: ${REPLICATE}"
-  echo "DIVERGENT | CONFIG | Threads: ${THREADS}"
-  echo "DIVERGENT | CONFIG | Positive bedGraph: ${POS_BG}"
-  echo "DIVERGENT | CONFIG | Negative bedGraph: ${NEG_BG}"
+  echo "DIVERGENT | CONFIG | Sample ID: \${SAMPLE_ID}"
+  echo "DIVERGENT | CONFIG | Condition: \${CONDITION}"
+  echo "DIVERGENT | CONFIG | Timepoint: \${TIMEPOINT}"
+  echo "DIVERGENT | CONFIG | Replicate: \${REPLICATE}"
+  echo "DIVERGENT | CONFIG | Threads: \${THREADS}"
+  echo "DIVERGENT | CONFIG | Positive bedGraph: \${POS_BG}"
+  echo "DIVERGENT | CONFIG | Negative bedGraph: \${NEG_BG}"
   echo ""
   echo "DIVERGENT | CONFIG | Detection Parameters (statistical):"
   echo "DIVERGENT | CONFIG |   Algorithm: Gaussian Mixture Model with FDR control"
-  echo "DIVERGENT | CONFIG |   Threshold: ${THRESHOLD} (auto = ${CAL_PERCENTILE}th percentile)"
-  echo "DIVERGENT | CONFIG |   Sum threshold: ${SUM_THR} (auto = ${CAL_SUM_MULT}x threshold)"
-  echo "DIVERGENT | CONFIG |   Merge gap: ${MERGE_GAP} bp (0=disabled)"
-  echo "DIVERGENT | CONFIG |   FDR threshold: ${FDR}"
-  echo "DIVERGENT | CONFIG |   Pairing window: ${NT_WINDOW} bp"
-  echo "DIVERGENT | CONFIG |   Balance filter: ${BALANCE} (0.0 = disabled for max sensitivity)"
-  echo "DIVERGENT | CONFIG |   Bin gap: ${BIN_GAP} bp"
+  echo "DIVERGENT | CONFIG |   Threshold: \${THRESHOLD} (auto = \${CAL_PERCENTILE}th percentile)"
+  echo "DIVERGENT | CONFIG |   Sum threshold: \${SUM_THR} (auto = \${CAL_SUM_MULT}x threshold)"
+  echo "DIVERGENT | CONFIG |   Merge gap: \${MERGE_GAP} bp (0=disabled)"
+  echo "DIVERGENT | CONFIG |   FDR threshold: \${FDR}"
+  echo "DIVERGENT | CONFIG |   Pairing window: \${NT_WINDOW} bp"
+  echo "DIVERGENT | CONFIG |   Balance filter: \${BALANCE} (0.0 = disabled for max sensitivity)"
+  echo "DIVERGENT | CONFIG |   Bin gap: \${BIN_GAP} bp"
   echo ""
   echo "DIVERGENT | CONFIG | Feature Extraction:"
   echo "DIVERGENT | CONFIG |   • Bayesian balance scoring"
@@ -225,10 +225,10 @@ process detect_divergent_transcription {
   # 2) micromamba: Docker/Singularity container (mambaorg/micromamba image)
   # 3) /opt/conda: Container with conda at standard path
   # 4) python3/python: System or conda-activated PATH
-  if [[ -n "${CONDA_PREFIX:-}" ]] && [[ -x "${CONDA_PREFIX}/bin/python3" ]]; then
-    PYTHON_CMD="${CONDA_PREFIX}/bin/python3"
-  elif [[ -n "${CONDA_PREFIX:-}" ]] && [[ -x "${CONDA_PREFIX}/bin/python" ]]; then
-    PYTHON_CMD="${CONDA_PREFIX}/bin/python"
+  if [[ -n "\${CONDA_PREFIX:-}" ]] && [[ -x "\${CONDA_PREFIX}/bin/python3" ]]; then
+    PYTHON_CMD="\${CONDA_PREFIX}/bin/python3"
+  elif [[ -n "\${CONDA_PREFIX:-}" ]] && [[ -x "\${CONDA_PREFIX}/bin/python" ]]; then
+    PYTHON_CMD="\${CONDA_PREFIX}/bin/python"
   elif command -v micromamba >/dev/null 2>&1; then
     PYTHON_CMD="micromamba run -n base python3"
   elif [[ -x /opt/conda/bin/python3 ]]; then
@@ -240,54 +240,54 @@ process detect_divergent_transcription {
   fi
 
   # Check Python script exists
-  if [[ ! -f "${DETECTOR_SCRIPT}" ]]; then
-    tracktx_error "detect_divergent_transcription" "Detector script not found: ${DETECTOR_SCRIPT}" "Ensure bin/detect_divergent_transcription.py exists in the pipeline directory"
+  if [[ ! -f "\${DETECTOR_SCRIPT}" ]]; then
+    tracktx_error "detect_divergent_transcription" "Detector script not found: \${DETECTOR_SCRIPT}" "Ensure bin/detect_divergent_transcription.py exists in the pipeline directory"
   fi
-  echo "DIVERGENT | VALIDATE | Detector script: ${DETECTOR_SCRIPT}"
+  echo "DIVERGENT | VALIDATE | Detector script: \${DETECTOR_SCRIPT}"
 
   # Check input bedGraphs
-  if [[ ! -s "${POS_BG}" ]]; then
-    tracktx_error "detect_divergent_transcription" "Positive bedGraph missing or empty: ${POS_BG}" "Check that generate_coverage_tracks produced 3p.pos.bedgraph for this sample"
+  if [[ ! -s "\${POS_BG}" ]]; then
+    tracktx_error "detect_divergent_transcription" "Positive bedGraph missing or empty: \${POS_BG}" "Check that generate_coverage_tracks produced 3p.pos.bedgraph for this sample"
   fi
 
-  if [[ ! -s "${NEG_BG}" ]]; then
-    tracktx_error "detect_divergent_transcription" "Negative bedGraph missing or empty: ${NEG_BG}" "Check that generate_coverage_tracks produced 3p.neg.bedgraph for this sample"
+  if [[ ! -s "\${NEG_BG}" ]]; then
+    tracktx_error "detect_divergent_transcription" "Negative bedGraph missing or empty: \${NEG_BG}" "Check that generate_coverage_tracks produced 3p.neg.bedgraph for this sample"
   fi
 
-  POS_SIZE=$(stat -c%s "${POS_BG}" 2>/dev/null || stat -f%z "${POS_BG}" 2>/dev/null || echo "unknown")
-  NEG_SIZE=$(stat -c%s "${NEG_BG}" 2>/dev/null || stat -f%z "${NEG_BG}" 2>/dev/null || echo "unknown")
-  POS_LINES=$(wc -l < "${POS_BG}" | tr -d ' ')
-  NEG_LINES=$(wc -l < "${NEG_BG}" | tr -d ' ')
+  POS_SIZE=\$(stat -c%s "\${POS_BG}" 2>/dev/null || stat -f%z "\${POS_BG}" 2>/dev/null || echo "unknown")
+  NEG_SIZE=\$(stat -c%s "\${NEG_BG}" 2>/dev/null || stat -f%z "\${NEG_BG}" 2>/dev/null || echo "unknown")
+  POS_LINES=\$(wc -l < "\${POS_BG}" | tr -d ' ')
+  NEG_LINES=\$(wc -l < "\${NEG_BG}" | tr -d ' ')
 
-  echo "DIVERGENT | VALIDATE | Positive bedGraph: ${POS_SIZE} bytes (${POS_LINES} lines)"
-  echo "DIVERGENT | VALIDATE | Negative bedGraph: ${NEG_SIZE} bytes (${NEG_LINES} lines)"
+  echo "DIVERGENT | VALIDATE | Positive bedGraph: \${POS_SIZE} bytes (\${POS_LINES} lines)"
+  echo "DIVERGENT | VALIDATE | Negative bedGraph: \${NEG_SIZE} bytes (\${NEG_LINES} lines)"
 
   # Validate tools and dependencies; try alternative Pythons if first fails
   TOOLS_OK=0
-  PYTHON_CANDIDATES=("${PYTHON_CMD}")
-  [[ -n "${CONDA_PREFIX:-}" ]] && PYTHON_CANDIDATES+=("${CONDA_PREFIX}/bin/python3" "${CONDA_PREFIX}/bin/python")
+  PYTHON_CANDIDATES=("\${PYTHON_CMD}")
+  [[ -n "\${CONDA_PREFIX:-}" ]] && PYTHON_CANDIDATES+=("\${CONDA_PREFIX}/bin/python3" "\${CONDA_PREFIX}/bin/python")
   command -v micromamba >/dev/null 2>&1 && PYTHON_CANDIDATES+=("micromamba run -n base python3")
   [[ -x /opt/conda/bin/python3 ]] && PYTHON_CANDIDATES+=("/opt/conda/bin/python3")
   command -v python3 >/dev/null 2>&1 && PYTHON_CANDIDATES+=("python3")
   command -v python >/dev/null 2>&1 && PYTHON_CANDIDATES+=("python")
 
-  for py in "${PYTHON_CANDIDATES[@]}"; do
-    [[ -z "$py" ]] && continue
-    if $py --version >/dev/null 2>&1; then
-      if $py -c "import numpy, pandas, sklearn.mixture, scipy.stats" 2>/dev/null; then
-        PYTHON_CMD="$py"
+  for py in "\${PYTHON_CANDIDATES[@]}"; do
+    [[ -z "\$py" ]] && continue
+    if \$py --version >/dev/null 2>&1; then
+      if \$py -c "import numpy, pandas, sklearn.mixture, scipy.stats" 2>/dev/null; then
+        PYTHON_CMD="\$py"
         TOOLS_OK=1
         break
       fi
     fi
   done
 
-  if ${PYTHON_CMD} --version >/dev/null 2>&1; then
-    PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
-    echo "DIVERGENT | VALIDATE | Python: ${PYTHON_VERSION}"
+  if \${PYTHON_CMD} --version >/dev/null 2>&1; then
+    PYTHON_VERSION=\$(\${PYTHON_CMD} --version 2>&1 || echo "unknown")
+    echo "DIVERGENT | VALIDATE | Python: \${PYTHON_VERSION}"
   fi
 
-  if [[ ${TOOLS_OK} -eq 0 ]]; then
+  if [[ \${TOOLS_OK} -eq 0 ]]; then
     tracktx_error "detect_divergent_transcription" "Missing Python dependencies (numpy, pandas, scikit-learn, scipy)" "pip install numpy pandas scikit-learn scipy | Or use: -profile conda | -profile docker"
   fi
   echo "DIVERGENT | VALIDATE | Checking Python dependencies... OK"
@@ -302,57 +302,57 @@ process detect_divergent_transcription {
 
   # Build command-line arguments
   THRESHOLD_ARG=""
-  if [[ "${THRESHOLD}" != "auto" ]]; then
-    THRESHOLD_ARG="--threshold ${THRESHOLD}"
+  if [[ "\${THRESHOLD}" != "auto" ]]; then
+    THRESHOLD_ARG="--threshold \${THRESHOLD}"
   fi
 
   SUM_THR_ARG=""
-  if [[ "${SUM_THR}" != "auto" ]]; then
-    SUM_THR_ARG="--sum-thr ${SUM_THR}"
+  if [[ "\${SUM_THR}" != "auto" ]]; then
+    SUM_THR_ARG="--sum-thr \${SUM_THR}"
   fi
 
   QC_ARG=""
-  [[ ${DO_QC} -eq 0 ]] && QC_ARG="--no-report"
+  [[ \${DO_QC} -eq 0 ]] && QC_ARG="--no-report"
 
   CAL_BG_ARG=""
-  [[ "${CAL_BG_LOWER}" == "true" ]] && CAL_BG_ARG="--calibration-background-lower"
+  [[ "\${CAL_BG_LOWER}" == "true" ]] && CAL_BG_ARG="--calibration-background-lower"
 
   # Run detector (capture exit code)
-  DETECT_START=$(date +%s)
+  DETECT_START=\$(date +%s)
   set +e
-  ${PYTHON_CMD} "${DETECTOR_SCRIPT}" \
-    --sample       "${SAMPLE_ID}" \
-    --pos          "${POS_BG}" \
-    --neg          "${NEG_BG}" \
-    --out          "divergent_transcription.bed" \
-    --fdr          "${FDR}" \
-    --nt-window    "${NT_WINDOW}" \
-    --balance      "${BALANCE}" \
-    --bin-gap      "${BIN_GAP}" \
-    --calibration-percentile "${CAL_PERCENTILE}" \
-    --calibration-sum-multiplier "${CAL_SUM_MULT}" \
-    --merge-gap    "${MERGE_GAP}" \
-    --ncores       "${THREADS}" \
-    --write-summary "divergent_summary.tsv" \
-    ${THRESHOLD_ARG} \
-    ${SUM_THR_ARG} \
-    ${CAL_BG_ARG} \
-    ${QC_ARG}
+  \${PYTHON_CMD} "\${DETECTOR_SCRIPT}" \\
+    --sample       "\${SAMPLE_ID}" \\
+    --pos          "\${POS_BG}" \\
+    --neg          "\${NEG_BG}" \\
+    --out          "divergent_transcription.bed" \\
+    --fdr          "\${FDR}" \\
+    --nt-window    "\${NT_WINDOW}" \\
+    --balance      "\${BALANCE}" \\
+    --bin-gap      "\${BIN_GAP}" \\
+    --calibration-percentile "\${CAL_PERCENTILE}" \\
+    --calibration-sum-multiplier "\${CAL_SUM_MULT}" \\
+    --merge-gap    "\${MERGE_GAP}" \\
+    --ncores       "\${THREADS}" \\
+    --write-summary "divergent_summary.tsv" \\
+    \${THRESHOLD_ARG} \\
+    \${SUM_THR_ARG} \\
+    \${CAL_BG_ARG} \\
+    \${QC_ARG}
   
-  DETECT_RC=$?
+  DETECT_RC=\$?
   set -e
   
-  DETECT_END=$(date +%s)
-  DETECT_TIME=$((DETECT_END - DETECT_START))
+  DETECT_END=\$(date +%s)
+  DETECT_TIME=\$((DETECT_END - DETECT_START))
 
-  echo "DIVERGENT | DETECT | Detection completed in ${DETECT_TIME}s (exit code: ${DETECT_RC})"
+  echo "DIVERGENT | DETECT | Detection completed in \${DETECT_TIME}s (exit code: \${DETECT_RC})"
 
   ###########################################################################
   # 4) HANDLE DETECTOR EXIT CODES
   ###########################################################################
 
-  if [[ ${DETECT_RC} -ne 0 ]]; then
-    tracktx_error "detect_divergent_transcription" "Detector failed with exit code ${DETECT_RC}" "Check divergent.log in work dir for details" ${DETECT_RC}
+  if [[ \${DETECT_RC} -ne 0 ]]; then
+    tracktx_error "detect_divergent_transcription" "Detector failed with exit code \${DETECT_RC}" "Check divergent.log in work dir for details" \${DETECT_RC}
   fi
 
   echo "DIVERGENT | STATUS | Detection successful"
@@ -367,7 +367,7 @@ process detect_divergent_transcription {
     echo "DIVERGENT | WARNING | Summary missing, creating default"
     cat > divergent_summary.tsv <<SUMMARYEOF
 sample	n_pos_pk	n_neg_pk	n_pairs_raw	n_dt	wall_s
-${SAMPLE_ID}	0	0	0	0	${DETECT_TIME}
+\${SAMPLE_ID}	0	0	0	0	\${DETECT_TIME}
 SUMMARYEOF
   fi
 
@@ -378,47 +378,47 @@ SUMMARYEOF
   echo "DIVERGENT | RESULTS | Parsing detection results..."
 
   # Count detected regions
-  DT_COUNT=$(grep -v '^#' divergent_transcription.bed 2>/dev/null | wc -l | tr -d ' ' || echo 0)
-  BED_SIZE=$(stat -c%s divergent_transcription.bed 2>/dev/null || stat -f%z divergent_transcription.bed 2>/dev/null || echo "unknown")
+  DT_COUNT=\$(grep -v '^#' divergent_transcription.bed 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+  BED_SIZE=\$(stat -c%s divergent_transcription.bed 2>/dev/null || stat -f%z divergent_transcription.bed 2>/dev/null || echo "unknown")
 
-  echo "DIVERGENT | RESULTS | Detected regions: ${DT_COUNT}"
-  echo "DIVERGENT | RESULTS | Output BED size: ${BED_SIZE} bytes"
+  echo "DIVERGENT | RESULTS | Detected regions: \${DT_COUNT}"
+  echo "DIVERGENT | RESULTS | Output BED size: \${BED_SIZE} bytes"
 
   # Parse summary statistics if available
-  if [[ -s divergent_summary.tsv && ${DT_COUNT} -gt 0 ]]; then
+  if [[ -s divergent_summary.tsv && \${DT_COUNT} -gt 0 ]]; then
     # Extract statistics from summary (skip header)
-    SUMMARY_LINE=$(tail -1 divergent_summary.tsv)
+    SUMMARY_LINE=\$(tail -1 divergent_summary.tsv)
     
-    N_POS_PK=$(echo "${SUMMARY_LINE}" | cut -f2 || echo "unknown")
-    N_NEG_PK=$(echo "${SUMMARY_LINE}" | cut -f3 || echo "unknown")
-    N_PAIRS_RAW=$(echo "${SUMMARY_LINE}" | cut -f4 || echo "unknown")
-    WALL_TIME=$(echo "${SUMMARY_LINE}" | cut -f6 || echo "unknown")
+    N_POS_PK=\$(echo "\${SUMMARY_LINE}" | cut -f2 || echo "unknown")
+    N_NEG_PK=\$(echo "\${SUMMARY_LINE}" | cut -f3 || echo "unknown")
+    N_PAIRS_RAW=\$(echo "\${SUMMARY_LINE}" | cut -f4 || echo "unknown")
+    WALL_TIME=\$(echo "\${SUMMARY_LINE}" | cut -f6 || echo "unknown")
     
-    echo "DIVERGENT | RESULTS | Positive peaks: ${N_POS_PK}"
-    echo "DIVERGENT | RESULTS | Negative peaks: ${N_NEG_PK}"
-    echo "DIVERGENT | RESULTS | Raw pairs: ${N_PAIRS_RAW}"
-    echo "DIVERGENT | RESULTS | Final regions (FDR-filtered): ${DT_COUNT}"
-    echo "DIVERGENT | RESULTS | Retention rate: $(awk "BEGIN {printf \"%.1f%%\", (${DT_COUNT}/${N_PAIRS_RAW})*100}" 2>/dev/null || echo "N/A")"
-    echo "DIVERGENT | RESULTS | Processing time: ${WALL_TIME}s"
+    echo "DIVERGENT | RESULTS | Positive peaks: \${N_POS_PK}"
+    echo "DIVERGENT | RESULTS | Negative peaks: \${N_NEG_PK}"
+    echo "DIVERGENT | RESULTS | Raw pairs: \${N_PAIRS_RAW}"
+    echo "DIVERGENT | RESULTS | Final regions (FDR-filtered): \${DT_COUNT}"
+    echo "DIVERGENT | RESULTS | Retention rate: \$(awk "BEGIN {printf \\"%.1f%%\\", (\${DT_COUNT}/\${N_PAIRS_RAW})*100}" 2>/dev/null || echo "N/A")"
+    echo "DIVERGENT | RESULTS | Processing time: \${WALL_TIME}s"
   fi
 
   # Parse confidence scores if BED has 5 columns
-  if [[ ${DT_COUNT} -gt 0 ]]; then
-    FIRST_LINE=$(grep -v '^#' divergent_transcription.bed | head -1)
-    COL_COUNT=$(echo "${FIRST_LINE}" | awk '{print NF}')
+  if [[ \${DT_COUNT} -gt 0 ]]; then
+    FIRST_LINE=\$(grep -v '^#' divergent_transcription.bed | head -1)
+    COL_COUNT=\$(echo "\${FIRST_LINE}" | awk '{print NF}')
     
-    if [[ ${COL_COUNT} -eq 5 ]]; then
+    if [[ \${COL_COUNT} -eq 5 ]]; then
       echo "DIVERGENT | RESULTS | Output format: BED5 (with confidence scores)"
       
       # Calculate score statistics
-      SCORE_MIN=$(awk '{print $5}' divergent_transcription.bed | sort -n | head -1)
-      SCORE_MAX=$(awk '{print $5}' divergent_transcription.bed | sort -n | tail -1)
-      SCORE_MEAN=$(awk '{sum+=$5; n++} END {if(n>0) printf "%.4f", sum/n; else print "N/A"}' divergent_transcription.bed)
+      SCORE_MIN=\$(awk '{print \$5}' divergent_transcription.bed | sort -n | head -1)
+      SCORE_MAX=\$(awk '{print \$5}' divergent_transcription.bed | sort -n | tail -1)
+      SCORE_MEAN=\$(awk '{sum+=\$5; n++} END {if(n>0) printf "%.4f", sum/n; else print "N/A"}' divergent_transcription.bed)
       
       echo "DIVERGENT | RESULTS | Confidence scores:"
-      echo "DIVERGENT | RESULTS |   Min:  ${SCORE_MIN}"
-      echo "DIVERGENT | RESULTS |   Mean: ${SCORE_MEAN}"
-      echo "DIVERGENT | RESULTS |   Max:  ${SCORE_MAX}"
+      echo "DIVERGENT | RESULTS |   Min:  \${SCORE_MIN}"
+      echo "DIVERGENT | RESULTS |   Mean: \${SCORE_MEAN}"
+      echo "DIVERGENT | RESULTS |   Max:  \${SCORE_MAX}"
     fi
   fi
 
@@ -426,10 +426,10 @@ SUMMARYEOF
   # 6) QC VALIDATION
   ###########################################################################
 
-  if [[ ${DO_QC} -eq 1 ]]; then
+  if [[ \${DO_QC} -eq 1 ]]; then
     if [[ -s divergent_transcription_qc.txt ]]; then
-      QC_SIZE=$(stat -c%s divergent_transcription_qc.txt 2>/dev/null || stat -f%z divergent_transcription_qc.txt 2>/dev/null || echo "unknown")
-      echo "DIVERGENT | QC | QC report generated: ${QC_SIZE} bytes"
+      QC_SIZE=\$(stat -c%s divergent_transcription_qc.txt 2>/dev/null || stat -f%z divergent_transcription_qc.txt 2>/dev/null || echo "unknown")
+      echo "DIVERGENT | QC | QC report generated: \${QC_SIZE} bytes"
       echo "DIVERGENT | QC | Report includes: thresholds, peak counts, score distributions, feature summaries"
     else
       echo "DIVERGENT | QC | WARNING: QC report not generated (check for errors above)"
@@ -444,7 +444,7 @@ SUMMARYEOF
 
   cat > README_divergent.txt <<'DOCEOF'
 ================================================================================
-DIVERGENT TRANSCRIPTION — !{sample_id} (Statistical)
+DIVERGENT TRANSCRIPTION — ${sample_id} (Statistical)
 ================================================================================
 
 OVERVIEW
@@ -554,36 +554,36 @@ INPUT DATA
 
 SAMPLE INFORMATION
 ────────────────────────────────────────────────────────────────────────────
-  Sample:     !{sample_id}
-  Condition:  !{condition}
-  Timepoint:  !{timepoint}
-  Replicate:  !{replicate}
+  Sample:     ${sample_id}
+  Condition:  ${condition}
+  Timepoint:  ${timepoint}
+  Replicate:  ${replicate}
 
 DETECTION PARAMETERS
 ────────────────────────────────────────────────────────────────────────────
-  Threshold:            ${THRESHOLD}
+  Threshold:            \${THRESHOLD}
     Per-bin signal minimum (auto = 95th percentile of background)
   
-  Sum Threshold:        ${SUM_THR}
+  Sum Threshold:        \${SUM_THR}
     Minimum total signal for peak blocks (auto = 10x threshold)
   
-  FDR Threshold:        ${FDR}
+  FDR Threshold:        \${FDR}
     False discovery rate for filtering (e.g., 0.05 = 5% expected false positives)
   
-  Pairing Window:       ${NT_WINDOW} bp
+  Pairing Window:       \${NT_WINDOW} bp
     Maximum distance for initial pairing (edge-to-edge or overlapping)
   
-  Balance Filter:       ${BALANCE}
+  Balance Filter:       \${BALANCE}
     Minimum balance for initial pairing (0.0 = disabled for max sensitivity)
     Note: Final filtering done statistically via GMM
   
-  Bin Gap:              ${BIN_GAP} bp
+  Bin Gap:              \${BIN_GAP} bp
     Maximum gap to merge bins into peak blocks
 
 PROCESSING OPTIONS
 ────────────────────────────────────────────────────────────────────────────
-  Threads:              ${THREADS}
-  QC Report:            $([ ${DO_QC} -eq 1 ] && echo "Generated" || echo "Disabled")
+  Threads:              \${THREADS}
+  QC Report:            \$([ \${DO_QC} -eq 1 ] && echo "Generated" || echo "Disabled")
 
 FILES
 ────────────────────────────────────────────────────────────────────────────
@@ -612,14 +612,14 @@ Confidence Score Interpretation:
 
 DETECTION RESULTS
 ────────────────────────────────────────────────────────────────────────────
-  Detected regions: ${DT_COUNT}
-  $([ -s divergent_summary.tsv ] && [ ${DT_COUNT} -gt 0 ] && cat <<STATS
-  Positive peaks:   ${N_POS_PK:-unknown}
-  Negative peaks:   ${N_NEG_PK:-unknown}
-  Raw pairs:        ${N_PAIRS_RAW:-unknown}
-  Final (filtered): ${DT_COUNT}
-  Retention rate:   $(awk "BEGIN {printf \"%.1f%%\", (${DT_COUNT}/${N_PAIRS_RAW:-1})*100}" 2>/dev/null || echo "N/A")
-  Processing time:  ${WALL_TIME:-unknown}s
+  Detected regions: \${DT_COUNT}
+  \$([ -s divergent_summary.tsv ] && [ \${DT_COUNT} -gt 0 ] && cat <<STATS
+  Positive peaks:   \${N_POS_PK:-unknown}
+  Negative peaks:   \${N_NEG_PK:-unknown}
+  Raw pairs:        \${N_PAIRS_RAW:-unknown}
+  Final (filtered): \${DT_COUNT}
+  Retention rate:   \$(awk "BEGIN {printf \\"%.1f%%\\", (\${DT_COUNT}/\${N_PAIRS_RAW:-1})*100}" 2>/dev/null || echo "N/A")
+  Processing time:  \${WALL_TIME:-unknown}s
 STATS
 )
 
@@ -692,8 +692,8 @@ TECHNICAL NOTES
 GENERATED
 ────────────────────────────────────────────────────────────────────────────
   Pipeline: TrackTx PRO-seq
-  Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Sample: !{sample_id}
+  Date: \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+  Sample: ${sample_id}
   Module: detect_divergent_transcription (Statistical)
   Detector: detect_divergent_transcription.py v1.0
 
@@ -725,30 +725,30 @@ DOCEOF
   # Validate BED format if non-empty
   if [[ -s divergent_transcription.bed ]]; then
     # Check that we have 5 columns (BED5 with scores)
-    FIRST_LINE=$(grep -v '^#' divergent_transcription.bed | head -1 || true)
-    if [[ -n "${FIRST_LINE}" ]]; then
-      COL_COUNT=$(echo "${FIRST_LINE}" | awk '{print NF}')
-      if [[ ${COL_COUNT} -ne 5 ]]; then
-        echo "DIVERGENT | WARNING | BED file should have 5 columns, found ${COL_COUNT}"
+    FIRST_LINE=\$(grep -v '^#' divergent_transcription.bed | head -1 || true)
+    if [[ -n "\${FIRST_LINE}" ]]; then
+      COL_COUNT=\$(echo "\${FIRST_LINE}" | awk '{print NF}')
+      if [[ \${COL_COUNT} -ne 5 ]]; then
+        echo "DIVERGENT | WARNING | BED file should have 5 columns, found \${COL_COUNT}"
       fi
       
       # Check coordinates
-      START=$(echo "${FIRST_LINE}" | cut -f2)
-      END=$(echo "${FIRST_LINE}" | cut -f3)
-      if [[ ${START} -ge ${END} ]]; then
+      START=\$(echo "\${FIRST_LINE}" | cut -f2)
+      END=\$(echo "\${FIRST_LINE}" | cut -f3)
+      if [[ \${START} -ge \${END} ]]; then
         echo "DIVERGENT | ERROR | Invalid BED coordinates: start >= end"
         VALIDATION_OK=0
       fi
       
       # Check score is numeric and in [0,1]
-      SCORE=$(echo "${FIRST_LINE}" | cut -f5)
-      if ! awk -v s="${SCORE}" 'BEGIN {exit !(s >= 0 && s <= 1)}'; then
-        echo "DIVERGENT | WARNING | Confidence score should be in [0,1], found ${SCORE}"
+      SCORE=\$(echo "\${FIRST_LINE}" | cut -f5)
+      if ! awk -v s="\${SCORE}" 'BEGIN {exit !(s >= 0 && s <= 1)}'; then
+        echo "DIVERGENT | WARNING | Confidence score should be in [0,1], found \${SCORE}"
       fi
     fi
   fi
 
-  if [[ ${VALIDATION_OK} -eq 0 ]]; then
+  if [[ \${VALIDATION_OK} -eq 0 ]]; then
     tracktx_error "detect_divergent_transcription" "Output validation failed (BED or summary missing/invalid)" "Check divergent.log in work dir for details"
   fi
 
@@ -759,30 +759,30 @@ DOCEOF
   ###########################################################################
 
   echo "────────────────────────────────────────────────────────────────────────"
-  echo "DIVERGENT | SUMMARY | Sample: ${SAMPLE_ID}"
+  echo "DIVERGENT | SUMMARY | Sample: \${SAMPLE_ID}"
   echo "DIVERGENT | SUMMARY | Algorithm: Gaussian Mixture Model + FDR"
-  echo "DIVERGENT | SUMMARY | Detected regions: ${DT_COUNT}"
-  echo "DIVERGENT | SUMMARY | Output size: ${BED_SIZE} bytes"
-  if [[ -s divergent_summary.tsv && ${DT_COUNT} -gt 0 ]]; then
-    echo "DIVERGENT | SUMMARY | Positive peaks: ${N_POS_PK}"
-    echo "DIVERGENT | SUMMARY | Negative peaks: ${N_NEG_PK}"
-    echo "DIVERGENT | SUMMARY | Raw pairs: ${N_PAIRS_RAW}"
-    echo "DIVERGENT | SUMMARY | Retention rate: $(awk "BEGIN {printf \"%.1f%%\", (${DT_COUNT}/${N_PAIRS_RAW})*100}" 2>/dev/null || echo "N/A")"
+  echo "DIVERGENT | SUMMARY | Detected regions: \${DT_COUNT}"
+  echo "DIVERGENT | SUMMARY | Output size: \${BED_SIZE} bytes"
+  if [[ -s divergent_summary.tsv && \${DT_COUNT} -gt 0 ]]; then
+    echo "DIVERGENT | SUMMARY | Positive peaks: \${N_POS_PK}"
+    echo "DIVERGENT | SUMMARY | Negative peaks: \${N_NEG_PK}"
+    echo "DIVERGENT | SUMMARY | Raw pairs: \${N_PAIRS_RAW}"
+    echo "DIVERGENT | SUMMARY | Retention rate: \$(awk "BEGIN {printf \\"%.1f%%\\", (\${DT_COUNT}/\${N_PAIRS_RAW})*100}" 2>/dev/null || echo "N/A")"
     
-    if [[ ${COL_COUNT:-0} -eq 5 ]]; then
-      echo "DIVERGENT | SUMMARY | Score range: [${SCORE_MIN}, ${SCORE_MAX}]"
-      echo "DIVERGENT | SUMMARY | Mean confidence: ${SCORE_MEAN}"
+    if [[ \${COL_COUNT:-0} -eq 5 ]]; then
+      echo "DIVERGENT | SUMMARY | Score range: [\${SCORE_MIN}, \${SCORE_MAX}]"
+      echo "DIVERGENT | SUMMARY | Mean confidence: \${SCORE_MEAN}"
     fi
   fi
-  echo "DIVERGENT | SUMMARY | Detection time: ${DETECT_TIME}s"
-  if [[ ${DO_QC} -eq 1 && -s divergent_transcription_qc.txt ]]; then
+  echo "DIVERGENT | SUMMARY | Detection time: \${DETECT_TIME}s"
+  if [[ \${DO_QC} -eq 1 && -s divergent_transcription_qc.txt ]]; then
     echo "DIVERGENT | SUMMARY | QC report: generated"
   fi
   echo "────────────────────────────────────────────────────────────────────────"
 
-  TIMESTAMP_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP_END=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "DIVERGENT | COMPLETE | sample=${SAMPLE_ID} | ts=${TIMESTAMP_END}"
+  echo "DIVERGENT | COMPLETE | sample=\${SAMPLE_ID} | ts=\${TIMESTAMP_END}"
   echo "════════════════════════════════════════════════════════════════════════"
-  '''
+  """
 }

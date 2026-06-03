@@ -100,8 +100,8 @@ process assign_signal_to_functional_regions {
     path "functional_regions.log",        emit: log
 
   // ── Main Script ───────────────────────────────────────────────────────────
-  shell:
-  '''
+  script:
+  """
   #!/usr/bin/env bash
   set -euo pipefail
   export LC_ALL=C
@@ -124,88 +124,88 @@ process assign_signal_to_functional_regions {
   }
   trap 'tracktx_error "assign_signal_to_functional_regions" "Unexpected process failure" "Check functional_regions.log in work dir"' ERR
 
-  TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "FUNCREGION | START | sample=!{sample_id} | ts=${TIMESTAMP}"
+  echo "FUNCREGION | START | sample=${sample_id} | ts=\${TIMESTAMP}"
   echo "════════════════════════════════════════════════════════════════════════"
 
   ###########################################################################
   # 1) CONFIGURATION
   ###########################################################################
 
-  SAMPLE_ID="!{sample_id}"
-  CONDITION="!{condition}"
-  TIMEPOINT="!{timepoint}"
-  REPLICATE="!{replicate}"
-  THREADS=!{task.cpus}
+  SAMPLE_ID="${sample_id}"
+  CONDITION="${condition}"
+  TIMEPOINT="${timepoint}"
+  REPLICATE="${replicate}"
+  THREADS=${task.cpus}
 
   # Input files
-  DIV_BED="!{divergent_bed}"
-  POS_BG="!{pos3_cpm_bg}"    # Note: Actually RAW tracks despite name
-  NEG_BG="!{neg3_cpm_bg}"    # Note: Actually RAW tracks despite name
-  GENES_TSV="!{genes_tsv}"
-  TSS_BED="!{tss_bed}"
-  TES_BED="!{tes_bed}"
-  FGR_SCRIPT="!{functional_regions_py}"
+  DIV_BED="${divergent_bed}"
+  POS_BG="${pos3_cpm_bg}"    # Note: Actually RAW tracks despite name
+  NEG_BG="${neg3_cpm_bg}"    # Note: Actually RAW tracks despite name
+  GENES_TSV="${genes_tsv}"
+  TSS_BED="${tss_bed}"
+  TES_BED="${tes_bed}"
+  FGR_SCRIPT="${functional_regions_py}"
 
   # Region geometry parameters
-  PROM_UP=!{params.functional_regions?.prom_up ?: 250}
-  PROM_DOWN=!{params.functional_regions?.prom_down ?: 250}
-  DIV_INNER=!{params.functional_regions?.div_inner ?: 250}
-  DIV_OUTER=!{params.functional_regions?.div_outer ?: 750}
-  TW_LENGTH=!{params.functional_regions?.tw_length ?: 10000}
-  TSS_ACTIVE_PM=!{params.functional_regions?.tss_active_pm ?: 500}
-  ACTIVE_SLOP=!{params.functional_regions?.active_slop ?: 0}
+  PROM_UP=${params.functional_regions?.prom_up ?: 250}
+  PROM_DOWN=${params.functional_regions?.prom_down ?: 250}
+  DIV_INNER=${params.functional_regions?.div_inner ?: 250}
+  DIV_OUTER=${params.functional_regions?.div_outer ?: 750}
+  TW_LENGTH=${params.functional_regions?.tw_length ?: 10000}
+  TSS_ACTIVE_PM=${params.functional_regions?.tss_active_pm ?: 500}
+  ACTIVE_SLOP=${params.functional_regions?.active_slop ?: 0}
 
   # Signal parameters
-  MIN_SIGNAL=!{params.functional_regions?.min_signal ?: 0.0}
-  MIN_SIGNAL_MODE="!{params.functional_regions?.min_signal_mode ?: 'absolute'}"
-  MIN_SIGNAL_QUANTILE=!{params.functional_regions?.min_signal_quantile ?: 0.90}
-  COUNT_MODE="!{params.functional_regions?.count_mode ?: 'signal'}"
+  MIN_SIGNAL=${params.functional_regions?.min_signal ?: 0.0}
+  MIN_SIGNAL_MODE="${params.functional_regions?.min_signal_mode ?: 'absolute'}"
+  MIN_SIGNAL_QUANTILE=${params.functional_regions?.min_signal_quantile ?: 0.90}
+  COUNT_MODE="${params.functional_regions?.count_mode ?: 'signal'}"
 
   # Divergent fallback parameters
-  DIV_FALLBACK_ENABLE=$([[ "!{params.functional_regions?.div_fallback_enable}" == "true" ]] && echo 1 || echo 0)
-  DIV_FALLBACK_THRESHOLD=!{params.functional_regions?.div_fallback_threshold ?: 0.30}
-  DIV_FALLBACK_MAX_FRAC=!{params.functional_regions?.div_fallback_max_frac ?: 0.25}
+  DIV_FALLBACK_ENABLE=\$([[ "${params.functional_regions?.div_fallback_enable}" == "true" ]] && echo 1 || echo 0)
+  DIV_FALLBACK_THRESHOLD=${params.functional_regions?.div_fallback_threshold ?: 0.30}
+  DIV_FALLBACK_MAX_FRAC=${params.functional_regions?.div_fallback_max_frac ?: 0.25}
 
   # Feature flags
-  ALLOW_UNSTRANDED=$([[ "!{params.functional_regions?.allow_unstranded}" == "false" ]] && echo 0 || echo 1)
+  ALLOW_UNSTRANDED=\$([[ "${params.functional_regions?.allow_unstranded}" == "false" ]] && echo 0 || echo 1)
 
-  echo "FUNCREGION | CONFIG | Sample ID: ${SAMPLE_ID}"
-  echo "FUNCREGION | CONFIG | Condition: ${CONDITION}"
-  echo "FUNCREGION | CONFIG | Timepoint: ${TIMEPOINT}"
-  echo "FUNCREGION | CONFIG | Replicate: ${REPLICATE}"
-  echo "FUNCREGION | CONFIG | Threads: ${THREADS}"
+  echo "FUNCREGION | CONFIG | Sample ID: \${SAMPLE_ID}"
+  echo "FUNCREGION | CONFIG | Condition: \${CONDITION}"
+  echo "FUNCREGION | CONFIG | Timepoint: \${TIMEPOINT}"
+  echo "FUNCREGION | CONFIG | Replicate: \${REPLICATE}"
+  echo "FUNCREGION | CONFIG | Threads: \${THREADS}"
   echo ""
   echo "FUNCREGION | CONFIG | Input Files:"
-  echo "FUNCREGION | CONFIG |   Divergent BED: $(basename ${DIV_BED})"
-  echo "FUNCREGION | CONFIG |   Positive track: $(basename ${POS_BG}) [RAW]"
-  echo "FUNCREGION | CONFIG |   Negative track: $(basename ${NEG_BG}) [RAW]"
-  echo "FUNCREGION | CONFIG |   Genes: $(basename ${GENES_TSV})"
-  echo "FUNCREGION | CONFIG |   TSS: $(basename ${TSS_BED})"
-  echo "FUNCREGION | CONFIG |   TES: $(basename ${TES_BED})"
+  echo "FUNCREGION | CONFIG |   Divergent BED: \$(basename \${DIV_BED})"
+  echo "FUNCREGION | CONFIG |   Positive track: \$(basename \${POS_BG}) [RAW]"
+  echo "FUNCREGION | CONFIG |   Negative track: \$(basename \${NEG_BG}) [RAW]"
+  echo "FUNCREGION | CONFIG |   Genes: \$(basename \${GENES_TSV})"
+  echo "FUNCREGION | CONFIG |   TSS: \$(basename \${TSS_BED})"
+  echo "FUNCREGION | CONFIG |   TES: \$(basename \${TES_BED})"
   echo ""
   echo "FUNCREGION | CONFIG | Region Geometry:"
-  echo "FUNCREGION | CONFIG |   Promoter: TSS -${PROM_UP} to +${PROM_DOWN} bp"
-  echo "FUNCREGION | CONFIG |   Divergent: TSS -${DIV_OUTER} to -${DIV_INNER} bp (opposite strand)"
+  echo "FUNCREGION | CONFIG |   Promoter: TSS -\${PROM_UP} to +\${PROM_DOWN} bp"
+  echo "FUNCREGION | CONFIG |   Divergent: TSS -\${DIV_OUTER} to -\${DIV_INNER} bp (opposite strand)"
   echo "FUNCREGION | CONFIG |   CPS: TES ±500 bp (fixed)"
-  echo "FUNCREGION | CONFIG |   Termination window: ${TW_LENGTH} bp downstream of CPS"
-  echo "FUNCREGION | CONFIG |   TSS active window: ±${TSS_ACTIVE_PM} bp"
-  echo "FUNCREGION | CONFIG |   Active slop: ${ACTIVE_SLOP} bp"
+  echo "FUNCREGION | CONFIG |   Termination window: \${TW_LENGTH} bp downstream of CPS"
+  echo "FUNCREGION | CONFIG |   TSS active window: ±\${TSS_ACTIVE_PM} bp"
+  echo "FUNCREGION | CONFIG |   Active slop: \${ACTIVE_SLOP} bp"
   echo ""
   echo "FUNCREGION | CONFIG | Signal Parameters:"
-  echo "FUNCREGION | CONFIG |   Count mode: ${COUNT_MODE}"
-  echo "FUNCREGION | CONFIG |   Min signal: ${MIN_SIGNAL} (${MIN_SIGNAL_MODE})"
-  if [[ "${MIN_SIGNAL_MODE}" == "quantile" ]]; then
-    echo "FUNCREGION | CONFIG |   Min signal quantile: ${MIN_SIGNAL_QUANTILE}"
+  echo "FUNCREGION | CONFIG |   Count mode: \${COUNT_MODE}"
+  echo "FUNCREGION | CONFIG |   Min signal: \${MIN_SIGNAL} (\${MIN_SIGNAL_MODE})"
+  if [[ "\${MIN_SIGNAL_MODE}" == "quantile" ]]; then
+    echo "FUNCREGION | CONFIG |   Min signal quantile: \${MIN_SIGNAL_QUANTILE}"
   fi
   echo ""
   echo "FUNCREGION | CONFIG | Feature Flags:"
-  echo "FUNCREGION | CONFIG |   Allow unstranded: $([ ${ALLOW_UNSTRANDED} -eq 1 ] && echo "yes" || echo "no")"
-  echo "FUNCREGION | CONFIG |   Divergent fallback: $([ ${DIV_FALLBACK_ENABLE} -eq 1 ] && echo "enabled" || echo "disabled")"
-  if [[ ${DIV_FALLBACK_ENABLE} -eq 1 ]]; then
-    echo "FUNCREGION | CONFIG |   Fallback threshold: ${DIV_FALLBACK_THRESHOLD}"
-    echo "FUNCREGION | CONFIG |   Fallback max fraction: ${DIV_FALLBACK_MAX_FRAC}"
+  echo "FUNCREGION | CONFIG |   Allow unstranded: \$([ \${ALLOW_UNSTRANDED} -eq 1 ] && echo "yes" || echo "no")"
+  echo "FUNCREGION | CONFIG |   Divergent fallback: \$([ \${DIV_FALLBACK_ENABLE} -eq 1 ] && echo "enabled" || echo "disabled")"
+  if [[ \${DIV_FALLBACK_ENABLE} -eq 1 ]]; then
+    echo "FUNCREGION | CONFIG |   Fallback threshold: \${DIV_FALLBACK_THRESHOLD}"
+    echo "FUNCREGION | CONFIG |   Fallback max fraction: \${DIV_FALLBACK_MAX_FRAC}"
   fi
 
   ###########################################################################
@@ -224,37 +224,37 @@ process assign_signal_to_functional_regions {
   fi
 
   # Check Python script
-  if [[ ! -f "${FGR_SCRIPT}" ]]; then
-    tracktx_error "assign_signal_to_functional_regions" "Python script not found: ${FGR_SCRIPT}" "Ensure bin/call_functional_regions.py exists"
+  if [[ ! -f "\${FGR_SCRIPT}" ]]; then
+    tracktx_error "assign_signal_to_functional_regions" "Python script not found: \${FGR_SCRIPT}" "Ensure bin/call_functional_regions.py exists"
   fi
-  echo "FUNCREGION | VALIDATE | Python script: ${FGR_SCRIPT}"
+  echo "FUNCREGION | VALIDATE | Python script: \${FGR_SCRIPT}"
 
   # Check required input files
-  for FILE in "${DIV_BED}" "${POS_BG}" "${NEG_BG}" "${GENES_TSV}" "${TSS_BED}" "${TES_BED}"; do
-    if [[ ! -s "${FILE}" ]]; then
-      tracktx_error "assign_signal_to_functional_regions" "Missing or empty input: ${FILE}" "Check upstream modules (detect_divergent_transcription, normalize_coverage_tracks, download_genome_annotations)"
+  for FILE in "\${DIV_BED}" "\${POS_BG}" "\${NEG_BG}" "\${GENES_TSV}" "\${TSS_BED}" "\${TES_BED}"; do
+    if [[ ! -s "\${FILE}" ]]; then
+      tracktx_error "assign_signal_to_functional_regions" "Missing or empty input: \${FILE}" "Check upstream modules (detect_divergent_transcription, normalize_coverage_tracks, download_genome_annotations)"
     fi
-    FILE_SIZE=$(stat -c%s "${FILE}" 2>/dev/null || stat -f%z "${FILE}" 2>/dev/null || echo "unknown")
-    echo "FUNCREGION | VALIDATE | $(basename ${FILE}): ${FILE_SIZE} bytes"
+    FILE_SIZE=\$(stat -c%s "\${FILE}" 2>/dev/null || stat -f%z "\${FILE}" 2>/dev/null || echo "unknown")
+    echo "FUNCREGION | VALIDATE | \$(basename \${FILE}): \${FILE_SIZE} bytes"
   done
 
   # Count input features
-  DIV_COUNT=$(grep -v '^#' "${DIV_BED}" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
-  GENE_COUNT=$(tail -n +2 "${GENES_TSV}" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
-  TSS_COUNT=$(wc -l < "${TSS_BED}" 2>/dev/null | tr -d ' ' || echo 0)
-  TES_COUNT=$(wc -l < "${TES_BED}" 2>/dev/null | tr -d ' ' || echo 0)
+  DIV_COUNT=\$(grep -v '^#' "\${DIV_BED}" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+  GENE_COUNT=\$(tail -n +2 "\${GENES_TSV}" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+  TSS_COUNT=\$(wc -l < "\${TSS_BED}" 2>/dev/null | tr -d ' ' || echo 0)
+  TES_COUNT=\$(wc -l < "\${TES_BED}" 2>/dev/null | tr -d ' ' || echo 0)
 
-  echo "FUNCREGION | VALIDATE | Divergent regions: ${DIV_COUNT}"
-  echo "FUNCREGION | VALIDATE | Genes: ${GENE_COUNT}"
-  echo "FUNCREGION | VALIDATE | TSS sites: ${TSS_COUNT}"
-  echo "FUNCREGION | VALIDATE | TES sites: ${TES_COUNT}"
+  echo "FUNCREGION | VALIDATE | Divergent regions: \${DIV_COUNT}"
+  echo "FUNCREGION | VALIDATE | Genes: \${GENE_COUNT}"
+  echo "FUNCREGION | VALIDATE | TSS sites: \${TSS_COUNT}"
+  echo "FUNCREGION | VALIDATE | TES sites: \${TES_COUNT}"
 
   # Validate tools
-  if ! ${PYTHON_CMD} --version >/dev/null 2>&1; then
-    tracktx_error "assign_signal_to_functional_regions" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
+  if ! \${PYTHON_CMD} --version >/dev/null 2>&1; then
+    tracktx_error "assign_signal_to_functional_regions" "Python not found (tried: \${PYTHON_CMD})" "Use -profile docker"
   fi
-  PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
-  echo "FUNCREGION | VALIDATE | Python: ${PYTHON_VERSION}"
+  PYTHON_VERSION=\$(\${PYTHON_CMD} --version 2>&1 || echo "unknown")
+  echo "FUNCREGION | VALIDATE | Python: \${PYTHON_VERSION}"
 
   ###########################################################################
   # 3) RUN FUNCTIONAL REGION CALLER
@@ -264,48 +264,48 @@ process assign_signal_to_functional_regions {
   echo "FUNCREGION | CALL | This may take several minutes..."
 
   # Build command with all parameters
-  CALL_START=$(date +%s)
+  CALL_START=\$(date +%s)
   
   EXTRA_ARGS=""
-  [[ ${ALLOW_UNSTRANDED} -eq 1 ]] && EXTRA_ARGS="${EXTRA_ARGS} --allow-unstranded"
-  [[ ${DIV_FALLBACK_ENABLE} -eq 1 ]] && EXTRA_ARGS="${EXTRA_ARGS} --div-fallback-enable"
+  [[ \${ALLOW_UNSTRANDED} -eq 1 ]] && EXTRA_ARGS="\${EXTRA_ARGS} --allow-unstranded"
+  [[ \${DIV_FALLBACK_ENABLE} -eq 1 ]] && EXTRA_ARGS="\${EXTRA_ARGS} --div-fallback-enable"
 
   set +e
-  ${PYTHON_CMD} "${FGR_SCRIPT}" \
-    --sid "${SAMPLE_ID}" \
-    --genes "${GENES_TSV}" \
-    --divergent "${DIV_BED}" \
-    --pos "${POS_BG}" \
-    --neg "${NEG_BG}" \
-    --tss "${TSS_BED}" \
-    --tes "${TES_BED}" \
-    --prom-up "${PROM_UP}" \
-    --prom-down "${PROM_DOWN}" \
-    --div-inner "${DIV_INNER}" \
-    --div-outer "${DIV_OUTER}" \
-    --tss-active-pm "${TSS_ACTIVE_PM}" \
-    --tw-length "${TW_LENGTH}" \
-    --min-signal "${MIN_SIGNAL}" \
-    --min-signal-mode "${MIN_SIGNAL_MODE}" \
-    --min-signal-quantile "${MIN_SIGNAL_QUANTILE}" \
-    --div-fallback-threshold "${DIV_FALLBACK_THRESHOLD}" \
-    --div-fallback-max-frac "${DIV_FALLBACK_MAX_FRAC}" \
-    --active-slop "${ACTIVE_SLOP}" \
-    --count-mode "${COUNT_MODE}" \
-    --outdir "." \
-    ${EXTRA_ARGS}
+  \${PYTHON_CMD} "\${FGR_SCRIPT}" \\
+    --sid "\${SAMPLE_ID}" \\
+    --genes "\${GENES_TSV}" \\
+    --divergent "\${DIV_BED}" \\
+    --pos "\${POS_BG}" \\
+    --neg "\${NEG_BG}" \\
+    --tss "\${TSS_BED}" \\
+    --tes "\${TES_BED}" \\
+    --prom-up "\${PROM_UP}" \\
+    --prom-down "\${PROM_DOWN}" \\
+    --div-inner "\${DIV_INNER}" \\
+    --div-outer "\${DIV_OUTER}" \\
+    --tss-active-pm "\${TSS_ACTIVE_PM}" \\
+    --tw-length "\${TW_LENGTH}" \\
+    --min-signal "\${MIN_SIGNAL}" \\
+    --min-signal-mode "\${MIN_SIGNAL_MODE}" \\
+    --min-signal-quantile "\${MIN_SIGNAL_QUANTILE}" \\
+    --div-fallback-threshold "\${DIV_FALLBACK_THRESHOLD}" \\
+    --div-fallback-max-frac "\${DIV_FALLBACK_MAX_FRAC}" \\
+    --active-slop "\${ACTIVE_SLOP}" \\
+    --count-mode "\${COUNT_MODE}" \\
+    --outdir "." \\
+    \${EXTRA_ARGS}
   
-  CALL_RC=$?
+  CALL_RC=\$?
   set -e
   
-  CALL_END=$(date +%s)
-  CALL_TIME=$((CALL_END - CALL_START))
+  CALL_END=\$(date +%s)
+  CALL_TIME=\$((CALL_END - CALL_START))
 
-  echo "FUNCREGION | CALL | Processing completed in ${CALL_TIME}s"
+  echo "FUNCREGION | CALL | Processing completed in \${CALL_TIME}s"
 
   # Handle failures
-  if [[ ${CALL_RC} -ne 0 ]]; then
-    tracktx_error "assign_signal_to_functional_regions" "Functional region caller failed with exit code ${CALL_RC}" "Check functional_regions.log in work dir" ${CALL_RC}
+  if [[ \${CALL_RC} -ne 0 ]]; then
+    tracktx_error "assign_signal_to_functional_regions" "Functional region caller failed with exit code \${CALL_RC}" "Check functional_regions.log in work dir" \${CALL_RC}
   fi
 
   # Ensure output files exist
@@ -330,27 +330,27 @@ SUMMARYEOF
   echo "FUNCREGION | RESULTS | Parsing functional region results..."
 
   # Count regions
-  REGION_COUNT=$(grep -v '^#' functional_regions.bed 2>/dev/null | wc -l | tr -d ' ' || echo 0)
-  BED_SIZE=$(stat -c%s functional_regions.bed 2>/dev/null || stat -f%z functional_regions.bed 2>/dev/null || echo "unknown")
+  REGION_COUNT=\$(grep -v '^#' functional_regions.bed 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+  BED_SIZE=\$(stat -c%s functional_regions.bed 2>/dev/null || stat -f%z functional_regions.bed 2>/dev/null || echo "unknown")
 
-  echo "FUNCREGION | RESULTS | Total regions: ${REGION_COUNT}"
-  echo "FUNCREGION | RESULTS | Output BED size: ${BED_SIZE} bytes"
+  echo "FUNCREGION | RESULTS | Total regions: \${REGION_COUNT}"
+  echo "FUNCREGION | RESULTS | Output BED size: \${BED_SIZE} bytes"
 
   # Parse summary statistics
   if [[ -s functional_regions_summary.tsv ]]; then
     echo "FUNCREGION | RESULTS | Signal distribution by category:"
     
     # Skip header and display each category
-    tail -n +2 functional_regions_summary.tsv | while IFS=$'\t' read -r CATEGORY SIGNAL COUNT; do
-      echo "FUNCREGION | RESULTS |   ${CATEGORY}: signal=${SIGNAL}, regions=${COUNT}"
+    tail -n +2 functional_regions_summary.tsv | while IFS=\$'\\t' read -r CATEGORY SIGNAL COUNT; do
+      echo "FUNCREGION | RESULTS |   \${CATEGORY}: signal=\${SIGNAL}, regions=\${COUNT}"
     done
     
     # Calculate total signal
-    TOTAL_SIGNAL=$(tail -n +2 functional_regions_summary.tsv | awk -F'\t' '{sum+=$2} END{print sum}')
-    TOTAL_REGIONS=$(tail -n +2 functional_regions_summary.tsv | awk -F'\t' '{sum+=$3} END{print sum}')
+    TOTAL_SIGNAL=\$(tail -n +2 functional_regions_summary.tsv | awk -F'\\t' '{sum+=\$2} END{print sum}')
+    TOTAL_REGIONS=\$(tail -n +2 functional_regions_summary.tsv | awk -F'\\t' '{sum+=\$3} END{print sum}')
     
-    echo "FUNCREGION | RESULTS | Total signal: ${TOTAL_SIGNAL}"
-    echo "FUNCREGION | RESULTS | Total regions: ${TOTAL_REGIONS}"
+    echo "FUNCREGION | RESULTS | Total signal: \${TOTAL_SIGNAL}"
+    echo "FUNCREGION | RESULTS | Total regions: \${TOTAL_REGIONS}"
   fi
 
   ###########################################################################
@@ -361,7 +361,7 @@ SUMMARYEOF
 
   cat > README_functional_regions.txt <<'DOCEOF'
 ================================================================================
-FUNCTIONAL REGIONS — !{sample_id}
+FUNCTIONAL REGIONS — ${sample_id}
 ================================================================================
 
 OVERVIEW
@@ -389,13 +389,13 @@ METHOD
 
 ACTIVE GENE DEFINITION
 ────────────────────────────────────────────────────────────────────────────
-  A gene is considered "active" if its promoter region (TSS ±${TSS_ACTIVE_PM} bp)
+  A gene is considered "active" if its promoter region (TSS ±\${TSS_ACTIVE_PM} bp)
   intersects at least one divergent transcription region.
   
-  Divergent fallback: $([ ${DIV_FALLBACK_ENABLE} -eq 1 ] && echo "Enabled" || echo "Disabled")
-  $([ ${DIV_FALLBACK_ENABLE} -eq 1 ] && cat <<FALLBACK
-  When enabled, genes with promoter signal ≥ ${DIV_FALLBACK_THRESHOLD} × max
-  and representing ≤ ${DIV_FALLBACK_MAX_FRAC} of genes are marked active
+  Divergent fallback: \$([ \${DIV_FALLBACK_ENABLE} -eq 1 ] && echo "Enabled" || echo "Disabled")
+  \$([ \${DIV_FALLBACK_ENABLE} -eq 1 ] && cat <<FALLBACK
+  When enabled, genes with promoter signal ≥ \${DIV_FALLBACK_THRESHOLD} × max
+  and representing ≤ \${DIV_FALLBACK_MAX_FRAC} of genes are marked active
   even without divergent transcription overlap.
 FALLBACK
 )
@@ -403,8 +403,8 @@ FALLBACK
 INPUT DATA
 ────────────────────────────────────────────────────────────────────────────
   Signal Tracks: RAW (unnormalized) 3' bedGraphs
-    • Positive strand: $(basename ${POS_BG})
-    • Negative strand: $(basename ${NEG_BG})
+    • Positive strand: \$(basename \${POS_BG})
+    • Negative strand: \$(basename \${NEG_BG})
   
   Why RAW tracks?
     • Matches original bash script logic
@@ -412,28 +412,28 @@ INPUT DATA
     • Signal-based counting via bedtools map -o sum
   
   Annotations:
-    • Divergent transcription: ${DIV_COUNT} regions
-    • Genes: ${GENE_COUNT} annotations
-    • TSS sites: ${TSS_COUNT}
-    • TES sites: ${TES_COUNT}
+    • Divergent transcription: \${DIV_COUNT} regions
+    • Genes: \${GENE_COUNT} annotations
+    • TSS sites: \${TSS_COUNT}
+    • TES sites: \${TES_COUNT}
 
 SAMPLE INFORMATION
 ────────────────────────────────────────────────────────────────────────────
-  Sample:     !{sample_id}
-  Condition:  !{condition}
-  Timepoint:  !{timepoint}
-  Replicate:  !{replicate}
+  Sample:     ${sample_id}
+  Condition:  ${condition}
+  Timepoint:  ${timepoint}
+  Replicate:  ${replicate}
 
 REGION DEFINITIONS
 ────────────────────────────────────────────────────────────────────────────
 
 1. Promoter:
-   Location: TSS -${PROM_UP} to +${PROM_DOWN} bp
+   Location: TSS -\${PROM_UP} to +\${PROM_DOWN} bp
    Strand: Gene strand
    Purpose: Transcription initiation region
 
 2. Divergent:
-   Location: TSS -${DIV_OUTER} to -${DIV_INNER} bp
+   Location: TSS -\${DIV_OUTER} to -\${DIV_INNER} bp
    Strand: OPPOSITE of gene strand
    Purpose: Divergent transcription detection
    Note: Used for active gene definition, not signal assignment
@@ -453,7 +453,7 @@ REGION DEFINITIONS
    Purpose: Putative enhancer elements
 
 7. Termination Window:
-   Location: ${TW_LENGTH} bp downstream of CPS end
+   Location: \${TW_LENGTH} bp downstream of CPS end
    Strand: Gene strand
    Purpose: Readthrough and termination region
 
@@ -463,7 +463,7 @@ REGION DEFINITIONS
 
 SIGNAL QUANTIFICATION
 ────────────────────────────────────────────────────────────────────────────
-  Count Mode: ${COUNT_MODE}
+  Count Mode: \${COUNT_MODE}
   
   signal mode (default):
     • Sum of all signal values overlapping region
@@ -475,8 +475,8 @@ SIGNAL QUANTIFICATION
     • Binary presence/absence
     • bedtools map -o count
 
-  Minimum Signal: ${MIN_SIGNAL} (${MIN_SIGNAL_MODE})
-  $([ "${MIN_SIGNAL_MODE}" == "quantile" ] && echo "  Quantile threshold: ${MIN_SIGNAL_QUANTILE}")
+  Minimum Signal: \${MIN_SIGNAL} (\${MIN_SIGNAL_MODE})
+  \$([ "\${MIN_SIGNAL_MODE}" == "quantile" ] && echo "  Quantile threshold: \${MIN_SIGNAL_QUANTILE}")
 
 HIERARCHICAL MASKING
 ────────────────────────────────────────────────────────────────────────────
@@ -517,12 +517,12 @@ Summary TSV (functional_regions_summary.tsv):
 
 RESULTS SUMMARY
 ────────────────────────────────────────────────────────────────────────────
-  Total regions: ${REGION_COUNT}
-  Processing time: ${CALL_TIME}s
+  Total regions: \${REGION_COUNT}
+  Processing time: \${CALL_TIME}s
   
   Signal distribution:
-$([ -s functional_regions_summary.tsv ] && tail -n +2 functional_regions_summary.tsv | \
-  awk -F'\t' '{printf "    %-20s signal=%-12s regions=%s\n", $1":", $2, $3}' || echo "    (empty)")
+\$([ -s functional_regions_summary.tsv ] && tail -n +2 functional_regions_summary.tsv | \\
+  awk -F'\\t' '{printf "    %-20s signal=%-12s regions=%s\\n", \$1":", \$2, \$3}' || echo "    (empty)")
 
 QUALITY CONTROL
 ────────────────────────────────────────────────────────────────────────────
@@ -587,16 +587,16 @@ Adjust region sizes:
 
 PARAMETERS USED
 ────────────────────────────────────────────────────────────────────────────
-  Promoter:             TSS -${PROM_UP} to +${PROM_DOWN} bp
-  Divergent:            TSS -${DIV_OUTER} to -${DIV_INNER} bp
+  Promoter:             TSS -\${PROM_UP} to +\${PROM_DOWN} bp
+  Divergent:            TSS -\${DIV_OUTER} to -\${DIV_INNER} bp
   CPS:                  TES ±500 bp (fixed)
-  Termination window:   ${TW_LENGTH} bp
-  TSS active window:    ±${TSS_ACTIVE_PM} bp
-  Active slop:          ${ACTIVE_SLOP} bp
-  Count mode:           ${COUNT_MODE}
-  Min signal:           ${MIN_SIGNAL} (${MIN_SIGNAL_MODE})
-  Allow unstranded:     $([ ${ALLOW_UNSTRANDED} -eq 1 ] && echo "yes" || echo "no")
-  Divergent fallback:   $([ ${DIV_FALLBACK_ENABLE} -eq 1 ] && echo "enabled" || echo "disabled")
+  Termination window:   \${TW_LENGTH} bp
+  TSS active window:    ±\${TSS_ACTIVE_PM} bp
+  Active slop:          \${ACTIVE_SLOP} bp
+  Count mode:           \${COUNT_MODE}
+  Min signal:           \${MIN_SIGNAL} (\${MIN_SIGNAL_MODE})
+  Allow unstranded:     \$([ \${ALLOW_UNSTRANDED} -eq 1 ] && echo "yes" || echo "no")
+  Divergent fallback:   \$([ \${DIV_FALLBACK_ENABLE} -eq 1 ] && echo "enabled" || echo "disabled")
 
 TECHNICAL NOTES
 ────────────────────────────────────────────────────────────────────────────
@@ -610,8 +610,8 @@ TECHNICAL NOTES
 GENERATED
 ────────────────────────────────────────────────────────────────────────────
   Pipeline: TrackTx PRO-seq
-  Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Sample: !{sample_id}
+  Date: \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+  Sample: ${sample_id}
   Module: 10_assign_signal_to_functional_regions
 
 ================================================================================
@@ -634,18 +634,18 @@ DOCEOF
   if [[ ! -s functional_regions_summary.tsv ]]; then
     tracktx_error "assign_signal_to_functional_regions" "Summary file missing or empty" "Check functional_regions.log in work dir"
   fi
-  SUMMARY_LINES=$(wc -l < functional_regions_summary.tsv | tr -d ' ')
-  if [[ ${SUMMARY_LINES} -lt 2 ]]; then
+  SUMMARY_LINES=\$(wc -l < functional_regions_summary.tsv | tr -d ' ')
+  if [[ \${SUMMARY_LINES} -lt 2 ]]; then
     echo "FUNCREGION | WARNING | Summary has fewer than expected lines"
   fi
 
   # Validate BED format if non-empty
   if [[ -s functional_regions.bed ]]; then
-    FIRST_LINE=$(grep -v '^#' functional_regions.bed | head -1 || true)
-    if [[ -n "${FIRST_LINE}" ]]; then
-      COL_COUNT=$(echo "${FIRST_LINE}" | awk '{print NF}')
-      if [[ ${COL_COUNT} -lt 6 ]]; then
-        echo "FUNCREGION | WARNING | BED file has ${COL_COUNT} columns, expected at least 6"
+    FIRST_LINE=\$(grep -v '^#' functional_regions.bed | head -1 || true)
+    if [[ -n "\${FIRST_LINE}" ]]; then
+      COL_COUNT=\$(echo "\${FIRST_LINE}" | awk '{print NF}')
+      if [[ \${COL_COUNT} -lt 6 ]]; then
+        echo "FUNCREGION | WARNING | BED file has \${COL_COUNT} columns, expected at least 6"
       fi
     fi
   fi
@@ -657,23 +657,23 @@ DOCEOF
   ###########################################################################
 
   echo "────────────────────────────────────────────────────────────────────────"
-  echo "FUNCREGION | SUMMARY | Sample: ${SAMPLE_ID}"
-  echo "FUNCREGION | SUMMARY | Total regions: ${REGION_COUNT}"
-  echo "FUNCREGION | SUMMARY | Output size: ${BED_SIZE} bytes"
-  echo "FUNCREGION | SUMMARY | Processing time: ${CALL_TIME}s"
+  echo "FUNCREGION | SUMMARY | Sample: \${SAMPLE_ID}"
+  echo "FUNCREGION | SUMMARY | Total regions: \${REGION_COUNT}"
+  echo "FUNCREGION | SUMMARY | Output size: \${BED_SIZE} bytes"
+  echo "FUNCREGION | SUMMARY | Processing time: \${CALL_TIME}s"
   
   if [[ -s functional_regions_summary.tsv ]]; then
     echo "FUNCREGION | SUMMARY | Signal by category:"
-    tail -n +2 functional_regions_summary.tsv | while IFS=$'\t' read -r CAT SIG CNT; do
-      echo "FUNCREGION | SUMMARY |   ${CAT}: ${SIG}"
+    tail -n +2 functional_regions_summary.tsv | while IFS=\$'\\t' read -r CAT SIG CNT; do
+      echo "FUNCREGION | SUMMARY |   \${CAT}: \${SIG}"
     done
   fi
   
   echo "────────────────────────────────────────────────────────────────────────"
 
-  TIMESTAMP_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP_END=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "FUNCREGION | COMPLETE | sample=${SAMPLE_ID} | ts=${TIMESTAMP_END}"
+  echo "FUNCREGION | COMPLETE | sample=\${SAMPLE_ID} | ts=\${TIMESTAMP_END}"
   echo "════════════════════════════════════════════════════════════════════════"
-  '''
+  """
 }

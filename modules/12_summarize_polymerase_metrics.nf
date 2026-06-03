@@ -84,13 +84,13 @@ process summarize_polymerase_metrics {
     path 'aggregate.log',                             emit: log
 
   // ── Main Script ───────────────────────────────────────────────────────────
-  shell:
-  '''
+  script:
+  """
   #!/usr/bin/env bash
   set -euo pipefail
   export LC_ALL=C
   # Matplotlib font cache: use TMPDIR (fast local disk) so tasks don't stall on "building font cache"
-  export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
+  export MPLCONFIGDIR="\${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
   exec > >(tee -a aggregate.log)
@@ -110,9 +110,9 @@ process summarize_polymerase_metrics {
   }
   trap 'tracktx_error "summarize_polymerase_metrics" "Unexpected process failure" "Check aggregate.log in work dir"' ERR
 
-  TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "AGGREGATE | START | cohort analysis | ts=${TIMESTAMP}"
+  echo "AGGREGATE | START | cohort analysis | ts=\${TIMESTAMP}"
   echo "════════════════════════════════════════════════════════════════════════"
 
   ###########################################################################
@@ -121,16 +121,16 @@ process summarize_polymerase_metrics {
 
   SAMPLES_TSV_ORIG="samples.tsv"
   SAMPLES_TSV="samples_rewritten.tsv"
-  AGGREGATOR_SCRIPT="!{projectDir}/bin/compare_pol_metrics.py"
+  AGGREGATOR_SCRIPT="${projectDir}/bin/compare_pol_metrics.py"
 
   # Parameters
-  TOP_N=!{params.pol?.top_n ?: 100}
-  ENABLE_PLOTS=$([[ "!{params.pol?.plots}" == "false" ]] && echo 0 || echo 1)
+  TOP_N=${params.pol?.top_n ?: 100}
+  ENABLE_PLOTS=\$([[ "${params.pol?.plots}" == "false" ]] && echo 0 || echo 1)
 
-  echo "AGGREGATE | CONFIG | Samples manifest: ${SAMPLES_TSV}"
-  echo "AGGREGATE | CONFIG | Aggregator script: ${AGGREGATOR_SCRIPT}"
-  echo "AGGREGATE | CONFIG | Top N genes: ${TOP_N}"
-  echo "AGGREGATE | CONFIG | Generate plots: $([ ${ENABLE_PLOTS} -eq 1 ] && echo "yes" || echo "no")"
+  echo "AGGREGATE | CONFIG | Samples manifest: \${SAMPLES_TSV}"
+  echo "AGGREGATE | CONFIG | Aggregator script: \${AGGREGATOR_SCRIPT}"
+  echo "AGGREGATE | CONFIG | Top N genes: \${TOP_N}"
+  echo "AGGREGATE | CONFIG | Generate plots: \$([ \${ENABLE_PLOTS} -eq 1 ] && echo "yes" || echo "no")"
 
   ###########################################################################
   # 1.5) CREATE SYMLINKS FROM STAGED FILES
@@ -142,56 +142,56 @@ process summarize_polymerase_metrics {
   # TSV has the mapping: sample_id -> metric_N
   # Create symlinks with meaningful names: Sample_ID.pol_gene_metrics.tsv -> metric_N
 
-  tail -n +2 "${SAMPLES_TSV_ORIG}" | while IFS=$'\t' read -r SAMPLE_ID CONDITION TIMEPOINT REPLICATE STAGED_NAME; do
-    TARGET_NAME="${SAMPLE_ID}.pol_gene_metrics.tsv"
+  tail -n +2 "\${SAMPLES_TSV_ORIG}" | while IFS=\$'\\t' read -r SAMPLE_ID CONDITION TIMEPOINT REPLICATE STAGED_NAME; do
+    TARGET_NAME="\${SAMPLE_ID}.pol_gene_metrics.tsv"
     
     # Nextflow stages single files as "metric_" instead of "metric_1"
     # Check both patterns
     ACTUAL_FILE=""
-    if [[ -e "${STAGED_NAME}" ]]; then
-      ACTUAL_FILE="${STAGED_NAME}"
-    elif [[ "${STAGED_NAME}" == "metric_"* ]]; then
+    if [[ -e "\${STAGED_NAME}" ]]; then
+      ACTUAL_FILE="\${STAGED_NAME}"
+    elif [[ "\${STAGED_NAME}" == "metric_"* ]]; then
       # Try without number suffix for single-file case
-      BASE_NAME="${STAGED_NAME%_*}"
-      if [[ -e "${BASE_NAME}_" ]]; then
-        ACTUAL_FILE="${BASE_NAME}_"
+      BASE_NAME="\${STAGED_NAME%_*}"
+      if [[ -e "\${BASE_NAME}_" ]]; then
+        ACTUAL_FILE="\${BASE_NAME}_"
       fi
     fi
     
-    if [[ -n "${ACTUAL_FILE}" && -e "${ACTUAL_FILE}" ]]; then
-      ln -sf "${ACTUAL_FILE}" "${TARGET_NAME}"
-      SIZE=$(stat -c%s "${ACTUAL_FILE}" 2>/dev/null || stat -f%z "${ACTUAL_FILE}" 2>/dev/null || echo "unknown")
-      echo "AGGREGATE | STAGE | ✓ ${ACTUAL_FILE} -> ${TARGET_NAME} (${SIZE} bytes)"
+    if [[ -n "\${ACTUAL_FILE}" && -e "\${ACTUAL_FILE}" ]]; then
+      ln -sf "\${ACTUAL_FILE}" "\${TARGET_NAME}"
+      SIZE=\$(stat -c%s "\${ACTUAL_FILE}" 2>/dev/null || stat -f%z "\${ACTUAL_FILE}" 2>/dev/null || echo "unknown")
+      echo "AGGREGATE | STAGE | ✓ \${ACTUAL_FILE} -> \${TARGET_NAME} (\${SIZE} bytes)"
     else
-      echo "AGGREGATE | WARNING | ✗ ${STAGED_NAME} not found (tried ${STAGED_NAME} and metric_)"
+      echo "AGGREGATE | WARNING | ✗ \${STAGED_NAME} not found (tried \${STAGED_NAME} and metric_)"
       # List what files actually exist for debugging
-      echo "AGGREGATE | DEBUG | Files in work dir: $(ls -1 metric* 2>/dev/null || echo 'none')"
+      echo "AGGREGATE | DEBUG | Files in work dir: \$(ls -1 metric* 2>/dev/null || echo 'none')"
     fi
   done
 
   # Rewrite TSV to use the meaningful names
-  echo -e "sample_id\tcondition\ttimepoint\treplicate\tfile" > "${SAMPLES_TSV}"
+  echo -e "sample_id\\tcondition\\ttimepoint\\treplicate\\tfile" > "\${SAMPLES_TSV}"
   
-  tail -n +2 "${SAMPLES_TSV_ORIG}" | while IFS=$'\t' read -r SAMPLE_ID CONDITION TIMEPOINT REPLICATE STAGED_NAME; do
-    TARGET_NAME="${SAMPLE_ID}.pol_gene_metrics.tsv"
-    echo -e "${SAMPLE_ID}\t${CONDITION}\t${TIMEPOINT}\t${REPLICATE}\t${TARGET_NAME}"
-  done >> "${SAMPLES_TSV}"
+  tail -n +2 "\${SAMPLES_TSV_ORIG}" | while IFS=\$'\\t' read -r SAMPLE_ID CONDITION TIMEPOINT REPLICATE STAGED_NAME; do
+    TARGET_NAME="\${SAMPLE_ID}.pol_gene_metrics.tsv"
+    echo -e "\${SAMPLE_ID}\\t\${CONDITION}\\t\${TIMEPOINT}\\t\${REPLICATE}\\t\${TARGET_NAME}"
+  done >> "\${SAMPLES_TSV}"
 
   echo "AGGREGATE | STAGE | Manifest rewritten with symlink names"
 
   # Parse contrasts from params
   cat > contrasts.txt <<'CONTRASTEOF'
-!{((params.pol?.contrasts ?: []) as List).join('\n')}
+${((params.pol?.contrasts ?: []) as List).join('\n')}
 CONTRASTEOF
 
   # Count contrasts
-  CONTRAST_COUNT=$( (grep -v '^$' contrasts.txt || true) | wc -l | tr -d ' ' )
-  echo "AGGREGATE | CONFIG | Contrasts: ${CONTRAST_COUNT}"
+  CONTRAST_COUNT=\$( (grep -v '^\$' contrasts.txt || true) | wc -l | tr -d ' ' )
+  echo "AGGREGATE | CONFIG | Contrasts: \${CONTRAST_COUNT}"
 
-  if [[ ${CONTRAST_COUNT} -gt 0 ]]; then
+  if [[ \${CONTRAST_COUNT} -gt 0 ]]; then
     echo "AGGREGATE | CONFIG | Contrast specifications:"
-    cat contrasts.txt | grep -v '^$' | while read -r contrast; do
-      echo "AGGREGATE | CONFIG |   ${contrast}"
+    cat contrasts.txt | grep -v '^\$' | while read -r contrast; do
+      echo "AGGREGATE | CONFIG |   \${contrast}"
     done
   fi
 
@@ -211,25 +211,25 @@ CONTRASTEOF
   fi
 
   # Check Python script
-  if [[ ! -f "${AGGREGATOR_SCRIPT}" ]]; then
-    tracktx_error "summarize_polymerase_metrics" "Aggregator script not found: ${AGGREGATOR_SCRIPT}" "Ensure bin/compare_pol_metrics.py exists"
+  if [[ ! -f "\${AGGREGATOR_SCRIPT}" ]]; then
+    tracktx_error "summarize_polymerase_metrics" "Aggregator script not found: \${AGGREGATOR_SCRIPT}" "Ensure bin/compare_pol_metrics.py exists"
   fi
-  echo "AGGREGATE | VALIDATE | Aggregator script: ${AGGREGATOR_SCRIPT}"
+  echo "AGGREGATE | VALIDATE | Aggregator script: \${AGGREGATOR_SCRIPT}"
 
   # Check samples manifest
-  if [[ ! -s "${SAMPLES_TSV}" ]]; then
-    tracktx_error "summarize_polymerase_metrics" "Samples manifest missing or empty: ${SAMPLES_TSV}" "Check samples manifest input"
+  if [[ ! -s "\${SAMPLES_TSV}" ]]; then
+    tracktx_error "summarize_polymerase_metrics" "Samples manifest missing or empty: \${SAMPLES_TSV}" "Check samples manifest input"
   fi
-  SAMPLES_SIZE=$(stat -c%s "${SAMPLES_TSV}" 2>/dev/null || stat -f%z "${SAMPLES_TSV}" 2>/dev/null || echo "unknown")
-  SAMPLES_LINES=$(wc -l < "${SAMPLES_TSV}" | tr -d ' ')
-  echo "AGGREGATE | VALIDATE | Samples manifest: ${SAMPLES_SIZE} bytes (${SAMPLES_LINES} lines)"
+  SAMPLES_SIZE=\$(stat -c%s "\${SAMPLES_TSV}" 2>/dev/null || stat -f%z "\${SAMPLES_TSV}" 2>/dev/null || echo "unknown")
+  SAMPLES_LINES=\$(wc -l < "\${SAMPLES_TSV}" | tr -d ' ')
+  echo "AGGREGATE | VALIDATE | Samples manifest: \${SAMPLES_SIZE} bytes (\${SAMPLES_LINES} lines)"
 
   # Validate tools
-  if ${PYTHON_CMD} --version >/dev/null 2>&1; then
-    PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
-    echo "AGGREGATE | VALIDATE | Python: ${PYTHON_VERSION}"
+  if \${PYTHON_CMD} --version >/dev/null 2>&1; then
+    PYTHON_VERSION=\$(\${PYTHON_CMD} --version 2>&1 || echo "unknown")
+    echo "AGGREGATE | VALIDATE | Python: \${PYTHON_VERSION}"
   else
-    tracktx_error "summarize_polymerase_metrics" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
+    tracktx_error "summarize_polymerase_metrics" "Python not found (tried: \${PYTHON_CMD})" "Use -profile docker"
   fi
 
   ###########################################################################
@@ -243,11 +243,11 @@ CONTRASTEOF
 
   # Check header
   # Check header (normalize whitespace)
-  ACTUAL_HEADER=$(head -1 "${SAMPLES_TSV}" | awk '{$1=$1};1')
-  EXPECTED_HEADER_NORM=$(echo "${EXPECTED_HEADER}" | awk '{$1=$1};1')
+  ACTUAL_HEADER=\$(head -1 "\${SAMPLES_TSV}" | awk '{\$1=\$1};1')
+  EXPECTED_HEADER_NORM=\$(echo "\${EXPECTED_HEADER}" | awk '{\$1=\$1};1')
 
-  if [[ "${ACTUAL_HEADER}" != "${EXPECTED_HEADER_NORM}" ]]; then
-    tracktx_error "summarize_polymerase_metrics" "Invalid manifest header (expected: ${EXPECTED_HEADER}, got: ${ACTUAL_HEADER})" "Fix samples manifest format"
+  if [[ "\${ACTUAL_HEADER}" != "\${EXPECTED_HEADER_NORM}" ]]; then
+    tracktx_error "summarize_polymerase_metrics" "Invalid manifest header (expected: \${EXPECTED_HEADER}, got: \${ACTUAL_HEADER})" "Fix samples manifest format"
   fi
 
   echo "AGGREGATE | VALIDATE | Manifest header: OK"
@@ -256,29 +256,29 @@ CONTRASTEOF
   SAMPLE_COUNT=0
   INVALID_ROWS=0
 
-  while IFS=$'\t' read -r SAMPLE_ID CONDITION TIMEPOINT REPLICATE FILE; do
-    SAMPLE_COUNT=$((SAMPLE_COUNT + 1))
+  while IFS=\$'\\t' read -r SAMPLE_ID CONDITION TIMEPOINT REPLICATE FILE; do
+    SAMPLE_COUNT=\$((SAMPLE_COUNT + 1))
 
     # Check field count
-    if [[ -z "${SAMPLE_ID}" || -z "${CONDITION}" || -z "${TIMEPOINT}" || -z "${REPLICATE}" || -z "${FILE}" ]]; then
-      echo "AGGREGATE | WARNING | Row ${SAMPLE_COUNT}: incomplete fields"
-      INVALID_ROWS=$((INVALID_ROWS + 1))
+    if [[ -z "\${SAMPLE_ID}" || -z "\${CONDITION}" || -z "\${TIMEPOINT}" || -z "\${REPLICATE}" || -z "\${FILE}" ]]; then
+      echo "AGGREGATE | WARNING | Row \${SAMPLE_COUNT}: incomplete fields"
+      INVALID_ROWS=\$((INVALID_ROWS + 1))
       continue
     fi
 
     # Check file exists
-    if [[ ! -s "${FILE}" ]]; then
-      echo "AGGREGATE | WARNING | Row ${SAMPLE_COUNT}: file missing or empty: ${FILE}"
-      INVALID_ROWS=$((INVALID_ROWS + 1))
+    if [[ ! -s "\${FILE}" ]]; then
+      echo "AGGREGATE | WARNING | Row \${SAMPLE_COUNT}: file missing or empty: \${FILE}"
+      INVALID_ROWS=\$((INVALID_ROWS + 1))
     fi
-  done < <(tail -n +2 "${SAMPLES_TSV}")
+  done < <(tail -n +2 "\${SAMPLES_TSV}")
 
-  echo "AGGREGATE | VALIDATE | Samples: ${SAMPLE_COUNT}"
+  echo "AGGREGATE | VALIDATE | Samples: \${SAMPLE_COUNT}"
 
-  if [[ ${INVALID_ROWS} -gt 0 ]]; then
-    echo "AGGREGATE | WARNING | ${INVALID_ROWS} rows with issues"
-    if [[ ${INVALID_ROWS} -ge ${SAMPLE_COUNT} && ${SAMPLE_COUNT} -gt 0 ]]; then
-      tracktx_error "summarize_polymerase_metrics" "All ${SAMPLE_COUNT} manifest rows are invalid (missing files or incomplete fields)" "Fix samples manifest and ensure metric files exist"
+  if [[ \${INVALID_ROWS} -gt 0 ]]; then
+    echo "AGGREGATE | WARNING | \${INVALID_ROWS} rows with issues"
+    if [[ \${INVALID_ROWS} -ge \${SAMPLE_COUNT} && \${SAMPLE_COUNT} -gt 0 ]]; then
+      tracktx_error "summarize_polymerase_metrics" "All \${SAMPLE_COUNT} manifest rows are invalid (missing files or incomplete fields)" "Fix samples manifest and ensure metric files exist"
     fi
   fi
 
@@ -299,21 +299,21 @@ CONTRASTEOF
 
   # Base arguments
   AGGREGATOR_ARGS=(
-    --samples-tsv "${SAMPLES_TSV}"
+    --samples-tsv "\${SAMPLES_TSV}"
     --out-merged pol_gene_metrics_merged.tsv
-    --top-n "${TOP_N}"
+    --top-n "\${TOP_N}"
   )
 
   # Add contrasts if specified
-  if [[ ${CONTRAST_COUNT} -gt 0 ]]; then
-    echo "AGGREGATE | BUILD | Adding ${CONTRAST_COUNT} contrasts..."
+  if [[ \${CONTRAST_COUNT} -gt 0 ]]; then
+    echo "AGGREGATE | BUILD | Adding \${CONTRAST_COUNT} contrasts..."
     
     # Read contrasts into array
-    mapfile -t CONTRASTS < <(grep -v '^$' contrasts.txt)
+    mapfile -t CONTRASTS < <(grep -v '^\$' contrasts.txt)
     
-    if [[ ${#CONTRASTS[@]} -gt 0 ]]; then
+    if [[ \${#CONTRASTS[@]} -gt 0 ]]; then
       AGGREGATOR_ARGS+=(
-        --contrasts "${CONTRASTS[@]}"
+        --contrasts "\${CONTRASTS[@]}"
         --out-contrasts pol_gene_metrics_contrasts.tsv
       )
       echo "AGGREGATE | BUILD | Contrast output: pol_gene_metrics_contrasts.tsv"
@@ -321,13 +321,13 @@ CONTRASTEOF
   fi
 
   # Add plots directory if enabled
-  if [[ ${ENABLE_PLOTS} -eq 1 ]]; then
+  if [[ \${ENABLE_PLOTS} -eq 1 ]]; then
     AGGREGATOR_ARGS+=(--plots-dir plots)
     echo "AGGREGATE | BUILD | Plots will be generated in: plots/"
   fi
 
   # Display command (for debugging)
-  echo "AGGREGATE | BUILD | Command arguments: ${#AGGREGATOR_ARGS[@]} args"
+  echo "AGGREGATE | BUILD | Command arguments: \${#AGGREGATOR_ARGS[@]} args"
 
   ###########################################################################
   # 6) RUN AGGREGATION
@@ -336,21 +336,21 @@ CONTRASTEOF
   echo "AGGREGATE | RUN | Running aggregation..."
   echo "AGGREGATE | RUN | This may take several minutes for large datasets..."
 
-  AGG_START=$(date +%s)
+  AGG_START=\$(date +%s)
 
   set +e
-  ${PYTHON_CMD} "${AGGREGATOR_SCRIPT}" "${AGGREGATOR_ARGS[@]}"
-  AGG_RC=$?
+  \${PYTHON_CMD} "\${AGGREGATOR_SCRIPT}" "\${AGGREGATOR_ARGS[@]}"
+  AGG_RC=\$?
   set -e
 
-  AGG_END=$(date +%s)
-  AGG_TIME=$((AGG_END - AGG_START))
+  AGG_END=\$(date +%s)
+  AGG_TIME=\$((AGG_END - AGG_START))
 
-  echo "AGGREGATE | RUN | Processing completed in ${AGG_TIME}s"
+  echo "AGGREGATE | RUN | Processing completed in \${AGG_TIME}s"
 
   # Handle failures
-  if [[ ${AGG_RC} -ne 0 ]]; then
-    tracktx_error "summarize_polymerase_metrics" "Aggregation failed with exit code ${AGG_RC}" "Check aggregate.log in work dir" ${AGG_RC}
+  if [[ \${AGG_RC} -ne 0 ]]; then
+    tracktx_error "summarize_polymerase_metrics" "Aggregation failed with exit code \${AGG_RC}" "Check aggregate.log in work dir" \${AGG_RC}
   fi
 
   ###########################################################################
@@ -363,28 +363,28 @@ CONTRASTEOF
   if [[ ! -s pol_gene_metrics_merged.tsv ]]; then
     tracktx_error "summarize_polymerase_metrics" "Merged table missing or empty" "Check aggregate.log in work dir"
   fi
-  MERGED_SIZE=$(stat -c%s pol_gene_metrics_merged.tsv 2>/dev/null || stat -f%z pol_gene_metrics_merged.tsv 2>/dev/null || echo "unknown")
-  MERGED_LINES=$(wc -l < pol_gene_metrics_merged.tsv | tr -d ' ')
-  MERGED_GENES=$((MERGED_LINES - 1))  # Exclude header
-  echo "AGGREGATE | VALIDATE | Merged table: ${MERGED_SIZE} bytes (${MERGED_GENES} genes)"
+  MERGED_SIZE=\$(stat -c%s pol_gene_metrics_merged.tsv 2>/dev/null || stat -f%z pol_gene_metrics_merged.tsv 2>/dev/null || echo "unknown")
+  MERGED_LINES=\$(wc -l < pol_gene_metrics_merged.tsv | tr -d ' ')
+  MERGED_GENES=\$((MERGED_LINES - 1))  # Exclude header
+  echo "AGGREGATE | VALIDATE | Merged table: \${MERGED_SIZE} bytes (\${MERGED_GENES} genes)"
 
   # Check contrasts table if expected
-  if [[ ${CONTRAST_COUNT} -gt 0 ]]; then
+  if [[ \${CONTRAST_COUNT} -gt 0 ]]; then
     if [[ -s pol_gene_metrics_contrasts.tsv ]]; then
-      CONTRAST_SIZE=$(stat -c%s pol_gene_metrics_contrasts.tsv 2>/dev/null || stat -f%z pol_gene_metrics_contrasts.tsv 2>/dev/null || echo "unknown")
-      CONTRAST_LINES=$(wc -l < pol_gene_metrics_contrasts.tsv | tr -d ' ')
-      echo "AGGREGATE | VALIDATE | Contrasts table: ${CONTRAST_SIZE} bytes (${CONTRAST_LINES} lines)"
+      CONTRAST_SIZE=\$(stat -c%s pol_gene_metrics_contrasts.tsv 2>/dev/null || stat -f%z pol_gene_metrics_contrasts.tsv 2>/dev/null || echo "unknown")
+      CONTRAST_LINES=\$(wc -l < pol_gene_metrics_contrasts.tsv | tr -d ' ')
+      echo "AGGREGATE | VALIDATE | Contrasts table: \${CONTRAST_SIZE} bytes (\${CONTRAST_LINES} lines)"
     else
       echo "AGGREGATE | WARNING | Contrasts requested but output missing"
     fi
   fi
 
   # Check plots if enabled
-  if [[ ${ENABLE_PLOTS} -eq 1 ]]; then
+  if [[ \${ENABLE_PLOTS} -eq 1 ]]; then
     if [[ -d plots ]]; then
-      PLOT_COUNT=$(find plots -name "*.png" 2>/dev/null | wc -l | tr -d ' ')
-      if [[ ${PLOT_COUNT} -gt 0 ]]; then
-        echo "AGGREGATE | VALIDATE | Plots generated: ${PLOT_COUNT} PNG files"
+      PLOT_COUNT=\$(find plots -name "*.png" 2>/dev/null | wc -l | tr -d ' ')
+      if [[ \${PLOT_COUNT} -gt 0 ]]; then
+        echo "AGGREGATE | VALIDATE | Plots generated: \${PLOT_COUNT} PNG files"
       else
         echo "AGGREGATE | VALIDATE | No plots generated (empty results or insufficient data)"
         rmdir plots 2>/dev/null || true
@@ -405,25 +405,25 @@ CONTRASTEOF
   # Get sample counts from merged table
   if [[ -s pol_gene_metrics_merged.tsv ]]; then
     # Count unique samples (columns after gene info)
-    HEADER_LINE=$(head -1 pol_gene_metrics_merged.tsv)
-    TOTAL_COLS=$(echo "${HEADER_LINE}" | awk -F'\t' '{print NF}')
+    HEADER_LINE=\$(head -1 pol_gene_metrics_merged.tsv)
+    TOTAL_COLS=\$(echo "\${HEADER_LINE}" | awk -F'\\t' '{print NF}')
     
-    echo "AGGREGATE | RESULTS | Merged table columns: ${TOTAL_COLS}"
-    echo "AGGREGATE | RESULTS | Genes: ${MERGED_GENES}"
+    echo "AGGREGATE | RESULTS | Merged table columns: \${TOTAL_COLS}"
+    echo "AGGREGATE | RESULTS | Genes: \${MERGED_GENES}"
   fi
 
   # Parse contrast results if available
   if [[ -s pol_gene_metrics_contrasts.tsv ]]; then
-    CONTRAST_GENES=$(tail -n +2 pol_gene_metrics_contrasts.tsv | wc -l | tr -d ' ')
-    echo "AGGREGATE | RESULTS | Contrasts: ${CONTRAST_GENES} genes analyzed"
+    CONTRAST_GENES=\$(tail -n +2 pol_gene_metrics_contrasts.tsv | wc -l | tr -d ' ')
+    echo "AGGREGATE | RESULTS | Contrasts: \${CONTRAST_GENES} genes analyzed"
     
     # Count significant genes: log2FC col 9, padj col 11
-    SIG_COUNT=$(tail -n +2 pol_gene_metrics_contrasts.tsv | \
-                awk -F'\t' 'NF>=11 && $9!="" && $9!="NA" && $11!="" && $11!="NA" && ($9+0>1 || $9+0<-1) && $11+0<0.05 && $11+0>0' | \
+    SIG_COUNT=\$(tail -n +2 pol_gene_metrics_contrasts.tsv | \\
+                awk -F'\\t' 'NF>=11 && \$9!="" && \$9!="NA" && \$11!="" && \$11!="NA" && (\$9+0>1 || \$9+0<-1) && \$11+0<0.05 && \$11+0>0' | \\
                 wc -l | tr -d ' ' || echo "NA")
     
-    if [[ "${SIG_COUNT}" != "NA" ]]; then
-      echo "AGGREGATE | RESULTS | Significant genes (|log2FC|>1, padj<0.05): ${SIG_COUNT}"
+    if [[ "\${SIG_COUNT}" != "NA" ]]; then
+      echo "AGGREGATE | RESULTS | Significant genes (|log2FC|>1, padj<0.05): \${SIG_COUNT}"
     fi
   fi
 
@@ -445,10 +445,10 @@ OVERVIEW
 
 PROCESSING SUMMARY
 ────────────────────────────────────────────────────────────────────────────
-  Samples processed:    ${SAMPLE_COUNT}
-  Genes analyzed:       ${MERGED_GENES}
-  Contrasts performed:  ${CONTRAST_COUNT}
-  Processing time:      ${AGG_TIME}s
+  Samples processed:    \${SAMPLE_COUNT}
+  Genes analyzed:       \${MERGED_GENES}
+  Contrasts performed:  \${CONTRAST_COUNT}
+  Processing time:      \${AGG_TIME}s
 
 AGGREGATION METHOD
 ────────────────────────────────────────────────────────────────────────────
@@ -495,14 +495,14 @@ pol_gene_metrics_merged.tsv:
     • tss_density     — TSS density (reads/bp)
     • body_density    — Body density (reads/bp)
   
-  Lines: ${MERGED_LINES} (${MERGED_GENES} genes × samples)
-  Size: ${MERGED_SIZE} bytes
+  Lines: \${MERGED_LINES} (\${MERGED_GENES} genes × samples)
+  Size: \${MERGED_SIZE} bytes
 
 pol_gene_metrics_contrasts.tsv (optional):
   Differential analysis results
   
   Generated when: params.pol.contrasts specified
-  Contrasts analyzed: ${CONTRAST_COUNT}
+  Contrasts analyzed: \${CONTRAST_COUNT}
   
   Format: One row per gene-contrast combination
   Columns:
@@ -515,9 +515,9 @@ pol_gene_metrics_contrasts.tsv (optional):
     • pvalue          — Statistical p-value
     • padj            — Adjusted p-value (FDR)
   
-  $([ -s pol_gene_metrics_contrasts.tsv ] && cat <<STATS
-  Lines: ${CONTRAST_LINES}
-  Significant genes: ${SIG_COUNT} (|log2FC|>1, padj<0.05)
+  \$([ -s pol_gene_metrics_contrasts.tsv ] && cat <<STATS
+  Lines: \${CONTRAST_LINES}
+  Significant genes: \${SIG_COUNT} (|log2FC|>1, padj<0.05)
 STATS
 )
 
@@ -532,7 +532,7 @@ plots/ directory (optional):
     • MA plots: log2FC vs mean expression per contrast
     • Distribution plots: Metric distributions per group
   
-  $([ -d plots ] && echo "  Plot count: ${PLOT_COUNT}" || echo "  No plots generated")
+  \$([ -d plots ] && echo "  Plot count: \${PLOT_COUNT}" || echo "  No plots generated")
 
 README_aggregate.txt:
   This documentation file
@@ -558,14 +558,14 @@ CONTRAST SPECIFICATION
     ]
 
   Contrasts used:
-$([ ${CONTRAST_COUNT} -gt 0 ] && cat contrasts.txt | grep -v '^$' | sed 's/^/    • /' || echo "    (none)")
+\$([ \${CONTRAST_COUNT} -gt 0 ] && cat contrasts.txt | grep -v '^\$' | sed 's/^/    • /' || echo "    (none)")
 
 TOP VARIABLE GENES
 ────────────────────────────────────────────────────────────────────────────
   Selection Method:
     • Calculate coefficient of variation (CV = SD/mean) per gene
     • Rank genes by CV
-    • Select top N (default: ${TOP_N})
+    • Select top N (default: \${TOP_N})
   
   Use cases:
     • Identify most dynamic genes
@@ -631,9 +631,9 @@ DOWNSTREAM USAGE
 
 PARAMETERS USED
 ────────────────────────────────────────────────────────────────────────────
-  Top N genes:      ${TOP_N}
-  Generate plots:   $([ ${ENABLE_PLOTS} -eq 1 ] && echo "Yes" || echo "No")
-  Contrasts:        ${CONTRAST_COUNT}
+  Top N genes:      \${TOP_N}
+  Generate plots:   \$([ \${ENABLE_PLOTS} -eq 1 ] && echo "Yes" || echo "No")
+  Contrasts:        \${CONTRAST_COUNT}
 
 TECHNICAL NOTES
 ────────────────────────────────────────────────────────────────────────────
@@ -656,9 +656,9 @@ DATA FORMAT COMPATIBILITY
 GENERATED
 ────────────────────────────────────────────────────────────────────────────
   Pipeline: TrackTx PRO-seq
-  Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+  Date: \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
   Module: 12_summarize_polymerase_metrics
-  Samples: ${SAMPLE_COUNT}
+  Samples: \${SAMPLE_COUNT}
 
 ================================================================================
 DOCEOF
@@ -671,21 +671,21 @@ DOCEOF
 
   echo "────────────────────────────────────────────────────────────────────────"
   echo "AGGREGATE | SUMMARY | Cohort Analysis Complete"
-  echo "AGGREGATE | SUMMARY | Samples: ${SAMPLE_COUNT}"
-  echo "AGGREGATE | SUMMARY | Genes: ${MERGED_GENES}"
-  echo "AGGREGATE | SUMMARY | Contrasts: ${CONTRAST_COUNT}"
-  if [[ "${SIG_COUNT}" != "NA" && ${CONTRAST_COUNT} -gt 0 ]]; then
-    echo "AGGREGATE | SUMMARY | Significant genes: ${SIG_COUNT}"
+  echo "AGGREGATE | SUMMARY | Samples: \${SAMPLE_COUNT}"
+  echo "AGGREGATE | SUMMARY | Genes: \${MERGED_GENES}"
+  echo "AGGREGATE | SUMMARY | Contrasts: \${CONTRAST_COUNT}"
+  if [[ "\${SIG_COUNT}" != "NA" && \${CONTRAST_COUNT} -gt 0 ]]; then
+    echo "AGGREGATE | SUMMARY | Significant genes: \${SIG_COUNT}"
   fi
-  if [[ ${ENABLE_PLOTS} -eq 1 && ${PLOT_COUNT} -gt 0 ]]; then
-    echo "AGGREGATE | SUMMARY | Plots: ${PLOT_COUNT}"
+  if [[ \${ENABLE_PLOTS} -eq 1 && \${PLOT_COUNT} -gt 0 ]]; then
+    echo "AGGREGATE | SUMMARY | Plots: \${PLOT_COUNT}"
   fi
-  echo "AGGREGATE | SUMMARY | Processing time: ${AGG_TIME}s"
+  echo "AGGREGATE | SUMMARY | Processing time: \${AGG_TIME}s"
   echo "────────────────────────────────────────────────────────────────────────"
 
-  TIMESTAMP_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP_END=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "AGGREGATE | COMPLETE | cohort analysis | ts=${TIMESTAMP_END}"
+  echo "AGGREGATE | COMPLETE | cohort analysis | ts=\${TIMESTAMP_END}"
   echo "════════════════════════════════════════════════════════════════════════"
-  '''
+  """
 }

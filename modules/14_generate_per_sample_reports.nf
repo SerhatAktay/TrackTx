@@ -100,18 +100,18 @@ process generate_per_sample_reports {
     path("${sample_id}.report.log"),         emit: log
 
   // ── Main Script ───────────────────────────────────────────────────────────
-  shell:
-  '''
+  script:
+  """
   #!/usr/bin/env bash
   # NOTE: Using -e (not -u) because track links may be empty strings
   set -eo pipefail
   export LC_ALL=C
   # Matplotlib font cache: use TMPDIR so tasks don't stall on "building font cache"
-  export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
+  export MPLCONFIGDIR="\${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a "!{sample_id}.report.log")
-  exec 2> >(tee -a "!{sample_id}.report.log" >&2)
+  exec > >(tee -a "${sample_id}.report.log")
+  exec 2> >(tee -a "${sample_id}.report.log" >&2)
 
   tracktx_error() {
     local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
@@ -127,57 +127,57 @@ process generate_per_sample_reports {
   }
   trap 'tracktx_error "generate_per_sample_reports" "Unexpected process failure" "Check *.report.log in work dir"' ERR
 
-  TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "REPORT | START | sample=!{sample_id} | ts=${TIMESTAMP}"
+  echo "REPORT | START | sample=${sample_id} | ts=\${TIMESTAMP}"
   echo "════════════════════════════════════════════════════════════════════════"
 
   ###########################################################################
   # 1) CONFIGURATION
   ###########################################################################
 
-  SAMPLE_ID="!{sample_id}"
-  CONDITION="!{condition}"
-  TIMEPOINT="!{timepoint}"
-  REPLICATE="!{replicate}"
+  SAMPLE_ID="${sample_id}"
+  CONDITION="${condition}"
+  TIMEPOINT="${timepoint}"
+  REPLICATE="${replicate}"
 
   # Core input files
-  DIV_BED="!{div_bed}"
-  FUNC_SUM="!{func_sum}"
-  POL_DENS="!{pol_density}"
-  PAUSING_IDX="!{pausing_idx}"
-  NORM_FACTORS="!{norm_factors}"
-  DEDUP_STATS="!{dedup_stats}"
-  QC_JSON="!{qc_json}"
+  DIV_BED="${div_bed}"
+  FUNC_SUM="${func_sum}"
+  POL_DENS="${pol_density}"
+  PAUSING_IDX="${pausing_idx}"
+  NORM_FACTORS="${norm_factors}"
+  DEDUP_STATS="${dedup_stats}"
+  QC_JSON="${qc_json}"
 
   # Track links (may be empty strings)
-  ALLMAP3P_POS_RAW="!{allmap3p_pos_raw}"
-  ALLMAP3P_NEG_RAW="!{allmap3p_neg_raw}"
-  POS3_CPM_BW="!{pos3_cpm_bw}"
-  NEG3_CPM_BW="!{neg3_cpm_bw}"
-  ALLMAP3P_POS_CPM_BW="!{allmap3p_pos_cpm_bw}"
-  ALLMAP3P_NEG_CPM_BW="!{allmap3p_neg_cpm_bw}"
+  ALLMAP3P_POS_RAW="${allmap3p_pos_raw}"
+  ALLMAP3P_NEG_RAW="${allmap3p_neg_raw}"
+  POS3_CPM_BW="${pos3_cpm_bw}"
+  NEG3_CPM_BW="${neg3_cpm_bw}"
+  ALLMAP3P_POS_CPM_BW="${allmap3p_pos_cpm_bw}"
+  ALLMAP3P_NEG_CPM_BW="${allmap3p_neg_cpm_bw}"
 
   # Renderer script
-  RENDER_SCRIPT="!{projectDir}/bin/render_sample_report.py"
+  RENDER_SCRIPT="${projectDir}/bin/render_sample_report.py"
 
   # Parameters
-  ENABLE_PLOTS=!{(params.reports_plots == null) ? 0 : (params.reports_plots as int)}
+  ENABLE_PLOTS=${(params.reports_plots == null) ? 0 : (params.reports_plots as int)}
 
   # Output files
-  OUT_HTML="${SAMPLE_ID}.report.html"
-  OUT_TSV="${SAMPLE_ID}.report.tsv"
-  OUT_JSON="${SAMPLE_ID}.report.json"
-  OUT_PLOTS="${SAMPLE_ID}.plots.html"
-  OUT_README="${SAMPLE_ID}.README_report.txt"
+  OUT_HTML="\${SAMPLE_ID}.report.html"
+  OUT_TSV="\${SAMPLE_ID}.report.tsv"
+  OUT_JSON="\${SAMPLE_ID}.report.json"
+  OUT_PLOTS="\${SAMPLE_ID}.plots.html"
+  OUT_README="\${SAMPLE_ID}.README_report.txt"
 
-  echo "REPORT | CONFIG | Sample ID: ${SAMPLE_ID}"
-  echo "REPORT | CONFIG | Condition: ${CONDITION}"
-  echo "REPORT | CONFIG | Timepoint: ${TIMEPOINT}"
-  echo "REPORT | CONFIG | Replicate: ${REPLICATE}"
+  echo "REPORT | CONFIG | Sample ID: \${SAMPLE_ID}"
+  echo "REPORT | CONFIG | Condition: \${CONDITION}"
+  echo "REPORT | CONFIG | Timepoint: \${TIMEPOINT}"
+  echo "REPORT | CONFIG | Replicate: \${REPLICATE}"
   echo ""
-  echo "REPORT | CONFIG | Renderer script: ${RENDER_SCRIPT}"
-  echo "REPORT | CONFIG | Enable plots: $([ ${ENABLE_PLOTS} -eq 1 ] && echo "yes" || echo "no")"
+  echo "REPORT | CONFIG | Renderer script: \${RENDER_SCRIPT}"
+  echo "REPORT | CONFIG | Enable plots: \$([ \${ENABLE_PLOTS} -eq 1 ] && echo "yes" || echo "no")"
 
   ###########################################################################
   # 2) VALIDATE INPUTS
@@ -195,45 +195,45 @@ process generate_per_sample_reports {
   fi
 
   # Check renderer script
-  if [[ ! -e "${RENDER_SCRIPT}" ]]; then
-    tracktx_error "generate_per_sample_reports" "Renderer script not found: ${RENDER_SCRIPT}" "Ensure bin/render_sample_report.py exists"
+  if [[ ! -e "\${RENDER_SCRIPT}" ]]; then
+    tracktx_error "generate_per_sample_reports" "Renderer script not found: \${RENDER_SCRIPT}" "Ensure bin/render_sample_report.py exists"
   fi
-  echo "REPORT | VALIDATE | Renderer script: ${RENDER_SCRIPT}"
+  echo "REPORT | VALIDATE | Renderer script: \${RENDER_SCRIPT}"
 
   # Check core input files
   validate_file() {
-    local label="$1"
-    local file="$2"
+    local label="\$1"
+    local file="\$2"
     
-    if [[ ! -s "${file}" ]]; then
-      tracktx_error "generate_per_sample_reports" "${label} missing or empty: ${file}" "Check upstream modules"
+    if [[ ! -s "\${file}" ]]; then
+      tracktx_error "generate_per_sample_reports" "\${label} missing or empty: \${file}" "Check upstream modules"
     fi
-    FILE_SIZE=$(stat -c%s "${file}" 2>/dev/null || stat -f%z "${file}" 2>/dev/null || echo "unknown")
-    FILE_LINES=$(wc -l < "${file}" 2>/dev/null | tr -d ' ' || echo 0)
-    echo "REPORT | VALIDATE | ${label}: ${FILE_SIZE} bytes (${FILE_LINES} lines)"
+    FILE_SIZE=\$(stat -c%s "\${file}" 2>/dev/null || stat -f%z "\${file}" 2>/dev/null || echo "unknown")
+    FILE_LINES=\$(wc -l < "\${file}" 2>/dev/null | tr -d ' ' || echo 0)
+    echo "REPORT | VALIDATE | \${label}: \${FILE_SIZE} bytes (\${FILE_LINES} lines)"
   }
 
-  validate_file "Divergent bed" "${DIV_BED}"
-  validate_file "Functional summary" "${FUNC_SUM}"
-  validate_file "Pol-II density" "${POL_DENS}"
-  validate_file "Pausing index" "${PAUSING_IDX}"
-  validate_file "Normalization factors" "${NORM_FACTORS}"
-  validate_file "QC JSON" "${QC_JSON}"
+  validate_file "Divergent bed" "\${DIV_BED}"
+  validate_file "Functional summary" "\${FUNC_SUM}"
+  validate_file "Pol-II density" "\${POL_DENS}"
+  validate_file "Pausing index" "\${PAUSING_IDX}"
+  validate_file "Normalization factors" "\${NORM_FACTORS}"
+  validate_file "QC JSON" "\${QC_JSON}"
 
   # Dedup stats is optional
-  if [[ -s "${DEDUP_STATS}" ]]; then
-    DEDUP_SIZE=$(stat -c%s "${DEDUP_STATS}" 2>/dev/null || stat -f%z "${DEDUP_STATS}" 2>/dev/null || echo "unknown")
-    echo "REPORT | VALIDATE | Dedup stats: ${DEDUP_SIZE} bytes"
+  if [[ -s "\${DEDUP_STATS}" ]]; then
+    DEDUP_SIZE=\$(stat -c%s "\${DEDUP_STATS}" 2>/dev/null || stat -f%z "\${DEDUP_STATS}" 2>/dev/null || echo "unknown")
+    echo "REPORT | VALIDATE | Dedup stats: \${DEDUP_SIZE} bytes"
   else
     echo "REPORT | VALIDATE | Dedup stats: not available"
   fi
 
   # Validate tools
-  if ${PYTHON_CMD} --version >/dev/null 2>&1; then
-    PYTHON_VERSION=$(${PYTHON_CMD} --version 2>&1 || echo "unknown")
-    echo "REPORT | VALIDATE | Python: ${PYTHON_VERSION}"
+  if \${PYTHON_CMD} --version >/dev/null 2>&1; then
+    PYTHON_VERSION=\$(\${PYTHON_CMD} --version 2>&1 || echo "unknown")
+    echo "REPORT | VALIDATE | Python: \${PYTHON_VERSION}"
   else
-    tracktx_error "generate_per_sample_reports" "Python not found (tried: ${PYTHON_CMD})" "Use -profile docker"
+    tracktx_error "generate_per_sample_reports" "Python not found (tried: \${PYTHON_CMD})" "Use -profile docker"
   fi
 
   ###########################################################################
@@ -244,30 +244,30 @@ process generate_per_sample_reports {
 
   # Helper to validate track link (URL or file path)
   validate_track() {
-    local label="$1"
-    local link="$2"
+    local label="\$1"
+    local link="\$2"
     
     # Empty is OK (optional)
-    if [[ -z "${link}" ]]; then
-      echo "REPORT | TRACKS | ${label}: not provided"
+    if [[ -z "\${link}" ]]; then
+      echo "REPORT | TRACKS | \${label}: not provided"
       return 1
     fi
     
     # Check if it's a URL
-    if [[ "${link}" =~ ^https?:// ]]; then
-      echo "REPORT | TRACKS | ${label}: URL (${link})"
+    if [[ "\${link}" =~ ^https?:// ]]; then
+      echo "REPORT | TRACKS | \${label}: URL (\${link})"
       return 0
     fi
     
     # Check if file exists
-    if [[ -e "${link}" ]]; then
-      LINK_SIZE=$(stat -c%s "${link}" 2>/dev/null || stat -f%z "${link}" 2>/dev/null || echo "unknown")
-      echo "REPORT | TRACKS | ${label}: file (${LINK_SIZE} bytes)"
+    if [[ -e "\${link}" ]]; then
+      LINK_SIZE=\$(stat -c%s "\${link}" 2>/dev/null || stat -f%z "\${link}" 2>/dev/null || echo "unknown")
+      echo "REPORT | TRACKS | \${label}: file (\${LINK_SIZE} bytes)"
       return 0
     fi
     
     # Not found
-    echo "REPORT | TRACKS | ${label}: not found (${link})"
+    echo "REPORT | TRACKS | \${label}: not found (\${link})"
     return 1
   }
 
@@ -279,18 +279,18 @@ process generate_per_sample_reports {
   HAVE_ALLMAP_POS_CPM_BW=0
   HAVE_ALLMAP_NEG_CPM_BW=0
 
-  validate_track "AllMap 3p pos raw" "${ALLMAP3P_POS_RAW}" && HAVE_ALLMAP_POS_RAW=1
-  validate_track "AllMap 3p neg raw" "${ALLMAP3P_NEG_RAW}" && HAVE_ALLMAP_NEG_RAW=1
-  validate_track "3p pos CPM BigWig" "${POS3_CPM_BW}" && HAVE_POS_CPM_BW=1
-  validate_track "3p neg CPM BigWig" "${NEG3_CPM_BW}" && HAVE_NEG_CPM_BW=1
-  validate_track "AllMap 3p pos CPM BigWig" "${ALLMAP3P_POS_CPM_BW}" && HAVE_ALLMAP_POS_CPM_BW=1
-  validate_track "AllMap 3p neg CPM BigWig" "${ALLMAP3P_NEG_CPM_BW}" && HAVE_ALLMAP_NEG_CPM_BW=1
+  validate_track "AllMap 3p pos raw" "\${ALLMAP3P_POS_RAW}" && HAVE_ALLMAP_POS_RAW=1
+  validate_track "AllMap 3p neg raw" "\${ALLMAP3P_NEG_RAW}" && HAVE_ALLMAP_NEG_RAW=1
+  validate_track "3p pos CPM BigWig" "\${POS3_CPM_BW}" && HAVE_POS_CPM_BW=1
+  validate_track "3p neg CPM BigWig" "\${NEG3_CPM_BW}" && HAVE_NEG_CPM_BW=1
+  validate_track "AllMap 3p pos CPM BigWig" "\${ALLMAP3P_POS_CPM_BW}" && HAVE_ALLMAP_POS_CPM_BW=1
+  validate_track "AllMap 3p neg CPM BigWig" "\${ALLMAP3P_NEG_CPM_BW}" && HAVE_ALLMAP_NEG_CPM_BW=1
 
-  TOTAL_TRACKS=$((HAVE_ALLMAP_POS_RAW + HAVE_ALLMAP_NEG_RAW + \
-                  HAVE_POS_CPM_BW + HAVE_NEG_CPM_BW + \
+  TOTAL_TRACKS=\$((HAVE_ALLMAP_POS_RAW + HAVE_ALLMAP_NEG_RAW + \\
+                  HAVE_POS_CPM_BW + HAVE_NEG_CPM_BW + \\
                   HAVE_ALLMAP_POS_CPM_BW + HAVE_ALLMAP_NEG_CPM_BW))
   
-  echo "REPORT | TRACKS | Available tracks: ${TOTAL_TRACKS}/6"
+  echo "REPORT | TRACKS | Available tracks: \${TOTAL_TRACKS}/6"
 
   ###########################################################################
   # 4) PARSE INPUT DATA FOR SUMMARY
@@ -299,29 +299,29 @@ process generate_per_sample_reports {
   echo "REPORT | PARSE | Extracting summary statistics..."
 
   # Count divergent loci
-  DIV_COUNT=$(grep -v '^#' "${DIV_BED}" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
-  echo "REPORT | PARSE | Divergent loci: ${DIV_COUNT}"
+  DIV_COUNT=\$(grep -v '^#' "\${DIV_BED}" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+  echo "REPORT | PARSE | Divergent loci: \${DIV_COUNT}"
 
   # Parse functional regions
-  if [[ -s "${FUNC_SUM}" ]]; then
-    FUNC_LINES=$(tail -n +2 "${FUNC_SUM}" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
-    echo "REPORT | PARSE | Functional regions: ${FUNC_LINES} categories"
+  if [[ -s "\${FUNC_SUM}" ]]; then
+    FUNC_LINES=\$(tail -n +2 "\${FUNC_SUM}" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+    echo "REPORT | PARSE | Functional regions: \${FUNC_LINES} categories"
   fi
 
   # Parse pausing index
-  if [[ -s "${PAUSING_IDX}" ]]; then
-    PAUSING_GENES=$(tail -n +2 "${PAUSING_IDX}" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
-    echo "REPORT | PARSE | Genes with pausing index: ${PAUSING_GENES}"
+  if [[ -s "\${PAUSING_IDX}" ]]; then
+    PAUSING_GENES=\$(tail -n +2 "\${PAUSING_IDX}" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+    echo "REPORT | PARSE | Genes with pausing index: \${PAUSING_GENES}"
   fi
 
   # Parse QC JSON for key metrics
-  if command -v jq >/dev/null 2>&1 && [[ -s "${QC_JSON}" ]]; then
-    TOTAL_READS=$(jq -r '.total_reads_raw // 0' "${QC_JSON}" 2>/dev/null || echo 0)
-    MAP_RATE=$(jq -r '.map_rate_percent // 0' "${QC_JSON}" 2>/dev/null || echo 0)
-    DUP_RATE=$(jq -r '.duplicate_perc_of_total // 0' "${QC_JSON}" 2>/dev/null || echo 0)
-    echo "REPORT | PARSE | Total reads: ${TOTAL_READS}"
-    echo "REPORT | PARSE | Mapping rate: ${MAP_RATE}%"
-    echo "REPORT | PARSE | Duplicate rate: ${DUP_RATE}%"
+  if command -v jq >/dev/null 2>&1 && [[ -s "\${QC_JSON}" ]]; then
+    TOTAL_READS=\$(jq -r '.total_reads_raw // 0' "\${QC_JSON}" 2>/dev/null || echo 0)
+    MAP_RATE=\$(jq -r '.map_rate_percent // 0' "\${QC_JSON}" 2>/dev/null || echo 0)
+    DUP_RATE=\$(jq -r '.duplicate_perc_of_total // 0' "\${QC_JSON}" 2>/dev/null || echo 0)
+    echo "REPORT | PARSE | Total reads: \${TOTAL_READS}"
+    echo "REPORT | PARSE | Mapping rate: \${MAP_RATE}%"
+    echo "REPORT | PARSE | Duplicate rate: \${DUP_RATE}%"
   else
     echo "REPORT | PARSE | jq not available, skipping QC metrics"
   fi
@@ -334,50 +334,50 @@ process generate_per_sample_reports {
 
   # Base arguments
   RENDERER_ARGS=(
-    --sample "${SAMPLE_ID}"
-    --condition "${CONDITION}"
-    --timepoint "${TIMEPOINT}"
-    --replicate "${REPLICATE}"
-    --divergent-bed "${DIV_BED}"
-    --functional-summary "${FUNC_SUM}"
-    --pol-density "${POL_DENS}"
-    --pausing-index "${PAUSING_IDX}"
-    --norm-factors "${NORM_FACTORS}"
-    --qc-json "${QC_JSON}"
-    --out-html "${OUT_HTML}"
-    --out-tsv "${OUT_TSV}"
-    --out-json "${OUT_JSON}"
-    --out-plots-html "${OUT_PLOTS}"
+    --sample "\${SAMPLE_ID}"
+    --condition "\${CONDITION}"
+    --timepoint "\${TIMEPOINT}"
+    --replicate "\${REPLICATE}"
+    --divergent-bed "\${DIV_BED}"
+    --functional-summary "\${FUNC_SUM}"
+    --pol-density "\${POL_DENS}"
+    --pausing-index "\${PAUSING_IDX}"
+    --norm-factors "\${NORM_FACTORS}"
+    --qc-json "\${QC_JSON}"
+    --out-html "\${OUT_HTML}"
+    --out-tsv "\${OUT_TSV}"
+    --out-json "\${OUT_JSON}"
+    --out-plots-html "\${OUT_PLOTS}"
   )
 
-  echo "REPORT | BUILD | Base arguments: ${#RENDERER_ARGS[@]}"
+  echo "REPORT | BUILD | Base arguments: \${#RENDERER_ARGS[@]}"
 
   # Helper to add track link if available
   add_track_link() {
-    local flag="$1"
-    local link="$2"
-    local have_flag="$3"
+    local flag="\$1"
+    local link="\$2"
+    local have_flag="\$3"
     
-    if [[ ${have_flag} -eq 1 ]]; then
-      RENDERER_ARGS+=("${flag}" "${link}")
-      echo "REPORT | BUILD | Added: ${flag}"
+    if [[ \${have_flag} -eq 1 ]]; then
+      RENDERER_ARGS+=("\${flag}" "\${link}")
+      echo "REPORT | BUILD | Added: \${flag}"
     fi
   }
 
-  add_track_link "--allmap3p-pos-raw" "${ALLMAP3P_POS_RAW}" ${HAVE_ALLMAP_POS_RAW}
-  add_track_link "--allmap3p-neg-raw" "${ALLMAP3P_NEG_RAW}" ${HAVE_ALLMAP_NEG_RAW}
-  add_track_link "--pos3-cpm-bw" "${POS3_CPM_BW}" ${HAVE_POS_CPM_BW}
-  add_track_link "--neg3-cpm-bw" "${NEG3_CPM_BW}" ${HAVE_NEG_CPM_BW}
-  add_track_link "--allmap3p-pos-cpm-bw" "${ALLMAP3P_POS_CPM_BW}" ${HAVE_ALLMAP_POS_CPM_BW}
-  add_track_link "--allmap3p-neg-cpm-bw" "${ALLMAP3P_NEG_CPM_BW}" ${HAVE_ALLMAP_NEG_CPM_BW}
+  add_track_link "--allmap3p-pos-raw" "\${ALLMAP3P_POS_RAW}" \${HAVE_ALLMAP_POS_RAW}
+  add_track_link "--allmap3p-neg-raw" "\${ALLMAP3P_NEG_RAW}" \${HAVE_ALLMAP_NEG_RAW}
+  add_track_link "--pos3-cpm-bw" "\${POS3_CPM_BW}" \${HAVE_POS_CPM_BW}
+  add_track_link "--neg3-cpm-bw" "\${NEG3_CPM_BW}" \${HAVE_NEG_CPM_BW}
+  add_track_link "--allmap3p-pos-cpm-bw" "\${ALLMAP3P_POS_CPM_BW}" \${HAVE_ALLMAP_POS_CPM_BW}
+  add_track_link "--allmap3p-neg-cpm-bw" "\${ALLMAP3P_NEG_CPM_BW}" \${HAVE_ALLMAP_NEG_CPM_BW}
 
   # Add plots flag if enabled
-  if [[ ${ENABLE_PLOTS} -eq 1 ]]; then
+  if [[ \${ENABLE_PLOTS} -eq 1 ]]; then
     RENDERER_ARGS+=(--plots 1)
     echo "REPORT | BUILD | Plots enabled"
   fi
 
-  echo "REPORT | BUILD | Total arguments: ${#RENDERER_ARGS[@]}"
+  echo "REPORT | BUILD | Total arguments: \${#RENDERER_ARGS[@]}"
 
   ###########################################################################
   # 6) RUN RENDERER
@@ -385,20 +385,20 @@ process generate_per_sample_reports {
 
   echo "REPORT | RENDER | Generating reports..."
 
-  RENDER_START=$(date +%s)
+  RENDER_START=\$(date +%s)
 
   set +e
-  ${PYTHON_CMD} "${RENDER_SCRIPT}" "${RENDERER_ARGS[@]}"
-  RENDER_RC=$?
+  \${PYTHON_CMD} "\${RENDER_SCRIPT}" "\${RENDERER_ARGS[@]}"
+  RENDER_RC=\$?
   set -e
 
-  RENDER_END=$(date +%s)
-  RENDER_TIME=$((RENDER_END - RENDER_START))
+  RENDER_END=\$(date +%s)
+  RENDER_TIME=\$((RENDER_END - RENDER_START))
 
-  echo "REPORT | RENDER | Rendering completed in ${RENDER_TIME}s"
+  echo "REPORT | RENDER | Rendering completed in \${RENDER_TIME}s"
 
-  if [[ ${RENDER_RC} -ne 0 ]]; then
-    tracktx_error "generate_per_sample_reports" "Renderer failed with exit code ${RENDER_RC}" "Check report.log in work dir" ${RENDER_RC}
+  if [[ \${RENDER_RC} -ne 0 ]]; then
+    tracktx_error "generate_per_sample_reports" "Renderer failed with exit code \${RENDER_RC}" "Check report.log in work dir" \${RENDER_RC}
   fi
 
   ###########################################################################
@@ -408,26 +408,26 @@ process generate_per_sample_reports {
   echo "REPORT | VALIDATE | Checking output files..."
 
   # Check required outputs
-  for OUTPUT in "${OUT_HTML}" "${OUT_TSV}" "${OUT_JSON}"; do
-    if [[ ! -s "${OUTPUT}" ]]; then
-      tracktx_error "generate_per_sample_reports" "Expected output missing or empty: ${OUTPUT}" "Check report.log in work dir"
+  for OUTPUT in "\${OUT_HTML}" "\${OUT_TSV}" "\${OUT_JSON}"; do
+    if [[ ! -s "\${OUTPUT}" ]]; then
+      tracktx_error "generate_per_sample_reports" "Expected output missing or empty: \${OUTPUT}" "Check report.log in work dir"
     fi
-    OUTPUT_SIZE=$(stat -c%s "${OUTPUT}" 2>/dev/null || stat -f%z "${OUTPUT}" 2>/dev/null || echo "unknown")
-    echo "REPORT | VALIDATE | $(basename ${OUTPUT}): ${OUTPUT_SIZE} bytes"
+    OUTPUT_SIZE=\$(stat -c%s "\${OUTPUT}" 2>/dev/null || stat -f%z "\${OUTPUT}" 2>/dev/null || echo "unknown")
+    echo "REPORT | VALIDATE | \$(basename \${OUTPUT}): \${OUTPUT_SIZE} bytes"
   done
 
   # Check plots file
-  if [[ ${ENABLE_PLOTS} -eq 1 ]]; then
-    if [[ -s "${OUT_PLOTS}" ]]; then
-      PLOTS_SIZE=$(stat -c%s "${OUT_PLOTS}" 2>/dev/null || stat -f%z "${OUT_PLOTS}" 2>/dev/null || echo "unknown")
-      echo "REPORT | VALIDATE | Plots HTML: ${PLOTS_SIZE} bytes"
+  if [[ \${ENABLE_PLOTS} -eq 1 ]]; then
+    if [[ -s "\${OUT_PLOTS}" ]]; then
+      PLOTS_SIZE=\$(stat -c%s "\${OUT_PLOTS}" 2>/dev/null || stat -f%z "\${OUT_PLOTS}" 2>/dev/null || echo "unknown")
+      echo "REPORT | VALIDATE | Plots HTML: \${PLOTS_SIZE} bytes"
     else
       echo "REPORT | WARNING | Plots enabled but file missing"
     fi
   else
     # Create placeholder if plots disabled
-    if [[ ! -s "${OUT_PLOTS}" ]]; then
-      cat > "${OUT_PLOTS}" <<'PLACEHOLDER'
+    if [[ ! -s "\${OUT_PLOTS}" ]]; then
+      cat > "\${OUT_PLOTS}" <<'PLACEHOLDER'
 <!DOCTYPE html>
 <html>
 <head>
@@ -456,9 +456,9 @@ PLACEHOLDER
 
   echo "REPORT | README | Creating documentation..."
 
-  cat > "${OUT_README}" <<DOCEOF
+  cat > "\${OUT_README}" <<DOCEOF
 ================================================================================
-PER-SAMPLE REPORT — !{sample_id}
+PER-SAMPLE REPORT — ${sample_id}
 ================================================================================
 
 OVERVIEW
@@ -467,14 +467,14 @@ OVERVIEW
 
 SAMPLE INFORMATION
 ────────────────────────────────────────────────────────────────────────────
-  Sample ID:    ${SAMPLE_ID}
-  Condition:    ${CONDITION}
-  Timepoint:    ${TIMEPOINT}
-  Replicate:    ${REPLICATE}
+  Sample ID:    \${SAMPLE_ID}
+  Condition:    \${CONDITION}
+  Timepoint:    \${TIMEPOINT}
+  Replicate:    \${REPLICATE}
 
 REPORT FILES
 ────────────────────────────────────────────────────────────────────────────
-  ${OUT_HTML}
+  \${OUT_HTML}
     Interactive HTML report with:
       • Sample metadata and experimental design
       • Quality control summary
@@ -487,14 +487,14 @@ REPORT FILES
     
     View in web browser for best experience.
   
-  ${OUT_TSV}
+  \${OUT_TSV}
     Tab-separated summary table with key metrics:
       • One row per metric
       • Columns: metric_name, value, unit, category
       • Easy to parse programmatically
       • Compatible with R, Python, Excel
   
-  ${OUT_JSON}
+  \${OUT_JSON}
     Structured JSON with complete data:
       • Versioned schema (current: 1.0)
       • Nested structure by category
@@ -502,67 +502,67 @@ REPORT FILES
       • Suitable for API integration
       • JSON Schema compliant
   
-  ${OUT_PLOTS}
-    $([ ${ENABLE_PLOTS} -eq 1 ] && echo "Supplementary plots page with:
+  \${OUT_PLOTS}
+    \$([ \${ENABLE_PLOTS} -eq 1 ] && echo "Supplementary plots page with:
       • Functional region composition pie chart
       • Pausing index distribution histogram
       • QC metrics summary plots
       • Base64-encoded inline images
       • No external dependencies" || echo "Placeholder (plots disabled)")
   
-  ${OUT_README}
+  \${OUT_README}
     This documentation file
   
-  ${SAMPLE_ID}.report.log
+  \${SAMPLE_ID}.report.log
     Processing log with timestamps
 
 INPUT DATA FILES
 ────────────────────────────────────────────────────────────────────────────
   Core Inputs:
-    • Divergent bed:          ${DIV_BED} (${DIV_COUNT} loci)
-    • Functional summary:     ${FUNC_SUM}
-    • Pol-II density:         ${POL_DENS}
-    • Pausing index:          ${PAUSING_IDX} (${PAUSING_GENES} genes)
-    • Normalization factors:  ${NORM_FACTORS}
-    • QC JSON:                ${QC_JSON}
-    • Dedup stats:            ${DEDUP_STATS}
+    • Divergent bed:          \${DIV_BED} (\${DIV_COUNT} loci)
+    • Functional summary:     \${FUNC_SUM}
+    • Pol-II density:         \${POL_DENS}
+    • Pausing index:          \${PAUSING_IDX} (\${PAUSING_GENES} genes)
+    • Normalization factors:  \${NORM_FACTORS}
+    • QC JSON:                \${QC_JSON}
+    • Dedup stats:            \${DEDUP_STATS}
 
 TRACK FILE LINKS
 ────────────────────────────────────────────────────────────────────────────
   Raw Coverage (unnormalized bedGraph):
-    • AllMap 3' pos:  $([ ${HAVE_ALLMAP_POS_RAW} -eq 1 ] && echo "${ALLMAP3P_POS_RAW}" || echo "Not available")
-    • AllMap 3' neg:  $([ ${HAVE_ALLMAP_NEG_RAW} -eq 1 ] && echo "${ALLMAP3P_NEG_RAW}" || echo "Not available")
+    • AllMap 3' pos:  \$([ \${HAVE_ALLMAP_POS_RAW} -eq 1 ] && echo "\${ALLMAP3P_POS_RAW}" || echo "Not available")
+    • AllMap 3' neg:  \$([ \${HAVE_ALLMAP_NEG_RAW} -eq 1 ] && echo "\${ALLMAP3P_NEG_RAW}" || echo "Not available")
   
   Normalized BigWig (CPM):
-    • 3' pos:         $([ ${HAVE_POS_CPM_BW} -eq 1 ] && echo "${POS3_CPM_BW}" || echo "Not available")
-    • 3' neg:         $([ ${HAVE_NEG_CPM_BW} -eq 1 ] && echo "${NEG3_CPM_BW}" || echo "Not available")
+    • 3' pos:         \$([ \${HAVE_POS_CPM_BW} -eq 1 ] && echo "\${POS3_CPM_BW}" || echo "Not available")
+    • 3' neg:         \$([ \${HAVE_NEG_CPM_BW} -eq 1 ] && echo "\${NEG3_CPM_BW}" || echo "Not available")
   
   AllMap Normalized BigWig (CPM):
-    • 3' pos:         $([ ${HAVE_ALLMAP_POS_CPM_BW} -eq 1 ] && echo "${ALLMAP3P_POS_CPM_BW}" || echo "Not available")
-    • 3' neg:         $([ ${HAVE_ALLMAP_NEG_CPM_BW} -eq 1 ] && echo "${ALLMAP3P_NEG_CPM_BW}" || echo "Not available")
+    • 3' pos:         \$([ \${HAVE_ALLMAP_POS_CPM_BW} -eq 1 ] && echo "\${ALLMAP3P_POS_CPM_BW}" || echo "Not available")
+    • 3' neg:         \$([ \${HAVE_ALLMAP_NEG_CPM_BW} -eq 1 ] && echo "\${ALLMAP3P_NEG_CPM_BW}" || echo "Not available")
   
-  Total tracks:       ${TOTAL_TRACKS}/6
+  Total tracks:       \${TOTAL_TRACKS}/6
 
 USING THE REPORTS
 ────────────────────────────────────────────────────────────────────────────
   HTML Report:
-    1. Open ${OUT_HTML} in web browser
+    1. Open \${OUT_HTML} in web browser
     2. Navigate sections using table of contents
     3. Click track links to view in UCSC/IGV
     4. Review QC metrics for data quality
   
   TSV Summary:
     # In R
-    data <- read.delim("${OUT_TSV}")
+    data <- read.delim("\${OUT_TSV}")
     
     # In Python
     import pandas as pd
-    data = pd.read_csv("${OUT_TSV}", sep="\t")
+    data = pd.read_csv("\${OUT_TSV}", sep="\\t")
   
   JSON Data:
     # In Python
     import json
-    with open("${OUT_JSON}") as f:
+    with open("\${OUT_JSON}") as f:
         data = json.load(f)
     
     # Check schema version
@@ -596,15 +596,15 @@ REPORT CONTENTS DETAILS
    • Pipeline version
 
 2. Quality Control
-   • Total reads: ${TOTAL_READS:-NA}
-   • Mapping rate: ${MAP_RATE:-NA}%
-   • Duplicate rate: ${DUP_RATE:-NA}%
+   • Total reads: \${TOTAL_READS:-NA}
+   • Mapping rate: \${MAP_RATE:-NA}%
+   • Duplicate rate: \${DUP_RATE:-NA}%
    • Strand balance
    • Coverage depth
    • UMI deduplication (if applicable)
 
 3. Divergent Transcription
-   • Number of loci: ${DIV_COUNT}
+   • Number of loci: \${DIV_COUNT}
    • Genomic distribution
    • Signal characteristics
    • Annotation overlap
@@ -669,10 +669,10 @@ DOWNSTREAM USAGE
 
 PROCESSING DETAILS
 ────────────────────────────────────────────────────────────────────────────
-  Renderer:         ${RENDER_SCRIPT}
-  Python version:   ${PYTHON_VERSION}
-  Processing time:  ${RENDER_TIME}s
-  Plots enabled:    $([ ${ENABLE_PLOTS} -eq 1 ] && echo "Yes" || echo "No")
+  Renderer:         \${RENDER_SCRIPT}
+  Python version:   \${PYTHON_VERSION}
+  Processing time:  \${RENDER_TIME}s
+  Plots enabled:    \$([ \${ENABLE_PLOTS} -eq 1 ] && echo "Yes" || echo "No")
 
 TROUBLESHOOTING
 ────────────────────────────────────────────────────────────────────────────
@@ -695,8 +695,8 @@ TROUBLESHOOTING
 GENERATED
 ────────────────────────────────────────────────────────────────────────────
   Pipeline: TrackTx PRO-seq
-  Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Sample: ${SAMPLE_ID}
+  Date: \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+  Sample: \${SAMPLE_ID}
   Module: 14_generate_per_sample_reports
 
 ================================================================================
@@ -710,15 +710,15 @@ DOCEOF
 
   echo "REPORT | SYMLINK | Creating quick access link..."
 
-  SYMLINK_DIR="!{params.output_dir}/reports"
-  mkdir -p "${SYMLINK_DIR}" || true
+  SYMLINK_DIR="${params.output_dir}/reports"
+  mkdir -p "\${SYMLINK_DIR}" || true
 
   # Create symlink for easy access
-  ln -sf "$(pwd)/${OUT_HTML}" "${SYMLINK_DIR}/${SAMPLE_ID}.html" || \
+  ln -sf "\$(pwd)/\${OUT_HTML}" "\${SYMLINK_DIR}/\${SAMPLE_ID}.html" || \\
     echo "REPORT | WARNING | Could not create symlink"
 
-  if [[ -L "${SYMLINK_DIR}/${SAMPLE_ID}.html" ]]; then
-    echo "REPORT | SYMLINK | Quick access: ${SYMLINK_DIR}/${SAMPLE_ID}.html"
+  if [[ -L "\${SYMLINK_DIR}/\${SAMPLE_ID}.html" ]]; then
+    echo "REPORT | SYMLINK | Quick access: \${SYMLINK_DIR}/\${SAMPLE_ID}.html"
   fi
 
   ###########################################################################
@@ -726,17 +726,17 @@ DOCEOF
   ###########################################################################
 
   echo "────────────────────────────────────────────────────────────────────────"
-  echo "REPORT | SUMMARY | Sample: ${SAMPLE_ID}"
-  echo "REPORT | SUMMARY | Divergent loci: ${DIV_COUNT}"
-  echo "REPORT | SUMMARY | Genes with PI: ${PAUSING_GENES}"
-  echo "REPORT | SUMMARY | Available tracks: ${TOTAL_TRACKS}/6"
+  echo "REPORT | SUMMARY | Sample: \${SAMPLE_ID}"
+  echo "REPORT | SUMMARY | Divergent loci: \${DIV_COUNT}"
+  echo "REPORT | SUMMARY | Genes with PI: \${PAUSING_GENES}"
+  echo "REPORT | SUMMARY | Available tracks: \${TOTAL_TRACKS}/6"
   echo "REPORT | SUMMARY | Output files: 5"
-  echo "REPORT | SUMMARY | Processing time: ${RENDER_TIME}s"
+  echo "REPORT | SUMMARY | Processing time: \${RENDER_TIME}s"
   echo "────────────────────────────────────────────────────────────────────────"
 
-  TIMESTAMP_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP_END=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "REPORT | COMPLETE | sample=${SAMPLE_ID} | ts=${TIMESTAMP_END}"
+  echo "REPORT | COMPLETE | sample=\${SAMPLE_ID} | ts=\${TIMESTAMP_END}"
   echo "════════════════════════════════════════════════════════════════════════"
-  '''
+  """
 }
