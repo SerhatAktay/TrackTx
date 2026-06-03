@@ -472,7 +472,7 @@ Paths are relative to: ${projectDir}"""
                      : (_rc.toString().trim().toLowerCase() in ['true','1','yes','on']))
   def signalEnd = (params.signal_end ?: (params.library_type == 'groseq' ? '5p' : '3p'))
                     .toString().toLowerCase()
-  log.info "STEP 6 | CONFIG | library_type=${params.library_type} | revcomp_r1=${revcompR1} | signal_end=${signalEnd}"
+  if (params.verbose) log.info "STEP 6 | CONFIG | library_type=${params.library_type} | revcomp_r1=${revcompR1} | signal_end=${signalEnd}"
 
   align_reads_to_genome(
     clean_fastq_with_r2,
