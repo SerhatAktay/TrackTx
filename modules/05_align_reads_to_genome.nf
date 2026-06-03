@@ -60,6 +60,7 @@ process align_reads_to_genome {
     path  spike_bt2
     
     val(is_paired_end)  // Pass as input to avoid params hash pollution
+    val(do_revcomp)     // true = reverse-complement R1 (PRO-seq); false = leave as-is (GRO-seq)
 
   // ── Outputs ──────────────────────────────────────────────────────────────
   output:
@@ -92,18 +93,8 @@ process align_reads_to_genome {
   exec > >(tee -a align_reads.log)
   exec 2> >(tee -a align_reads.log >&2)
 
-  tracktx_error() {
-    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
-    echo "" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "TRACKTX ERROR" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "Module:  \${module}" >&2
-    echo "Problem: \${problem}" >&2
-    echo "Fix:     \${fix}" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    exit "\$code"
-  }
+  # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
+  source tracktx_error_fragment.sh
   # Print the precise failing command + location (much more actionable than exit status 1)
   tracktx_on_err() {
     local rc="\$?"
@@ -223,8 +214,15 @@ process align_reads_to_genome {
     [[ "\$1" == *.gz ]] && gzip -cd -- "\$1" || cat -- "\$1"
   }
 
-  # Reverse-complement FASTQ stream (PRO-seq convention for R1)
+  # Reverse-complement FASTQ stream for R1.
+  #   PRO-seq: R1 is sequenced from the 3' end antisense → flip onto nascent strand.
+  #   GRO-seq: R1 already represents the nascent strand → pass through unchanged.
+  DO_REVCOMP="${do_revcomp}"
   rc_stream() {
+    if [[ "\${DO_REVCOMP}" != "true" ]]; then
+      cat   # GRO-seq / override: no reverse-complement
+      return 0
+    fi
     if command -v seqkit >/dev/null 2>&1; then
       seqkit seq --quiet -t dna -r -p -j "\${THREADS}"
     else

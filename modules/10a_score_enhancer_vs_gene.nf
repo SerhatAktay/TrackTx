@@ -91,7 +91,7 @@ process score_enhancer_vs_gene {
     PYTHON_CMD="python"
   fi
 
-  SCORE_SCRIPT="${projectDir}/bin/enhancer_gene_score.py"
+  SCORE_SCRIPT="\$(command -v enhancer_gene_score.py)"
   if [[ ! -f "\${SCORE_SCRIPT}" ]]; then
     echo "ENHSC | ERROR | Scoring script not found: \${SCORE_SCRIPT}" >&2
     exit 1

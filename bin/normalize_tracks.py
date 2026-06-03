@@ -115,11 +115,23 @@ def read_counts_table(path: str) -> list[dict]:
 
 def pick_baseline(rows: list[dict], condition: str) -> dict:
     cond_l = str(condition).lower()
-    crows = [r for r in rows if r["condition_l"] == cond_l] or rows
+    crows = [r for r in rows if r["condition_l"] == cond_l]
+    if not crows:
+        # No sample matches the requested condition. Falling back to ALL rows
+        # makes the spike-in (siCPM) baseline arbitrary, so surface it loudly
+        # rather than silently anchoring to an unrelated sample.
+        known = sorted({r.get("condition", "") for r in rows})
+        print(f"WARN: condition '{condition}' not found in counts table "
+              f"(known conditions: {known}); siCPM baseline will fall back to "
+              f"ALL samples and is NOT condition-anchored.", file=sys.stderr)
+        crows = rows
     base = [r for r in crows if r["tp_min"]==0 and r["rep_i"]==1] or \
            [r for r in crows if r["tp_min"]==0]
     if not base:
         min_tp = min(r["tp_min"] for r in crows)
+        print(f"WARN: no t=0 baseline for condition '{condition}'; "
+              f"using earliest timepoint ({min_tp} min) as siCPM control anchor.",
+              file=sys.stderr)
         base = [r for r in crows if r["tp_min"]==min_tp]
     return sorted(base, key=lambda r: r["rep_i"])[0]
 

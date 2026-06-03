@@ -84,18 +84,8 @@ process quantify_reads_per_gene {
   exec > >(tee -a quantify_reads_per_gene.log)
   exec 2> >(tee -a quantify_reads_per_gene.log >&2)
 
-  tracktx_error() {
-    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
-    echo "" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "TRACKTX ERROR" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "Module:  \${module}" >&2
-    echo "Problem: \${problem}" >&2
-    echo "Fix:     \${fix}" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    exit "\$code"
-  }
+  # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
+  source tracktx_error_fragment.sh
   trap 'tracktx_error "quantify_reads_per_gene" "Unexpected process failure" "Check quantify_reads_per_gene.log in work dir"' ERR
 
   TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")

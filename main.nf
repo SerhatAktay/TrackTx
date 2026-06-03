@@ -462,13 +462,26 @@ Paths are relative to: ${projectDir}"""
     log.info "STEP 6 | CONFIG | Mode: ${params.paired_end ? 'Paired-end' : 'Single-end'}"
   }
 
+  // Library-type-derived processing (null params auto-derive; see nextflow.config).
+  //   proseq → revcomp R1, 3' signal end;  groseq → no revcomp, 5' signal end.
+  // Robust bool: YAML gives a real Boolean; CLI (--revcomp_r1 false) gives the
+  // String "false" (which `as boolean` would wrongly treat as true).
+  def _rc = params.revcomp_r1
+  def revcompR1 = (_rc == null) ? (params.library_type != 'groseq')
+                  : (_rc instanceof Boolean ? _rc
+                     : (_rc.toString().trim().toLowerCase() in ['true','1','yes','on']))
+  def signalEnd = (params.signal_end ?: (params.library_type == 'groseq' ? '5p' : '3p'))
+                    .toString().toLowerCase()
+  log.info "STEP 6 | CONFIG | library_type=${params.library_type} | revcomp_r1=${revcompR1} | signal_end=${signalEnd}"
+
   align_reads_to_genome(
     clean_fastq_with_r2,
     ref_meta_ch,
     ref_idx_ch,
     spike_meta_ch,
     spike_idx_ch,
-    params.paired_end ?: false
+    params.paired_end ?: false,
+    revcompR1
   )
 
   def aligned_ch = align_reads_to_genome.out[0]
@@ -665,9 +678,13 @@ Paths are relative to: ${projectDir}"""
     log.info "=".multiply(80)
   }
 
-  def divergent_input_ch = bw3p_pair_ch
-    .map { sid, pos3_bg, neg3_bg, _bwp, _bwn, c, t, r ->
-      tuple(sid, pos3_bg, neg3_bg, c, t, r)
+  // Route the configured signal end into divergent calling. PRO-seq uses 3'
+  // (Pol II active site); GRO-seq uses 5' (3' end is not the Pol position).
+  // bw3p_pair and bw5p_pair share the same tuple shape, so the map is identical.
+  def signal_pair_ch = (signalEnd == '5p') ? bw5p_pair_ch : bw3p_pair_ch
+  def divergent_input_ch = signal_pair_ch
+    .map { sid, pos_bg, neg_bg, _bwp, _bwn, c, t, r ->
+      tuple(sid, pos_bg, neg_bg, c, t, r)
     }
 
   divergent_input_ch.subscribe { sid, _pos, _neg, _cond, _time, _rep ->

@@ -244,6 +244,23 @@
               <p class="help is-dim ml-5">Two FASTQ files per sample. Less common for PRO-seq.</p>
             </div>
           </div>
+          <div class="field mt-4">
+            <label class="label">Library Type</label>
+            <div class="control">
+              <label class="radio">
+                <input type="radio" name="library_type" value="proseq" checked>
+                <strong>PRO-seq</strong>
+              </label>
+              <p class="help is-dim ml-5">R1 reverse-complemented; 3' end marks the RNA Pol II active site (single-nucleotide resolution).</p>
+            </div>
+            <div class="control mt-2">
+              <label class="radio">
+                <input type="radio" name="library_type" value="groseq">
+                <strong>GRO-seq</strong>
+              </label>
+              <p class="help is-dim ml-5">R1 kept as-is; 5' end used as the nascent-RNA signal. Experimental — validate strand/signal on real data.</p>
+            </div>
+          </div>
         </div>
         
         <div class="column">
@@ -914,6 +931,57 @@
           </div>
         </div>
       </div>
+
+      <!-- Pausing index (Pol-II metrics) -->
+      <div class="section-header mt-5"><strong>Pausing Index (Pol-II Metrics)</strong></div>
+      <div class="help-box mb-3">
+        Geometry for the RNA Pol-II pausing index (TSS read density ÷ gene-body density).
+        The gene body starts at <em>max(offset min, offset fraction × gene length)</em> after the TSS.
+        The validity guard flags genes whose body window is too short to give a stable density —
+        these report <code>NaN</code> instead of an inflated index.
+      </div>
+
+      <div class="columns">
+        <div class="column">
+          <div class="field">
+            <label class="label">TSS Window (±bp)</label>
+            <input class="input small-input" id="pol_tss_win" type="number" value="50">
+            <p class="help">Promoter-proximal window for TSS read counting. Common: 50-100 bp.</p>
+          </div>
+        </div>
+        <div class="column">
+          <div class="field">
+            <label class="label">Body Offset Min (bp)</label>
+            <input class="input small-input" id="pol_body_offset_min" type="number" value="2000">
+            <p class="help">Minimum distance after TSS where the gene body starts.</p>
+          </div>
+        </div>
+        <div class="column">
+          <div class="field">
+            <label class="label">Body Offset Fraction</label>
+            <input class="input small-input" id="pol_body_offset_frac" type="number" step="0.01" value="0.10">
+            <p class="help">Body start as a fraction of gene length (used when larger than offset min).</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="columns mt-3">
+        <div class="column">
+          <div class="field">
+            <label class="label">Min Body Fraction</label>
+            <input class="input small-input" id="pol_min_body_frac" type="number" step="0.01" value="0.10">
+            <p class="help">Body window must be ≥ this fraction of gene length, else the gene is flagged truncated (NaN PI). Scales with gene length.</p>
+          </div>
+        </div>
+        <div class="column">
+          <div class="field">
+            <label class="label">Min Body Length Floor (bp)</label>
+            <input class="input small-input" id="pol_min_body_len" type="number" value="0">
+            <p class="help">Optional absolute body-length floor on top of the fraction. 0 = off.</p>
+          </div>
+        </div>
+        <div class="column"></div>
+      </div>
     </div>
 
     <!-- ================================================================ -->
@@ -1130,6 +1198,7 @@ const $$ = sel => Array.from(document.querySelectorAll(sel));
 const mono = s => s == null ? 'null' : `"${String(s).replace(/"/g,'\\"')}"`;
 const isPE = () => document.querySelector('input[name="read_type"]:checked').value === 'PE';
 const source = () => document.querySelector('input[name="sample_source"]:checked').value;
+const libType = () => (document.querySelector('input[name="library_type"]:checked') || {value:'proseq'}).value;
 
 /* ====================== UI Toggles ====================== */
 function toggleBlock(id, show){
@@ -1273,6 +1342,7 @@ function loadExampleSamples(){
   container.innerHTML = '';
   // Set SRA as source so example uses SRR IDs
   $$('input[name="sample_source"]').forEach(r => { r.checked = (r.value === 'srr'); });
+  $$('input[name="library_type"]').forEach(r => { r.checked = (r.value === 'proseq'); });
   rebuildAllReplicateUIs();
   // Add two example samples: Control and Treatment
   addSampleUI();
@@ -1412,6 +1482,15 @@ function buildYAML(){
     qc:              !!$('#fgr_qc').checked
   };
 
+  // Pausing index (Pol-II metrics) geometry
+  const pol = {
+    tss_win:          parseInt($('#pol_tss_win').value||'50',10),
+    body_offset_min:  parseInt($('#pol_body_offset_min').value||'2000',10),
+    body_offset_frac: parseFloat($('#pol_body_offset_frac').value||'0.10'),
+    min_body_frac:    parseFloat($('#pol_min_body_frac').value||'0.10'),
+    min_body_len:     parseInt($('#pol_min_body_len').value||'0',10)
+  };
+
   // Output switches
   const out = {
     cpm:     $('#outputCPM').checked,
@@ -1442,6 +1521,7 @@ function buildYAML(){
   y += `samplesheet: ${mono(samplesheet)}\n`;
   y += `sample_source: ${mono(sampleSource)}\n`;
   y += `paired_end: ${pairedEnd}\n`;
+  y += `library_type: ${mono(libType())}\n`;
   y += `output_dir: ${mono(outputDir)}\n`;
   y += `control_label: ${mono(controlLabel)}\n\n`;
 
@@ -1549,6 +1629,14 @@ function buildYAML(){
   y += `  divergent_bin_gap: ${div.bin_gap}        # Bin merge gap (bp)\n`;
   y += `  divergent_balance: ${div.balance}        # Balance ratio (0 = max sensitivity)\n`;
   y += `  divergent_qc: ${div.qc}\n\n`;
+
+  y += `# Polymerase metrics (pausing-index geometry)\n`;
+  y += `pol:\n`;
+  y += `  tss_win: ${pol.tss_win}              # TSS window ±bp\n`;
+  y += `  body_offset_min: ${pol.body_offset_min}      # Min body start offset after TSS (bp)\n`;
+  y += `  body_offset_frac: ${pol.body_offset_frac}    # Body start as fraction of gene length\n`;
+  y += `  min_body_frac: ${pol.min_body_frac}       # Body must be >= this fraction of gene length (else NaN PI)\n`;
+  y += `  min_body_len: ${pol.min_body_len}           # Optional absolute body-length floor (bp); 0 = off\n\n`;
 
   y += `# Functional region geometry\n`;
   y += `functional_regions:\n`;
@@ -1718,6 +1806,7 @@ const DIV_PRESETS = {
 const SPECIES_PROFILES = {
   mammal: {
     label: 'Human / mouse / rat / rhesus',
+    pol: { tss_win: 50, body_offset_min: 2000, body_offset_frac: 0.10, min_body_frac: 0.10, min_body_len: 0 },
     divergent: {
       nt_window: 1000,
       bin_gap: 100,
@@ -1739,6 +1828,7 @@ const SPECIES_PROFILES = {
   },
   fly: {
     label: 'Drosophila (dm6)',
+    pol: { tss_win: 50, body_offset_min: 1500, body_offset_frac: 0.10, min_body_frac: 0.10, min_body_len: 0 },
     divergent: {
       nt_window: 800,
       bin_gap: 100,
@@ -1760,6 +1850,7 @@ const SPECIES_PROFILES = {
   },
   yeast: {
     label: 'Yeast / compact genomes (sacCer3)',
+    pol: { tss_win: 50, body_offset_min: 1000, body_offset_frac: 0.10, min_body_frac: 0.10, min_body_len: 0 },
     divergent: {
       nt_window: 500,
       bin_gap: 80,
@@ -1781,6 +1872,7 @@ const SPECIES_PROFILES = {
   },
   other: {
     label: 'Generic defaults',
+    pol: { tss_win: 50, body_offset_min: 2000, body_offset_frac: 0.10, min_body_frac: 0.10, min_body_len: 0 },
     divergent: {
       nt_window: 1000,
       bin_gap: 100,
@@ -1840,6 +1932,15 @@ function applySpeciesProfileToUI(){
   if(document.getElementById('tw_length'))       document.getElementById('tw_length').value = profile.functional.tw_length;
   if(document.getElementById('tss_active_pm'))   document.getElementById('tss_active_pm').value = profile.functional.tss_active_pm;
   if(document.getElementById('merge_gap'))       document.getElementById('merge_gap').value = profile.functional.merge_gap;
+
+  // Apply pausing-index (Pol-II) geometry defaults as suggestions
+  if(profile.pol){
+    if(document.getElementById('pol_tss_win'))          document.getElementById('pol_tss_win').value = profile.pol.tss_win;
+    if(document.getElementById('pol_body_offset_min'))  document.getElementById('pol_body_offset_min').value = profile.pol.body_offset_min;
+    if(document.getElementById('pol_body_offset_frac')) document.getElementById('pol_body_offset_frac').value = profile.pol.body_offset_frac;
+    if(document.getElementById('pol_min_body_frac'))    document.getElementById('pol_min_body_frac').value = profile.pol.min_body_frac;
+    if(document.getElementById('pol_min_body_len'))     document.getElementById('pol_min_body_len').value = profile.pol.min_body_len;
+  }
 
   // Apply divergent defaults as suggestions (before any preset overlay)
   if(document.getElementById('div_win'))        document.getElementById('div_win').value = profile.divergent.nt_window;

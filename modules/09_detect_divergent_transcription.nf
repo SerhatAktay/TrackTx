@@ -142,18 +142,8 @@ process detect_divergent_transcription {
   trap 'tracktx_error "detect_divergent_transcription" "Unexpected process failure" "Check divergent.log in work dir"' ERR
 
   # Standardized error reporting (surfaces clearly in Nextflow "Command error")
-  tracktx_error() {
-    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
-    echo "" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "TRACKTX ERROR" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "Module:  \${module}" >&2
-    echo "Problem: \${problem}" >&2
-    echo "Fix:     \${fix}" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    exit "\$code"
-  }
+  # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
+  source tracktx_error_fragment.sh
 
   TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -173,7 +163,7 @@ process detect_divergent_transcription {
   POS_BG="${pos_bg}"
   NEG_BG="${neg_bg}"
   
-  DETECTOR_SCRIPT="${projectDir}/bin/detect_divergent_transcription.py"
+  DETECTOR_SCRIPT="\$(command -v detect_divergent_transcription.py)"
 
   # Detection parameters (passed as process inputs for cache control)
   THRESHOLD="${threshold}"

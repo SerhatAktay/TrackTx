@@ -78,18 +78,8 @@ process download_genome_annotations {
   set -euo pipefail
   export LC_ALL=C
 
-  tracktx_error() {
-    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
-    echo "" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "TRACKTX ERROR" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "Module:  \${module}" >&2
-    echo "Problem: \${problem}" >&2
-    echo "Fix:     \${fix}" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    exit "\$code"
-  }
+  # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
+  source tracktx_error_fragment.sh
 
   TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
@@ -373,7 +363,7 @@ process download_genome_annotations {
   trap 'rm -rf "\${WORK_DIR}"' EXIT
 
   # Locate Python script
-  SCRIPT_PATH="${projectDir}/bin/gtf_to_catalog.py"
+  SCRIPT_PATH="\$(command -v gtf_to_catalog.py)"
   if [[ ! -f "\${SCRIPT_PATH}" ]]; then
     # Fallback to PATH if not found (for container environments)
     SCRIPT_PATH="gtf_to_catalog.py"

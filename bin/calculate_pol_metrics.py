@@ -442,7 +442,7 @@ def parse_gtf_file(
 
     Returns:
         List of tuples: (gene_id, gene_name, chrom, strand,
-                        tss_lo, tss_hi, body_lo, body_hi, body_len)
+                        tss_lo, tss_hi, body_lo, body_hi, body_len, gene_length)
     """
     log("PARSE", f"Reading GTF: {gtf_path}")
 
@@ -533,7 +533,7 @@ def parse_gtf_file(
             tss_hi   = tss + tss_window
 
             gene_data_with_windows[gene_id]["transcripts"].append(
-                (tss_lo, tss_hi, body_lo, body_hi, body_len)
+                (tss_lo, tss_hi, body_lo, body_hi, body_len, gene_length)
             )
 
     # Swap gene_data to the windowed version for the aggregation step below
@@ -555,7 +555,7 @@ def parse_gtf_file(
 
         # Pick transcript with longest body (most representative for pausing)
         best = max(transcripts, key=lambda t: t[4])  # t[4] = body_len
-        tss_lo, tss_hi, body_lo, body_hi, body_len = best
+        tss_lo, tss_hi, body_lo, body_hi, body_len, gene_length = best
         
         # Sanity: reject genes with bogus TSS span (should be ~2*tss_window)
         tss_span = tss_hi - tss_lo
@@ -583,9 +583,10 @@ def parse_gtf_file(
             tss_hi,
             body_lo,
             body_hi,
-            body_len
+            body_len,
+            gene_length
         ))
-    
+
     log("PARSE", f"Extracted {len(genes):,} unique genes")
     return genes
 
@@ -593,34 +594,52 @@ def parse_gtf_file(
 # BED FILE OPERATIONS
 # =============================================================================
 
+def required_body_len(gene_length: int, min_body_frac: float, min_body_len: int) -> int:
+    """
+    Minimum gene-body window (bp) required for a stable pausing index.
+
+    The threshold scales with gene length: the body must retain at least
+    `min_body_frac` of the gene. Because the body offset is max(2000 bp,
+    10% of L), the body only collapses for short genes, so a fractional
+    floor targets exactly those cases and auto-scales for everything else.
+    `min_body_len` is an optional absolute floor (bp) applied on top.
+    """
+    return max(int(min_body_len), int(min_body_frac * gene_length))
+
 def write_bed_files(
     genes: List[Tuple],
     tss_bed_path: Path,
-    body_bed_path: Path
+    body_bed_path: Path,
+    min_body_frac: float = 0.0,
+    min_body_len: int = 1
 ):
     """
     Write TSS and body BED files
-    
+
     Args:
         genes: List of gene tuples
         tss_bed_path: Output path for TSS BED
         body_bed_path: Output path for body BED
+        min_body_frac: Body must be >= this fraction of gene length
+        min_body_len: Absolute body-length floor (bp)
     """
     log("BED", "Writing BED files...")
-    
+
     tss_count = 0
     body_count = 0
-    
+
     with open(tss_bed_path, "w") as tss_f, open(body_bed_path, "w") as body_f:
-        for (gene_id, gene_name, chrom, strand, tss_lo, tss_hi, 
-             body_lo, body_hi, body_len) in genes:
-            
+        for (gene_id, gene_name, chrom, strand, tss_lo, tss_hi,
+             body_lo, body_hi, body_len, gene_length) in genes:
+
             # TSS window (always write)
             tss_f.write(f"{chrom}\t{tss_lo}\t{tss_hi}\t{gene_id}\t0\t{strand}\n")
             tss_count += 1
-            
-            # Body region (only if length > 0)
-            if body_len > 0:
+
+            # Body region (only if window is a meaningful fraction of the gene;
+            # tiny windows on short genes inflate the pausing index)
+            min_needed = required_body_len(gene_length, min_body_frac, min_body_len)
+            if body_len >= min_needed:
                 body_f.write(f"{chrom}\t{body_lo}\t{body_hi}\t{gene_id}\t0\t{strand}\n")
                 body_count += 1
     
@@ -695,7 +714,9 @@ def write_output_files(
     body_counts: Dict[str, int],
     mapped_reads: int,
     pausing_output: str,
-    genes_output: str
+    genes_output: str,
+    min_body_frac: float = 0.0,
+    min_body_len: int = 1
 ):
     """
     Write pausing index and gene metrics output files
@@ -736,8 +757,8 @@ def write_output_files(
         
         # Write data
         for (gene_id, gene_name, chrom, strand, tss_lo, tss_hi,
-             body_lo, body_hi, body_len) in genes:
-            
+             body_lo, body_hi, body_len, gene_length) in genes:
+
             # Get counts
             tss_count = int(tss_counts.get(gene_id, 0))
             body_count = int(body_counts.get(gene_id, 0))
@@ -745,16 +766,22 @@ def write_output_files(
             # Calculate metrics
             tss_width = max(1, tss_hi - tss_lo)
             
+            # A body window that is too short relative to the gene gives an
+            # unstable elongation density, so treat it as truncated (NaN PI)
+            # rather than dividing by a near-zero body. Threshold scales with
+            # gene length (see required_body_len).
+            body_ok = (body_len >= required_body_len(gene_length, min_body_frac, min_body_len))
+
             # Pausing indices
-            pi_raw = (tss_count / body_count) if body_count > 0 else float("nan")
+            pi_raw = (tss_count / body_count) if (body_count > 0 and body_ok) else float("nan")
             pi_len_norm = (
                 (tss_count / tss_width) / (body_count / body_len)
-                if (body_count > 0 and body_len > 0)
+                if (body_count > 0 and body_ok)
                 else float("nan")
             )
-            
+
             # Truncation flag
-            is_truncated = int(body_count == 0 or body_len == 0)
+            is_truncated = int(body_count == 0 or not body_ok)
             
             # CPM and densities
             tss_cpm = tss_count / cpm_denom
@@ -832,6 +859,14 @@ def main():
                        help="Minimum body offset (bp) [default: 2000]")
     parser.add_argument("--body-offset-frac", type=float, default=0.10,
                        help="Body offset fraction [default: 0.10]")
+    parser.add_argument("--min-body-frac", type=float, default=0.10,
+                       help="Body window must be >= this fraction of gene "
+                            "length for a valid pausing index; shorter bodies "
+                            "are flagged truncated and report NaN PI. Scales "
+                            "with gene length [default: 0.10]")
+    parser.add_argument("--min-body-len", type=int, default=0,
+                       help="Optional absolute body-length floor (bp) applied "
+                            "on top of --min-body-frac [default: 0 = off]")
     parser.add_argument("--feature-types", default="gene,transcript",
                        help="Comma-separated feature types [default: gene,transcript]")
     parser.add_argument("--out-pausing", required=True, 
@@ -857,6 +892,8 @@ def main():
     log("CONFIG", f"TSS window: ±{args.tss_win} bp")
     log("CONFIG", f"Body offset min: {args.body_offset_min} bp")
     log("CONFIG", f"Body offset fraction: {args.body_offset_frac}")
+    log("CONFIG", f"Min body fraction: {args.min_body_frac} of gene length")
+    log("CONFIG", f"Min body length floor: {args.min_body_len} bp")
     log("CONFIG", f"Feature types: {args.feature_types}")
     
     # Parse feature types
@@ -908,7 +945,7 @@ def main():
         
         # Write BED files
         log("═" * 70, "")
-        write_bed_files(genes, tss_bed, body_bed)
+        write_bed_files(genes, tss_bed, body_bed, args.min_body_frac, args.min_body_len)
         
         # Extract genome file and sort BEDs
         log("═" * 70, "")
@@ -935,7 +972,9 @@ def main():
             body_counts,
             mapped,
             args.out_pausing,
-            args.out_genes
+            args.out_genes,
+            args.min_body_frac,
+            args.min_body_len
         )
         
         # Write QC JSON

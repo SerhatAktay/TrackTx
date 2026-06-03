@@ -113,18 +113,8 @@ process generate_per_sample_reports {
   exec > >(tee -a "${sample_id}.report.log")
   exec 2> >(tee -a "${sample_id}.report.log" >&2)
 
-  tracktx_error() {
-    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
-    echo "" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "TRACKTX ERROR" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "Module:  \${module}" >&2
-    echo "Problem: \${problem}" >&2
-    echo "Fix:     \${fix}" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    exit "\$code"
-  }
+  # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
+  source tracktx_error_fragment.sh
   trap 'tracktx_error "generate_per_sample_reports" "Unexpected process failure" "Check *.report.log in work dir"' ERR
 
   TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -159,7 +149,7 @@ process generate_per_sample_reports {
   ALLMAP3P_NEG_CPM_BW="${allmap3p_neg_cpm_bw}"
 
   # Renderer script
-  RENDER_SCRIPT="${projectDir}/bin/render_sample_report.py"
+  RENDER_SCRIPT="\$(command -v render_sample_report.py)"
 
   # Parameters
   ENABLE_PLOTS=${(params.reports_plots == null) ? 0 : (params.reports_plots as int)}

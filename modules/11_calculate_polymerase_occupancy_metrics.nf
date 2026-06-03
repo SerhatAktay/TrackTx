@@ -50,6 +50,9 @@
 //   tss_win            : TSS window ±bp (default: 50)
 //   body_offset_min    : Min body start offset (default: 2000 bp)
 //   body_offset_frac   : Body start as fraction (default: 0.10)
+//   min_body_frac      : Min body window as fraction of gene length for a
+//                        valid pausing index; shorter → truncated/NaN (default: 0.10)
+//   min_body_len       : Optional absolute body-length floor in bp (default: 0 = off)
 //   feature_types      : GTF features to use (default: "gene,transcript")
 //   fail_if_no_genes   : Fail on empty gene list (default: false)
 //
@@ -108,18 +111,8 @@ process calculate_polymerase_occupancy_metrics {
   exec > >(tee -a pol_metrics.log)
   exec 2> >(tee -a pol_metrics.log >&2)
 
-  tracktx_error() {
-    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
-    echo "" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "TRACKTX ERROR" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "Module:  \${module}" >&2
-    echo "Problem: \${problem}" >&2
-    echo "Fix:     \${fix}" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    exit "\$code"
-  }
+  # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
+  source tracktx_error_fragment.sh
   trap 'tracktx_error "calculate_polymerase_occupancy_metrics" "Unexpected process failure" "Check pol_metrics.log in work dir"' ERR
 
   TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -141,7 +134,7 @@ process calculate_polymerase_occupancy_metrics {
   IN_BAM="${in_bam}"
   FUNC_BED="${func_bed}"
   GTF_FILE="${gtf}"
-  CALC_SCRIPT="${projectDir}/bin/calculate_pol_metrics.py"
+  CALC_SCRIPT="\$(command -v calculate_pol_metrics.py)"
 
   # Coverage tracks
   POS_CPM="${pos3_cpm_bg}"
@@ -155,6 +148,8 @@ process calculate_polymerase_occupancy_metrics {
   TSS_WIN=${params.pol?.tss_win ?: 50}
   BODY_OFFSET_MIN=${params.pol?.body_offset_min ?: 2000}
   BODY_OFFSET_FRAC=${params.pol?.body_offset_frac ?: 0.10}
+  MIN_BODY_FRAC=${params.pol?.min_body_frac ?: 0.10}
+  MIN_BODY_LEN=${params.pol?.min_body_len ?: 0}
   FEATURE_TYPES="${params.pol?.feature_types ?: 'gene,transcript'}"
   FAIL_IF_NO_GENES=\$([[ "${params.pol?.fail_if_no_genes}" == "true" ]] && echo 1 || echo 0)
 
@@ -466,6 +461,8 @@ process calculate_polymerase_occupancy_metrics {
     --tss-win \${TSS_WIN} \\
     --body-offset-min \${BODY_OFFSET_MIN} \\
     --body-offset-frac \${BODY_OFFSET_FRAC} \\
+    --min-body-frac \${MIN_BODY_FRAC} \\
+    --min-body-len \${MIN_BODY_LEN} \\
     --feature-types "\${FEATURE_TYPES}" \\
     --out-pausing pausing_index.tsv \\
     --out-genes pol_gene_metrics.tsv \\
