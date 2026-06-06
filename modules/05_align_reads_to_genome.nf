@@ -457,8 +457,8 @@ PYEND
     
     # Primary genome alignment metrics
     tot=\$(awk '/in total/ {print \$1}' "\${SAMPLE_ID}.flagstat")
-    map=\$(awk '/ mapped \\\\(/ {print \$1}' "\${SAMPLE_ID}.flagstat")
-    mpr=\$(awk -F'[()% ]+' '/ mapped \\\\(/ {print \$(NF-1)}' "\${SAMPLE_ID}.flagstat")
+    map=\$(awk '/ mapped \\(/ {print \$1; exit}' "\${SAMPLE_ID}.flagstat")
+    mpr=\$(awk -F'[(%]' '/ mapped \\(/ {print \$2; exit}' "\${SAMPLE_ID}.flagstat")
     sec=\$(awk '/secondary/ {print \$1}' "\${SAMPLE_ID}.flagstat")
     dup=\$(awk '/duplicates/ {print \$1}' "\${SAMPLE_ID}.flagstat")
     
@@ -477,8 +477,8 @@ PYEND
     
     # Spike-in alignment metrics
     stot=\$(awk '/in total/ {print \$1}' "\${SAMPLE_ID}_spikein.flagstat")
-    smap=\$(awk '/ mapped \\\\(/ {print \$1}' "\${SAMPLE_ID}_spikein.flagstat")
-    smpr=\$(awk -F'[()% ]+' '/ mapped \\\\(/ {print \$(NF-1)}' "\${SAMPLE_ID}_spikein.flagstat")
+    smap=\$(awk '/ mapped \\(/ {print \$1; exit}' "\${SAMPLE_ID}_spikein.flagstat")
+    smpr=\$(awk -F'[(%]' '/ mapped \\(/ {print \$2; exit}' "\${SAMPLE_ID}_spikein.flagstat")
     
     [[ -n "\$stot" ]] || stot=0
     [[ -n "\$smap" ]] || smap=0

@@ -304,34 +304,62 @@ Paths are relative to: ${projectDir}"""
 
     if (params.verbose) log.info "STEP 3 | CHECK | Scanning for pre-existing trimmed FASTQs in ${outputDir}/01_trimmed_fastq/"
 
-    def samples_branched = samples_ch.branch { item ->
+    // storeDir cache location for raw SRA FASTQs (must mirror the storeDir
+    // closure in modules/02_download_sra_samples.nf).
+    def sraCacheDir = (params.get('publish_sra_fastq')?.toString() != 'false')
+        ? "${outputDir}/00_sra_cache"
+        : "${outputDir}/.sra_cache"
+
+    // 1) Samples already preprocessed (trimmed FASTQs present) → skip download
+    //    AND preprocessing entirely.
+    def by_trimmed = samples_ch.branch { item ->
       def sid        = item[0]
       def r1_trimmed = file("${outputDir}/01_trimmed_fastq/${sid}/final_R1.fastq")
       trimmed_exists: r1_trimmed.exists() && r1_trimmed.size() > 0
-      needs_download: true
+      needs_reads:    true
     }
 
-    preexisting_clean_ch = samples_branched.trimmed_exists.map { sid, _reads, c, t, r ->
+    preexisting_clean_ch = by_trimmed.trimmed_exists.map { sid, _reads, c, t, r ->
       def r1 = file("${outputDir}/01_trimmed_fastq/${sid}/final_R1.fastq")
       def r2 = file("${outputDir}/01_trimmed_fastq/${sid}/final_R2.fastq")
       if (params.verbose) log.info "STEP 3 | SKIP | ${sid}: trimmed FASTQs found in results — skipping download and preprocessing"
       tuple(sid, r1, r2, c, t, r)
     }
 
+    // 2) Of the rest, split those whose raw FASTQs are already in the storeDir
+    //    cache from those that still need downloading. A fully-stored storeDir
+    //    task is SKIPPED and does NOT re-emit its outputs (Nextflow behaviour),
+    //    which would close the downstream channel empty and deadlock the DAG.
+    //    So we build the input tuple for cached samples directly from disk and
+    //    only run download_sra_samples for the ones actually missing.
+    def by_cache = by_trimmed.needs_reads.branch { item ->
+      def srr = item[1][0]
+      def r1c = file("${sraCacheDir}/${srr}/${srr}_R1.fastq")
+      cached:         r1c.exists() && r1c.size() > 0
+      needs_download: true
+    }
+
+    def cached_input_ch = by_cache.cached.map { sid, reads, c, t, r ->
+      def srr = reads[0]
+      def r1  = file("${sraCacheDir}/${srr}/${srr}_R1.fastq")
+      def r2  = file("${sraCacheDir}/${srr}/${srr}_R2.fastq")
+      if (params.verbose) log.info "STEP 3 | CACHE | ${sid}: raw FASTQs found in ${sraCacheDir}/${srr} — skipping download"
+      tuple(sid, [r1, r2].findAll { it.exists() }, c, t, r)
+    }
+
     download_sra_samples(
-      samples_ch.map { sid, reads, c, t, r ->
+      by_cache.needs_download.map { sid, reads, c, t, r ->
         tuple(sid, reads[0], c, t, r, isPairedEnd)
       }
     )
-    
-    prepared_input_ch = download_sra_samples.out[0].map { sid, fq1, fq2, c, t, r ->
+
+    def downloaded_input_ch = download_sra_samples.out[0].map { sid, fq1, fq2, c, t, r ->
+      if (params.verbose) log.info "STEP 3 | DOWNLOAD | ${sid} complete"
       tuple(sid, [file(fq1), file(fq2)].findAll(), c, t, r)
     }
 
-    prepared_input_ch.subscribe { sid, _reads, _cond, _time, _rep ->
-      if (params.verbose) log.info "STEP 3 | DOWNLOAD | ${sid} complete"
-    }
-    
+    prepared_input_ch = cached_input_ch.mix(downloaded_input_ch)
+
 
   } else {
     if (params.verbose) {
