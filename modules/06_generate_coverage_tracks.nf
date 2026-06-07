@@ -270,11 +270,16 @@ process generate_coverage_tracks {
     # RAM and get OOM-killed, leaving a truncated bedGraph. Sort to a temp file
     # and only replace the original on success so a killed sort can't corrupt it.
     echo "TRACKS | BIGWIG | Sorting bedGraph..."
-    # Give sort most of the task's RAM so it stays in memory instead of spilling
-    # thousands of tiny temp files to disk (catastrophic on slow/USB work dirs).
-    # Falls back to disk only if truly needed, using a fast temp dir (never the
-    # USB-backed work dir via "-T ."). Override with SORT_MEM / SORT_TMPDIR.
-    : "\${SORT_MEM:=\$(( ${task.memory.toGiga()} * 70 / 100 ))G}"
+    # Cap sort memory so it stays in memory instead of spilling thousands of
+    # tiny temp files to disk (catastrophic on slow/USB work dirs), WITHOUT
+    # oversubscribing the task's RAM. Up to 4 generate_coverage jobs run
+    # concurrently (pos/neg sorts within each are sequential, but across jobs
+    # they overlap), so each sort may only safely claim ~1/4 of the 70% budget
+    # — otherwise concurrent sorts collectively request >100% of task.memory
+    # and get OOM-killed (as happened: 4 * 4G > 7G). Falls back to disk only if
+    # truly needed, using a fast temp dir (never the USB-backed work dir via
+    # "-T ."). Override with SORT_MEM / SORT_TMPDIR.
+    : "\${SORT_MEM:=\$(( ${task.memory.toGiga()} * 70 / 100 / 4 ))G}"
     : "\${SORT_TMP:=\${SORT_TMPDIR:-/tmp}}"
     mkdir -p "\${SORT_TMP}" 2>/dev/null || SORT_TMP=/tmp
     if ! LC_ALL=C sort -S "\${SORT_MEM}" -T "\${SORT_TMP}" -k1,1 -k2,2n "\${bedgraph}" > "\${bedgraph}.sorted"; then
