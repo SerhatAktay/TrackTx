@@ -698,6 +698,11 @@
       <!-- Bowtie2 options -->
       <div class="section-header mt-5">Alignment Settings</div>
       <div class="field">
+        <label class="label">Multimapping reports per read (bowtie2 -k)</label>
+        <input class="input small-input" id="multimap_k" type="number" min="1" max="50" value="4">
+        <p class="help">How many alignments bowtie2 reports per read (<code>-k N</code>). With N &gt; 1, <strong>allMap</strong> tracks keep every reported locus (signal stays visible across repeats) while <strong>main</strong> tracks/quantification use the single best alignment; uniqueness is then defined by the NH tag (NH==1). Set to <strong>1</strong> for legacy single-best behaviour (allMap = main, uniqueness via MAPQ). Default 4.</p>
+      </div>
+      <div class="field">
         <label class="label">Bowtie2 Extra Options (advanced)</label>
         <input class="input" id="bowtie2_extra" placeholder="--very-sensitive">
         <p class="help">Additional command-line flags for Bowtie2 aligner. Default settings are optimized for PRO-seq. Leave blank unless you have specific requirements.</p>
@@ -1439,6 +1444,7 @@ function buildYAML(){
 
   const cutadaptExtra = $('#cutadapt_extra').value || '';
   const bowtie2Extra  = $('#bowtie2_extra').value || '';
+  const multimapK     = Math.max(1, parseInt($('#multimap_k')?.value || '4', 10) || 4);
 
   const qcEnabled = !!$('#qc_enabled')?.checked;
   const qcRaw     = !!$('#qc_raw')?.checked;
@@ -1587,6 +1593,10 @@ function buildYAML(){
   y += `  length: ${bcLen}\n`;
   y += `  location: ${bcLoc}\n\n`;
 
+  y += `# Alignment / multimapping\n`;
+  y += `align:\n`;
+  y += `  multimap_k: ${multimapK}   # bowtie2 -k N; >1 = allMap keeps all hits, NH-based uniqueness; 1 = single-best\n\n`;
+
   y += `# Output formats\n`;
   y += `output:\n`;
   y += `  cpm: ${out.cpm}\n`;
@@ -1636,7 +1646,20 @@ function buildYAML(){
   y += `  body_offset_min: ${pol.body_offset_min}      # Min body start offset after TSS (bp)\n`;
   y += `  body_offset_frac: ${pol.body_offset_frac}    # Body start as fraction of gene length\n`;
   y += `  min_body_frac: ${pol.min_body_frac}       # Body must be >= this fraction of gene length (else NaN PI)\n`;
-  y += `  min_body_len: ${pol.min_body_len}           # Optional absolute body-length floor (bp); 0 = off\n\n`;
+  y += `  min_body_len: ${pol.min_body_len}           # Optional absolute body-length floor (bp); 0 = off\n`;
+  // Differential pausing contrasts (module 12). Auto-built from the sample
+  // table: each timepoint vs its condition's baseline (0-like or earliest).
+  const contrasts = buildContrasts();
+  y += `  # Differential pausing contrasts: [conditionA, timepointA, conditionB, timepointB]\n`;
+  y += `  # Auto-generated below as each timepoint vs the condition's baseline. Edit freely\n`;
+  y += `  # (e.g. add cross-condition comparisons at matched timepoints).\n`;
+  if(contrasts.length){
+    y += `  contrasts:\n`;
+    contrasts.forEach(c => y += `    - ${c}\n`);
+    y += `\n`;
+  } else {
+    y += `  contrasts: []   # e.g. - ["treat", "1h", "treat", "0h"]  (needs >1 timepoint per condition)\n\n`;
+  }
 
   y += `# Functional region geometry\n`;
   y += `functional_regions:\n`;
@@ -1668,6 +1691,49 @@ function buildCSV(){
     });
   });
   return csv;
+}
+
+/* ============ Differential pausing contrasts (auto from samples) ========== */
+function naturalTpKey(tp){
+  // Order timepoints by real elapsed time, unit-aware, so the earliest-baseline
+  // fallback is correct even with mixed units (e.g. 5min < 30min < 2h).
+  const m = String(tp).match(/^(\d+(?:\.\d+)?)\s*([a-zA-Z]*)/);
+  if(!m) return Number.POSITIVE_INFINITY;
+  const n = parseFloat(m[1]);
+  const u = (m[2] || '').toLowerCase();
+  const mult = u.startsWith('d') ? 86400
+             : u.startsWith('h') ? 3600
+             : (u === 'm' || u.startsWith('min')) ? 60
+             : u.startsWith('s') ? 1
+             : 1;  // unknown/no unit → numeric order
+  return n * mult;
+}
+function collectConditionTimepoints(){
+  // condition -> ordered list of distinct timepoints seen in the sample table
+  const map = new Map();
+  $$('#samplesContainer .sample-box').forEach(box=>{
+    const cond = (box.querySelector('.sample-treatment')?.value||'').trim();
+    const tp   = (box.querySelector('.sample-timepoint')?.value||'').trim();
+    if(!cond || !tp) return;
+    if(!map.has(cond)) map.set(cond, []);
+    if(!map.get(cond).includes(tp)) map.get(cond).push(tp);
+  });
+  return map;
+}
+function buildContrasts(){
+  // Each non-baseline timepoint vs the condition's baseline (0-like, else earliest).
+  const map = collectConditionTimepoints();
+  const out = [];
+  map.forEach((tps, cond)=>{
+    if(tps.length < 2) return;                       // no timecourse → nothing to contrast
+    let baseline = tps.find(t => /^0(\D|$)/.test(t)); // explicit 0 / 0h / 0min
+    if(!baseline) baseline = [...tps].sort((a,b)=>naturalTpKey(a)-naturalTpKey(b))[0];
+    tps.forEach(tp=>{
+      if(tp === baseline) return;
+      out.push(`["${cond}", "${tp}", "${cond}", "${baseline}"]`);
+    });
+  });
+  return out;
 }
 
 /* ====================== Actions ====================== */

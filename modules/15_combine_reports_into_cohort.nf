@@ -55,7 +55,7 @@ process combine_reports_into_cohort {
 
   tag        { "cohort" }
   label      'conda'
-  cache      'deep'
+  cache      'lenient'
 
   publishDir "${params.output_dir}/11_reports/cohort",
              mode: params.publish_mode,

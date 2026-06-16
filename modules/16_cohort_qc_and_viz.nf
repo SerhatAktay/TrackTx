@@ -58,7 +58,7 @@
 process cohort_qc_and_viz {
 
   label      'conda'
-  cache      'deep'
+  cache      'lenient'
 
   publishDir "${params.output_dir}/12_cohort_qc",
              mode: params.publish_mode,
@@ -449,6 +449,11 @@ if os.path.isfile(genes_bed):
                 continue
             p = line.split()
             if len(p) < 6:
+                continue
+            # Skip header row (e.g. "gene_name  chrom  start  end ..." or
+            # "chrom  start  end  name  score  strand") — columns 2 and 3
+            # must be numeric coordinates for a real BED record.
+            if not (p[1].lstrip('-').isdigit() and p[2].lstrip('-').isdigit()):
                 continue
             chrom, start, end, name, _, strand = p[0], int(p[1]), int(p[2]), p[3], p[4], p[5]
             length = end - start

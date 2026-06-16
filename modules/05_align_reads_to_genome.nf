@@ -38,7 +38,7 @@ process align_reads_to_genome {
   // ── Process Configuration ────────────────────────────────────────────────
   tag        { sample_id }
   label      'conda'
-  cache      'deep'  // Ignore resource allocation changes for better caching
+  cache      'lenient'  // name+size hashing: stable across USB copies, cheap on -resume
 
   publishDir { "${params.output_dir}/02_alignments/${sample_id}" },
              mode: params.publish_mode,
@@ -61,6 +61,7 @@ process align_reads_to_genome {
     
     val(is_paired_end)  // Pass as input to avoid params hash pollution
     val(do_revcomp)     // true = reverse-complement R1 (PRO-seq); false = leave as-is (GRO-seq)
+    val(multimap_k)     // bowtie2 -k N (report up to N alignments); <=1 = single-best/legacy
 
   // ── Outputs ──────────────────────────────────────────────────────────────
   output:
@@ -218,6 +219,40 @@ process align_reads_to_genome {
   #   PRO-seq: R1 is sequenced from the 3' end antisense → flip onto nascent strand.
   #   GRO-seq: R1 already represents the nascent strand → pass through unchanged.
   DO_REVCOMP="${do_revcomp}"
+
+  # ── Multimapping (-k) configuration ──────────────────────────────────────
+  # multimap_k > 1 → bowtie2 reports up to N alignments per read. The full set
+  # becomes the allMap BAM (multimappers spread across every repeat copy); the
+  # primary-only subset (-F 260) becomes the main BAM. Because -k makes bowtie2
+  # set MAPQ=255, we add deterministic NH:i tags (add_nh_tags.awk) so that
+  # downstream "unique read" filtering can use NH==1 instead of MAPQ.
+  MULTIMAP_K=${multimap_k ?: 0}
+  BT2_K_FLAG=""
+  if [[ "\${MULTIMAP_K}" -gt 1 ]]; then
+    BT2_K_FLAG="-k \${MULTIMAP_K}"
+    echo "ALIGN | CONFIG | Multimapping mode: bowtie2 -k \${MULTIMAP_K} (allMap keeps all hits; NH tags added; main = primary only)"
+  else
+    echo "ALIGN | CONFIG | Single-best mode (legacy): allMap == main; uniqueness via MAPQ downstream"
+  fi
+
+  # Resolve the NH tagger (Nextflow puts \$projectDir/bin on PATH).
+  NH_AWK="\$(command -v add_nh_tags.awk || echo add_nh_tags.awk)"
+
+  # Finalize a bowtie2 SAM/BAM stream (stdin) into coordinate-sorted
+  # \${SAMPLE_ID}_allMap.bam, inserting NH:i tags when -k is active. NH counting
+  # needs records grouped by read name, so we collate first (fast, O(n)).
+  finalize_allmap() {
+    if [[ "\${MULTIMAP_K}" -gt 1 ]]; then
+      samtools collate -@ "\${SAM_THREADS}" -O -u - \\
+        | samtools view -h - \\
+        | awk -f "\${NH_AWK}" \\
+        | samtools view -@ "\${SAM_THREADS}" -b - \\
+        | samtools sort -@ "\${SAM_THREADS}" -o "\${SAMPLE_ID}_allMap.bam"
+    else
+      samtools sort -@ "\${SAM_THREADS}" -o "\${SAMPLE_ID}_allMap.bam"
+    fi
+  }
+
   rc_stream() {
     if [[ "\${DO_REVCOMP}" != "true" ]]; then
       cat   # GRO-seq / override: no reverse-complement
@@ -340,31 +375,35 @@ PYEND
     echo "ALIGN | PRIMARY | Mode: Paired-end with PRO-seq orientation (--ff)"
     echo "ALIGN | PRIMARY | -1: original R2, -2: RC(R1)"
     
+    # shellcheck disable=SC2086
     bowtie2 -p "\${BT2_THREADS}" \\
             --end-to-end \\
             --ff \\
             --no-unal \\
+            \${BT2_K_FLAG} \\
             -x "\${GENOME_IDX}" \\
             -1 <(decompress "\${R2}") \\
             -2 <(decompress "\${R1}" | rc_stream) \\
             --un-conc unaligned_R%.fastq \\
             2> >(tee bowtie2_primary.log >&2) \\
-    | samtools sort -@ "\${SAM_THREADS}" -o "\${SAMPLE_ID}_allMap.bam"
-    
+    | finalize_allmap
+
     # Combine unaligned reads for spike-in
     cat unaligned_R1.fastq unaligned_R2.fastq > unaligned.fastq
-    
+
   else
     echo "ALIGN | PRIMARY | Mode: Single-end with RC(R1)"
-    
+
+    # shellcheck disable=SC2086
     bowtie2 -p "\${BT2_THREADS}" \\
             --end-to-end \\
             --no-unal \\
+            \${BT2_K_FLAG} \\
             -x "\${GENOME_IDX}" \\
             -U <(decompress "\${R1}" | rc_stream) \\
             --un unaligned.fastq \\
             2> >(tee bowtie2_primary.log >&2) \\
-    | samtools sort -@ "\${SAM_THREADS}" -o "\${SAMPLE_ID}_allMap.bam"
+    | finalize_allmap
   fi
 
   # Verify allMap BAM

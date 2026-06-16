@@ -53,7 +53,7 @@ process quantify_reads_per_gene {
 
   tag        { sid }
   label      'conda'
-  cache      'deep'
+  cache      'lenient'
 
   publishDir { "${params.output_dir}/04_counts/${sid}" },
              mode: params.publish_mode,

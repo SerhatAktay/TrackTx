@@ -40,7 +40,7 @@ process check_and_merge_replicates {
 
   tag        { "${condition}_${timepoint}" }
   label      'conda'
-  cache      'deep'
+  cache      'lenient'
 
   publishDir "${params.output_dir}/02_alignments/_merged",
              mode: params.publish_mode,

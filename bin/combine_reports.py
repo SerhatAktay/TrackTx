@@ -415,6 +415,9 @@ def normalize_sample_data(
         "duplicate_percent": dup_percent,
         "umi_deduplication_enabled": qc.get("umi_deduplication_enabled", False),
         "umi_deduplication_percent": qc.get("umi_deduplication_percent"),
+        "multimapper_percent": qc.get("multimapper_percent"),
+        "uniqueness_method": qc.get("uniqueness_method"),
+        "multimap_k": qc.get("multimap_k"),
         "unlocalized_fraction": unloc_frac,
         "func_totals": func_totals,
         "region_counts": region_counts,
@@ -545,6 +548,7 @@ def build_cohort_dataframe(
     core_cols = [
         "sample_id", "condition", "timepoint", "replicate",
         "input_reads", "input_reads_source", "dedup_reads", "duplicate_percent",
+        "multimapper_percent", "uniqueness_method",
         "divergent_regions", "total_regions", "reads_total_functional",
         "median_pausing_index", "median_density",
         "cpm_factor", "crpmsi_factor", "unlocalized_fraction"
@@ -618,6 +622,7 @@ def write_json_output(
     core_cols = [
         "sample_id", "condition", "timepoint", "replicate",
         "input_reads", "input_reads_source", "dedup_reads", "duplicate_percent",
+        "multimapper_percent", "uniqueness_method",
         "divergent_regions", "total_regions", "reads_total_functional",
         "median_pausing_index", "median_density",
         "cpm_factor", "crpmsi_factor", "unlocalized_fraction"
@@ -1144,6 +1149,15 @@ def generate_html_report(
         </div>
         <p style="margin:0.5rem 0 0;font-size:0.9rem;color:var(--muted);">
           From samtools stats (flag 0x400). UMI deduplication uses reads_before/reads_after from dedup stats when enabled.
+        </p>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Read uniqueness &amp; multimapper %</div>
+        <div class="stat-value" style="font-size:1rem;font-weight:600;">
+          100 × (1 − unique_reads / mapped_reads)
+        </div>
+        <p style="margin:0.5rem 0 0;font-size:0.9rem;color:var(--muted);">
+          Uniqueness is defined by the <span class="mono">uniqueness_method</span> in qc_pol.json: <span class="mono">NH==1</span> when bowtie2 multimapping (<span class="mono">align.multimap_k &gt; 1</span>) is active, otherwise <span class="mono">MAPQ≥threshold</span>. A high multimapper % flags repetitive genomes or low-complexity libraries; those reads are retained in the allMap tracks but excluded from gene quantification.
         </p>
       </div>
       <div class="stat-item">

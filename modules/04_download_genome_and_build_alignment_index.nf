@@ -48,7 +48,7 @@ process download_genome_and_build_alignment_index {
 
   tag        { genome_id }
   label      'conda'
-  cache      'deep'
+  cache      'lenient'
 
   // Persistent storage for cross-run caching
   storeDir   { "${params.assets_dir ?: "${projectDir}/assets"}/references/${genome_id}" }

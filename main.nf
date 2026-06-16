@@ -509,7 +509,8 @@ Paths are relative to: ${projectDir}"""
     spike_meta_ch,
     spike_idx_ch,
     params.paired_end ?: false,
-    revcompR1
+    revcompR1,
+    (params.align?.multimap_k ?: 0) as int
   )
 
   def aligned_ch = align_reads_to_genome.out[0]

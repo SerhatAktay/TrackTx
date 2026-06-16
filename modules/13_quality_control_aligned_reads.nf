@@ -76,7 +76,7 @@ process quality_control_aligned_reads {
 
   tag        { sample_id }
   label      'conda'
-  cache      'deep'
+  cache      'lenient'
 
   publishDir { "${params.output_dir}/10_qc/${sample_id}" },
              mode: params.publish_mode,
@@ -143,10 +143,22 @@ process quality_control_aligned_reads {
   DEDUP_STATS="${dedup_stats}"
   
   MAPQ_THRESHOLD=${mapq_thr}
+  MULTIMAP_K=${params.align?.multimap_k ?: 0}
   DEDUP_ENABLED=${dedup_enabled}
   DEDUP_FLAG="${dedup_flag}"
   FAIL_MAP_RATE="${fail_map_rate}"
   FAIL_STRAND="${fail_strand}"
+
+  # Uniqueness definition for the "unique read" QC metrics. With bowtie2 -k,
+  # MAPQ is 255 (unavailable), so we select uniquely-mapped reads via the NH
+  # tag (NH==1) by pre-building a filtered BAM once — samtools stats/coverage
+  # cannot filter on tags, only on flags. In legacy single-best mode we keep
+  # the MAPQ threshold applied per call to the original BAM.
+  if [[ "\${MULTIMAP_K}" -gt 1 ]]; then
+    UNIQUE_LABEL="NH==1"
+  else
+    UNIQUE_LABEL="MAPQ≥\${MAPQ_THRESHOLD}"
+  fi
 
   echo "QC | CONFIG | Sample ID: \${SAMPLE_ID}"
   echo "QC | CONFIG | Condition: \${CONDITION}"
@@ -223,6 +235,21 @@ process quality_control_aligned_reads {
   # 4) CALCULATE BASIC ALIGNMENT STATISTICS
   ###########################################################################
 
+  # Select the BAM + filter used for the "unique read" metrics. In bowtie2 -k
+  # mode, pre-build a uniquely-mapped (NH==1) BAM and run stats on it with no
+  # MAPQ cutoff; otherwise apply the MAPQ threshold per call to the full BAM.
+  if [[ "\${MULTIMAP_K}" -gt 1 ]]; then
+    echo "QC | CONFIG | Uniqueness via NH==1 (bowtie2 -k mode)"
+    samtools view -@ \${THREADS} -b -d NH:1 "\${BAM_FILE}" -o qc_unique.bam
+    samtools index -@ \${THREADS} qc_unique.bam
+    QC_BAM="qc_unique.bam"
+    MAPQ_ARG=""
+  else
+    echo "QC | CONFIG | Uniqueness via MAPQ≥\${MAPQ_THRESHOLD} (single-best mode)"
+    QC_BAM="\${BAM_FILE}"
+    MAPQ_ARG="-q \${MAPQ_THRESHOLD}"
+  fi
+
   echo "QC | STATS | Calculating alignment statistics..."
 
   STATS_START=\$(date +%s)
@@ -242,15 +269,15 @@ process quality_control_aligned_reads {
   DUP_READS=\$(samtools view -c -f 0x400 -F 0x900 "\${BAM_FILE}")
   echo "QC | STATS | Duplicate reads: \${DUP_READS}"
 
-  # MAPQ filtered reads (primary, mapped, MAPQ≥threshold)
-  echo "QC | STATS | Counting MAPQ≥\${MAPQ_THRESHOLD} reads..."
-  MAPQ_READS=\$(samtools view -c -F 0x904 -q \${MAPQ_THRESHOLD} "\${BAM_FILE}")
-  echo "QC | STATS | MAPQ≥\${MAPQ_THRESHOLD} reads: \${MAPQ_READS}"
+  # Unique reads (primary, mapped, NH==1 in -k mode / MAPQ≥threshold otherwise)
+  echo "QC | STATS | Counting unique (\${UNIQUE_LABEL}) reads..."
+  MAPQ_READS=\$(samtools view -c -F 0x904 \${MAPQ_ARG} "\${QC_BAM}")
+  echo "QC | STATS | Unique (\${UNIQUE_LABEL}) reads: \${MAPQ_READS}"
 
-  # MAPQ filtered + deduplicated reads
-  echo "QC | STATS | Counting MAPQ≥\${MAPQ_THRESHOLD} + non-duplicate reads..."
-  MAPQ_NODUP_READS=\$(samtools view -c -F 0xD04 -q \${MAPQ_THRESHOLD} "\${BAM_FILE}")
-  echo "QC | STATS | MAPQ≥\${MAPQ_THRESHOLD} (no dup): \${MAPQ_NODUP_READS}"
+  # Unique + deduplicated reads
+  echo "QC | STATS | Counting unique (\${UNIQUE_LABEL}) + non-duplicate reads..."
+  MAPQ_NODUP_READS=\$(samtools view -c -F 0xD04 \${MAPQ_ARG} "\${QC_BAM}")
+  echo "QC | STATS | Unique (\${UNIQUE_LABEL}) no-dup: \${MAPQ_NODUP_READS}"
 
   STATS_END=\$(date +%s)
   STATS_TIME=\$((STATS_END - STATS_START))
@@ -266,7 +293,7 @@ process quality_control_aligned_reads {
 
   # Count reads on each strand (after MAPQ filtering)
   # Flag 0x10 = reverse strand
-  samtools view -F 0x904 -q \${MAPQ_THRESHOLD} ${dedup_flag} "\${BAM_FILE}" | \
+  samtools view -F 0x904 \${MAPQ_ARG} ${dedup_flag} "\${QC_BAM}" | \
     awk '{
       if (and(\$2, 16)) {
         strand = "-"
@@ -322,7 +349,7 @@ process quality_control_aligned_reads {
     echo "QC | FRAGMENT | Extracting insert size distribution..."
     
     # Use samtools stats to get insert size distribution (IS lines: length, count)
-    samtools stats -F 0x904 -q \${MAPQ_THRESHOLD} ${dedup_flag} "\${BAM_FILE}" 2>/dev/null | \
+    samtools stats -F 0x904 \${MAPQ_ARG} ${dedup_flag} "\${QC_BAM}" 2>/dev/null | \
       awk '/^IS[[:space:]]/ && NF>=3 && \$2+0==\$2 && \$3+0==\$3 {print \$2 "\\t" \$3}' > frag_tmp.tsv || true
 
     if [[ -s frag_tmp.tsv ]]; then
@@ -367,7 +394,7 @@ process quality_control_aligned_reads {
 
   # Use samtools coverage with MAPQ filter to match other QC stats
   # Note: samtools coverage uses -q for MAPQ; --ff for excl-flags (default excludes DUP)
-  samtools coverage -q \${MAPQ_THRESHOLD} "\${BAM_FILE}" 2>/dev/null | \
+  samtools coverage \${MAPQ_ARG} "\${QC_BAM}" 2>/dev/null | \
     awk 'NR==1 {
       for (i=1;i<=NF;i++) if (\$i=="meandepth") { col=i; break }
       if (col=="") col=7
@@ -557,11 +584,16 @@ process quality_control_aligned_reads {
   "mapq_ge_\${MAPQ_THRESHOLD}_reads": \${MAPQ_READS},
   "mapq_ge_reads_nodup": \${MAPQ_NODUP_READS},
   "mapq_pass_percent": \${MAPQ_PERCENT},
+  "unique_reads": \${MAPQ_READS},
+  "unique_reads_nodup": \${MAPQ_NODUP_READS},
+  "unique_pass_percent": \${MAPQ_PERCENT},
   "strand_plus_reads": \${PLUS_READS},
   "strand_minus_reads": \${MINUS_READS},
   "strand_plus_fraction": \${PLUS_FRAC},
   "mean_coverage_depth": \${MEAN_DEPTH},
   "mapq_threshold": \${MAPQ_THRESHOLD},
+  "uniqueness_method": "\${UNIQUE_LABEL}",
+  "multimap_k": \${MULTIMAP_K},
   "deduplication_enabled": \${DEDUP_ENABLED},
   "umi_deduplication_enabled": \${UMI_ENABLED},
   "umi_input_reads": \${UMI_INPUT_READS},

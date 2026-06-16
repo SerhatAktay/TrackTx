@@ -63,7 +63,7 @@ process calculate_polymerase_occupancy_metrics {
 
   tag        { sid }
   label      'conda'
-  cache      'deep'
+  cache      'lenient'
 
   publishDir { "${params.output_dir}/08_pol_metrics/${sid}" },
              mode: params.publish_mode,
@@ -144,6 +144,18 @@ process calculate_polymerase_occupancy_metrics {
 
   # Parameters
   MAPQ=${params.pol?.mapq ?: 10}
+  MULTIMAP_K=${params.align?.multimap_k ?: 0}
+  # Uniqueness filter for gene quantification. With bowtie2 -k, MAPQ is set to
+  # 255 (unavailable), so uniquely-mapped reads are selected via the NH tag
+  # (NH==1, written by add_nh_tags.awk in module 05). In legacy single-best
+  # mode there is no NH tag, so fall back to the MAPQ threshold.
+  if [[ "\${MULTIMAP_K}" -gt 1 ]]; then
+    UNIQUE_FILTER="-d NH:1"
+    UNIQUE_DESC="NH==1 (bowtie2 -k mode)"
+  else
+    UNIQUE_FILTER="-q \${MAPQ}"
+    UNIQUE_DESC="MAPQ≥\${MAPQ}"
+  fi
   DEDUP_ENABLED=\$([[ "${params.pol?.dedup ?: true}" == "false" ]] && echo 0 || echo 1)
   TSS_WIN=${params.pol?.tss_win ?: 50}
   BODY_OFFSET_MIN=${params.pol?.body_offset_min ?: 2000}
@@ -410,20 +422,20 @@ process calculate_polymerase_occupancy_metrics {
   BAM_START=\$(date +%s)
   
   if [[ \${SO_COORD} -eq 1 ]]; then
-    echo "POL | BAM | Filtering BAM (MAPQ≥\${MAPQ})..."
+    echo "POL | BAM | Filtering BAM (unique=\${UNIQUE_DESC})..."
     samtools view \\
       -@ \${THREADS} \\
       -b \\
-      -q \${MAPQ} \\
+      \${UNIQUE_FILTER} \\
       \${FILTER_FLAGS} \\
       "\${IN_BAM}" \\
       -o filtered.bam
   else
-    echo "POL | BAM | Filtering and sorting BAM (MAPQ≥\${MAPQ})..."
+    echo "POL | BAM | Filtering and sorting BAM (unique=\${UNIQUE_DESC})..."
     samtools view \\
       -@ \${THREADS} \\
       -b \\
-      -q \${MAPQ} \\
+      \${UNIQUE_FILTER} \\
       \${FILTER_FLAGS} \\
       "\${IN_BAM}" | \\
     samtools sort -@ \${THREADS} -o filtered.bam

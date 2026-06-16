@@ -88,7 +88,7 @@ process detect_divergent_transcription {
 
   tag        { sample_id }
   label      'conda'
-  cache      'deep'
+  cache      'lenient'
 
   publishDir { "${params.output_dir}/06_divergent_tx/${sample_id}" },
              mode: params.publish_mode,

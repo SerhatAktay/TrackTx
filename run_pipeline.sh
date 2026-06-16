@@ -1116,7 +1116,9 @@ main() {
     # Image version is read from nextflow.config to avoid hardcoding here.
     # ═══════════════════════════════════════════════════════════════════════
     local NF_VERSION
-    NF_VERSION=$(grep "version" nextflow.config 2>/dev/null | head -1 | grep -oE "[0-9][0-9.]*" || echo "3.0")
+    # Anchor to the manifest `version = '...'` line (^\s*version=), so we don't
+    # accidentally match `nextflowVersion = '>=26.04.0'` and pull the wrong tag.
+    NF_VERSION=$(grep -E "^\s*version\s*=" nextflow.config 2>/dev/null | head -1 | grep -oE "[0-9][0-9.]*" || echo "3.0")
     local TRACKTX_IMAGE="ghcr.io/serhataktay/tracktx:${NF_VERSION}"
 
     if [[ "${TRACKTX_SKIP_PULL:-0}" -eq 0 ]]; then
@@ -1145,6 +1147,28 @@ main() {
             separator
             echo ""
         fi
+    fi
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # EXTERNAL DRIVE MODE SETUP
+    # exFAT/USB/NFS lack file locking. Nextflow cache, temp, and work dir all need it.
+    # Redirect ALL lock-using dirs to local. Results stay on project dir (external).
+    # NOTE: must run BEFORE resume detection so the auto-resume work-dir check
+    # (which honors $NXF_WORK below) looks in the right place.
+    # ═══════════════════════════════════════════════════════════════════════
+
+    if [[ $EXTERNAL_DRIVE_MODE -eq 1 ]]; then
+        local TRACKTX_CACHE="${HOME}/tmp/tracktx_cache"
+        local proj_name
+        proj_name=$(basename "$(pwd)" 2>/dev/null | sed 's/[^a-zA-Z0-9_.-]/_/g')
+        proj_name=${proj_name:-default}
+        local TRACKTX_WORK="${HOME}/tmp/tracktx_work/${proj_name}"
+        mkdir -p "$TRACKTX_CACHE" "$TRACKTX_WORK"
+        export NXF_CACHE_DIR="$TRACKTX_CACHE"
+        export NXF_TEMP="${TRACKTX_CACHE}/.nxf_temp"
+        mkdir -p "$NXF_TEMP"
+        export NXF_WORK="$TRACKTX_WORK"
+        success "External drive mode: cache, temp, work on local (~10–50 GB); results on project dir"
     fi
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -1181,7 +1205,7 @@ main() {
         local has_prior_run=0
         if [[ -f "$trace_path" ]] && grep -q "COMPLETED" "$trace_path" 2>/dev/null; then
             has_prior_run=1
-        elif [[ -d .nextflow ]] && find work -name ".exitcode" -exec grep -lx "0" {} \; 2>/dev/null | grep -q .; then
+        elif [[ -d .nextflow ]] && find "${NXF_WORK:-work}" -name ".exitcode" -exec grep -lx "0" {} \; 2>/dev/null | grep -q .; then
             has_prior_run=1
         fi
 
@@ -1197,26 +1221,6 @@ main() {
                 RESUME="-resume"
             fi
         fi
-    fi
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # EXTERNAL DRIVE MODE SETUP
-    # exFAT/USB/NFS lack file locking. Nextflow cache, temp, and work dir all need it.
-    # Redirect ALL lock-using dirs to local. Results stay on project dir (external).
-    # ═══════════════════════════════════════════════════════════════════════
-
-    if [[ $EXTERNAL_DRIVE_MODE -eq 1 ]]; then
-        local TRACKTX_CACHE="${HOME}/tmp/tracktx_cache"
-        local proj_name
-        proj_name=$(basename "$(pwd)" 2>/dev/null | sed 's/[^a-zA-Z0-9_.-]/_/g')
-        proj_name=${proj_name:-default}
-        local TRACKTX_WORK="${HOME}/tmp/tracktx_work/${proj_name}"
-        mkdir -p "$TRACKTX_CACHE" "$TRACKTX_WORK"
-        export NXF_CACHE_DIR="$TRACKTX_CACHE"
-        export NXF_TEMP="${TRACKTX_CACHE}/.nxf_temp"
-        mkdir -p "$NXF_TEMP"
-        export NXF_WORK="$TRACKTX_WORK"
-        success "External drive mode: cache, temp, work on local (~10–50 GB); results on project dir"
     fi
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -1311,8 +1315,10 @@ main() {
     info "Started at: $(date '+%Y-%m-%d %H:%M:%S')"
     echo ""
 
-    "${CMD[@]}"
-    local exit_code=$?
+    # Capture Nextflow's exit code without `set -e` aborting the script first,
+    # so the summary/error message below actually runs on failure.
+    local exit_code=0
+    "${CMD[@]}" || exit_code=$?
 
     echo ""
     if [[ $exit_code -eq 0 ]]; then

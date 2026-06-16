@@ -67,7 +67,7 @@ process assign_signal_to_functional_regions {
 
   tag        { sample_id }
   label      'conda'
-  cache      'deep'
+  cache      'lenient'
 
   publishDir { "${params.output_dir}/07_functional_regions/${sample_id}" },
              mode: params.publish_mode,

@@ -56,7 +56,7 @@ process generate_coverage_tracks {
 
   tag        { sample_id }
   label      'conda'
-  cache      'deep'
+  cache      'lenient'
 
   publishDir { "${params.output_dir}/03_genome_tracks/${sample_id}" },
              mode: params.publish_mode,
@@ -583,34 +583,15 @@ process generate_coverage_tracks {
     tracktx_error "generate_coverage_tracks" "One or more coverage generation jobs failed" "Check tracks.log for per-job error messages"
   fi
 
-  # AllMap BAM
-  echo "TRACKS | 3P | Processing allMap BAM..."
-  if ! generate_coverage "\${ALLMAP_BAM}" "3" "3p/\${SAMPLE_ID}.allMap.3p"; then
-    tracktx_error "generate_coverage_tracks" "Failed to generate 3' coverage from allMap BAM" "Check tracks.log in work dir"
-  fi
+  # NOTE: All four track sets (main/allMap × 3'/5') are produced by the single
+  # parallel block above, using the PE mate-filtered BAMs (Read2-only) in PE
+  # mode and the full BAMs in SE mode. The previous sequential re-runs here
+  # regenerated allMap-3', main-5' and allMap-5' from the *unfiltered* BAMs,
+  # overwriting the correct Read2-only outputs in PE mode (contaminating tracks
+  # with the wrong mate's end position). They were removed so the mate-filtered
+  # outputs survive for paired-end data.
 
   echo "TRACKS | 3P | 3' end coverage complete"
-
-  ###########################################################################
-  # 7) GENERATE 5' END COVERAGE (Always — PE and SE)
-  ###########################################################################
-
-  echo "────────────────────────────────────────────────────────────────────────"
-  echo "TRACKS | 5P | Generating 5' end coverage tracks..."
-  echo "────────────────────────────────────────────────────────────────────────"
-
-  # Main BAM
-  echo "TRACKS | 5P | Processing main BAM..."
-  if ! generate_coverage "\${INPUT_BAM}" "5" "5p/\${SAMPLE_ID}.5p"; then
-    tracktx_error "generate_coverage_tracks" "Failed to generate 5' coverage from main BAM" "Check tracks.log in work dir"
-  fi
-
-  # AllMap BAM
-  echo "TRACKS | 5P | Processing allMap BAM..."
-  if ! generate_coverage "\${ALLMAP_BAM}" "5" "5p/\${SAMPLE_ID}.allMap.5p"; then
-    tracktx_error "generate_coverage_tracks" "Failed to generate 5' coverage from allMap BAM" "Check tracks.log in work dir"
-  fi
-
   echo "TRACKS | 5P | 5' end coverage complete"
 
   ###########################################################################

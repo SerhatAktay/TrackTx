@@ -32,7 +32,7 @@ process score_enhancer_vs_gene {
 
   tag        { sample_id }
   label      'conda'
-  cache      'deep'
+  cache      'lenient'
 
   publishDir { "${params.output_dir}/06_divergent_tx/${sample_id}" },
              mode: params.publish_mode,

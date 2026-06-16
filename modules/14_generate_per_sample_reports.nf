@@ -62,7 +62,7 @@ process generate_per_sample_reports {
 
   tag        { sample_id }
   label      'conda'
-  cache      'deep'
+  cache      'lenient'
 
   publishDir { "${params.output_dir}/11_reports/samples/${sample_id}" },
              mode: params.publish_mode,

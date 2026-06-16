@@ -61,7 +61,7 @@ process summarize_polymerase_metrics {
 
   tag        'pol-aggregate'
   label      'conda'
-  cache      'deep'
+  cache      'lenient'
 
   publishDir "${params.output_dir}/09_pol_aggregate",
              mode: params.publish_mode,

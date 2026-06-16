@@ -343,6 +343,36 @@ def main():
     umi_output_reads = qc.get("umi_output_reads") if isinstance(qc, dict) else None
     umi_dedup_percent = qc.get("umi_deduplication_percent") if isinstance(qc, dict) else None
 
+    # Multimapping / uniqueness fields (module 13). uniqueness_method is "NH==1"
+    # when bowtie2 -k is active, otherwise "MAPQ≥<thr>". Older runs without these
+    # keys fall back gracefully.
+    uniqueness_method = qc.get("uniqueness_method") if isinstance(qc, dict) else None
+    multimap_k = qc.get("multimap_k") if isinstance(qc, dict) else None
+    mapped_reads = qc.get("mapped_reads") if isinstance(qc, dict) else None
+    # Prefer the stable 'unique_reads' key; fall back to legacy mapq_ge_*_reads.
+    unique_reads = qc.get("unique_reads") if isinstance(qc, dict) else None
+    if unique_reads is None and isinstance(qc, dict):
+        for k, v in qc.items():
+            if k.startswith("mapq_ge_") and k.endswith("_reads") and "nodup" not in k:
+                unique_reads = v
+                break
+    def _to_int(x):
+        try:
+            v = int(x)
+            return v if v >= 0 else None
+        except (ValueError, TypeError):
+            return None
+    mapped_reads = _to_int(mapped_reads)
+    unique_reads = _to_int(unique_reads)
+    multimapper_percent = None
+    if mapped_reads and mapped_reads > 0 and unique_reads is not None:
+        multimapper_percent = round(100.0 * (1.0 - float(unique_reads) / float(mapped_reads)), 2)
+    # Human-readable uniqueness label for the KPI / meta line
+    if uniqueness_method:
+        uniq_label = uniqueness_method
+    else:
+        uniq_label = "MAPQ"
+
     def safe_int(x): 
         try: 
             v=int(x) 
@@ -407,6 +437,11 @@ def main():
             umi_output_reads=umi_output_reads,
             umi_deduplication_percent=umi_dedup_percent,
             mean_coverage_depth=qc.get("mean_coverage_depth") if isinstance(qc, dict) else None,
+            mapped_reads=mapped_reads,
+            unique_reads=unique_reads,
+            multimapper_percent=multimapper_percent,
+            uniqueness_method=uniqueness_method,
+            multimap_k=multimap_k,
         ),
         regions=regions_list,
         tracks=dict(
@@ -711,13 +746,16 @@ def main():
         <h1>{SID}</h1>
         <div>{status_strip()}</div>
         <div class="muted">Condition: <b>{COND}</b> • Timepoint: <b>{TP}</b> • Replicate: <b>{REP}</b></div>
+        <div class="muted">Uniqueness: <b>{uniqueness_method or "MAPQ (legacy)"}</b>{f" • bowtie2 -k {multimap_k}" if multimap_k and int(multimap_k) > 1 else ""}</div>
       </div>
 
       <h2>At-a-glance</h2>
       <div class="grid">
         {kpi("Total input reads", row["qc"]["total_reads_raw"], "qc_pol.json")}
-        {kpi("De-dup reads (MAPQ≥)", row["qc"]["dedup_reads_mapq_ge"],
+        {kpi(f"De-dup unique reads ({uniq_label})", row["qc"]["dedup_reads_mapq_ge"],
              ("Low coverage expected for subset data. " if (row["qc"].get("mean_coverage_depth") or 1) < 0.1 else "") + "qc_pol.json")}
+        {kpi("Multimapper %", "n/a" if multimapper_percent is None else f"{multimapper_percent}%",
+             ("High values flag repetitive genomes / low-complexity libraries. " if (multimapper_percent or 0) > 50 else "") + "1 − unique / mapped")}
         {kpi("UMI Dedup %" if row["qc"].get("umi_deduplication_enabled", False) else "Duplicate %", 
              row["qc"].get("umi_deduplication_percent") if row["qc"].get("umi_deduplication_enabled", False) else row["qc"].get("duplicate_percent"))}
         {kpi("# divergent loci", row["metrics"]["divergent_regions"])}
@@ -790,7 +828,12 @@ def main():
         </ul>
       </div>
 
-      {("<h2>Track links</h2><div class='card'><ul>" +
+      {("<h2>Track links</h2>"
+         "<p class='muted' style='margin:-8px 0 12px 0;font-size:0.85em;'>"
+         "<b>main</b> tracks use the best alignment per read — use these for quantitative analysis and as your default browser track. "
+         "<b>allMap</b> tracks include every reported alignment (when <span class='mono'>align.multimap_k &gt; 1</span>) so signal stays visible across repeat copies; "
+         "treat them as a multimapper-aware view, not for quantification.</p>"
+         "<div class='card'><ul>" +
          "".join(f"<li><span class='mono'>{k}</span>: {v}</li>" for k,v in track_links) +
          "</ul></div>") if track_links else ""}
 

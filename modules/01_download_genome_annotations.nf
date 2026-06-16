@@ -47,7 +47,7 @@ process download_genome_annotations {
 
   tag        { params.reference_genome }
   label      'conda'
-  cache      'deep'
+  cache      'lenient'
   conda      'envs/tracktx.yaml'
 
   // Persistent storage for caching across runs (includes annotation_source for cache key)

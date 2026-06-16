@@ -8,7 +8,7 @@
 [![Docker](https://img.shields.io/badge/docker-supported-0db7ed.svg)](https://www.docker.com/)
 [![Conda](https://img.shields.io/badge/conda-supported-green.svg)](https://conda.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/serhataktay/tracktx/releases/tag/v1.2.0)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/serhataktay/tracktx/releases/tag/v1.3.0)
 
 </div>
 
@@ -183,7 +183,8 @@ graph LR
 **Key capabilities:**
 
 - **Automated** — raw reads to publication-ready outputs in one command
-- **Flexible** — handles SE and PE data, UMIs, barcodes, and spike-in normalization
+- **Flexible** — handles SE and PE data, PRO-seq and GRO-seq, UMIs, barcodes, and spike-in normalization
+- **Multimapper-aware** — `main` tracks (best alignment per read) for quantitative analysis plus `allMap` tracks (every reported alignment) for spotting signal in repetitive regions, with unique-read filtering by the `NH` tag
 - **Statistical** — divergent transcription detection with Gaussian Mixture Models and FDR control, no manual thresholding required
 - **Quantitative** — CPM and spike-in CPM (siCPM) normalization for cross-sample comparisons
 - **Comprehensive** — per-sample HTML reports plus a cohort-wide dashboard
@@ -208,40 +209,44 @@ Trims adapter sequences, removes barcodes, and applies a minimum length filter i
 Downloads the reference (and spike-in) genome FASTA, then builds a `bowtie2` alignment index. Pre-built indexes are cached and reused across runs.
 
 **05 — Align Reads to Genome**
-Aligns cleaned reads to the reference genome with `bowtie2` (end-to-end mode). Spike-in reads are aligned separately to derive normalization factors. Outputs include coordinate-sorted, indexed BAM files for primary, all-mapping, and spike-in alignments. BAMs and alignment artefacts are stored via `storeDir` at `{output_dir}/02_alignments/{sample_id}/`, so alignment is skipped for any sample whose BAM already exists there — even across runs where `work/` has been cleared. To force realignment for a sample, delete its folder: `rm -rf {output_dir}/02_alignments/{sample_id}`.
+Aligns cleaned reads to the reference genome with `bowtie2` (end-to-end mode). For PRO-seq, R1 is reverse-complemented and paired-end data is aligned with `--ff` (`-1` original R2, `-2` RC(R1)) so the nascent-RNA 3′ end maps to the polymerase position. Spike-in reads (the genome-unaligned set) are aligned separately to derive normalization factors and are **not** run in multimapping mode. Outputs include coordinate-sorted, indexed BAM files for primary, all-mapping, and spike-in alignments.
+
+*Multimapping (`align.multimap_k`, default 4):* bowtie2 reports up to *N* alignments per read (`-k N`). The full set becomes the **allMap** BAM — multimappers are kept at every reported locus, which makes signal visible in repetitive regions where a single best position is misleading. Filtering to one primary alignment per read (`-F 260`) gives the **main** BAM that drives counts, divergent detection, and functional-region calling. Because `-k` makes bowtie2 set MAPQ to 255, deterministic `NH:i` tags are added right after alignment (no second alignment pass), and every downstream "unique read" step selects `NH == 1`. Set `align.multimap_k: 1` for legacy single-best behaviour (then allMap ≡ main and uniqueness falls back to MAPQ).
+
+BAMs are published to `{output_dir}/02_alignments/{sample_id}/`. To force realignment for a sample, delete its folder: `rm -rf {output_dir}/02_alignments/{sample_id}`.
 
 **05b — Check and Merge Replicates** *(optional)*
 When replicate merging is enabled (`replicates.merge: true`), performs a pairwise Pearson correlation check across BAMs using `deepTools multiBamSummary`. Replicate groups that meet the concordance threshold are merged into a single BAM before coverage track generation, with a concordance TSV written for the cohort report.
 
 **06 — Generate Coverage Tracks**
-Produces strand-specific 3′-end and 5′-end coverage tracks in bedGraph format using `bedtools genomecov`. Four independent coverage jobs (3p positive, 3p negative, 5p positive, 5p negative) run in parallel. Each bedGraph is pre-sorted inline and converted to BigWig format for use in genome browsers. For paired-end libraries, only Read 2 (the RC(R1) mate carrying the nascent RNA 3′ end = polymerase position) is used for coverage, preventing noise from the R2 mate's 3′ end contaminating the tracks.
+Produces strand-specific 3′-end and 5′-end coverage tracks in bedGraph format using `bedtools genomecov`, for both the **main** BAM (best alignment per read) and the **allMap** BAM (all reported alignments). Negative-strand tracks are mirrored with `-scale -1`, and each bedGraph is sorted inline and converted to BigWig. For paired-end libraries, only Read 2 (the RC(R1) mate carrying the nascent-RNA 3′ end = polymerase position) is used for coverage, so the other mate's end cannot contaminate the tracks — this mate filtering is applied consistently to all four track sets (main/allMap × 3′/5′). For single-end data the full read set is used.
 
-**07 — Quantify Reads Per Gene**
-Counts uniquely aligned reads overlapping each gene using `samtools idxstats` and gene coordinate intervals. Produces a counts master file that drives CPM and siCPM normalization factor calculation in the next module.
+**07 — Collect Library Sizes**
+Collects per-sample library sizes with `samtools idxstats`: total mapped reads in the main BAM, the allMap BAM, and the spike-in BAM. These totals form the counts master file that drives CPM and siCPM normalization-factor calculation in the next module. (Per-gene read counting is not done here — that happens in module 11 directly on the alignments.)
 
 **08 — Normalize Coverage Tracks**
 Scales raw bedGraph signal to CPM (counts per million mapped reads) and siCPM (spike-in CPM) using pre-computed factors. Positive and negative strand tracks are normalized in parallel. Outputs both bedGraph and BigWig formats for all track sets (3p, 5p, main, and allMap).
 
 **09 — Detect Divergent Transcription**
-The statistical core of the pipeline. Pairs upstream antisense peaks with downstream sense peaks, computes a suite of features (signal balance, local enrichment, strand specificity), and fits a two-component Gaussian Mixture Model to separate signal from noise. Divergent regions passing the FDR threshold are written as a BED file with confidence scores. No manual thresholds are required — set `divergent_threshold: auto` and the calibration percentile handles it.
+The statistical core of the pipeline. Operates on the **main** signal track (3′ for PRO-seq, 5′ for GRO-seq). Pairs upstream antisense peaks with downstream sense peaks, computes a suite of features (signal balance, local enrichment, strand specificity), and fits a two-component Gaussian Mixture Model to separate signal from noise. Divergent regions passing the FDR threshold are written as a BED file with confidence scores. No manual thresholds are required — set `divergent_threshold: auto` and the calibration percentile handles it.
 
 **10 — Assign Signal to Functional Regions**
 Assigns normalized coverage to a hierarchical set of genomic functional regions: active promoters, gene bodies, cleavage and polyadenylation sites, enhancers, termination windows, and non-localized signal. Each position is assigned to exactly one region by sequential masking, so the categories are mutually exclusive.
 
 **11 — Calculate Polymerase Occupancy Metrics**
-Computes two complementary views of Pol II occupancy. The density metrics approach sums normalized bedGraph signal over each functional region. The gene metrics approach operates on the filtered BAM directly, computing per-gene TSS-window and gene-body coverage from which pausing indices (PI = TSS density / body density) are derived. Both approaches run in parallel so neither waits on the other. Read counting is strand-specific so only sense-strand reads contribute to each gene's TSS and body counts, eliminating contamination from antisense transcription at convergent loci. The gene-body offset is automatically calibrated from the gene-length distribution in the annotation (25th-percentile-based), so the pipeline works correctly for compact genomes such as *D. melanogaster* and *C. elegans* without manual parameter tuning.
+Computes two complementary views of Pol II occupancy. The density metrics approach sums normalized bedGraph signal over each functional region. The gene metrics approach operates on the filtered BAM directly, computing per-gene TSS-window and gene-body coverage from which pausing indices (PI = TSS density / body density) are derived. Both approaches run in parallel so neither waits on the other. Read counting is strand-specific so only sense-strand reads contribute to each gene's TSS and body counts, eliminating contamination from antisense transcription at convergent loci, and restricted to uniquely-mapped reads (`NH == 1` when `align.multimap_k > 1`, otherwise MAPQ ≥ `pol.mapq`) so ambiguous multimappers do not inflate gene quantification. The gene-body offset is automatically calibrated from the gene-length distribution in the annotation (25th-percentile-based), so the pipeline works correctly for compact genomes such as *D. melanogaster* and *C. elegans* without manual parameter tuning.
 
 **12 — Summarize Polymerase Metrics**
 Aggregates per-sample Pol II metrics across the cohort into summary TSVs — pausing index distributions, region density tables, and normalization factor comparisons — for use in the cohort report.
 
 **13 — Quality Control Aligned Reads**
-Calculates per-sample alignment QC: total and mapped read counts, duplicate rates, MAPQ pass rates, strand balance (critical for PRO-seq validation), fragment length distribution (PE only), and mean genome coverage depth. Results feed the per-sample HTML reports and cohort outlier detection.
+Calculates per-sample alignment QC: total and mapped read counts, duplicate rates, unique-read rate (`NH == 1` in multimapping mode, MAPQ ≥ `qc.mapq` otherwise — reported as `uniqueness_method` in the QC JSON), strand balance (critical for PRO-seq validation), fragment length distribution (PE only), and mean genome coverage depth. Results feed the per-sample HTML reports and cohort outlier detection.
 
 **14 — Generate Per-Sample Reports**
-Produces an interactive HTML report for each sample, summarising QC metrics, coverage distributions, divergent transcription statistics, and Pol II pausing results, with inline visualizations.
+Produces an interactive HTML report for each sample, summarising QC metrics (including the unique-read count with its method label, and a multimapper % = 1 − unique/mapped), coverage distributions, divergent transcription statistics, and Pol II pausing results, with inline visualizations. Track links distinguish the `main` (best-alignment) and `allMap` (multimapper-aware) BigWigs so the right track is used for each purpose.
 
 **15 — Combine Reports into Cohort**
-The final step — runs after module 16 so it can incorporate signal-QC outputs into the landing page. Merges all per-sample JSON reports into a cohort-level HTML dashboard (global_summary.html) covering: by-condition QC comparisons, divergent transcription patterns, Pol II pausing distributions, functional region composition, normalization factor validation, replicate consistency (coefficient of variation), and an interactive sample metrics table. Also generates a modern `index.html` landing page at the output root that embeds the run-on efficiency table, KPI stats, and links to all outputs.
+The final step — runs after module 16 so it can incorporate signal-QC outputs into the landing page. Merges all per-sample JSON reports into a cohort-level HTML dashboard (global_summary.html) covering: by-condition QC comparisons, mapping uniqueness and multimapper % per sample, divergent transcription patterns, Pol II pausing distributions, functional region composition, normalization factor validation, replicate consistency (coefficient of variation), and an interactive sample metrics table. Also generates a modern `index.html` landing page at the output root that embeds the run-on efficiency table, KPI stats, and links to all outputs.
 
 **16 — Cohort QC and Visualization**
 Cohort-level signal QC module that runs after all per-sample tracks are ready, and before module 15 so its outputs feed the landing page. Produces: (1) a **MultiQC** HTML report aggregating all alignment logs, flagstats, and trimming statistics into a single QC dashboard; (2) **deepTools** PCA plot and Pearson correlation heatmap computed from CPM-normalized 3′ BigWigs using 10 kb genome-wide bins; (3) an **IGV session XML** file that loads all sample tracks in one click, colour-coded by condition; and (4) a **run-on efficiency table** reporting the median 5′/3′ bedGraph signal ratio across long gene bodies per sample — values close to 1.0 indicate efficient NRO run-on.
@@ -422,61 +427,30 @@ sample1,control,0,1,SRR123456,
 
 ### Parameters (`params.yaml`)
 
-**Recommended:** Generate this using the interactive generator [`TrackTx_config_generator.html`](TrackTx_config_generator.html), which exports a validated `params.yaml` for you.  
-You can also create it manually if you prefer:
+**Generate this with the interactive generator** [`TrackTx_config_generator.html`](TrackTx_config_generator.html) — it writes a validated `params.yaml` with sensible, species-aware defaults for the dozens of advanced options (divergent calibration, functional-region windows, pausing geometry) so you don't have to hand-maintain them.
+
+The generator is the single source of truth for the full schema. The handful of fields you're most likely to set are:
 
 ```yaml
-# Basic Settings
-samplesheet: "samplesheet.csv" # Sample sheet CSV (or override via --samplesheet)
-sample_source: "local"        # "local" for FASTQ paths, "srr" for SRA downloads
-reference_genome: "hg38"       # Human (hg38, hs1), Mouse (mm39, mm10), Fly (dm6), etc.
-paired_end: false              # true for paired-end data
-output_dir: "./results"        # Where to save results
+# Core
+sample_source:   local      # "local" for FASTQ paths, "srr" for SRA accessions
+reference_genome: hs1        # hg38, hs1 (T2T), mm39, mm10, dm6, ...
+spikein_genome:   dm6        # optional; enables siCPM normalization
+paired_end:       true
+library_type:     proseq     # proseq (RC R1, 3' signal) | groseq (no RC, 5' signal)
+output_dir:       ./results
 
-# Optional: Spike-in Normalization
-spikein_genome: "dm6"          # Drosophila spike-in
+# Read structure (match your library prep)
+barcode: { enabled: true, length: 7, location: 5 }   # 5' random barcode, stripped pre-alignment
+umi:     { enabled: true, length: 7, location: 3 }    # UMI for duplicate removal
 
-# Annotation options (affects divergent read assignment)
-annotation_source: refseq      # refseq, ensembl, gencode
-annotation_exclude_biotypes: ""  # e.g. rRNA,tRNA
-annotation_chr_naming: none    # none, add (Ensembl->UCSC), remove (UCSC->Ensembl)
-
-# Optional: Adapter Trimming
-adapter_trimming:
-  enabled: true
-  preset: "illumina"           # illumina, nextera, or custom
-  adapter1: "TGGAATTCTCGGGTGCCAAGG"
-
-# Optional: UMI Processing (if your library has UMIs)
-umi:
-  enabled: false               # Enable if using UMIs
-  length: 8                    # Typical: 6-10 bases
-  location: 5                  # 5' or 3'
-
-# Advanced: Divergent Transcription (Statistical)
-advanced:
-  # divergent_profile is an optional label written by the config generator
-  # to document which preset/species profile was used (modules ignore it).
-  divergent_profile: "mammal_default"
-  divergent_threshold: auto    # auto = 65th percentile, or specify float
-  divergent_sum_thr: auto      # auto = 1.5x threshold, or specify float
-  divergent_fdr: 0.08          # False discovery rate (0.01-0.10)
-  divergent_calibration_percentile: 65   # Recommended (mammals; targets ~50-150K sites)
-  divergent_calibration_sum_multiplier: 1.5
-  divergent_merge_gap: 150     # Merge overlapping regions (bp); 0=disabled
-  divergent_nt_window: 1000    # Max pairing distance (bp)
-  divergent_balance: 0.0       # Balance ratio (0 = max sensitivity)
-  divergent_qc: true           # Generate QC reports
-
-# Functional regions (affects divergent read assignment)
-functional_regions:
-  # Recommended defaults depend on reference_genome; for hg38/mm10:
-  tss_active_pm: 500          # TSS ± bp for active gene detection
-  prom_up: 500                # Promoter upstream window
-  prom_down: 250              # Promoter downstream window
+# Alignment / multimapping
+align: { multimap_k: 4 }     # report up to N alignments/read for allMap tracks; 1 = single-best
 ```
 
-**💡 Pro Tip:** Use the interactive config generator (`TrackTx_config_generator.html`) for guided parameter selection with detailed explanations!
+For a complete, always-current worked example see [`test_PE/params_PE.yaml`](test_PE/params_PE.yaml). Every other key (`advanced.*` for divergent transcription, `functional_regions.*`, `pol.*` for pausing and differential contrasts, `qc.*`, `norm.*`, output toggles) has a documented default in `nextflow.config` and is filled in by the generator.
+
+> **Differential pausing contrasts** are configured under `pol.contrasts` (a list of `[condA, tpA, condB, tpB]` comparisons). The generator does not yet emit these — add them by hand to `params.yaml` if you want module 12's treatment-vs-baseline tables. See `test_PE/params_PE.yaml` / the working `params.yaml` for the format.
 
 ---
 
@@ -513,9 +487,12 @@ results/
 
 **Note:** Intermediate outputs (00_references, 01_trimmed_fastq, 02_alignments, 03_genome_tracks, 04_counts, 09_pol_aggregate) are also produced. Trace files live in `{output_dir}/trace/`.
 
+**`main` vs `allMap` tracks:** every track set is emitted twice — `main` (best alignment per read; use for quantitative analysis and as the default browser track) and `allMap` (every reported alignment when `align.multimap_k > 1`; use to inspect signal across repeat copies). With `align.multimap_k: 1` the two are identical.
+
 **🎯 Start Here:**
 1. **`11_reports/cohort/global_summary.html`** - Comprehensive cohort analysis with:
    - Quality control assessment and outlier detection
+   - Mapping uniqueness method and multimapper % per sample
    - Divergent transcription patterns across conditions
    - Pol II pausing index distributions
    - Functional region composition analysis
@@ -735,11 +712,11 @@ conda clean --all --yes
 - Use SSD storage for better performance
 - Monitor with `python3 nfmon.py` to see bottlenecks
 
-**Low MAPQ pass rate (e.g. &lt;30%):**
-- QC reports "De-dup reads (MAPQ≥10)" — only reads with MAPQ ≥ threshold are counted
-- PRO-seq often has 30–60% MAPQ pass; subset data or repetitive genomes can be lower
-- To use a lower threshold: add `qc: { mapq: 5 }` to params.yaml (or `pol: { mapq: 5 }` for Pol metrics)
-- Multimapping in repetitive regions reduces MAPQ; this is expected for some datasets
+**Low unique-read rate (e.g. &lt;30%):**
+- QC reports the unique-read rate via `uniqueness_method` in `qc_pol.json`: `NH==1` when `align.multimap_k > 1` (the default), or `MAPQ≥threshold` in single-best mode
+- PRO-seq often has 30–60% uniquely-mapped reads; subset data or repetitive genomes can be lower — the multimappers are still retained in the **allMap** tracks even when excluded from unique-read metrics and gene quantification
+- Single-best mode only: to use a lower MAPQ threshold add `qc: { mapq: 5 }` (or `pol: { mapq: 5 }`) to params.yaml. In `-k` mode uniqueness is exact (`NH==1`), so MAPQ thresholds don't apply
+- A high multimapper fraction in repetitive regions is expected for some datasets and is not an error
 
 **"Failed to publish file [link]"** (external drive / exFAT):
 

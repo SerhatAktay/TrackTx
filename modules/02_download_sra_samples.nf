@@ -47,7 +47,7 @@ process download_sra_samples {
 
   tag        { sra_id }
   label      'conda'
-  cache      'deep'
+  cache      'lenient'
   conda      (params.conda_sra ?: "${projectDir}/envs/tracktx.yaml")
   
   // storeDir persists raw FASTQs so that re-runs skip the download entirely — even after
