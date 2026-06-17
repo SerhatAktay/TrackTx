@@ -407,38 +407,49 @@ TSS_SKIP     = 500    # skip first 500 bp after TSS
 TES_SKIP     = 500    # skip last  500 bp before TES
 MIN_SIGNAL   = 1.0    # minimum 3' signal to include gene
 
-def load_bedgraph(path):
-    \"\"\"Return dict: chrom -> sorted list of (start, end, abs_val).\"\"\"
+BIN = 100_000   # genomic bin size for the gene-overlap index (bp)
+
+def accumulate(path, acc):
+    # Stream one bedGraph file once and add abs(signal) * overlap into acc[gi]
+    # for every gene body that overlaps each interval. Memory stays O(n_genes)
+    # instead of loading the whole genome-wide bedGraph into RAM (the previous
+    # load_bedgraph approach OOM-killed the process on T2T single-nt tracks).
     if not path or not os.path.isfile(path) or os.path.getsize(path) == 0:
-        return {}
-    chrom_data = {}
+        return
+    get = gene_bins.get
     with open(path) as f:
         for line in f:
-            if not line.strip() or line.startswith('#'):
+            if not line or line[0] == '#':
                 continue
             parts = line.split()
             if len(parts) < 4:
                 continue
-            chrom, start, end, val = parts[0], int(parts[1]), int(parts[2]), abs(float(parts[3]))
-            chrom_data.setdefault(chrom, []).append((start, end, val))
-    for lst in chrom_data.values():
-        lst.sort()
-    return chrom_data
-
-def region_signal(bg, chrom, lo, hi):
-    \"\"\"Sum bedGraph signal in [lo, hi).\"\"\"
-    if chrom not in bg:
-        return 0.0
-    total = 0.0
-    for (s, e, v) in bg[chrom]:
-        if e <= lo:
-            continue
-        if s >= hi:
-            break
-        overlap = min(e, hi) - max(s, lo)
-        if overlap > 0:
-            total += v * overlap
-    return total
+            chrom = parts[0]
+            try:
+                s = int(parts[1]); e = int(parts[2]); v = abs(float(parts[3]))
+            except ValueError:
+                continue
+            if v == 0.0 or e <= s:
+                continue
+            b0 = s // BIN
+            b1 = (e - 1) // BIN
+            if b0 == b1:
+                cands = get((chrom, b0))
+                if not cands:
+                    continue
+            else:
+                cands = set()
+                for b in range(b0, b1 + 1):
+                    c = get((chrom, b))
+                    if c:
+                        cands.update(c)
+                if not cands:
+                    continue
+            for gi in cands:
+                lo = genes[gi][1]; hi = genes[gi][2]
+                ov = (e if e < hi else hi) - (s if s > lo else lo)
+                if ov > 0:
+                    acc[gi] += v * ov
 
 # Parse gene bodies from BED6
 genes = []
@@ -473,24 +484,33 @@ else:
 
 print(f\"Loaded {len(genes)} gene bodies (>={MIN_GENE_LEN} bp)\", file=sys.stderr)
 
+# Build the (chrom, bin) -> [gene indices] index once. Each gene body is
+# registered in every bin it spans so accumulate() can look up candidates fast.
+gene_bins = {}
+for gi, (gchrom, glo, ghi, gstrand) in enumerate(genes):
+    for b in range(glo // BIN, ghi // BIN + 1):
+        gene_bins.setdefault((gchrom, b), []).append(gi)
+
 header = ['sample_id', 'n_genes_used', 'median_5p3p_ratio',
           'mean_5p3p_ratio', 'interpretation']
 rows = ['\\t'.join(header)]
 
+ng = len(genes)
 for i, sid in enumerate(sids):
-    p3bg = load_bedgraph(pos3[i] if i < len(pos3) else '')
-    n3bg = load_bedgraph(neg3[i] if i < len(neg3) else '')
-    p5bg = load_bedgraph(pos5[i] if i < len(pos5) else '')
-    n5bg = load_bedgraph(neg5[i] if i < len(neg5) else '')
+    a_p3 = [0.0] * ng; a_n3 = [0.0] * ng
+    a_p5 = [0.0] * ng; a_n5 = [0.0] * ng
+    if i < len(pos3): accumulate(pos3[i], a_p3)
+    if i < len(neg3): accumulate(neg3[i], a_n3)
+    if i < len(pos5): accumulate(pos5[i], a_p5)
+    if i < len(neg5): accumulate(neg5[i], a_n5)
 
     ratios = []
-    for (chrom, lo, hi, strand) in genes:
+    for gi in range(ng):
+        strand = genes[gi][3]
         if strand == '+':
-            sig3 = region_signal(p3bg, chrom, lo, hi)
-            sig5 = region_signal(p5bg, chrom, lo, hi)
+            sig3 = a_p3[gi]; sig5 = a_p5[gi]
         else:
-            sig3 = region_signal(n3bg, chrom, lo, hi)
-            sig5 = region_signal(n5bg, chrom, lo, hi)
+            sig3 = a_n3[gi]; sig5 = a_n5[gi]
         if sig3 < MIN_SIGNAL:
             continue
         ratios.append(sig5 / sig3 if sig3 > 0 else 0.0)
