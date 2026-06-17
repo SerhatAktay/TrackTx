@@ -142,6 +142,7 @@ process quality_control_aligned_reads {
   BAM_FILE="${aligned_bam}"
   DEDUP_STATS="${dedup_stats}"
   
+  THREADS=${task.cpus}
   MAPQ_THRESHOLD=${mapq_thr}
   MULTIMAP_K=${params.align?.multimap_k ?: 0}
   DEDUP_ENABLED=${dedup_enabled}
