@@ -877,7 +877,7 @@ TSV Export:
   treatment <- subset(cohort, condition == \"treatment\")
   
   # Calculate statistics
-  mean(cohort\\\\\$map_rate_percent)
+  mean(cohort\\\$map_rate_percent)
   
   # Load in Python
   import pandas as pd
