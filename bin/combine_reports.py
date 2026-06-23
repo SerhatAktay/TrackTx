@@ -697,625 +697,298 @@ def generate_html_report(
     run_command: str,
     output_path: str
 ):
-    """
-    Generate single-file HTML report with embedded CSS/JS
-    
-    Args:
-        data_json: JSON data string
-        css: CSS string
-        js: JavaScript string
-        args: Command-line arguments
-        run_command: Full command line
-        output_path: Output HTML path
-    """
+    """Generate single-file interactive HTML cohort report (embedded CSS/JS)."""
+    import html as _html
     log("HTML", "Generating interactive dashboard...")
-    
-    # Generate timestamp
     timestamp = datetime.datetime.now().strftime("%B %d, %Y at %H:%M")
-    
-    # Build comprehensive HTML report
-    html = f"""<!doctype html>
+
+    template = r'''<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>TrackTx Cohort Report</title>
-  {css}
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TrackTx Cohort Report</title>
+%%CSS%%
 </head>
 <body>
+<div id="tt"></div>
 <div class="container">
-  <!-- Header -->
+
   <header class="page-header">
-    <div class="eyebrow">TrackTx PRO-seq Analysis • Cohort Report</div>
-    <h1>Global Summary</h1>
-    <p class="muted">Profile: {args.profile} • Run: {args.run_name} • Duration: {args.duration}</p>
-    <p class="muted">Generated {timestamp} • <span id="sample-count-header"></span></p>
+    <div class="eyebrow">TrackTx · PRO-seq · Cohort report</div>
+    <h1>%%RUN_NAME%%</h1>
+    <div class="meta">
+      <span>Profile <b>%%PROFILE%%</b></span><span class="dot">·</span>
+      <span id="hdr-samples">— samples</span><span class="dot">·</span>
+      <span>Duration %%DURATION%%</span><span class="dot">·</span>
+      <span>Generated %%TIMESTAMP%%</span>
+    </div>
+    <div class="kpi-strip" id="kpi-strip"></div>
   </header>
 
-  <!-- Navigation -->
-  <nav class="nav-pills">
-    <a href="#overview">📊 Overview</a>
-    <a href="#qc">✓ Quality Control</a>
-    <a href="#divergent">🔀 Divergent TX</a>
-    <a href="#pausing">⏸️ Pausing</a>
-    <a href="#regions">🎯 Functional Regions</a>
-    <a href="#normalization">📏 Normalization</a>
-    <a href="#methodology">📐 Calculation Methodology</a>
-    <a href="#samples">📋 Sample Table</a>
-    <a href="#files">📁 Files</a>
-  </nav>
-
-  <p class="muted" style="margin:0.75rem 0 1.75rem;font-size:0.9rem;">
-    <strong>Phase 1 – Technical QC:</strong> Overview, Quality Control, Normalization.
-    <strong>Phase 2 – Biology & design:</strong> Divergent TX, Pausing, Functional Regions, Sample Table, Files.
-  </p>
-
-  <!-- SECTION: Overview -->
-  <section class="layer" id="overview">
-    <div class="layer-heading">
-      <h2>Cohort Overview</h2>
-      <div class="subtitle">High-level summary and experimental design</div>
-    </div>
-    
-    <div class="help-box">
-      <strong>What is this report?</strong> This cohort-level dashboard aggregates metrics from all individual sample reports in your TrackTx PRO-seq analysis.
-      Use it to assess overall experiment quality, identify outliers, compare conditions, and understand transcriptional dynamics across your cohort.
-      <ul>
-        <li><strong>QC metrics:</strong> Read depth, duplication rates, mapping stats</li>
-        <li><strong>Biological metrics:</strong> Divergent transcription, Pol II pausing, functional region distributions</li>
-        <li><strong>Normalization:</strong> CPM and spike-in factors for cross-sample comparisons</li>
-      </ul>
-    </div>
-
-    <div id="small-cohort-summary" class="kpi-grid" style="display:none;margin-top:1.5rem;margin-bottom:0.5rem;">
-      <div class="kpi-card">
-        <div class="kpi-label">Cohort Size</div>
-        <div class="kpi-value" id="small-cohort-size">-</div>
-        <div class="muted" id="small-cohort-size-note" style="font-size:0.85rem;margin-top:0.35rem;"></div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">QC Summary</div>
-        <div class="kpi-value" id="small-cohort-qc">-</div>
-        <div class="muted" id="small-cohort-qc-detail" style="font-size:0.85rem;margin-top:0.35rem;"></div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">Design Summary</div>
-        <div class="kpi-value" id="small-cohort-design">-</div>
-        <div class="muted" id="small-cohort-design-detail" style="font-size:0.85rem;margin-top:0.35rem;"></div>
+  <div class="toolbar">
+    <div class="toolbar-inner">
+      <nav class="nav" id="nav">
+        <a href="#overview">Overview</a>
+        <a href="#trends">Trends</a>
+        <a href="#qc">Quality</a>
+        <a href="#divergent">Divergent TX</a>
+        <a href="#pausing">Pausing</a>
+        <a href="#regions">Functional regions</a>
+        <a href="#normalization">Normalization</a>
+        <a href="#samples">Samples</a>
+      </nav>
+      <div class="controls">
+        <div class="control">
+          <label>Order</label>
+          <span class="seg" id="order-seg">
+            <button data-order="timepoint" class="on">Timepoint</button>
+            <button data-order="name">Name</button>
+          </span>
+        </div>
+        <label class="control toggle"><input type="checkbox" id="color-by-cond"> Color by condition</label>
       </div>
     </div>
+  </div>
 
-    <div class="kpi-grid">
-      <div class="kpi-card">
-        <div class="kpi-label">Total Samples <span class="info-tip" title="Total number of samples successfully processed and included in this cohort report">?</span></div>
-        <div class="kpi-value" id="kpi-total">0</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">Conditions <span class="info-tip" title="Number of unique experimental conditions in the cohort">?</span></div>
-        <div class="kpi-value" id="kpi-conditions">0</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">Avg Read Depth <span class="info-tip" title="Average total input reads per sample (millions)">?</span></div>
-        <div class="kpi-value" id="kpi-depth">0M</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">Total Divergent Loci <span class="info-tip" title="Sum of divergent transcription regions detected across all samples (not de-duplicated across samples). Median per-sample values are shown in the Divergent Transcription section below.">?</span></div>
-        <div class="kpi-value" id="kpi-div-total">0</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">Median Functional Reads <span class="info-tip" title="Median reads in functional regions per sample (millions). Uses localized functional regions only.">?</span></div>
-        <div class="kpi-value" id="kpi-regions-avg">0</div>
-      </div>
+  <div class="hl-banner" id="hl-banner">
+    <span>Highlighting <b id="hl-name"></b> across all charts.</span>
+    <button class="btn" id="hl-clear">Clear</button>
+  </div>
+
+  <!-- OVERVIEW -->
+  <section class="section" id="overview">
+    <div class="head">
+      <h2>Overview</h2>
+      <div class="sub">Experimental design and per-condition summary</div>
     </div>
-
-    <div id="experimental-design-summary" style="margin-top:2rem;"></div>
-  </section>
-
-  <!-- SECTION: Quality Control -->
-  <section class="layer" id="qc">
-    <div class="layer-heading">
-      <h2>Quality Control Analysis</h2>
-      <div class="subtitle">Sequencing depth, duplication rates, and sample consistency</div>
-    </div>
-    
-    <div id="depth-fallback-banner" style="display:none;margin-bottom:1rem;padding:0.75rem 1rem;background:var(--surface-2);border-left:4px solid var(--accent);border-radius:4px;font-size:0.9rem;">
-      <strong>Read depth note:</strong> For some samples, QC total reads were unavailable. 
-      Values shown use <span id="depth-fallback-detail">dedup or functional reads</span> as proxy—interpret as estimated depth, not total sequencing depth.
-    </div>
-    <div class="help-box">
-      <strong>What to look for:</strong>
-      <ul>
-        <li><strong>Read Depth:</strong> PRO-seq typically requires 5-20M reads per sample for good gene coverage. Lower depth may miss lowly-expressed genes.</li>
-        <li><strong>Duplication / UMI-dedup Rate:</strong> &lt;15% is excellent, 15-30% is acceptable, &gt;30% suggests PCR over-amplification or low library complexity. Values come from the per-sample QC JSON (post-demultiplexing, post-alignment; UMI-deduplication is used when available).</li>
-        <li><strong>Unlocalized Reads:</strong> &lt;20% is typical. Higher values may indicate contamination, rRNA, or incomplete genome annotation.</li>
-        <li><strong>Sample Consistency:</strong> Replicates within a condition should cluster together. Large variability suggests technical issues or biological heterogeneity.</li>
-      </ul>
-      <p style="margin-top:0.75rem;font-size:0.9rem;">
-        For <strong>small cohorts (≤5 samples)</strong>, treat these QC plots as per-sample sanity checks and focus on spotting clear outliers rather than subtle distributional differences.
-      </p>
-    </div>
-
-    <div class="stats-grid">
-      <div class="stat-item">
-        <div class="stat-label">Median Depth</div>
-        <div class="stat-value" id="qc-median-depth">-</div>
+    <details class="note-box">
+      <summary>About this report</summary>
+      <div class="body">
+        Aggregates metrics from every per-sample report in this run. Use it to compare conditions, spot outliers,
+        and read transcriptional trends across the cohort. Click any bar, point, or table row to highlight that
+        sample everywhere; click again to clear. For gene-level statistics, open the individual sample reports.
       </div>
-      <div class="stat-item">
-        <div class="stat-label">Median Duplication / UMI-dedup</div>
-        <div class="stat-value" id="qc-median-dup">-</div>
+    </details>
+    <div class="grid cols-2" style="align-items:start;">
+      <div class="card">
+        <h3>Design matrix</h3>
+        <div class="h3sub">Samples per condition × timepoint</div>
+        <div style="overflow-x:auto;"><table class="design-table" id="design-table"></table></div>
       </div>
-      <div class="stat-item">
-        <div class="stat-label">Median Unlocalized</div>
-        <div class="stat-value" id="qc-median-unloc">-</div>
-      </div>
-    </div>
-
-    <div id="condition-qc-summary" class="stats-grid" style="margin-top:1.5rem;"></div>
-
-    <div class="viz-grid">
-      <div class="viz-card">
-        <h3>Read Depth per Sample <span class="info-tip" title="Total input reads for each sample (in millions, M). Hover over bars to see sample names and exact values.">?</span></h3>
-        <div id="chart-depth-per-sample" class="viz-body"></div>
-        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over bars to see sample IDs</p>
-      </div>
-      <div class="viz-card">
-        <h3>Duplication / UMI-dedup Rate per Sample <span class="info-tip" title="If UMI-deduplication was used, this shows the UMI-deduplication percent; otherwise it shows the PCR duplicate percent from the QC JSON. Lower is better.">?</span></h3>
-        <div id="chart-dup-per-sample" class="viz-body"></div>
-        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over bars to see sample IDs</p>
-      </div>
-      <div class="viz-card">
-        <h3>Read Depth Distribution <span class="info-tip" title="Histogram showing how read depths are distributed. HOVER over bars to see which samples fall in each bin.">?</span></h3>
-        <div id="chart-depth-dist" class="viz-body"></div>
-        <div class="distrib-summary" id="depth-stats"></div>
-        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">📊 Aggregate distribution - hover to see samples in each bin</p>
-      </div>
-      <div class="viz-card">
-        <h3>Duplication Rate Distribution <span class="info-tip" title="Histogram showing how duplication rates are distributed. HOVER over bars to see which samples fall in each bin.">?</span></h3>
-        <div id="chart-dup-dist" class="viz-body"></div>
-        <div class="distrib-summary" id="dup-stats"></div>
-        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">📊 Aggregate distribution - hover to see samples in each bin</p>
-      </div>
-    </div>
-
-  </section>
-
-  <!-- SECTION: Divergent Transcription -->
-  <section class="layer" id="divergent">
-    <div class="layer-heading">
-      <h2>Divergent Transcription Analysis</h2>
-      <div class="subtitle">Bidirectional transcription from promoters and enhancers</div>
-    </div>
-    
-    <div class="help-box">
-      <strong>What is divergent transcription?</strong> Divergent (bidirectional) transcription occurs when RNA Polymerase II initiates in both directions from a promoter or enhancer.
-      It's a hallmark of active regulatory elements. TrackTx uses statistical detection (Gaussian Mixture Models + FDR control) to identify high-confidence divergent regions.
-      <ul>
-        <li><strong>More regions:</strong> Indicates higher transcriptional activity or more active enhancers</li>
-        <li><strong>Condition differences:</strong> Can reflect stimulus-dependent enhancer activation</li>
-        <li><strong>Variability:</strong> High variability within replicates may suggest technical noise or biological heterogeneity</li>
-      </ul>
-      <p style="margin-top:0.75rem;font-size:0.9rem;">
-        For <strong>small cohorts (≤5 samples)</strong>, use these plots to spot clear condition-level shifts and obvious outliers only.
-        For gene-level divergent calls and FDR statistics, follow up in <code>06_divergent_tx/</code> and the per-sample reports.
-      </p>
-    </div>
-
-    <div class="stats-grid">
-      <div class="stat-item">
-        <div class="stat-label">Total Regions</div>
-        <div class="stat-value" id="div-total-regions">-</div>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">Mean per Sample</div>
-        <div class="stat-value" id="div-mean">-</div>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">Median per Sample</div>
-        <div class="stat-value" id="div-median">-</div>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">Range</div>
-        <div class="stat-value" id="div-range">-</div>
-      </div>
-    </div>
-
-    <div class="viz-grid">
-      <div class="viz-card">
-        <h3>Divergent Regions per Sample <span class="info-tip" title="Number of high-confidence divergent transcription sites detected in each sample">?</span></h3>
-        <div id="chart-div-per-sample" class="viz-body"></div>
-        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over bars to see sample IDs</p>
-      </div>
-      <div class="viz-card">
-        <h3>Distribution Across Cohort <span class="info-tip" title="Histogram showing how divergent region counts are distributed. HOVER over bars to see which samples fall in each bin.">?</span></h3>
-        <div id="chart-div-hist" class="viz-body"></div>
-        <div class="distrib-summary" id="div-stats"></div>
-        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">📊 Aggregate distribution - hover to see samples in each bin</p>
-      </div>
-      <div class="viz-card">
-        <h3>By Condition <span class="info-tip" title="Compare divergent transcription levels across experimental conditions">?</span></h3>
-        <div id="chart-div-by-condition" class="viz-body"></div>
-        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over bars to see condition names</p>
-      </div>
-      <div class="viz-card">
-        <h3>Replicate Consistency <span class="info-tip" title="Coefficient of variation within replicate groups. Lower is better (more consistent).">?</span></h3>
-        <div id="chart-div-cv" class="viz-body"></div>
-        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over bars to see condition names</p>
+      <div>
+        <div class="grid cols-2" id="condition-cards"></div>
       </div>
     </div>
   </section>
 
-  <!-- SECTION: Pausing Index -->
-  <section class="layer" id="pausing">
-    <div class="layer-heading">
-      <h2>Pol II Pausing Analysis</h2>
-      <div class="subtitle">Promoter-proximal pausing and elongation dynamics</div>
+  <!-- TRENDS -->
+  <section class="section" id="trends">
+    <div class="head">
+      <h2>Trends across timepoints</h2>
+      <div class="sub">How each metric moves along the ordered timepoint series, split by condition</div>
     </div>
-    
-    <div class="help-box">
-      <strong>What is Pol II pausing?</strong> After transcription initiation, RNA Polymerase II often pauses 20-60 bp downstream of the TSS before entering productive elongation.
-      The <strong>Pausing Index (PI)</strong> conceptually quantifies this as (Promoter signal) / (Gene body signal). In TrackTx we use a length-normalized version (pi_len_norm), i.e. promoter density divided by gene-body density, to correct for large differences in gene-body length.
-      <ul>
-        <li><strong>PI &gt; 2:</strong> Strong pausing - typical for rapidly-induced genes (e.g., heat shock genes)</li>
-        <li><strong>PI = 0.5-2:</strong> Moderate pausing - most constitutive genes</li>
-        <li><strong>PI &lt; 0.5:</strong> Weak/no pausing - highly elongating genes</li>
-        <li><strong>Condition changes:</strong> PI shifts can indicate transcriptional regulation at elongation step vs. initiation</li>
-      </ul>
-      <p style="margin-top:0.75rem;font-size:0.9rem;">
-        For <strong>small cohorts (≤5 samples)</strong>, interpret PI differences qualitatively (direction and magnitude) rather than as formal statistics.
-        For gene-level PI contrasts with FDR control, see the aggregated Pol II outputs in <code>08_pol_metrics/</code> and <code>09_pol_aggregate/</code>.
-      </p>
+    <div class="card">
+      <div class="table-tools" style="margin-bottom:0.8rem;">
+        <div class="control">
+          <label style="font-size:0.8rem;color:var(--muted);font-weight:600;">Metric</label>
+          <select id="trend-metric"></select>
+        </div>
+        <div class="spacer"></div>
+        <div class="legend" id="trend-legend"></div>
+      </div>
+      <div class="chart" id="chart-trend"></div>
+      <p class="h3sub" id="trend-note" style="margin-top:0.6rem;"></p>
     </div>
+  </section>
 
-    <div class="stats-grid">
-      <div class="stat-item">
-        <div class="stat-label">Cohort Median PI</div>
-        <div class="stat-value" id="pi-cohort-median">-</div>
+  <!-- QC -->
+  <section class="section" id="qc">
+    <div class="head">
+      <h2>Quality control</h2>
+      <div class="sub">Sequencing depth, duplication, multimapping and unlocalized signal per sample</div>
+    </div>
+    <details class="note-box">
+      <summary>How to read these</summary>
+      <div class="body">
+        <ul>
+          <li><strong>Read depth</strong> — PRO-seq usually wants 5–20M+ usable reads. Bars are colored by a rough PASS/WARN/FAIL on depth.</li>
+          <li><strong>Duplication / UMI-dedup</strong> — &lt;15% great, 15–30% acceptable, &gt;30% suggests over-amplification or low complexity.</li>
+          <li><strong>Multimapper %</strong> — high values flag repetitive genomes; those reads stay in allMap tracks but are excluded from quantification.</li>
+          <li><strong>Unlocalized %</strong> — reads outside annotated features; &lt;20% typical, higher may mean rRNA or annotation gaps.</li>
+        </ul>
       </div>
-      <div class="stat-item">
-        <div class="stat-label">Mean PI</div>
-        <div class="stat-value" id="pi-cohort-mean">-</div>
+    </details>
+    <div class="grid cols-4" id="qc-charts">
+      <div class="card"><h3>Read depth</h3><div class="h3sub">million reads</div><div class="chart" id="chart-depth"></div></div>
+      <div class="card"><h3 id="dup-title">Duplication</h3><div class="h3sub">percent</div><div class="chart" id="chart-dup"></div></div>
+      <div class="card"><h3>Multimapper %</h3><div class="h3sub">1 − unique/mapped</div><div class="chart" id="chart-mm"></div></div>
+      <div class="card"><h3>Unlocalized %</h3><div class="h3sub">outside features</div><div class="chart" id="chart-unloc"></div></div>
+    </div>
+  </section>
+
+  <!-- DIVERGENT -->
+  <section class="section" id="divergent">
+    <div class="head">
+      <h2>Divergent transcription</h2>
+      <div class="sub">High-confidence bidirectional transcription loci (GMM + FDR)</div>
+    </div>
+    <details class="note-box">
+      <summary>What this means</summary>
+      <div class="body">
+        Divergent transcription marks active promoters and enhancers where Pol II initiates in both directions.
+        Counts are per sample (not de-duplicated across samples). Condition-level shifts can reflect
+        stimulus-dependent enhancer activity.
       </div>
-      <div class="stat-item">
-        <div class="stat-label">Std Dev</div>
-        <div class="stat-value" id="pi-std">-</div>
+    </details>
+    <div class="chips" id="div-chips"></div>
+    <div class="grid cols-2">
+      <div class="card"><h3>Divergent loci per sample</h3><div class="chart" id="chart-div"></div></div>
+      <div class="card"><h3>Mean per condition</h3><div class="chart" id="chart-div-cond"></div></div>
+    </div>
+  </section>
+
+  <!-- PAUSING -->
+  <section class="section" id="pausing">
+    <div class="head">
+      <h2>Pol II pausing</h2>
+      <div class="sub">Length-normalized pausing index (promoter density ÷ gene-body density)</div>
+    </div>
+    <details class="note-box">
+      <summary>Interpreting the pausing index</summary>
+      <div class="body">
+        PI &gt; 1.5 indicates strong promoter-proximal pausing; ≈1 is balanced; &lt;1 favors productive elongation.
+        PI should be roughly independent of sequencing depth — a strong depth correlation in the scatter would suggest technical bias.
       </div>
-      <div class="stat-item">
-        <div class="stat-label">Range</div>
-        <div class="stat-value" id="pi-range">-</div>
+    </details>
+    <div class="chips" id="pi-chips"></div>
+    <div class="grid cols-2">
+      <div class="card"><h3>Median PI per sample</h3><div class="chart" id="chart-pi"></div></div>
+      <div class="card"><h3>PI vs read depth</h3><div class="h3sub">bias check</div><div class="chart" id="chart-pi-depth"></div></div>
+    </div>
+  </section>
+
+  <!-- FUNCTIONAL REGIONS -->
+  <section class="section" id="regions">
+    <div class="head">
+      <h2>Functional region composition</h2>
+      <div class="sub">Where Pol II signal lands across genomic features</div>
+    </div>
+    <div class="grid cols-2" style="align-items:start;">
+      <div class="card">
+        <h3>Composition per sample</h3>
+        <div class="h3sub">share of localized functional signal (%)</div>
+        <div class="chart" id="chart-composition"></div>
+        <div class="legend" id="composition-legend"></div>
+      </div>
+      <div class="card">
+        <h3>Cohort-wide totals</h3>
+        <div class="h3sub">summed reads across all samples</div>
+        <div class="chart" id="chart-region-totals"></div>
       </div>
     </div>
-
-    <div class="viz-grid">
-      <div class="viz-card">
-        <h3>Median PI per Sample <span class="info-tip" title="Median pausing index for each sample. Shows overall pausing landscape.">?</span></h3>
-        <div id="chart-pi-per-sample" class="viz-body"></div>
-        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over bars to see sample IDs</p>
-      </div>
-      <div class="viz-card">
-        <h3>PI Distribution <span class="info-tip" title="Histogram showing how pausing indices are distributed. HOVER over bars to see which samples fall in each bin.">?</span></h3>
-        <div id="chart-pi-dist" class="viz-body"></div>
-        <div class="distrib-summary" id="pi-stats"></div>
-        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">📊 Aggregate distribution - hover to see samples in each bin</p>
-      </div>
-      <div class="viz-card">
-        <h3>PI by Condition <span class="info-tip" title="Compare pausing indices across experimental conditions. Differences may reflect regulation at elongation stage.">?</span></h3>
-        <div id="chart-pi-by-condition" class="viz-body"></div>
-        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over bars to see condition names</p>
-      </div>
-      <div class="viz-card">
-        <h3>PI vs Read Depth <span class="info-tip" title="Pausing index should be independent of sequencing depth. Strong correlation suggests technical bias.">?</span></h3>
-        <div id="chart-pi-vs-depth" class="viz-body"></div>
-        <p style="text-align:center;font-size:0.85rem;color:var(--muted);margin-top:0.5rem;">💡 Hover over points to see sample IDs</p>
+    <div class="card" style="margin-top:1rem;">
+      <h3>Region read counts by sample</h3>
+      <div class="table-wrap" style="margin-top:0.6rem;">
+        <table class="data" id="region-table"><thead></thead><tbody></tbody></table>
       </div>
     </div>
   </section>
 
-  <!-- SECTION: Functional Regions -->
-  <section class="layer" id="regions">
-    <div class="layer-heading">
-      <h2>Functional Region Composition</h2>
-      <div class="subtitle">Read distribution across genomic features</div>
+  <!-- NORMALIZATION -->
+  <section class="section" id="normalization">
+    <div class="head">
+      <h2>Normalization factors</h2>
+      <div class="sub">CPM and spike-in (siCPM) scaling for cross-sample comparison</div>
     </div>
-    
-    <div class="help-box">
-      <strong>Functional regions</strong> are genomic features where Pol II signal is measured:
-      <ul>
-        <li><strong>Promoters:</strong> TSS ± window (default: -500 to +250 bp). High signal indicates active transcription initiation.</li>
-        <li><strong>Gene Bodies:</strong> From TSS + offset to TES (default: start +2000 bp). Measures elongating Pol II.</li>
-        <li><strong>CPS (Cleavage/PolyA Sites):</strong> 3' end regions. Signal here indicates termination events.</li>
-        <li><strong>Enhancers:</strong> Distal regulatory elements (if annotated). Active enhancers produce eRNAs.</li>
-        <li><strong>Divergent TX:</strong> Bidirectional transcription sites detected by pipeline.</li>
-        <li><strong>Non-localized:</strong> Reads not mapping to any defined feature. Should be <20%.</li>
-      </ul>
-      <strong>What to look for:</strong> Samples should have similar functional region distributions. Large differences may indicate varying library quality or biological states.
-    </div>
-
-    <div class="viz-grid">
-      <div class="viz-card">
-        <h3>Cohort-wide Region Totals <span class="info-tip" title="Aggregate read counts across all samples for each functional region type">?</span></h3>
-        <div id="chart-region-totals" class="viz-body"></div>
+    <details class="note-box">
+      <summary>CPM vs siCPM</summary>
+      <div class="body">
+        <strong>CPM</strong> rescales by sequencing depth (assumes similar global transcription).
+        <strong>siCPM</strong> uses an exogenous spike-in to capture global changes in transcription — essential when conditions
+        are expected to shift overall output. Within a condition, factors should be consistent across replicates.
       </div>
-      <div class="viz-card">
-        <h3>Region Composition by Sample <span class="info-tip" title="Stacked bar showing percentage distribution of reads across regions for each sample">?</span></h3>
-        <div id="chart-region-composition" class="viz-body"></div>
-      </div>
-      <div class="viz-card">
-        <h3>Promoter Signal per Sample <span class="info-tip" title="Promoter signal for each sample. Hover to see sample names and exact counts.">?</span></h3>
-        <div id="chart-promoter-per-sample" class="viz-body"></div>
-      </div>
-      <div class="viz-card">
-        <h3>Gene Body Signal per Sample <span class="info-tip" title="Gene body signal for each sample. Hover to see sample names and exact counts.">?</span></h3>
-        <div id="chart-genebody-per-sample" class="viz-body"></div>
-      </div>
-    </div>
-
-    <div style="margin-top:2rem;">
-      <h3 style="margin-bottom:1rem;font-size:1.25rem;">Detailed Region Counts by Sample</h3>
-      <div class="table-wrap">
-        <table id="region-counts-table">
-          <thead id="region-counts-thead"></thead>
-          <tbody id="region-counts-tbody"></tbody>
-        </table>
-      </div>
+    </details>
+    <div class="chips" id="norm-chips"></div>
+    <div class="grid cols-3">
+      <div class="card"><h3>CPM factor</h3><div class="chart" id="chart-cpm"></div></div>
+      <div class="card"><h3>siCPM factor</h3><div class="chart" id="chart-sicpm"></div></div>
+      <div class="card"><h3>CPM vs siCPM</h3><div class="chart" id="chart-cpm-sicpm"></div></div>
     </div>
   </section>
 
-  <!-- SECTION: Normalization -->
-  <section class="layer" id="normalization">
-    <div class="layer-heading">
-      <h2>Normalization Factors</h2>
-      <div class="subtitle">CPM and spike-in normalization for cross-sample comparisons</div>
+  <!-- SAMPLES -->
+  <section class="section" id="samples">
+    <div class="head">
+      <h2>Sample-level metrics</h2>
+      <div class="sub">Sortable, searchable table — click a row to highlight that sample in every chart</div>
     </div>
-    
-    <div class="help-box">
-      <strong>Why normalize?</strong> Raw read counts vary with sequencing depth and library preparation efficiency. Normalization enables quantitative comparison across samples.
-      <ul>
-        <li><strong>CPM (Counts Per Million):</strong> Simple depth normalization. Assumes total transcription is similar across samples.
-          <br>Formula: CPM = (raw_counts / total_reads) × 1,000,000</li>
-        <li><strong>siCPM (Spike-in CPM):</strong> Uses exogenous spike-in control (e.g., Drosophila) for absolute quantification. Accounts for global changes in transcription.
-          <br>Formula: siCPM = CPM × (spike-in_reads_control / spike-in_reads_sample)</li>
-        <li><strong>When to use spike-in:</strong> Essential when comparing samples with expected global transcriptional changes (e.g., stress conditions, differentiation)</li>
-        <li><strong>Quality check:</strong> Spike-in factors should be consistent across replicates within a condition. Large variation suggests pipetting errors or contamination.</li>
-      </ul>
-    </div>
-
-    <div class="stats-grid">
-      <div class="stat-item">
-        <div class="stat-label">Samples with CPM</div>
-        <div class="stat-value" id="norm-cpm-count">-</div>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">Samples with siCPM</div>
-        <div class="stat-value" id="norm-sicpm-count">-</div>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">CPM Factor Range</div>
-        <div class="stat-value" id="norm-cpm-range">-</div>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">siCPM Factor Range</div>
-        <div class="stat-value" id="norm-sicpm-range">-</div>
-      </div>
-    </div>
-
-    <div class="viz-grid">
-      <div class="viz-card">
-        <h3>CPM Factors <span class="info-tip" title="CPM normalization factors for each sample. Should be inversely proportional to sequencing depth.">?</span></h3>
-        <div id="chart-cpm-factors" class="viz-body"></div>
-      </div>
-      <div class="viz-card">
-        <h3>siCPM Factors <span class="info-tip" title="Spike-in normalization factors. Consistent within condition indicates good technical reproducibility.">?</span></h3>
-        <div id="chart-sicpm-factors" class="viz-body"></div>
-      </div>
-      <div class="viz-card">
-        <h3>CPM vs siCPM Comparison <span class="info-tip" title="Compare CPM and siCPM factors. Large differences suggest global transcriptional changes between conditions.">?</span></h3>
-        <div id="chart-cpm-vs-sicpm" class="viz-body"></div>
-      </div>
-      <div class="viz-card">
-        <h3>Normalization Factor CV by Condition <span class="info-tip" title="Coefficient of variation for normalization factors within each condition. Lower = more consistent.">?</span></h3>
-        <div id="chart-norm-cv" class="viz-body"></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- SECTION: Calculation Methodology -->
-  <section class="layer" id="methodology">
-    <div class="layer-heading">
-      <h2>Calculation Methodology</h2>
-      <div class="subtitle">How numbers are computed across the TrackTx pipeline</div>
-    </div>
-    <a href="#" onclick="toggleSection('methodology-content'); return false;" style="display:inline-block;margin-top:0.5rem;font-size:0.9rem;">Show/hide methodology details</a>
-
-    <div id="methodology-content">
-      <div class="help-box" style="margin-top:1rem;">
-        <strong>Pipeline data flow</strong> Per-sample reports are generated by the report module and aggregated into this cohort view.
-        Metrics originate from: alignment QC, divergent transcription detection, functional region quantification, and Pol-II gene metrics.
-      </div>
-
-      <div style="display:grid; gap:1.5rem; margin-top:1.5rem;">
-      <div class="stat-item">
-        <div class="stat-label">Read depth</div>
-        <div class="stat-value" style="font-size:1rem;font-weight:600;">
-          total_reads_raw (from qc_pol.json) → input_reads
-        </div>
-        <p style="margin:0.5rem 0 0;font-size:0.9rem;color:var(--muted);">
-          Primary: samtools view -c -F 0x900 on aligned BAM. Fallback: dedup_reads or reads_total_functional if QC parse failed.
-        </p>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">Duplication rate</div>
-        <div class="stat-value" style="font-size:1rem;font-weight:600;">
-          100 × duplicate_reads / total_reads
-        </div>
-        <p style="margin:0.5rem 0 0;font-size:0.9rem;color:var(--muted);">
-          From samtools stats (flag 0x400). UMI deduplication uses reads_before/reads_after from dedup stats when enabled.
-        </p>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">Read uniqueness &amp; multimapper %</div>
-        <div class="stat-value" style="font-size:1rem;font-weight:600;">
-          100 × (1 − unique_reads / mapped_reads)
-        </div>
-        <p style="margin:0.5rem 0 0;font-size:0.9rem;color:var(--muted);">
-          Uniqueness is defined by the <span class="mono">uniqueness_method</span> in qc_pol.json: <span class="mono">NH==1</span> when bowtie2 multimapping (<span class="mono">align.multimap_k &gt; 1</span>) is active, otherwise <span class="mono">MAPQ≥threshold</span>. A high multimapper % flags repetitive genomes or low-complexity libraries; those reads are retained in the allMap tracks but excluded from gene quantification.
-        </p>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">Divergent regions</div>
-        <div class="stat-value" style="font-size:1rem;font-weight:600;">
-          Count of loci from divergent bed (GMM + FDR)
-        </div>
-        <p style="margin:0.5rem 0 0;font-size:0.9rem;color:var(--muted);">
-          Detected by Gaussian Mixture Models with FDR control. One value per sample from divergent transcription module.
-        </p>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">Pausing index (median)</div>
-        <div class="stat-value" style="font-size:1rem;font-weight:600;">
-          PI = (TSS_density) / (body_density)
-        </div>
-        <p style="margin:0.5rem 0 0;font-size:0.9rem;color:var(--muted);">
-          <strong>pi_len_norm</strong> = (tss_count/tss_width) / (body_count/body_len). Length-normalized to correct for TSS ±50bp vs gene body size. 
-          Per-gene from BAM counts in TSS window and body (TSS+offset to TES). Median over genes (excluding truncated).
-          PI &gt; 1.5: strong pausing; PI ≈ 1: balanced; PI &lt; 1: productive elongation.
-        </p>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">Functional region signal</div>
-        <div class="stat-value" style="font-size:1rem;font-weight:600;">
-          Sum of |pos| + |neg| reads per region
-        </div>
-        <p style="margin:0.5rem 0 0;font-size:0.9rem;color:var(--muted);">
-          Promoter, Gene body, CPS, Enhancers, Termination window, DivergentTx. From normalized bedGraphs (siCPM or CPM). 
-          reads_total_functional = sum over non-unlocalized regions.
-        </p>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">Unlocalized fraction</div>
-        <div class="stat-value" style="font-size:1rem;font-weight:600;">
-          unlocalized_reads / (functional + unlocalized)
-        </div>
-        <p style="margin:0.5rem 0 0;font-size:0.9rem;color:var(--muted);">
-          Reads in regions matching "non-localized|unlocalized". &lt;20% typical; higher may indicate rRNA or annotation gaps.
-        </p>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">CPM / siCPM factors</div>
-        <div class="stat-value" style="font-size:1rem;font-weight:600;">
-          CPM: 1e6/total_mapped; siCPM: CPM × (spike_control/spike_sample)
-        </div>
-        <p style="margin:0.5rem 0 0;font-size:0.9rem;color:var(--muted);">
-          From normalization module. Used to convert raw counts to normalized signal in tracks and density tables.
-        </p>
-      </div>
-    </div>
-    </div>
-  </section>
-
-  <!-- SECTION: Sample Table -->
-  <section class="layer" id="samples">
-    <div class="layer-heading">
-      <h2>Sample-Level Metrics</h2>
-      <div class="subtitle">Interactive table with all metrics, filters, and export</div>
-    </div>
-
     <div class="table-tools">
-      <div>
-        <label>Search</label>
-        <input id="sample-search" type="text" placeholder="Search samples, conditions, timepoints...">
-      </div>
-      <div>
-        <label>Condition</label>
-        <select id="condition-filter"><option value="">All</option></select>
-      </div>
-      <div>
-        <label>Actions</label>
-        <button id="export-csv">Export CSV</button>
-      </div>
+      <input type="text" id="sample-search" placeholder="Search sample, condition, timepoint…">
+      <select id="condition-filter"><option value="">All conditions</option></select>
+      <div class="spacer"></div>
+      <button class="btn" id="export-csv">Export CSV</button>
     </div>
-    
     <div class="table-wrap">
-      <table id="sample-table">
-        <thead>
-          <tr>
-            <th>Sample</th>
-            <th>Condition</th>
-            <th>Time</th>
-            <th>Rep</th>
-            <th>Input Reads</th>
-            <th>Functional Reads</th>
-            <th>Dup %</th>
-            <th>Unloc %</th>
-            <th>Div Regions</th>
-            <th>Total Regions</th>
-            <th>Median PI</th>
-            <th>Median Density</th>
-            <th>CPM Factor</th>
-            <th>siCPM Factor</th>
-          </tr>
-        </thead>
-        <tbody id="sample-table-body"></tbody>
+      <table class="data" id="sample-table">
+        <thead><tr id="sample-thead"></tr></thead>
+        <tbody id="sample-tbody"></tbody>
       </table>
     </div>
   </section>
 
-  <!-- SECTION: Files -->
-  <section class="layer" id="files">
-    <div class="layer-heading">
-      <h2>Output Files & Documentation</h2>
-      <div class="subtitle">Locate results and reproduce analysis</div>
-    </div>
-    <a href="#" onclick="toggleSection('files-content'); return false;" style="display:inline-block;margin-top:0.5rem;font-size:0.9rem;">Show/hide file and run details</a>
-
-    <div id="files-content">
-      <div class="help-box" style="margin-top:1rem;">
-        <strong>Output Organization:</strong> TrackTx organizes results hierarchically by analysis step and sample:
+  <!-- DETAILS -->
+  <section class="section" id="details">
+    <div class="head"><h2>Methodology &amp; files</h2></div>
+    <details class="note-box">
+      <summary>How metrics are computed</summary>
+      <div class="body" id="methodology"></div>
+    </details>
+    <details class="note-box">
+      <summary>Output files &amp; run command</summary>
+      <div class="body">
+        <h4 style="margin:0 0 0.4rem;">Run command</h4>
+        <pre class="cmd"><code>%%RUN_CMD%%</code></pre>
+        <h4 style="margin:0.8rem 0 0.4rem;">File locations</h4>
         <ul>
-          <li><strong>11_reports/:</strong> This cohort report and individual sample HTML reports</li>
-          <li><strong>05_normalized_tracks/:</strong> BigWig files for genome browser visualization (CPM and siCPM normalized)</li>
-          <li><strong>06_divergent_tx/:</strong> Divergent transcription BED files and QC reports</li>
-          <li><strong>07_functional_regions/:</strong> Region assignments and read count summaries</li>
-          <li><strong>08_pol_metrics/:</strong> Pausing indices and density calculations per gene/region</li>
-          <li><strong>10_qc/:</strong> Quality control JSON files with alignment stats</li>
+          <li>Cohort HTML: <code>%%OUT_HTML%%</code></li>
+          <li>Cohort TSV: <code>%%OUT_TSV%%</code></li>
+          <li>Cohort JSON: <code>%%OUT_JSON%%</code></li>
+          <li>Sample reports: <code>11_reports/samples/&lt;sample&gt;/&lt;sample&gt;.report.html</code></li>
+          <li>Normalized tracks: <code>05_normalized_tracks/&lt;sample&gt;/*.bw</code></li>
+          <li>Divergent TX: <code>06_divergent_tx/&lt;sample&gt;/divergent_transcription.bed</code></li>
+          <li>Functional regions: <code>07_functional_regions/&lt;sample&gt;/functional_regions.bed</code></li>
         </ul>
       </div>
-
-      <div style="background:var(--card);padding:1.5rem;border-radius:0.75rem;border:1px solid var(--line);">
-        <h3 style="margin:0 0 1rem 0;font-size:1.125rem;">Run Command</h3>
-        <pre style="background:var(--bg);padding:1rem;border-radius:0.5rem;overflow-x:auto;"><code>{run_command}</code></pre>
-      </div>
-
-      <div style="background:var(--card);padding:1.5rem;border-radius:0.75rem;border:1px solid var(--line);margin-top:1.5rem;">
-        <h3 style="margin:0 0 1rem 0;font-size:1.125rem;">File Locations</h3>
-        <ul style="line-height:1.8;">
-          <li>Cohort HTML: <code>{args.out_html}</code></li>
-          <li>Cohort TSV: <code>{args.out_tsv}</code></li>
-          <li>Cohort JSON: <code>{args.out_json}</code></li>
-          <li>Sample reports: <code>{{output_dir}}/11_reports/samples/&lt;sample&gt;/&lt;sample&gt;.report.html</code></li>
-          <li>Normalized tracks: <code>{{output_dir}}/05_normalized_tracks/&lt;sample&gt;/*.bw</code></li>
-          <li>Divergent TX: <code>{{output_dir}}/06_divergent_tx/&lt;sample&gt;/divergent_transcription.bed</code></li>
-          <li>Functional regions: <code>{{output_dir}}/07_functional_regions/&lt;sample&gt;/functional_regions.bed</code></li>
-          <li>Pol II metrics: <code>{{output_dir}}/08_pol_metrics/&lt;sample&gt;/*.tsv</code></li>
-          <li>QC stats: <code>{{output_dir}}/10_qc/&lt;sample&gt;/qc_pol.json</code></li>
-        </ul>
-      </div>
-    </div>
+    </details>
   </section>
 
 </div>
 
-<script type="application/json" id="payload">{data_json}</script>
-{js}
+<script type="application/json" id="payload">%%DATA%%</script>
+%%JS%%
 </body>
-</html>
-"""
-    
+</html>'''
+
+    html = (template
+        .replace("%%CSS%%", css)
+        .replace("%%JS%%", js)
+        .replace("%%DATA%%", data_json)
+        .replace("%%PROFILE%%", _html.escape(str(args.profile)))
+        .replace("%%RUN_NAME%%", _html.escape(str(args.run_name)))
+        .replace("%%DURATION%%", _html.escape(str(args.duration)))
+        .replace("%%TIMESTAMP%%", _html.escape(str(timestamp)))
+        .replace("%%RUN_CMD%%", _html.escape(str(run_command)))
+        .replace("%%OUT_HTML%%", _html.escape(str(args.out_html)))
+        .replace("%%OUT_TSV%%", _html.escape(str(args.out_tsv)))
+        .replace("%%OUT_JSON%%", _html.escape(str(args.out_json)))
+    )
+
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html)
-    
+
     file_size = os.path.getsize(output_path)
     log("HTML", f"Written: {file_size:,} bytes ({file_size / 1024 / 1024:.2f} MB)")
-
 # =============================================================================
 # MAIN FUNCTION
 # =============================================================================
@@ -1500,1566 +1173,755 @@ def main():
     }), ensure_ascii=False)
     
     # Embedded Assets
-    CSS = """
-    <style>
-    :root {
-      --bg: #ffffff; --fg: #111827; --muted: #6b7280;
-      --card: #f9fafb; --line: #e5e7eb; --primary: #3b82f6;
-      --ok: #10b981; --warn: #f59e0b; --fail: #ef4444;
-      --font: system-ui, -apple-system, sans-serif;
-      --accent: #8b5cf6; --accent-light: #c4b5fd;
-      --info: #06b6d4; --danger: #ef4444;
+    CSS = r'''
+<style>
+:root {
+  --bg:#ffffff; --fg:#1a1d23; --muted:#6b7280; --faint:#9aa1ab;
+  --card:#ffffff; --panel:#f7f8fa; --line:#e6e8ec; --line-strong:#d4d8de;
+  --accent:#2f6df6; --accent-soft:#eaf0fe;
+  --ok:#1f9d57; --warn:#d98a00; --fail:#dc3a3a;
+  --grid:#eceef1;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#0e1116; --fg:#e6e8ec; --muted:#9aa1ab; --faint:#6b7280;
+    --card:#161a21; --panel:#12161c; --line:#262c35; --line-strong:#333b46;
+    --accent:#5b8cff; --accent-soft:#1a2230;
+    --ok:#37c172; --warn:#e0a032; --fail:#ef5e5e;
+    --grid:#1d222a;
+  }
+}
+
+* { box-sizing:border-box; }
+html { scroll-behavior:smooth; }
+body { background:var(--bg); color:var(--fg); font-family:var(--font); margin:0; line-height:1.55; font-size:15px; -webkit-font-smoothing:antialiased; }
+.container { max-width:1240px; margin:0 auto; padding:0 1.5rem 5rem; }
+a { color:var(--accent); text-decoration:none; }
+a:hover { text-decoration:underline; }
+code, .mono { font-family:var(--mono); font-size:0.85em; }
+
+/* Header */
+.page-header { padding:2.25rem 0 1.25rem; border-bottom:1px solid var(--line); }
+.eyebrow { text-transform:uppercase; font-size:0.7rem; font-weight:700; letter-spacing:0.12em; color:var(--accent); }
+.page-header h1 { margin:0.35rem 0 0.4rem; font-size:1.7rem; font-weight:700; letter-spacing:-0.01em; }
+.page-header .meta { color:var(--muted); font-size:0.875rem; }
+.page-header .meta span { white-space:nowrap; }
+.page-header .meta .dot { margin:0 0.5rem; color:var(--faint); }
+
+/* KPI strip */
+.kpi-strip { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); border-radius:10px; overflow:hidden; margin:1.5rem 0 0.5rem; }
+.kpi { background:var(--card); padding:0.9rem 1.1rem; }
+.kpi .k-label { font-size:0.72rem; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:0.04em; }
+.kpi .k-value { font-size:1.45rem; font-weight:700; margin-top:0.2rem; letter-spacing:-0.01em; }
+.kpi .k-sub { font-size:0.72rem; color:var(--faint); margin-top:0.1rem; }
+
+/* Sticky control bar (nav + controls) */
+.toolbar { position:sticky; top:0; z-index:50; background:var(--bg); border-bottom:1px solid var(--line); padding:0.6rem 0; margin-bottom:2rem; }
+.toolbar-inner { display:flex; align-items:center; gap:1rem; flex-wrap:wrap; }
+.nav { display:flex; gap:0.15rem; flex-wrap:wrap; flex:1; }
+.nav a { padding:0.35rem 0.7rem; border-radius:7px; color:var(--muted); font-weight:600; font-size:0.82rem; }
+.nav a:hover { background:var(--panel); color:var(--fg); text-decoration:none; }
+.nav a.active { background:var(--accent-soft); color:var(--accent); }
+.controls { display:flex; align-items:center; gap:0.9rem; flex-wrap:wrap; }
+.control { display:flex; align-items:center; gap:0.4rem; font-size:0.8rem; color:var(--muted); }
+.control label { font-weight:600; }
+.seg { display:inline-flex; border:1px solid var(--line-strong); border-radius:7px; overflow:hidden; }
+.seg button { border:none; background:var(--card); color:var(--muted); padding:0.3rem 0.6rem; font-size:0.78rem; font-weight:600; cursor:pointer; }
+.seg button + button { border-left:1px solid var(--line); }
+.seg button.on { background:var(--accent); color:#fff; }
+.toggle { display:inline-flex; align-items:center; gap:0.4rem; cursor:pointer; user-select:none; }
+.toggle input { accent-color:var(--accent); width:auto; }
+
+/* Sections */
+.section { padding-top:2.4rem; margin-top:1rem; scroll-margin-top:64px; border-top:1px solid var(--line); }
+.section:first-of-type { border-top:none; }
+.section > .head { margin-bottom:1.1rem; }
+.section > .head h2 { margin:0; font-size:1.25rem; font-weight:700; letter-spacing:-0.01em; }
+.section > .head .sub { color:var(--muted); font-size:0.875rem; margin-top:0.15rem; }
+.section > .head .sub a.note { font-size:0.8rem; margin-left:0.5rem; }
+
+/* Collapsible note */
+details.note-box { margin:0.4rem 0 1rem; }
+details.note-box > summary { cursor:pointer; font-size:0.82rem; color:var(--accent); font-weight:600; list-style:none; }
+details.note-box > summary::-webkit-details-marker { display:none; }
+details.note-box > summary::before { content:"ⓘ "; }
+details.note-box[open] > summary::before { content:"▾ "; }
+details.note-box .body { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:0.9rem 1.1rem; margin-top:0.5rem; font-size:0.86rem; color:var(--fg); }
+details.note-box .body ul { margin:0.4rem 0 0 1.1rem; padding:0; }
+details.note-box .body li { margin:0.25rem 0; }
+details.note-box .body strong { color:var(--fg); }
+
+/* Cards & grids */
+.grid { display:grid; gap:1rem; }
+.cols-2 { grid-template-columns:repeat(2,1fr); }
+.cols-3 { grid-template-columns:repeat(3,1fr); }
+.cols-4 { grid-template-columns:repeat(4,1fr); }
+@media (max-width:980px){ .cols-2,.cols-3,.cols-4 { grid-template-columns:1fr; } }
+.card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:1rem 1.1rem; }
+.card > h3 { margin:0 0 0.15rem; font-size:0.95rem; font-weight:700; }
+.card > .h3sub { font-size:0.78rem; color:var(--faint); margin:0 0 0.5rem; }
+.chart { width:100%; }
+.chart svg { display:block; width:100%; height:auto; overflow:visible; }
+.empty { padding:2.2rem 1rem; text-align:center; color:var(--faint); font-size:0.85rem; }
+
+/* Stat chips */
+.chips { display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:1rem; }
+.chip { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:0.45rem 0.75rem; }
+.chip .c-label { font-size:0.68rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; font-weight:600; }
+.chip .c-value { font-size:1.05rem; font-weight:700; }
+
+/* Condition / design cards */
+.cond-card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:0.85rem 1rem; border-left:3px solid var(--cond,var(--accent)); }
+.cond-card .cc-name { font-weight:700; font-size:0.95rem; }
+.cond-card .cc-row { font-size:0.8rem; color:var(--muted); margin-top:0.25rem; }
+.flag { display:inline-block; font-size:0.68rem; font-weight:700; padding:0.05rem 0.4rem; border-radius:5px; vertical-align:middle; }
+.flag.ok { background:rgba(31,157,87,0.14); color:var(--ok); }
+.flag.warn { background:rgba(217,138,0,0.16); color:var(--warn); }
+.flag.fail { background:rgba(220,58,58,0.14); color:var(--fail); }
+
+/* Design grid (condition x timepoint) */
+.design-table { border-collapse:collapse; font-size:0.82rem; }
+.design-table th, .design-table td { border:1px solid var(--line); padding:0.4rem 0.6rem; text-align:center; }
+.design-table th { background:var(--panel); font-weight:700; color:var(--muted); }
+.design-table td.has { background:var(--accent-soft); color:var(--accent); font-weight:700; }
+.design-table td.empty-cell { color:var(--faint); }
+
+/* Tables */
+.table-tools { display:flex; gap:0.75rem; flex-wrap:wrap; align-items:center; margin-bottom:0.9rem; }
+.table-tools input[type=text], .table-tools select { padding:0.45rem 0.7rem; border:1px solid var(--line-strong); border-radius:7px; background:var(--card); color:var(--fg); font-size:0.85rem; }
+.table-tools input[type=text] { min-width:240px; }
+.table-tools .spacer { flex:1; }
+.btn { padding:0.45rem 0.8rem; border:1px solid var(--line-strong); border-radius:7px; background:var(--card); color:var(--fg); font-size:0.82rem; font-weight:600; cursor:pointer; }
+.btn:hover { background:var(--panel); }
+.btn.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+.table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:10px; }
+table.data { width:100%; border-collapse:collapse; font-size:0.84rem; }
+table.data th, table.data td { padding:0.55rem 0.75rem; text-align:right; border-bottom:1px solid var(--line); white-space:nowrap; }
+table.data th:first-child, table.data td:first-child,
+table.data th.lft, table.data td.lft { text-align:left; }
+table.data thead th { background:var(--panel); position:sticky; top:0; font-weight:700; color:var(--muted); font-size:0.72rem; text-transform:uppercase; letter-spacing:0.03em; cursor:pointer; user-select:none; z-index:2; }
+table.data thead th.sortable:hover { color:var(--fg); }
+table.data thead th .arrow { color:var(--faint); font-size:0.85em; }
+table.data tbody tr:hover { background:var(--panel); }
+table.data tbody tr.hl { background:var(--accent-soft) !important; }
+table.data tbody tr:last-child td { border-bottom:none; }
+table.data td.num { font-variant-numeric:tabular-nums; }
+
+/* Floating tooltip */
+#tt { position:fixed; z-index:9999; pointer-events:none; background:var(--fg); color:var(--bg); padding:0.45rem 0.6rem; border-radius:7px; font-size:0.78rem; line-height:1.35; box-shadow:0 6px 22px rgba(0,0,0,0.25); max-width:280px; opacity:0; transition:opacity 0.08s; }
+#tt .tt-title { font-weight:700; margin-bottom:0.15rem; }
+#tt .tt-row { display:flex; justify-content:space-between; gap:0.8rem; }
+#tt .tt-row .v { font-variant-numeric:tabular-nums; }
+#tt .sw { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:0.35rem; vertical-align:middle; }
+
+/* Legend */
+.legend { display:flex; flex-wrap:wrap; gap:0.5rem 1rem; margin-top:0.6rem; font-size:0.78rem; color:var(--muted); }
+.legend .item { display:inline-flex; align-items:center; gap:0.35rem; cursor:default; }
+.legend .sw { width:11px; height:11px; border-radius:3px; }
+
+/* Methodology */
+.method-row { padding:0.7rem 0; border-bottom:1px solid var(--line); }
+.method-row:last-child { border-bottom:none; }
+.method-row .m-name { font-weight:700; font-size:0.9rem; }
+.method-row .m-formula { font-family:var(--mono); font-size:0.8rem; color:var(--accent); margin:0.2rem 0; }
+.method-row .m-desc { font-size:0.82rem; color:var(--muted); }
+pre.cmd { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:0.8rem; overflow-x:auto; font-size:0.78rem; }
+
+.hl-banner { display:none; align-items:center; gap:0.6rem; background:var(--accent-soft); border:1px solid var(--accent); color:var(--accent); border-radius:8px; padding:0.45rem 0.8rem; font-size:0.82rem; font-weight:600; margin-bottom:1rem; }
+.hl-banner button { margin-left:auto; }
+</style>
+'''
+
+    JS = r'''
+<script>
+(function () {
+  "use strict";
+  var payload = JSON.parse(document.getElementById('payload').textContent);
+  var rows = payload.rows || [];
+  var region_totals = payload.region_totals || {};
+  var region_keys = payload.region_keys || [];
+  var aggregate = payload.aggregate || {};
+
+  // ---------- state ----------
+  var state = { order: 'timepoint', colorByCondition: false, highlight: null };
+  var redraws = [];
+  function register(fn) { redraws.push(fn); }
+  function redrawAll() { redraws.forEach(function (f) { try { f(); } catch (e) { console.error(e); } }); }
+
+  // ---------- math / format ----------
+  function mean(a) { return a.length ? a.reduce(function (x, y) { return x + y; }, 0) / a.length : 0; }
+  function median(a) { if (!a.length) return 0; var s = a.slice().sort(function (x, y) { return x - y; }); var m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; }
+  function std(a) { if (a.length < 2) return 0; var m = mean(a); return Math.sqrt(mean(a.map(function (v) { return (v - m) * (v - m); }))); }
+  function cv(a) { if (a.length < 2) return null; var m = mean(a); return m ? std(a) / m * 100 : null; }
+  function isNum(v) { return v != null && isFinite(v); }
+  function fmt(n) {
+    if (n == null || !isFinite(n)) return '–';
+    var a = Math.abs(n);
+    if (a >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (a >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    if (a === 0) return '0';
+    if (a < 1) return n.toFixed(3);
+    if (a < 10) return n.toFixed(2);
+    if (a < 100) return n.toFixed(1);
+    return Math.round(n).toLocaleString();
+  }
+  function fmtInt(n) { return (n == null) ? '–' : Math.round(n).toLocaleString(); }
+  function shortName(id) { return String(id || '').replace(/_merged$/, ''); }
+  function parseTP(v) { var x = parseFloat(v); return isFinite(x) ? x : null; }
+
+  // ---------- colors ----------
+  var ACCENT = cssVar('--accent') || '#2f6df6';
+  var COND_PALETTE = ['#2f6df6', '#e8843c', '#1f9d57', '#b23bd4', '#d83a7a', '#0f9bb0', '#8a6d3b', '#6366f1'];
+  function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+  var conditions = uniq(rows.map(function (r) { return r.condition || 'Unknown'; }));
+  var condColor = {};
+  conditions.forEach(function (c, i) { condColor[c] = COND_PALETTE[i % COND_PALETTE.length]; });
+  function uniq(a) { return a.filter(function (v, i) { return a.indexOf(v) === i; }); }
+
+  var REGION_COLORS = {
+    'promoter': '#f38400', 'activepromoter': '#f38400', 'pppol': '#f38400',
+    'divergenttx': '#b23bd4', 'divtx': '#b23bd4', 'divergent': '#b23bd4',
+    'enhancers': '#5bbf6a', 'enhancer': '#5bbf6a', 'enh': '#5bbf6a',
+    'genebody': '#3a3f4a', 'cps': '#3aa7e0', 'cleavagepolyadenylation': '#3aa7e0',
+    'terminationwindow': '#ef5470', 'termination': '#ef5470', 'tw': '#ef5470',
+    'nonlocalizedpolymerase': '#aeb4bd', 'nonlocalized': '#aeb4bd', 'unlocalized': '#aeb4bd'
+  };
+  function regionColor(name) {
+    var k = String(name || '').toLowerCase().replace(/[\s_-]+/g, '');
+    return REGION_COLORS[k] || '#8a93a0';
+  }
+  function barColor(row) { return state.colorByCondition ? (condColor[row.condition || 'Unknown'] || ACCENT) : ACCENT; }
+
+  // ---------- ordering ----------
+  function orderedRows() {
+    var r = rows.slice();
+    if (state.order === 'name') {
+      r.sort(function (a, b) { return String(a.sample_id).localeCompare(String(b.sample_id)); });
+    } else {
+      r.sort(function (a, b) {
+        var ta = parseTP(a.timepoint), tb = parseTP(b.timepoint);
+        if (ta != null && tb != null && ta !== tb) return ta - tb;
+        var ca = String(a.condition || ''), cb = String(b.condition || '');
+        if (ca !== cb) return ca.localeCompare(cb);
+        return String(a.sample_id).localeCompare(String(b.sample_id));
+      });
     }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #0f172a; --fg: #f1f5f9; --muted: #94a3b8;
-        --card: #1e293b; --line: #334155; --primary: #60a5fa;
-        --accent: #a78bfa; --accent-light: #6d28d9;
-        --info: #22d3ee; --danger: #f87171;
+    return r;
+  }
+
+  // ---------- tooltip ----------
+  var tt = document.getElementById('tt');
+  function ttShow(html) { tt.innerHTML = html; tt.style.opacity = '1'; }
+  function ttMove(e) {
+    var pad = 14, w = tt.offsetWidth, h = tt.offsetHeight;
+    var x = e.clientX + pad, y = e.clientY + pad;
+    if (x + w > window.innerWidth - 8) x = e.clientX - w - pad;
+    if (y + h > window.innerHeight - 8) y = e.clientY - h - pad;
+    tt.style.left = x + 'px'; tt.style.top = y + 'px';
+  }
+  function ttHide() { tt.style.opacity = '0'; }
+  function rowTip(row, extra) {
+    var s = '<div class="tt-title">' + shortName(row.sample_id) + '</div>';
+    s += '<div class="tt-row"><span>' + (row.condition || '–') + '</span><span class="v">tp ' + (row.timepoint != null ? row.timepoint : '–') + '</span></div>';
+    if (extra) s += extra;
+    return s;
+  }
+  function tipRow(label, val, color) {
+    return '<div class="tt-row"><span>' + (color ? '<span class="sw" style="background:' + color + '"></span>' : '') + label + '</span><span class="v">' + val + '</span></div>';
+  }
+
+  // ---------- highlight ----------
+  function setHighlight(id) {
+    state.highlight = (state.highlight === id) ? null : id;
+    var b = document.getElementById('hl-banner');
+    if (state.highlight) { document.getElementById('hl-name').textContent = shortName(state.highlight); b.style.display = 'flex'; }
+    else b.style.display = 'none';
+    redrawAll();
+    syncTableHl();
+  }
+  function dim(id) { return state.highlight && state.highlight !== id ? 0.22 : 1; }
+  function isHl(id) { return state.highlight === id; }
+
+  // ---------- svg helpers ----------
+  function svgEl(w, h) { return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="xMidYMid meet" font-family="var(--font)">'; }
+  function widthOf(el) { var w = el.getBoundingClientRect().width; if (!w && el.parentElement) w = el.parentElement.getBoundingClientRect().width; return Math.max(260, Math.round(w || 360)); }
+  function txt(x, y, s, opts) { opts = opts || {}; return '<text x="' + x + '" y="' + y + '" text-anchor="' + (opts.anchor || 'middle') + '" font-size="' + (opts.size || 10) + '" fill="' + (opts.fill || 'var(--muted)') + '"' + (opts.weight ? ' font-weight="' + opts.weight + '"' : '') + (opts.rotate ? ' transform="rotate(' + opts.rotate + ' ' + x + ' ' + y + ')"' : '') + '>' + s + '</text>'; }
+  function niceMax(v) { if (v <= 0) return 1; var mag = Math.pow(10, Math.floor(Math.log10(v))); return Math.ceil(v / mag) * mag; }
+  function empty(el, msg) { el.innerHTML = '<div class="empty">' + (msg || 'No data') + '</div>'; }
+
+  // ---------- generic vertical bar chart ----------
+  // items: [{id, label, value, row}]
+  function drawBars(elId, getItems, opts) {
+    opts = opts || {};
+    var el = document.getElementById(elId);
+    if (!el) return;
+    function render() {
+      var items = getItems();
+      if (!items || !items.length || items.every(function (d) { return !isNum(d.value); })) { empty(el, opts.emptyMsg); return; }
+      var W = widthOf(el), H = opts.height || 230;
+      var m = { t: 18, r: 10, b: 52, l: 44 };
+      var iw = W - m.l - m.r, ih = H - m.t - m.b;
+      var vals = items.map(function (d) { return isNum(d.value) ? d.value : 0; });
+      var dmax = Math.max.apply(null, vals.concat([0]));
+      var yMax = opts.yMax != null ? opts.yMax : (dmax <= 1 ? Math.min(1, dmax * 1.15 || 1) : niceMax(dmax * 1.05));
+      if (yMax <= 0) yMax = 1;
+      var n = items.length;
+      var step = iw / n, bw = Math.min(opts.maxBar || 64, step * 0.66);
+      var lblEvery = n <= 18 ? 1 : Math.ceil(n / 18);
+      var s = svgEl(W, H);
+      // gridlines + y labels
+      for (var g = 0; g <= 4; g++) {
+        var gy = m.t + ih * g / 4;
+        s += '<line x1="' + m.l + '" y1="' + gy + '" x2="' + (W - m.r) + '" y2="' + gy + '" stroke="var(--grid)" stroke-width="1"/>';
+        s += txt(m.l - 6, gy + 3, fmt(yMax - yMax * g / 4), { anchor: 'end', size: 9 });
       }
-    }
-    
-    * { box-sizing: border-box; }
-    body { background: var(--bg); color: var(--fg); font-family: var(--font); margin: 0; line-height: 1.6; }
-    .container { max-width: 1400px; margin: 0 auto; padding: 2.5rem; }
-    
-    /* Header */
-    .page-header { 
-      background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
-      color: white; padding: 3rem 2rem; border-radius: 1rem; margin-bottom: 3rem;
-      box-shadow: 0 10px 40px rgba(0,0,0,0.1);
-    }
-    .eyebrow { text-transform: uppercase; font-size: 0.75rem; font-weight: 700; opacity: 0.9; letter-spacing: 0.1em; }
-    h1 { margin: 0.5rem 0; font-size: 2.5rem; font-weight: 800; }
-    .page-header .muted { color: rgba(255,255,255,0.9); font-size: 1rem; }
-    
-    /* Navigation */
-    .nav-pills { 
-      display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 2rem;
-      position: sticky; top: 0; background: var(--bg); padding: 1rem 0; z-index: 100;
-      border-bottom: 2px solid var(--line);
-    }
-    .nav-pills a {
-      padding: 0.625rem 1.25rem; border-radius: 0.5rem; text-decoration: none;
-      color: var(--fg); background: var(--card); border: 1px solid var(--line);
-      font-weight: 600; font-size: 0.875rem; transition: all 0.2s;
-    }
-    .nav-pills a:hover { background: var(--primary); color: white; border-color: var(--primary); }
-    
-    /* Sections */
-    .layer { margin-bottom: 4rem; scroll-margin-top: 80px; }
-    .layer-heading { margin-bottom: 1.5rem; }
-    .layer-heading h2 { 
-      margin: 0; font-size: 1.75rem; font-weight: 700;
-      background: linear-gradient(135deg, var(--primary), var(--accent));
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-      background-clip: text;
-    }
-    .layer-heading .subtitle { color: var(--muted); font-size: 1rem; margin-top: 0.5rem; }
-    
-    /* Help boxes */
-    .help-box {
-      background: linear-gradient(135deg, rgba(59,130,246,0.1), rgba(139,92,246,0.1));
-      border-left: 4px solid var(--primary); padding: 1.25rem; border-radius: 0.5rem;
-      margin: 1.5rem 0; font-size: 0.95rem; line-height: 1.7;
-    }
-    .help-box strong { color: var(--primary); }
-    .help-box ul { margin: 0.75rem 0 0 1.5rem; }
-    .help-box li { margin: 0.5rem 0; }
-    
-    /* KPI Cards */
-    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.25rem; }
-    .kpi-card { 
-      background: var(--card); padding: 1.5rem; border-radius: 0.75rem;
-      border: 1px solid var(--line); transition: all 0.3s;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-    }
-    .kpi-card:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.12); transform: translateY(-2px); }
-    .kpi-label { font-size: 0.875rem; color: var(--muted); margin-bottom: 0.75rem; font-weight: 600; }
-    .kpi-value { font-size: 2rem; font-weight: 800; color: var(--fg); }
-    .kpi-trend { font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
-    .kpi-sparkline { height: 40px; margin-top: 0.75rem; }
-    
-    /* Visualization Cards */
-    .viz-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 1.5rem; }
-    .viz-card { 
-      background: var(--card); padding: 1.5rem; border-radius: 0.75rem;
-      border: 1px solid var(--line); box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-    }
-    .viz-card h3 { margin: 0 0 1rem 0; font-size: 1.125rem; font-weight: 700; }
-    .viz-body { min-height: 380px; height: 380px; position: relative; width: 100%; }
-    
-    /* Stats Grid */
-    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
-    .stat-item { 
-      background: var(--card); padding: 1.25rem; border-radius: 0.5rem;
-      border-left: 4px solid var(--primary);
-    }
-    .stat-label { font-size: 0.8rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
-    .stat-value { font-size: 1.5rem; font-weight: 700; margin-top: 0.25rem; }
-    
-    /* Tables */
-    .table-tools { 
-      display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap; align-items: flex-end;
-      background: var(--card); padding: 1.25rem; border-radius: 0.75rem; border: 1px solid var(--line);
-    }
-    .table-tools > div { flex: 1; min-width: 200px; }
-    .table-tools label { display: block; font-size: 0.75rem; font-weight: 700; margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; }
-    input, select, button { 
-      width: 100%; padding: 0.625rem 0.875rem; border: 1px solid var(--line); 
-      border-radius: 0.5rem; background: var(--bg); color: var(--fg); font-size: 0.875rem;
-      transition: all 0.2s;
-    }
-    input:focus, select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }
-    button { 
-      cursor: pointer; background: var(--primary); color: white; border: none; font-weight: 600;
-      box-shadow: 0 2px 8px rgba(59,130,246,0.3);
-    }
-    button:hover { background: var(--accent); box-shadow: 0 4px 12px rgba(139,92,246,0.4); }
-    
-    .table-wrap { 
-      overflow-x: auto; border: 1px solid var(--line); border-radius: 0.75rem;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-    }
-    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
-    th, td { padding: 0.875rem 1.125rem; text-align: left; border-bottom: 1px solid var(--line); }
-    th { 
-      background: var(--card); font-weight: 700; white-space: nowrap; position: sticky; top: 0;
-      text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; color: var(--muted);
-    }
-    tbody tr { transition: background 0.2s; }
-    tbody tr:hover { background: rgba(59,130,246,0.05); }
-    tr:last-child td { border-bottom: none; }
-    
-    /* Status badges */
-    .status { 
-      display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 600;
-      font-size: 0.75rem; padding: 0.25rem 0.75rem; border-radius: 999px;
-      background: var(--card); border: 1px solid var(--line);
-    }
-    .status::before { content: ''; width: 0.625rem; height: 0.625rem; border-radius: 50%; background: var(--status); }
-    
-    /* Info tooltips */
-    .info-tip { 
-      cursor: help; color: var(--primary); border-bottom: 1px dotted var(--primary);
-      margin-left: 0.25rem; font-weight: 600; position: relative;
-      display: inline-block;
-    }
-    .info-tip:hover { color: var(--accent); }
-    .info-tip:hover::after {
-      content: attr(title);
-      position: absolute;
-      bottom: 100%;
-      left: 50%;
-      transform: translateX(-50%);
-      background: rgba(17, 24, 39, 0.95);
-      color: white;
-      padding: 0.5rem 0.75rem;
-      border-radius: 0.375rem;
-      font-size: 0.8125rem;
-      white-space: normal;
-      width: max-content;
-      max-width: 300px;
-      z-index: 1000;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-      margin-bottom: 0.5rem;
-      pointer-events: none;
-      line-height: 1.4;
-    }
-    @media (prefers-color-scheme: dark) {
-      .info-tip:hover::after {
-        background: rgba(241, 245, 249, 0.95);
-        color: #0f172a;
+      // threshold band
+      if (opts.threshold && opts.threshold.warn != null) {
+        var wy = m.t + ih * (1 - Math.min(1, opts.threshold.warn / yMax));
+        s += '<line x1="' + m.l + '" y1="' + wy + '" x2="' + (W - m.r) + '" y2="' + wy + '" stroke="var(--warn)" stroke-dasharray="3 3" stroke-width="1" opacity="0.6"/>';
       }
+      items.forEach(function (d, i) {
+        var v = isNum(d.value) ? d.value : 0;
+        var bh = Math.max(v > 0 ? 2 : 0, (v / yMax) * ih);
+        var x = m.l + step * i + (step - bw) / 2;
+        var y = m.t + ih - bh;
+        var col = opts.colorFn ? opts.colorFn(d) : barColor(d.row);
+        var op = dim(d.id);
+        var stroke = isHl(d.id) ? ' stroke="var(--fg)" stroke-width="1.5"' : '';
+        s += '<rect class="bar" data-id="' + esc(d.id) + '" data-i="' + i + '" x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + bh.toFixed(1) + '" rx="2.5" fill="' + col + '" opacity="' + op + '"' + stroke + ' style="cursor:pointer"/>';
+        if (bh > 16 && bw > 22) s += txt(x + bw / 2, y - 4, opts.valFmt ? opts.valFmt(v) : fmt(v), { size: 9, fill: 'var(--fg)', weight: '600' });
+        if (i % lblEvery === 0) {
+          var lab = state.order === 'timepoint' && d.row.timepoint != null && d.row.timepoint !== '' ? String(d.row.timepoint) : shortName(d.id);
+          if (lab.length > 9) lab = lab.slice(0, 8) + '…';
+          s += txt(x + bw / 2, H - m.b + 12, esc(lab), { size: 9, anchor: 'end', rotate: -42 });
+        }
+      });
+      if (opts.xLabel) s += txt(m.l + iw / 2, H - 4, opts.xLabel, { size: 9, weight: '600' });
+      s += '</svg>';
+      el.innerHTML = s;
+      el.querySelectorAll('rect.bar').forEach(function (r) {
+        var d = items[+r.getAttribute('data-i')];
+        r.addEventListener('mousemove', function (e) { ttShow(rowTip(d.row, tipRow(opts.tipLabel || 'Value', opts.tipFmt ? opts.tipFmt(d.value) : fmt(d.value)))); ttMove(e); });
+        r.addEventListener('mouseleave', ttHide);
+        r.addEventListener('click', function () { ttHide(); setHighlight(d.id); });
+      });
     }
-    
-    /* Charts */
-    .bar-chart { display: flex; align-items: flex-end; height: 100%; gap: 4px; padding: 1rem 0; }
-    .bar-col { 
-      flex: 1; display: flex; flex-direction: column; justify-content: flex-end;
-      height: 100%; position: relative; cursor: pointer;
-    }
-    .bar { 
-      background: linear-gradient(180deg, var(--primary), var(--accent)); 
-      width: 100%; border-radius: 4px 4px 0 0; transition: all 0.3s;
-      box-shadow: 0 2px 8px rgba(59,130,246,0.3);
-    }
-    .bar:hover { opacity: 0.8; transform: translateY(-4px); box-shadow: 0 4px 16px rgba(59,130,246,0.5); }
-    .bar-label { 
-      position: absolute; bottom: -25px; left: 50%; transform: translateX(-50%);
-      font-size: 0.7rem; color: var(--muted); white-space: nowrap;
-    }
-    
-    /* Histogram */
-    .histogram { display: flex; align-items: flex-end; height: 200px; gap: 2px; }
-    .hist-bar { background: var(--primary); flex-grow: 1; border-radius: 2px 2px 0 0; transition: opacity 0.2s; }
-    .hist-bar:hover { opacity: 0.7; }
-    
-    /* Distribution summary */
-    .distrib-summary {
-      display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.75rem;
-      margin-top: 1rem; padding: 1rem; background: rgba(59,130,246,0.05);
-      border-radius: 0.5rem;
-    }
-    .distrib-stat { text-align: center; }
-    .distrib-stat .label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; font-weight: 600; }
-    .distrib-stat .value { font-size: 1.125rem; font-weight: 700; margin-top: 0.25rem; }
-    
-    /* Alert boxes */
-    .alert { 
-      padding: 1rem 1.25rem; border-radius: 0.5rem; margin: 1rem 0;
-      border-left: 4px solid;
-    }
-    .alert-info { background: rgba(6,182,212,0.1); border-color: var(--info); }
-    .alert-warning { background: rgba(245,158,11,0.1); border-color: var(--warn); }
-    .alert-danger { background: rgba(239,68,68,0.1); border-color: var(--danger); }
-    .alert-success { background: rgba(16,185,129,0.1); border-color: var(--ok); }
-    
-    /* Responsive */
-    @media (max-width: 768px) {
-      .container { padding: 1rem; }
-      .page-header { padding: 2rem 1.5rem; }
-      h1 { font-size: 1.75rem; }
-      .kpi-grid, .viz-grid { grid-template-columns: 1fr; }
-    }
-    </style>
-    """
+    register(render); render();
+  }
 
-    JS = """
-    <script>
-    document.addEventListener('DOMContentLoaded', () => {
-        const payload = JSON.parse(document.getElementById('payload').textContent);
-        const { samples, rows, region_totals, region_keys, aggregate } = payload;
-        
-        console.log('Loaded', rows.length, 'samples');
-        
-        // ===== UTILITY FUNCTIONS =====
-        function median(arr) {
-            if (!arr.length) return 0;
-            const s = [...arr].sort((a, b) => a - b);
-            const mid = Math.floor(s.length / 2);
-            return s.length % 2 !== 0 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
-        }
-        
-        function mean(arr) {
-            if (!arr.length) return 0;
-            return arr.reduce((a,b) => a+b, 0) / arr.length;
-        }
-        
-        function stdDev(arr) {
-            if (!arr.length) return 0;
-            const m = mean(arr);
-            const variance = arr.reduce((sum, val) => sum + Math.pow(val - m, 2), 0) / arr.length;
-            return Math.sqrt(variance);
-        }
-        
-        
-        function formatNumber(n, forceDecimals = false) {
-            if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
-            if (n >= 1e3) return (n/1e3).toFixed(1) + 'K';
-            // For values < 1, show up to 3 decimal places
-            if (n < 1 && n > 0) return n.toFixed(3);
-            // For values 1-10, show 2 decimals
-            if (n < 10) return n.toFixed(2);
-            // For larger values < 1000, show 1 decimal or integer
-            if (n < 100) return n.toFixed(1);
-            return n.toFixed(0);
-        }
+  // ---------- horizontal ranked bars (region totals) ----------
+  function drawHBars(elId, items, opts) {
+    opts = opts || {};
+    var el = document.getElementById(elId);
+    if (!el) return;
+    function render() {
+      if (!items.length) { empty(el); return; }
+      var W = widthOf(el), rowH = 26, m = { t: 8, r: 54, b: 8, l: 110 };
+      var H = m.t + m.b + items.length * rowH;
+      var iw = W - m.l - m.r;
+      var dmax = Math.max.apply(null, items.map(function (d) { return d.value; }).concat([1]));
+      var s = svgEl(W, H);
+      items.forEach(function (d, i) {
+        var y = m.t + i * rowH, bw = Math.max(1, d.value / dmax * iw), bh = rowH - 9;
+        s += txt(m.l - 8, y + bh / 2 + 3, esc(d.label), { anchor: 'end', size: 10, fill: 'var(--fg)' });
+        s += '<rect x="' + m.l + '" y="' + y + '" width="' + bw.toFixed(1) + '" height="' + bh + '" rx="2.5" fill="' + (opts.colorFn ? opts.colorFn(d) : ACCENT) + '"/>';
+        s += txt(m.l + bw + 5, y + bh / 2 + 3, fmt(d.value), { anchor: 'start', size: 9, weight: '600', fill: 'var(--muted)' });
+      });
+      s += '</svg>'; el.innerHTML = s;
+    }
+    register(render); render();
+  }
 
-        // Simple toggle for collapsible sections
-        function toggleSection(id) {
-            const el = document.getElementById(id);
-            if (!el) return;
-            const current = window.getComputedStyle(el).display;
-            el.style.display = (current === 'none') ? 'block' : 'none';
+  // ---------- 100% stacked composition ----------
+  function drawStacked(elId, legendId, keys) {
+    var el = document.getElementById(elId);
+    if (!el) return;
+    function render() {
+      var items = orderedRows();
+      if (!items.length || !keys.length) { empty(el); return; }
+      var W = widthOf(el), H = 280, m = { t: 14, r: 10, b: 54, l: 38 };
+      var iw = W - m.l - m.r, ih = H - m.t - m.b;
+      var n = items.length, step = iw / n, bw = Math.min(58, step * 0.7);
+      var lblEvery = n <= 18 ? 1 : Math.ceil(n / 18);
+      var s = svgEl(W, H);
+      for (var g = 0; g <= 4; g++) { var gy = m.t + ih * g / 4; s += '<line x1="' + m.l + '" y1="' + gy + '" x2="' + (W - m.r) + '" y2="' + gy + '" stroke="var(--grid)"/>'; s += txt(m.l - 6, gy + 3, (100 - 25 * g) + '%', { anchor: 'end', size: 9 }); }
+      items.forEach(function (r, i) {
+        var tot = keys.reduce(function (a, k) { return a + (r['func_' + k] || 0); }, 0) || 1;
+        var x = m.l + step * i + (step - bw) / 2, yA = m.t + ih, op = dim(r.sample_id);
+        var hlStroke = isHl(r.sample_id) ? '<rect x="' + (x - 2) + '" y="' + (m.t - 2) + '" width="' + (bw + 4) + '" height="' + (ih + 4) + '" fill="none" stroke="var(--fg)" stroke-width="1.5" rx="3"/>' : '';
+        keys.forEach(function (k) {
+          var pct = (r['func_' + k] || 0) / tot, sh = pct * ih;
+          if (sh <= 0) return;
+          var y = yA - sh; yA = y;
+          s += '<rect class="seg" data-id="' + esc(r.sample_id) + '" data-k="' + esc(k) + '" x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + sh.toFixed(1) + '" fill="' + regionColor(k) + '" opacity="' + op + '" style="cursor:pointer"/>';
+        });
+        s += hlStroke;
+        if (i % lblEvery === 0) {
+          var lab = state.order === 'timepoint' && r.timepoint != null && r.timepoint !== '' ? String(r.timepoint) : shortName(r.sample_id);
+          if (lab.length > 9) lab = lab.slice(0, 8) + '…';
+          s += txt(x + bw / 2, H - m.b + 12, esc(lab), { size: 9, anchor: 'end', rotate: -42 });
         }
-        
-        function renderDistribSummary(containerId, data) {
-            const container = document.getElementById(containerId);
-            if (!container) return;
-            if (!data || data.length === 0) {
-                container.innerHTML = '<div style="padding:0.5rem;text-align:center;color:var(--muted);font-size:0.875rem;">No data</div>';
-                return;
-            }
-            const min = Math.min(...data);
-            const max = Math.max(...data);
-            const med = median(data);
-            const avg = mean(data);
-            const std = stdDev(data);
-            container.innerHTML = `
-                <div class="distrib-stat"><div class="label">Min</div><div class="value">${min.toFixed(1)}</div></div>
-                <div class="distrib-stat"><div class="label">Max</div><div class="value">${max.toFixed(1)}</div></div>
-                <div class="distrib-stat"><div class="label">Median</div><div class="value">${med.toFixed(1)}</div></div>
-                <div class="distrib-stat"><div class="label">Mean</div><div class="value">${avg.toFixed(1)}</div></div>
-                <div class="distrib-stat"><div class="label">Std Dev</div><div class="value">${std.toFixed(1)}</div></div>
-            `;
-        }
-        
-        function regionColor(name) {
-            const key = (name || '').toString().toLowerCase().replace(/[\\s_-]+/g, '');
-            const map = {
-                'promoter': '#f38400',
-                'activepromoter': '#f38400',
-                'pppol': '#f38400',
-                'divergenttx': '#b23bd4',
-                'divtx': '#b23bd4',
-                'divergent': '#b23bd4',
-                'ppdiv': '#b23bd4',
-                'enhancers': '#73d47a',
-                'enhancer': '#73d47a',
-                'enh': '#73d47a',
-                'genebody': '#000000',
-                'cps': '#67c8f9',
-                'cleavagepolyadenylation': '#67c8f9',
-                'terminationwindow': '#ff3662',
-                'termination': '#ff3662',
-                'tw': '#ff3662'
-            };
-            return map[key] || '#3b82f6';
-        }
+      });
+      s += '</svg>'; el.innerHTML = s;
+      el.querySelectorAll('rect.seg').forEach(function (rc) {
+        var id = rc.getAttribute('data-id'), k = rc.getAttribute('data-k');
+        var row = rows.find(function (r) { return r.sample_id === id; });
+        var tot = keys.reduce(function (a, kk) { return a + (row['func_' + kk] || 0); }, 0) || 1;
+        var reads = row['func_' + k] || 0;
+        rc.addEventListener('mousemove', function (e) { ttShow(rowTip(row, tipRow(k, (reads / tot * 100).toFixed(1) + '%', regionColor(k)) + tipRow('reads', fmt(reads)))); ttMove(e); });
+        rc.addEventListener('mouseleave', ttHide);
+        rc.addEventListener('click', function () { ttHide(); setHighlight(id); });
+      });
+    }
+    register(render); render();
+    // legend
+    var lg = document.getElementById(legendId);
+    if (lg) lg.innerHTML = keys.map(function (k) { return '<span class="item"><span class="sw" style="background:' + regionColor(k) + '"></span>' + esc(k) + '</span>'; }).join('');
+  }
 
-        function renderBarChart(containerId, data, labels = null, colorFn = null) {
-            const container = document.getElementById(containerId);
-            if (!container) return;
-            if (!data || data.length === 0) {
-                container.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No data available</div>';
-                return;
-            }
-            
-            // Get container dimensions - use parent or reasonable defaults
-            const containerRect = container.getBoundingClientRect();
-            const parentWidth = container.parentElement ? container.parentElement.getBoundingClientRect().width : 0;
-            const containerWidth = Math.max(containerRect.width || parentWidth || 600, 500);
-            const containerHeight = Math.max(containerRect.height || 320, 300);
-            
-            // Smart Y-axis max: add small padding (5%), but ensure it's tight to data
-            const dataMax = Math.max(...data);
-            const dataMin = Math.min(...data);
-            const dataRange = dataMax - dataMin;
-            let yMax = dataMax;
-            if (dataRange > 0) {
-                // Add 5% padding above max
-                yMax = dataMax + (dataRange * 0.05);
-                // For small ranges (like PI 0-1), use tighter scaling
-                if (dataMax <= 1 && dataMin >= 0) {
-                    yMax = Math.min(1, dataMax + 0.05);
-                } else {
-                    // Round to nice number for larger ranges
-                    const magnitude = Math.pow(10, Math.floor(Math.log10(yMax)));
-                    yMax = Math.ceil(yMax / magnitude) * magnitude;
-                }
-            } else {
-                // Single value or no range - add small padding
-                yMax = dataMax > 0 ? dataMax * 1.05 : 1;
-            }
-            // Ensure minimum height for visibility
-            if (yMax <= dataMax) yMax = dataMax * 1.05;
-            
-            // Adaptive bar sizing to fill container
-            const barCount = data.length;
-            const margin = {top: 40, right: 20, bottom: 80, left: 70};
-            const chartWidth = containerWidth - margin.left - margin.right;
-            const chartHeight = containerHeight - margin.top - margin.bottom;
-            const minBarWidth = 30;
-            const maxBarWidth = 80;
-            const barSpacing = 8;
-            const totalBarSpace = chartWidth - (barSpacing * (barCount - 1));
-            const barWidth = Math.max(minBarWidth, Math.min(maxBarWidth, totalBarSpace / barCount));
-            
-            // Calculate actual width needed (only for bars that exist)
-            const actualChartWidth = (barWidth * barCount) + (barSpacing * (barCount - 1));
-            const width = margin.left + actualChartWidth + margin.right;
-            const height = containerHeight;
-            
-            // Color palette
-            const colorPalette = ['#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f59e0b', '#10b981', '#6366f1', '#06b6d4'];
-            
-            // Create SVG
-            let svg = `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" style="max-width:${width}px;font-family:var(--font);">`;
-            
-            // Gradients
-            svg += '<defs>';
-            colorPalette.forEach((color, i) => {
-                svg += `<linearGradient id="grad${i}" x1="0%" y1="0%" x2="0%" y2="100%">
-                    <stop offset="0%" style="stop-color:${color};stop-opacity:0.9" />
-                    <stop offset="100%" style="stop-color:${color};stop-opacity:0.7" />
-                </linearGradient>
-                <filter id="shadow${i}">
-                    <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.3"/>
-                </filter>`;
-            });
-            svg += '</defs>';
-            
-            // Grid lines
-            const ySteps = 5;
-            for (let i = 0; i <= ySteps; i++) {
-                const y = margin.top + (chartHeight * i / ySteps);
-                svg += `<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="var(--line)" stroke-width="0.5" opacity="0.4"/>`;
-            }
-            
-            // Y-axis
-            svg += `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${height - margin.bottom}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
-            
-            // Y-axis labels
-            for (let i = 0; i <= ySteps; i++) {
-                const val = yMax - (yMax * i / ySteps);
-                const y = margin.top + (chartHeight * i / ySteps);
-                svg += `<text x="${margin.left - 12}" y="${y + 4}" text-anchor="end" font-size="11" fill="var(--muted)" font-weight="500">${formatNumber(val)}</text>`;
-            }
-            
-            // Bars
-            data.forEach((v, i) => {
-                const x = margin.left + (i * (barWidth + barSpacing));
-                const barHeight = Math.max(2, (v / yMax) * chartHeight);
-                const y = height - margin.bottom - barHeight;
-                const colorIdx = i % colorPalette.length;
-                const label = labels ? labels[i] : `Item ${i+1}`;
-                
-                // Bar shadow
-                svg += `<rect x="${x}" y="${y+2}" width="${barWidth}" height="${barHeight}" fill="black" opacity="0.1" rx="3"/>`;
-                
-                // Bar
-                const formattedValue = v < 1 ? v.toFixed(3) : (v < 10 ? v.toFixed(2) : v.toLocaleString());
-                const customColor = typeof colorFn === 'function' ? colorFn(i, label, colorPalette[colorIdx]) : null;
-                const fillRef = customColor ? customColor : `url(#grad${colorIdx})`;
-                const shadowRef = `url(#shadow${colorIdx})`;
-                svg += `<rect x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" fill="${fillRef}" rx="3" filter="${shadowRef}" style="cursor:pointer;transition:opacity 0.15s;" onmouseover="evt.target.style.opacity='0.7'" onmouseout="evt.target.style.opacity='1'">
-                    <title>${label}: ${formattedValue}</title>
-                </rect>`;
-                
-                // Value labels on top
-                if (barHeight > 25) {
-                    svg += `<text x="${x + barWidth/2}" y="${y - 8}" text-anchor="middle" font-size="10" fill="var(--fg)" font-weight="700" opacity="0.8">${formatNumber(v)}</text>`;
-                }
-            });
-            
-            // X-axis (only as wide as needed)
-            const xAxisEnd = margin.left + actualChartWidth;
-            svg += `<line x1="${margin.left}" y1="${height - margin.bottom}" x2="${xAxisEnd}" y2="${height - margin.bottom}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
-            
-            // X-axis labels
-            data.forEach((v, i) => {
-                const x = margin.left + (i * (barWidth + barSpacing)) + barWidth/2;
-                const label = labels ? labels[i] : `Item ${i+1}`;
-                const displayLabel = label.length > 10 ? label.substring(0,9) + '..' : label;
-                
-                svg += `<text x="${x}" y="${height - margin.bottom + 18}" text-anchor="end" font-size="10" fill="var(--muted)" font-weight="500" transform="rotate(-45 ${x} ${height - margin.bottom + 18})"><title>${label}</title>${displayLabel}</text>`;
-            });
-            
-            // X-axis label
-            svg += `<text x="${width/2}" y="${height - 8}" text-anchor="middle" font-size="11" fill="var(--muted)" font-weight="600">Sample</text>`;
-            
-            svg += '</svg>';
-            container.innerHTML = svg;
-        }
-        
-        function renderHistogram(containerId, data, bins = 20, xAxisLabel = 'Value', labels = null) {
-            const container = document.getElementById(containerId);
-            if (!container) return;
-            if (!data || data.length === 0) {
-                container.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No data available</div>';
-                return;
-            }
-            if (data.length === 1) {
-                const sampleInfo = labels && labels[0] ? ` (${labels[0]})` : '';
-                container.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--muted)">Single sample${sampleInfo}: <strong>${data[0].toFixed(2)}</strong></div>`;
-                return;
-            }
-            
-            const min = Math.min(...data);
-            const max = Math.max(...data);
-            const range = max - min;
-            
-            if (range === 0) {
-                container.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--muted)">All samples: <strong>${min.toFixed(2)}</strong></div>`;
-                return;
-            }
-            
-            // Get container dimensions - use parent or reasonable defaults
-            const containerRect = container.getBoundingClientRect();
-            const parentWidth = container.parentElement ? container.parentElement.getBoundingClientRect().width : 0;
-            const containerWidth = Math.max(containerRect.width || parentWidth || 600, 500);
-            const containerHeight = Math.max(containerRect.height || 360, 340);
-            
-            // Create histogram bins with sample tracking
-            const binSize = range / bins;
-            const histogram = new Array(bins).fill(0).map(() => ({ count: 0, samples: [] }));
-            data.forEach((v, idx) => {
-                const binIndex = Math.min(Math.floor((v - min) / binSize), bins - 1);
-                histogram[binIndex].count++;
-                if (labels && labels[idx]) {
-                    histogram[binIndex].samples.push({ name: labels[idx], value: v });
-                }
-            });
-            const maxCount = Math.max(...histogram.map(h => h.count), 1);
-            
-            // Smart Y-axis max: add 10% padding
-            const yMax = Math.ceil(maxCount * 1.1);
-            
-            // Chart dimensions - fill container
-            const margin = {top: 30, right: 20, bottom: 50, left: 60};
-            const width = containerWidth;
-            const height = containerHeight;
-            const chartWidth = width - margin.left - margin.right;
-            const chartHeight = height - margin.top - margin.bottom;
-            const barWidth = chartWidth / bins;
-            
-            // Create SVG
-            let svg = `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" style="max-width:${width}px;font-family:var(--font);">`;
-            
-            // Gradients
-            svg += `<defs>
-                <linearGradient id="histGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-                    <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:0.9" />
-                    <stop offset="100%" style="stop-color:#8b5cf6;stop-opacity:0.7" />
-                </linearGradient>
-                <filter id="histShadow">
-                    <feGaussianBlur in="SourceAlpha" stdDeviation="2"/>
-                    <feOffset dx="0" dy="1" result="offsetblur"/>
-                    <feComponentTransfer>
-                        <feFuncA type="linear" slope="0.3"/>
-                    </feComponentTransfer>
-                    <feMerge>
-                        <feMergeNode/>
-                        <feMergeNode in="SourceGraphic"/>
-                    </feMerge>
-                </filter>
-            </defs>`;
-            
-            // Grid lines
-            const ySteps = 4;
-            for (let i = 0; i <= ySteps; i++) {
-                const y = margin.top + (chartHeight * i / ySteps);
-                svg += `<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="var(--line)" stroke-width="0.5" opacity="0.3"/>`;
-            }
-            
-            // Y-axis
-            svg += `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${height - margin.bottom}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
-            
-            // Y-axis labels (count)
-            for (let i = 0; i <= ySteps; i++) {
-                const val = Math.round(yMax - (yMax * i / ySteps));
-                const y = margin.top + (chartHeight * i / ySteps);
-                svg += `<text x="${margin.left - 10}" y="${y + 4}" text-anchor="end" font-size="11" fill="var(--muted)" font-weight="500">${val}</text>`;
-            }
-            
-            // Y-axis label
-            svg += `<text x="${15}" y="${height/2}" text-anchor="middle" font-size="11" fill="var(--muted)" font-weight="600" transform="rotate(-90 15 ${height/2})">Count</text>`;
-            
-            // Histogram bars
-            histogram.forEach((bin, i) => {
-                const x = margin.left + (i * barWidth);
-                const barHeight = (bin.count / yMax) * chartHeight;
-                const y = height - margin.bottom - barHeight;
-                const binStart = min + (i * binSize);
-                const binEnd = binStart + binSize;
-                
-                // Format bin range based on magnitude
-                const formatBinValue = (v) => v < 1 ? v.toFixed(3) : (v < 10 ? v.toFixed(2) : v.toFixed(1));
-                
-                // Build tooltip with sample names if available
-                let tooltip = `${bin.count} sample${bin.count !== 1 ? 's' : ''} in range ${formatBinValue(binStart)} - ${formatBinValue(binEnd)}`;
-                if (bin.samples.length > 0 && bin.samples.length <= 8) {
-                    tooltip += ':\\n' + bin.samples.map(s => `  ${s.name}: ${formatBinValue(s.value)}`).join('\\n');
-                } else if (bin.samples.length > 8) {
-                    tooltip += ':\\n' + bin.samples.slice(0, 8).map(s => `  ${s.name}: ${formatBinValue(s.value)}`).join('\\n') + `\\n  ... and ${bin.samples.length - 8} more`;
-                }
-                
-                // Bar
-                svg += `<rect x="${x}" y="${y}" width="${barWidth - 1}" height="${barHeight}" fill="url(#histGrad)" filter="url(#histShadow)" rx="2" style="cursor:pointer;transition:opacity 0.15s;" onmouseover="evt.target.style.opacity='0.7'" onmouseout="evt.target.style.opacity='1'">
-                    <title>${tooltip}</title>
-                </rect>`;
-            });
-            
-            // X-axis
-            svg += `<line x1="${margin.left}" y1="${height - margin.bottom}" x2="${width - margin.right}" y2="${height - margin.bottom}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
-            
-            // X-axis labels (value range)
-            const xLabelCount = Math.min(5, bins);
-            for (let i = 0; i <= xLabelCount; i++) {
-                const val = min + (range * i / xLabelCount);
-                const x = margin.left + (chartWidth * i / xLabelCount);
-                const formattedVal = val < 1 ? val.toFixed(3) : (val < 10 ? val.toFixed(2) : val.toFixed(1));
-                svg += `<text x="${x}" y="${height - margin.bottom + 20}" text-anchor="middle" font-size="10" fill="var(--muted)" font-weight="500">${formattedVal}</text>`;
-            }
-            
-            // X-axis label
-            svg += `<text x="${width/2}" y="${height - 8}" text-anchor="middle" font-size="11" fill="var(--muted)" font-weight="600">${xAxisLabel}</text>`;
-            
-            svg += '</svg>';
-            container.innerHTML = svg;
-        }
+  // ---------- scatter ----------
+  function drawScatter(elId, getPoints, xLabel, yLabel, opts) {
+    opts = opts || {};
+    var el = document.getElementById(elId);
+    if (!el) return;
+    function render() {
+      var pts = getPoints();
+      if (!pts.length) { empty(el, opts.emptyMsg); return; }
+      var W = widthOf(el), H = 230, m = { t: 14, r: 14, b: 42, l: 48 };
+      var iw = W - m.l - m.r, ih = H - m.t - m.b;
+      var xs = pts.map(function (p) { return p.x; }), ys = pts.map(function (p) { return p.y; });
+      var xMin = Math.min.apply(null, xs), xMax = Math.max.apply(null, xs);
+      var yMin = Math.min.apply(null, ys), yMax = Math.max.apply(null, ys);
+      var xr = (xMax - xMin) || 1, yr = (yMax - yMin) || 1;
+      xMin -= xr * 0.08; xMax += xr * 0.08; yMin -= yr * 0.08; yMax += yr * 0.08;
+      var sx = function (v) { return m.l + (v - xMin) / (xMax - xMin) * iw; };
+      var sy = function (v) { return m.t + ih - (v - yMin) / (yMax - yMin) * ih; };
+      var s = svgEl(W, H);
+      for (var g = 0; g <= 4; g++) {
+        var gy = m.t + ih * g / 4; s += '<line x1="' + m.l + '" y1="' + gy + '" x2="' + (W - m.r) + '" y2="' + gy + '" stroke="var(--grid)"/>';
+        s += txt(m.l - 6, gy + 3, fmt(yMax - (yMax - yMin) * g / 4), { anchor: 'end', size: 9 });
+        var gx = m.l + iw * g / 4; s += txt(gx, H - m.b + 14, fmt(xMin + (xMax - xMin) * g / 4), { size: 9 });
+      }
+      pts.forEach(function (p) {
+        s += '<circle class="pt" data-id="' + esc(p.id) + '" cx="' + sx(p.x).toFixed(1) + '" cy="' + sy(p.y).toFixed(1) + '" r="' + (isHl(p.id) ? 7 : 5) + '" fill="' + barColor(p.row) + '" opacity="' + dim(p.id) + '" stroke="var(--card)" stroke-width="1.5" style="cursor:pointer"/>';
+      });
+      s += txt(m.l + iw / 2, H - 3, xLabel, { size: 9, weight: '600' });
+      s += '<text x="12" y="' + (m.t + ih / 2) + '" text-anchor="middle" font-size="9" font-weight="600" fill="var(--muted)" transform="rotate(-90 12 ' + (m.t + ih / 2) + ')">' + yLabel + '</text>';
+      s += '</svg>'; el.innerHTML = s;
+      el.querySelectorAll('circle.pt').forEach(function (c) {
+        var p = pts.find(function (q) { return q.id === c.getAttribute('data-id'); });
+        c.addEventListener('mousemove', function (e) { ttShow(rowTip(p.row, tipRow(xLabel, fmt(p.x)) + tipRow(yLabel, fmt(p.y)))); ttMove(e); });
+        c.addEventListener('mouseleave', ttHide);
+        c.addEventListener('click', function () { ttHide(); setHighlight(p.id); });
+      });
+    }
+    register(render); render();
+  }
 
-        // Helper for small-cohort distributions (1–5 samples)
-        function renderSmallCohortDistribution(containerId, data, labels, metricLabel = 'Value') {
-            const container = document.getElementById(containerId);
-            if (!container) return;
-            if (!data || data.length === 0) {
-                container.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No data available</div>';
-                return;
-            }
-            const n = data.length;
-            const safeLabels = (labels && labels.length === n) ? labels : data.map((_, i) => `Sample ${i + 1}`);
-            
-            // For 1–2 samples, show a simple textual summary rather than a pseudo-distribution
-            if (n <= 2) {
-                const items = data.map((v, idx) => {
-                    const name = safeLabels[idx];
-                    const value = (typeof v === 'number' && isFinite(v)) ? v.toFixed(2) : v;
-                    return `<li><strong>${name}</strong>: ${value}</li>`;
-                }).join('');
-                container.innerHTML = `
-                    <div style="padding:1.5rem 2rem;color:var(--muted);font-size:0.9rem;">
-                      <div style="margin-bottom:0.5rem;">
-                        <strong>Small cohort (${n} sample${n > 1 ? 's' : ''}):</strong>
-                        treat these values as per-sample QC, not a distribution.
-                      </div>
-                      <ul style="margin-left:1.25rem;">${items}</ul>
-                    </div>
-                `;
-                return;
-            }
-            
-            // For 3–5 samples, render a compact dot/strip plot
-            const width = 520;
-            const height = 220;
-            const margin = { top: 30, right: 30, bottom: 60, left: 60 };
-            const chartWidth = width - margin.left - margin.right;
-            const chartHeight = height - margin.top - margin.bottom;
-            const min = Math.min(...data);
-            const max = Math.max(...data);
-            const range = max - min || 1;
-            const scaleY = v => margin.top + chartHeight - ((v - min) / range) * chartHeight;
-            const xStep = n > 1 ? chartWidth / (n - 1) : chartWidth;
-            
-            let svg = `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" style="max-width:${width}px;font-family:var(--font);">`;
-            
-            // Background
-            svg += `<rect x="0" y="0" width="${width}" height="${height}" fill="transparent"/>`;
-            
-            // Y-axis
-            svg += `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + chartHeight}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
-            const ticks = 4;
-            for (let i = 0; i <= ticks; i++) {
-                const tVal = min + (range * i / ticks);
-                const y = scaleY(tVal);
-                svg += `<line x1="${margin.left - 4}" y1="${y}" x2="${margin.left}" y2="${y}" stroke="var(--muted)" stroke-width="1" opacity="0.5"/>`;
-                svg += `<text x="${margin.left - 8}" y="${y + 3}" text-anchor="end" font-size="10" fill="var(--muted)" font-weight="500">${tVal.toFixed(2)}</text>`;
-            }
-            
-            // Dots for each sample
-            data.forEach((v, idx) => {
-                const x = margin.left + (idx * xStep);
-                const y = scaleY(v);
-                const label = safeLabels[idx];
-                svg += `<circle cx="${x}" cy="${y}" r="5" fill="var(--accent)" fill-opacity="0.85">
-                          <title>${label}: ${v.toFixed(2)}</title>
-                        </circle>`;
-            });
-            
-            // X-axis
-            svg += `<line x1="${margin.left}" y1="${margin.top + chartHeight}" x2="${margin.left + chartWidth}" y2="${margin.top + chartHeight}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
-            safeLabels.forEach((label, idx) => {
-                const x = margin.left + (idx * xStep);
-                const displayLabel = label.length > 12 ? label.substring(0, 11) + '…' : label;
-                svg += `<text x="${x}" y="${margin.top + chartHeight + 18}" text-anchor="end" font-size="10" fill="var(--muted)" font-weight="500" transform="rotate(-45 ${x} ${margin.top + chartHeight + 18})"><title>${label}</title>${displayLabel}</text>`;
-            });
-            
-            // Axis label and cohort note
-            svg += `<text x="${width / 2}" y="${height - 10}" text-anchor="middle" font-size="11" fill="var(--muted)" font-weight="600">${metricLabel} (small cohort, n=${n})</text>`;
-            
-            svg += '</svg>';
-            container.innerHTML = svg;
-        }
-        
-        function renderScatterPlot(containerId, xData, yData, xLabel, yLabel, labels = null) {
-            const container = document.getElementById(containerId);
-            if (!container) return;
-            if (!xData || !yData || xData.length === 0 || yData.length === 0) {
-                container.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No data available</div>';
-                return;
-            }
-            
-            // Filter valid pairs
-            const points = [];
-            for (let i = 0; i < Math.min(xData.length, yData.length); i++) {
-                if (xData[i] != null && yData[i] != null && isFinite(xData[i]) && isFinite(yData[i])) {
-                    points.push({x: xData[i], y: yData[i], label: labels ? labels[i] : `Sample ${i+1}`});
-                }
-            }
-            
-            if (points.length === 0) {
-                container.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No valid data points</div>';
-                return;
-            }
-            
-            const containerRect = container.getBoundingClientRect();
-            const parentWidth = container.parentElement ? container.parentElement.getBoundingClientRect().width : 0;
-            const containerWidth = Math.max(containerRect.width || parentWidth || 600, 500);
-            const containerHeight = Math.max(containerRect.height || 320, 300);
-            
-            const xMin = Math.min(...points.map(p => p.x));
-            const xMax = Math.max(...points.map(p => p.x));
-            const yMin = Math.min(...points.map(p => p.y));
-            const yMax = Math.max(...points.map(p => p.y));
-            const xRange = xMax - xMin || 1;
-            const yRange = yMax - yMin || 1;
-            
-            // Add padding
-            const xPadding = xRange * 0.1;
-            const yPadding = yRange * 0.1;
-            const xScaleMin = xMin - xPadding;
-            const xScaleMax = xMax + xPadding;
-            const yScaleMin = yMin - yPadding;
-            const yScaleMax = yMax + yPadding;
-            
-            const margin = {top: 30, right: 20, bottom: 60, left: 70};
-            const width = containerWidth;
-            const height = containerHeight;
-            const chartWidth = width - margin.left - margin.right;
-            const chartHeight = height - margin.top - margin.bottom;
-            
-            const scaleX = (val) => margin.left + ((val - xScaleMin) / (xScaleMax - xScaleMin)) * chartWidth;
-            const scaleY = (val) => height - margin.bottom - ((val - yScaleMin) / (yScaleMax - yScaleMin)) * chartHeight;
-            
-            let svg = `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" style="font-family:var(--font);">`;
-            
-            // Grid lines
-            const xSteps = 5;
-            const ySteps = 5;
-            for (let i = 0; i <= xSteps; i++) {
-                const x = margin.left + (chartWidth * i / xSteps);
-                svg += `<line x1="${x}" y1="${margin.top}" x2="${x}" y2="${height - margin.bottom}" stroke="var(--line)" stroke-width="0.5" opacity="0.3"/>`;
-            }
-            for (let i = 0; i <= ySteps; i++) {
-                const y = margin.top + (chartHeight * i / ySteps);
-                svg += `<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="var(--line)" stroke-width="0.5" opacity="0.3"/>`;
-            }
-            
-            // Axes
-            svg += `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${height - margin.bottom}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
-            svg += `<line x1="${margin.left}" y1="${height - margin.bottom}" x2="${width - margin.right}" y2="${height - margin.bottom}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
-            
-            // Axis labels
-            for (let i = 0; i <= xSteps; i++) {
-                const val = xScaleMin + (xScaleMax - xScaleMin) * i / xSteps;
-                const x = margin.left + (chartWidth * i / xSteps);
-                const formattedVal = val < 1 ? val.toFixed(3) : (val < 10 ? val.toFixed(2) : val.toFixed(1));
-                svg += `<text x="${x}" y="${height - margin.bottom + 20}" text-anchor="middle" font-size="10" fill="var(--muted)" font-weight="500">${formattedVal}</text>`;
-            }
-            for (let i = 0; i <= ySteps; i++) {
-                const val = yScaleMax - (yScaleMax - yScaleMin) * i / ySteps;
-                const y = margin.top + (chartHeight * i / ySteps);
-                const formattedVal = val < 1 ? val.toFixed(3) : (val < 10 ? val.toFixed(2) : val.toFixed(1));
-                svg += `<text x="${margin.left - 10}" y="${y + 4}" text-anchor="end" font-size="10" fill="var(--muted)" font-weight="500">${formattedVal}</text>`;
-            }
-            
-            // Axis titles
-            svg += `<text x="${width/2}" y="${height - 10}" text-anchor="middle" font-size="11" fill="var(--muted)" font-weight="600">${xLabel}</text>`;
-            svg += `<text x="${15}" y="${height/2}" text-anchor="middle" font-size="11" fill="var(--muted)" font-weight="600" transform="rotate(-90 15 ${height/2})">${yLabel}</text>`;
-            
-            // Color palette for scatter points
-            const colorPalette = ['#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f59e0b', '#10b981', '#6366f1', '#06b6d4'];
-            
-            // Points with different colors per sample
-            points.forEach((p, i) => {
-                const x = scaleX(p.x);
-                const y = scaleY(p.y);
-                const colorIdx = i % colorPalette.length;
-                const color = colorPalette[colorIdx];
-                const formatScatterVal = (v) => v < 1 ? v.toFixed(4) : (v < 10 ? v.toFixed(3) : v.toFixed(2));
-                svg += `<circle cx="${x}" cy="${y}" r="5" fill="${color}" opacity="0.7" stroke="white" stroke-width="1.5" style="cursor:pointer;" onmouseover="evt.target.setAttribute('r', '7');evt.target.setAttribute('opacity', '1');" onmouseout="evt.target.setAttribute('r', '5');evt.target.setAttribute('opacity', '0.7');">
-                    <title>${p.label}\\n${xLabel}: ${formatScatterVal(p.x)}\\n${yLabel}: ${formatScatterVal(p.y)}</title>
-                </circle>`;
-            });
-            
-            svg += '</svg>';
-            container.innerHTML = svg;
-        }
-        
-        function renderStackedBarChart(containerId, dataBySample, regionKeys, sampleLabels) {
-            const container = document.getElementById(containerId);
-            if (!container) return;
-            if (!dataBySample || dataBySample.length === 0 || !regionKeys || regionKeys.length === 0) {
-                container.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No data available</div>';
-                return;
-            }
-            
-            const containerRect = container.getBoundingClientRect();
-            const parentWidth = container.parentElement ? container.parentElement.getBoundingClientRect().width : 0;
-            const containerWidth = Math.max(containerRect.width || parentWidth || 600, 500);
-            const containerHeight = Math.max(containerRect.height || 320, 300);
-            
-            // Calculate percentages for each sample
-            const percentages = dataBySample.map(sample => {
-                const total = Object.values(sample).reduce((sum, v) => sum + (v || 0), 0);
-                const pct = {};
-                regionKeys.forEach(key => {
-                    pct[key] = total > 0 ? ((sample[key] || 0) / total) * 100 : 0;
-                });
-                return pct;
-            });
-            
-            const margin = {top: 40, right: 20, bottom: 80, left: 70};
-            const width = containerWidth;
-            const height = containerHeight;
-            const chartWidth = width - margin.left - margin.right;
-            const chartHeight = height - margin.top - margin.bottom;
-            
-            const barCount = dataBySample.length;
-            const barSpacing = 8;
-            const barWidth = Math.max(30, (chartWidth - (barSpacing * (barCount - 1))) / barCount);
-            
-            const colorPalette = regionKeys.map(key => regionColor(key));
-            
-            let svg = `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" style="font-family:var(--font);">`;
-            
-            // Gradients
-            svg += '<defs>';
-            colorPalette.forEach((color, i) => {
-                svg += `<linearGradient id="stackGrad${i}" x1="0%" y1="0%" x2="0%" y2="100%">
-                    <stop offset="0%" style="stop-color:${color};stop-opacity:0.9" />
-                    <stop offset="100%" style="stop-color:${color};stop-opacity:0.7" />
-                </linearGradient>`;
-            });
-            svg += '</defs>';
-            
-            // Grid and axes
-            const ySteps = 5;
-            for (let i = 0; i <= ySteps; i++) {
-                const y = margin.top + (chartHeight * i / ySteps);
-                svg += `<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="var(--line)" stroke-width="0.5" opacity="0.4"/>`;
-            }
-            svg += `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${height - margin.bottom}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
-            svg += `<line x1="${margin.left}" y1="${height - margin.bottom}" x2="${width - margin.right}" y2="${height - margin.bottom}" stroke="var(--muted)" stroke-width="1.5" opacity="0.6"/>`;
-            
-            // Y-axis labels (0-100%)
-            for (let i = 0; i <= ySteps; i++) {
-                const val = 100 - (100 * i / ySteps);
-                const y = margin.top + (chartHeight * i / ySteps);
-                svg += `<text x="${margin.left - 12}" y="${y + 4}" text-anchor="end" font-size="11" fill="var(--muted)" font-weight="500">${val}%</text>`;
-            }
-            
-            // Stacked bars
-            percentages.forEach((pct, sampleIdx) => {
-                const x = margin.left + (sampleIdx * (barWidth + barSpacing));
-                let yAccum = height - margin.bottom;
-                
-                regionKeys.forEach((key, regionIdx) => {
-                    const segmentHeight = (pct[key] / 100) * chartHeight;
-                    const colorIdx = regionIdx % colorPalette.length;
-                    const y = yAccum - segmentHeight;
-                    
-                    svg += `<rect x="${x}" y="${y}" width="${barWidth}" height="${segmentHeight}" fill="url(#stackGrad${colorIdx})" rx="0" style="cursor:pointer;" onmouseover="evt.target.style.opacity='0.8'" onmouseout="evt.target.style.opacity='1'">
-                        <title>${sampleLabels[sampleIdx]}: ${key} = ${pct[key].toFixed(1)}%</title>
-                    </rect>`;
-                    
-                    yAccum = y;
-                });
-            });
-            
-            // X-axis labels
-            percentages.forEach((pct, sampleIdx) => {
-                const x = margin.left + (sampleIdx * (barWidth + barSpacing)) + barWidth/2;
-                const label = sampleLabels[sampleIdx] || `Sample ${sampleIdx+1}`;
-                const displayLabel = label.length > 10 ? label.substring(0,9) + '..' : label;
-                svg += `<text x="${x}" y="${height - margin.bottom + 18}" text-anchor="end" font-size="10" fill="var(--muted)" font-weight="500" transform="rotate(-45 ${x} ${height - margin.bottom + 18})"><title>${label}</title>${displayLabel}</text>`;
-            });
-            
-            // Legend
-            const legendX = width - margin.right - 150;
-            const legendY = margin.top + 20;
-            regionKeys.forEach((key, i) => {
-                const colorIdx = i % colorPalette.length;
-                const y = legendY + (i * 18);
-                svg += `<rect x="${legendX}" y="${y - 8}" width="12" height="12" fill="url(#stackGrad${colorIdx})" rx="2"/>`;
-                svg += `<text x="${legendX + 18}" y="${y}" font-size="10" fill="var(--fg)" font-weight="500">${key}</text>`;
-            });
-            
-            svg += '</svg>';
-            container.innerHTML = svg;
-        }
-        
-        // ===== OVERVIEW SECTION =====
-        document.getElementById('sample-count-header').textContent = rows.length + ' samples analyzed';
-        document.getElementById('kpi-total').textContent = rows.length;
-        
-        const conditions = [...new Set(rows.map(r => r.condition).filter(Boolean))];
-        document.getElementById('kpi-conditions').textContent = conditions.length;
-        
-        const depthValues = rows.map(r => r.input_reads || 0).filter(v => v > 0);
-        const avgDepth = depthValues.length > 0 ? mean(depthValues) / 1e6 : 0;
-        document.getElementById('kpi-depth').textContent = avgDepth > 0 ? avgDepth.toFixed(1) + 'M' : '-';
-        
-        const totalDiv = rows.reduce((sum, r) => sum + (r.divergent_regions || 0), 0);
-        document.getElementById('kpi-div-total').textContent = totalDiv.toLocaleString();
-        
-        // Median functional-region reads per sample (millions)
-        const funcReads = rows.map(r => r.reads_total_functional || 0).filter(v => v > 0);
-        const medFunc = funcReads.length > 0 ? median(funcReads) / 1e6 : 0;
-        document.getElementById('kpi-regions-avg').textContent = medFunc > 0 ? medFunc.toFixed(1) + 'M' : '-';
-
-        // Small-cohort summary card (optimized for n <= 5)
-        (function updateSmallCohortSummary() {
-            const nSamples = rows.length;
-            const container = document.getElementById('small-cohort-summary');
-            if (!container) return;
-            if (nSamples === 0 || nSamples > 5) {
-                container.style.display = 'none';
-                return;
-            }
-            container.style.display = 'grid';
-            
-            const sizeEl = document.getElementById('small-cohort-size');
-            const sizeNoteEl = document.getElementById('small-cohort-size-note');
-            if (sizeEl) sizeEl.textContent = `${nSamples} sample${nSamples > 1 ? 's' : ''}`;
-            if (sizeNoteEl) {
-                if (nSamples <= 2) {
-                    sizeNoteEl.textContent = 'Very small cohort: treat all plots as per-sample QC.';
-                } else {
-                    sizeNoteEl.textContent = 'Small cohort: distributions are qualitative, not formal statistics.';
-                }
-            }
-            
-            // QC verdict based on depth, duplication, and unlocalized fraction
-            let qcVerdict = 'QC looks broadly OK';
-            const qcDetailParts = [];
-            
-            const depthsM = rows
-                .map(r => r.input_reads)
-                .filter(v => v != null && v > 0)
-                .map(v => v / 1e6);
-            if (depthsM.length > 0) {
-                const okDepth = depthsM.filter(d => d >= 5 && d <= 20).length;
-                if (okDepth / depthsM.length < 0.5) {
-                    qcVerdict = 'Potential QC concerns';
-                    qcDetailParts.push('many samples outside 5-20M reads');
-                }
-            }
-            
-            const dupsForSummary = rows.map(r => {
-                if (r.umi_deduplication_enabled === true) {
-                    return r.umi_deduplication_percent != null ? r.umi_deduplication_percent : null;
-                } else {
-                    return r.duplicate_percent != null ? r.duplicate_percent : null;
-                }
-            }).filter(v => v != null);
-            if (dupsForSummary.length > 0) {
-                const okDup = dupsForSummary.filter(d => d < 35).length;
-                if (okDup / dupsForSummary.length < 0.5) {
-                    qcVerdict = 'Potential QC concerns';
-                    qcDetailParts.push('high duplication in several samples');
-                }
-            }
-            
-            const unlocPercents = rows
-                .map(r => (r.unlocalized_fraction || 0) * 100)
-                .filter(v => isFinite(v) && v >= 0);
-            if (unlocPercents.length > 0) {
-                const okUnloc = unlocPercents.filter(v => v <= 30).length;
-                if (okUnloc / unlocPercents.length < 0.5) {
-                    qcVerdict = 'Potential QC concerns';
-                    qcDetailParts.push('high unlocalized fraction in several samples');
-                }
-            }
-            
-            const qcEl = document.getElementById('small-cohort-qc');
-            const qcDetailEl = document.getElementById('small-cohort-qc-detail');
-            if (qcEl) qcEl.textContent = qcVerdict;
-            if (qcDetailEl) {
-                if (qcDetailParts.length === 0) {
-                    qcDetailEl.textContent = 'Most samples fall within typical depth, duplication, and unlocalized ranges.';
-                } else {
-                    qcDetailEl.textContent = qcDetailParts.join('; ');
-                }
-            }
-            
-            // Design verdict: look at sample counts per condition
-            const conditionCounts = {};
-            rows.forEach(r => {
-                const cond = r.condition || 'Unknown';
-                conditionCounts[cond] = (conditionCounts[cond] || 0) + 1;
-            });
-            const counts = Object.values(conditionCounts);
-            let designVerdict = 'Design balanced';
-            let designDetail = '';
-            if (counts.length <= 1) {
-                designVerdict = 'Single-condition design';
-                designDetail = 'All samples share the same condition.';
-            } else {
-                const maxCount = Math.max(...counts);
-                const minCount = Math.min(...counts);
-                if (minCount === 0 || maxCount >= 2 * Math.max(1, minCount)) {
-                    designVerdict = 'Imbalanced conditions';
-                    designDetail = 'Some conditions have many more samples than others.';
-                } else {
-                    designDetail = 'Conditions have similar sample counts.';
-                }
-            }
-            const designEl = document.getElementById('small-cohort-design');
-            const designDetailEl = document.getElementById('small-cohort-design-detail');
-            if (designEl) designEl.textContent = designVerdict;
-            if (designDetailEl) designDetailEl.textContent = designDetail;
-        })();
-        
-        // ===== QC SECTION =====
-        // Show fallback banner when any sample uses estimated depth
-        const fallbackRows = rows.filter(r => (r.input_reads_source === 'fallback_functional' || r.input_reads_source === 'fallback_dedup'));
-        const depthBanner = document.getElementById('depth-fallback-banner');
-        if (fallbackRows.length > 0 && depthBanner) {
-            depthBanner.style.display = 'block';
-            const funcCount = fallbackRows.filter(r => r.input_reads_source === 'fallback_functional').length;
-            const dedupCount = fallbackRows.filter(r => r.input_reads_source === 'fallback_dedup').length;
-            const parts = [];
-            if (funcCount > 0) parts.push('functional reads');
-            if (dedupCount > 0) parts.push('dedup reads');
-            document.getElementById('depth-fallback-detail').textContent = parts.join(' or ');
-        } else if (depthBanner) {
-            depthBanner.style.display = 'none';
-        }
-        // Extract read depths (filter out null/undefined values)
-        const depths = rows.map(r => r.input_reads).filter(v => v != null && v > 0).map(v => v / 1e6);
-        
-        // Extract duplication rates - check if UMI deduplication was used
-        const hasUMIDedup = rows.some(r => r.umi_deduplication_enabled === true);
-        const dups = rows.map(r => {
-            if (r.umi_deduplication_enabled === true) {
-                return r.umi_deduplication_percent != null ? r.umi_deduplication_percent : null;
-            } else {
-                return r.duplicate_percent != null ? r.duplicate_percent : null;
-            }
-        }).filter(v => v != null);
-        
-        // Display median depth
-        if (depths.length > 0) {
-            document.getElementById('qc-median-depth').textContent = median(depths).toFixed(1) + 'M';
-        } else {
-            document.getElementById('qc-median-depth').textContent = '-';
-        }
-        
-        // Display median duplication with special handling for no UMI
-        if (dups.length > 0) {
-            document.getElementById('qc-median-dup').textContent = median(dups).toFixed(1) + '%';
-        } else if (!hasUMIDedup) {
-            document.getElementById('qc-median-dup').textContent = 'No deduplication done';
-        } else {
-            document.getElementById('qc-median-dup').textContent = '-';
-        }
-
-        // Display median unlocalized fraction (as percent)
-        const unlocFracs = rows.map(r => r.unlocalized_fraction).filter(v => v != null && isFinite(v));
-        if (unlocFracs.length > 0) {
-            document.getElementById('qc-median-unloc').textContent = (median(unlocFracs) * 100).toFixed(1) + '%';
-        } else {
-            document.getElementById('qc-median-unloc').textContent = '-';
-        }
-        
-        // Condition-level QC summary (depth/dup/PI medians and replicate consistency)
-        (function updateConditionQcSummary() {
-            const container = document.getElementById('condition-qc-summary');
-            if (!container) return;
-            const groups = {};
-            rows.forEach(r => {
-                const cond = r.condition || 'Unknown';
-                if (!groups[cond]) {
-                    groups[cond] = { depths: [], dups: [], pi: [] };
-                }
-                if (r.input_reads != null && r.input_reads > 0) {
-                    groups[cond].depths.push(r.input_reads / 1e6);
-                }
-                let dupVal = null;
-                if (r.umi_deduplication_enabled === true) {
-                    dupVal = r.umi_deduplication_percent != null ? r.umi_deduplication_percent : null;
-                } else {
-                    dupVal = r.duplicate_percent != null ? r.duplicate_percent : null;
-                }
-                if (dupVal != null) groups[cond].dups.push(dupVal);
-                if (r.median_pausing_index != null && r.median_pausing_index > 0 && isFinite(r.median_pausing_index)) {
-                    groups[cond].pi.push(r.median_pausing_index);
-                }
-            });
-            const condNames = Object.keys(groups);
-            if (condNames.length === 0) {
-                container.innerHTML = '';
-                return;
-            }
-            function coeffVar(arr) {
-                if (!arr || arr.length < 2) return null;
-                const m = mean(arr);
-                if (!isFinite(m) || m === 0) return null;
-                const variance = mean(arr.map(v => (v - m) * (v - m)));
-                const sd = Math.sqrt(variance);
-                return (sd / m) * 100;
-            }
-            const cards = condNames.map(name => {
-                const g = groups[name];
-                const depthMed = g.depths.length ? median(g.depths).toFixed(1) + 'M' : '-';
-                const dupMed = g.dups.length ? median(g.dups).toFixed(1) + '%' : '-';
-                const piMed = g.pi.length ? median(g.pi).toFixed(2) : '-';
-                const depthCv = coeffVar(g.depths);
-                let repLabel = 'n/a';
-                if (depthCv != null) {
-                    if (depthCv < 20) repLabel = 'consistent';
-                    else if (depthCv < 40) repLabel = 'moderate variability';
-                    else repLabel = 'high variability';
-                }
-                return `
-                  <div class="stat-item">
-                    <div class="stat-label">${name}</div>
-                    <div class="stat-value" style="font-size:1.0rem;">Depth ${depthMed}</div>
-                    <div class="muted" style="font-size:0.8rem;">Dup ${dupMed} • PI ${piMed}</div>
-                    <div class="muted" style="font-size:0.8rem;">Replicates: ${repLabel}</div>
-                  </div>
-                `;
-            }).join('');
-            container.innerHTML = cards;
-        })();
-        
-        // Render per-sample depth bar chart
-        if (depths.length > 0) {
-            const depthSampleIds = rows.filter(r => r.input_reads != null && r.input_reads > 0).map(r => r.sample_id);
-            renderBarChart('chart-depth-per-sample', depths, depthSampleIds);
-        } else {
-            document.getElementById('chart-depth-per-sample').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No read depth data available</div>';
-        }
-        
-        // Render per-sample duplication bar chart
-        if (dups.length > 0) {
-            const dupSampleIds = rows.filter(r => {
-                if (r.umi_deduplication_enabled === true) {
-                    return r.umi_deduplication_percent != null;
-                } else {
-                    return r.duplicate_percent != null;
-                }
-            }).map(r => r.sample_id);
-            renderBarChart('chart-dup-per-sample', dups, dupSampleIds);
-        } else if (!hasUMIDedup) {
-            document.getElementById('chart-dup-per-sample').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No deduplication done</div>';
-        } else {
-            document.getElementById('chart-dup-per-sample').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No duplication data available</div>';
-        }
-        
-        // Render depth distribution with small-cohort-aware behavior
-        if (depths.length > 0) {
-            const depthSampleIds = rows.filter(r => r.input_reads != null && r.input_reads > 0).map(r => r.sample_id);
-            if (depths.length >= 10) {
-                renderHistogram('chart-depth-dist', depths, 15, 'Read Depth (M)', depthSampleIds);
-                renderDistribSummary('depth-stats', depths);
-            } else if (depths.length >= 6) {
-                renderHistogram('chart-depth-dist', depths, 15, 'Read Depth (M)', depthSampleIds);
-                renderDistribSummary('depth-stats', depths);
-                const depthContainer = document.getElementById('chart-depth-dist');
-                if (depthContainer) {
-                    depthContainer.insertAdjacentHTML('beforeend', '<div style="margin-top:0.5rem;font-size:0.8rem;color:var(--muted);text-align:center;">Small cohort (n=' + depths.length + '): distribution is approximate.</div>');
-                }
-            } else {
-                renderSmallCohortDistribution('chart-depth-dist', depths, depthSampleIds, 'Read Depth (M)');
-                renderDistribSummary('depth-stats', depths);
-            }
-        } else {
-            document.getElementById('chart-depth-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No read depth data available</div>';
-        }
-        
-        // Render duplication distribution with small-cohort-aware behavior
-        if (dups.length > 0) {
-            const dupSampleIds = rows.filter(r => {
-                if (r.umi_deduplication_enabled === true) {
-                    return r.umi_deduplication_percent != null;
-                } else {
-                    return r.duplicate_percent != null;
-                }
-            }).map(r => r.sample_id);
-            if (dups.length >= 10) {
-                renderHistogram('chart-dup-dist', dups, 15, 'Duplication Rate (%)', dupSampleIds);
-                renderDistribSummary('dup-stats', dups);
-            } else if (dups.length >= 6) {
-                renderHistogram('chart-dup-dist', dups, 15, 'Duplication Rate (%)', dupSampleIds);
-                renderDistribSummary('dup-stats', dups);
-                const dupContainer = document.getElementById('chart-dup-dist');
-                if (dupContainer) {
-                    dupContainer.insertAdjacentHTML('beforeend', '<div style="margin-top:0.5rem;font-size:0.8rem;color:var(--muted);text-align:center;">Small cohort (n=' + dups.length + '): distribution is approximate.</div>');
-                }
-            } else {
-                renderSmallCohortDistribution('chart-dup-dist', dups, dupSampleIds, 'Duplication Rate (%)');
-                renderDistribSummary('dup-stats', dups);
-            }
-        } else if (!hasUMIDedup) {
-            document.getElementById('chart-dup-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No deduplication done</div>';
-        } else {
-            document.getElementById('chart-dup-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No duplication data available</div>';
-        }
-        
-        // ===== DIVERGENT SECTION =====
-        const divRegions = rows.map(r => r.divergent_regions || 0);
-        const divMean = mean(divRegions);
-        const divMedian = median(divRegions);
-        const divMin = Math.min(...divRegions);
-        const divMax = Math.max(...divRegions);
-        
-        document.getElementById('div-total-regions').textContent = totalDiv.toLocaleString();
-        document.getElementById('div-mean').textContent = divMean.toFixed(0);
-        document.getElementById('div-median').textContent = divMedian.toFixed(0);
-        document.getElementById('div-range').textContent = `${divMin}-${divMax}`;
-        
-        renderBarChart('chart-div-per-sample', divRegions, rows.map(r => r.sample_id));
-        
-        // Divergent distribution with small-cohort-aware behavior
-        if (divRegions.length >= 10) {
-            renderHistogram('chart-div-hist', divRegions, 15, 'Divergent Regions per Sample', rows.map(r => r.sample_id));
-            renderDistribSummary('div-stats', divRegions);
-        } else if (divRegions.length >= 6) {
-            renderHistogram('chart-div-hist', divRegions, 15, 'Divergent Regions per Sample', rows.map(r => r.sample_id));
-            renderDistribSummary('div-stats', divRegions);
-            const divContainer = document.getElementById('chart-div-hist');
-            if (divContainer) {
-                divContainer.insertAdjacentHTML('beforeend', '<div style="margin-top:0.5rem;font-size:0.8rem;color:var(--muted);text-align:center;">Small cohort (n=' + divRegions.length + '): distribution is approximate.</div>');
-            }
-        } else {
-            renderSmallCohortDistribution('chart-div-hist', divRegions, rows.map(r => r.sample_id), 'Divergent Regions per Sample');
-            renderDistribSummary('div-stats', divRegions);
-        }
-        
-        // Divergent by condition
-        const divByCondition = {};
-        rows.forEach(r => {
-            const cond = r.condition || 'Unknown';
-            if (!divByCondition[cond]) divByCondition[cond] = [];
-            divByCondition[cond].push(r.divergent_regions || 0);
-        });
-        const divCondLabels = Object.keys(divByCondition);
-        const divCondMeans = divCondLabels.map(c => mean(divByCondition[c]));
-        renderBarChart('chart-div-by-condition', divCondMeans, divCondLabels);
-        
-        // Replicate CV (requires >= 2 samples per condition)
-        const cvLabels = [];
-        const cvValues = [];
-        divCondLabels.forEach(c => {
-            const data = divByCondition[c];
-            if (data.length > 1 && mean(data) > 0) {
-                cvLabels.push(c);
-                cvValues.push((stdDev(data) / mean(data)) * 100);
-            }
-        });
-        if (cvValues.length > 0) {
-            renderBarChart('chart-div-cv', cvValues, cvLabels);
-        } else {
-            document.getElementById('chart-div-cv').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">Replicate consistency requires >= 2 samples per condition with non-zero divergent regions.</div>';
-        }
-        
-        // ===== PAUSING SECTION =====
-        const pausingIndices = rows.map(r => r.median_pausing_index).filter(p => p != null && p > 0 && isFinite(p));
-        if (pausingIndices.length > 0) {
-            const piMedian = median(pausingIndices);
-            const piMean = mean(pausingIndices);
-            const piStd = stdDev(pausingIndices);
-            const piMin = Math.min(...pausingIndices);
-            const piMax = Math.max(...pausingIndices);
-            
-        document.getElementById('pi-cohort-median').textContent = piMedian.toFixed(2);
-        document.getElementById('pi-cohort-mean').textContent = piMean.toFixed(2);
-        document.getElementById('pi-std').textContent = piStd.toFixed(2);
-        document.getElementById('pi-range').textContent = `${piMin.toFixed(2)}-${piMax.toFixed(2)}`;
-            
-            const piSampleIds = rows.filter(r => r.median_pausing_index != null && r.median_pausing_index > 0).map(r => r.sample_id);
-            renderBarChart('chart-pi-per-sample', pausingIndices, piSampleIds);
-            
-            // Pausing index distribution with small-cohort-aware behavior
-            if (pausingIndices.length >= 10) {
-                renderHistogram('chart-pi-dist', pausingIndices, 15, 'Median Pausing Index', piSampleIds);
-                renderDistribSummary('pi-stats', pausingIndices);
-            } else if (pausingIndices.length >= 6) {
-                renderHistogram('chart-pi-dist', pausingIndices, 15, 'Median Pausing Index', piSampleIds);
-                renderDistribSummary('pi-stats', pausingIndices);
-                const piContainer = document.getElementById('chart-pi-dist');
-                if (piContainer) {
-                    piContainer.insertAdjacentHTML('beforeend', '<div style="margin-top:0.5rem;font-size:0.8rem;color:var(--muted);text-align:center;">Small cohort (n=' + pausingIndices.length + '): distribution is approximate.</div>');
-                }
-            } else {
-                renderSmallCohortDistribution('chart-pi-dist', pausingIndices, piSampleIds, 'Median Pausing Index');
-                renderDistribSummary('pi-stats', pausingIndices);
-            }
-            
-            // PI by condition
-            const piByCondition = {};
-            rows.forEach(r => {
-                if (r.median_pausing_index != null && r.median_pausing_index > 0 && isFinite(r.median_pausing_index)) {
-                    const cond = r.condition || 'Unknown';
-                    if (!piByCondition[cond]) piByCondition[cond] = [];
-                    piByCondition[cond].push(r.median_pausing_index);
-                }
-            });
-            const piCondLabels = Object.keys(piByCondition);
-            const piCondMeans = piCondLabels.map(c => mean(piByCondition[c]));
-            renderBarChart('chart-pi-by-condition', piCondMeans, piCondLabels);
-        } else {
-            document.getElementById('pi-cohort-median').textContent = '-';
-            document.getElementById('pi-cohort-mean').textContent = '-';
-            document.getElementById('pi-std').textContent = '-';
-            document.getElementById('pi-range').textContent = '-';
-            document.getElementById('chart-pi-per-sample').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No pausing index data available</div>';
-            document.getElementById('chart-pi-dist').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No data</div>';
-            document.getElementById('chart-pi-by-condition').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No data</div>';
-        }
-        
-        // ===== FUNCTIONAL REGIONS SECTION =====
-        if (region_totals && region_keys && region_keys.length > 0) {
-            const regionData = region_keys.filter(k => !k.toLowerCase().includes('localized')).map(k => region_totals[k] || 0);
-            const regionLabels = region_keys.filter(k => !k.toLowerCase().includes('localized'));
-            
-            if (regionLabels.length > 0 && regionData.some(d => d > 0)) {
-                renderBarChart('chart-region-totals', regionData, regionLabels, (i, label) => regionColor(label));
-                
-                // Region counts table
-                const regionTableHead = document.getElementById('region-counts-thead');
-                const regionTableBody = document.getElementById('region-counts-tbody');
-                regionTableHead.innerHTML = '<tr><th>Sample</th>' + regionLabels.map(k => `<th>${k}</th>`).join('') + '</tr>';
-                regionTableBody.innerHTML = rows.map(r => {
-                    return '<tr><td>' + r.sample_id + '</td>' +
-                        regionLabels.map(k => {
-                            const count = r['count_' + k] || 0;
-                            return `<td>${count.toLocaleString()}</td>`;
-                        }).join('') + '</tr>';
-                }).join('');
-            } else {
-                document.getElementById('chart-region-totals').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No functional region data available</div>';
-            }
-        } else {
-            document.getElementById('chart-region-totals').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No region data available</div>';
-        }
-        
-        // Region composition by sample - Stacked bar chart
-        if (region_keys && region_keys.length > 0) {
-            const filteredRegionKeys = region_keys.filter(k => !k.toLowerCase().includes('localized'));
-            if (filteredRegionKeys.length > 0) {
-                const regionDataBySample = rows.map(r => {
-                    const sampleData = {};
-                    filteredRegionKeys.forEach(key => {
-                        sampleData[key] = r['func_' + key] || 0;
-                    });
-                    return sampleData;
-                });
-                const sampleLabels = rows.map(r => r.sample_id);
-                renderStackedBarChart('chart-region-composition', regionDataBySample, filteredRegionKeys, sampleLabels);
-            } else {
-                document.getElementById('chart-region-composition').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No region data available</div>';
-            }
-        } else {
-            document.getElementById('chart-region-composition').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No region data available</div>';
-        }
-        
-        // Promoter and gene body per-sample signals
-        const promoterSignals = rows.map(r => r.func_Promoter || 0).filter(v => v > 0);
-        const geneBodySignals = rows.map(r => r['func_Gene body'] || 0).filter(v => v > 0);
-        
-        // Render per-sample promoter bar chart
-        if (promoterSignals.length > 0) {
-            const promoterSampleIds = rows.filter(r => (r.func_Promoter || 0) > 0).map(r => r.sample_id);
-            renderBarChart('chart-promoter-per-sample', promoterSignals, promoterSampleIds);
-        } else {
-            document.getElementById('chart-promoter-per-sample').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No promoter data</div>';
-        }
-        
-        // Render per-sample gene body bar chart
-        if (geneBodySignals.length > 0) {
-            const geneBodySampleIds = rows.filter(r => (r['func_Gene body'] || 0) > 0).map(r => r.sample_id);
-            renderBarChart('chart-genebody-per-sample', geneBodySignals, geneBodySampleIds);
-        } else {
-            document.getElementById('chart-genebody-per-sample').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No gene body data</div>';
-        }
-        
-        // ===== NORMALIZATION SECTION =====
-        const cpmFactors = rows.map(r => r.cpm_factor).filter(f => f != null && isFinite(f));
-        const sicpmFactors = rows.map(r => r.crpmsi_factor).filter(f => f != null && isFinite(f));
-        
-        document.getElementById('norm-cpm-count').textContent = cpmFactors.length;
-        document.getElementById('norm-sicpm-count').textContent = sicpmFactors.length;
-        
-        if (cpmFactors.length > 0) {
-            const cpmMin = Math.min(...cpmFactors);
-            const cpmMax = Math.max(...cpmFactors);
-            document.getElementById('norm-cpm-range').textContent = `${cpmMin.toFixed(2)}-${cpmMax.toFixed(2)}`;
-            renderBarChart('chart-cpm-factors', cpmFactors, rows.filter(r => r.cpm_factor != null).map(r => r.sample_id));
-        } else {
-            document.getElementById('norm-cpm-range').textContent = 'No data';
-            document.getElementById('chart-cpm-factors').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No CPM normalization factors available</div>';
-        }
-        
-        if (sicpmFactors.length > 0) {
-            const sicpmMin = Math.min(...sicpmFactors);
-            const sicpmMax = Math.max(...sicpmFactors);
-            document.getElementById('norm-sicpm-range').textContent = `${sicpmMin.toFixed(2)}-${sicpmMax.toFixed(2)}`;
-            renderBarChart('chart-sicpm-factors', sicpmFactors, rows.filter(r => r.crpmsi_factor != null).map(r => r.sample_id));
-        } else {
-            document.getElementById('norm-sicpm-range').textContent = 'No data';
-            document.getElementById('chart-sicpm-factors').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No spike-in normalization available</div>';
-        }
-        
-        // CPM vs siCPM comparison scatter plot
-        const cpmVsSicpmPairs = rows.filter(r => r.cpm_factor != null && r.crpmsi_factor != null && isFinite(r.cpm_factor) && isFinite(r.crpmsi_factor));
-        if (cpmVsSicpmPairs.length > 0) {
-            const cpmValues = cpmVsSicpmPairs.map(r => r.cpm_factor);
-            const sicpmValues = cpmVsSicpmPairs.map(r => r.crpmsi_factor);
-            const sampleLabels = cpmVsSicpmPairs.map(r => r.sample_id);
-            renderScatterPlot('chart-cpm-vs-sicpm', cpmValues, sicpmValues, 'CPM Factor', 'siCPM Factor', sampleLabels);
-        } else {
-            document.getElementById('chart-cpm-vs-sicpm').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No CPM/siCPM data available</div>';
-        }
-        
-        // Normalization CV by condition
-        const normCVByCondition = {};
-        conditions.forEach(cond => {
-            const condRows = rows.filter(r => r.condition === cond);
-            const cpmVals = condRows.map(r => r.cpm_factor).filter(f => f != null && isFinite(f));
-            const sicpmVals = condRows.map(r => r.crpmsi_factor).filter(f => f != null && isFinite(f));
-            
-            if (cpmVals.length > 1) {
-                const cpmCV = (stdDev(cpmVals) / mean(cpmVals)) * 100;
-                normCVByCondition[cond] = normCVByCondition[cond] || {};
-                normCVByCondition[cond].cpm = cpmCV;
-            }
-            if (sicpmVals.length > 1) {
-                const sicpmCV = (stdDev(sicpmVals) / mean(sicpmVals)) * 100;
-                normCVByCondition[cond] = normCVByCondition[cond] || {};
-                normCVByCondition[cond].sicpm = sicpmCV;
-            }
-        });
-        
-        if (Object.keys(normCVByCondition).length > 0) {
-            const condLabels = Object.keys(normCVByCondition);
-            const cpmCVs = condLabels.map(c => normCVByCondition[c].cpm || 0);
-            const sicpmCVs = condLabels.map(c => normCVByCondition[c].sicpm || 0);
-            
-            // Show both CPM and siCPM CVs as grouped bars
-            if (cpmCVs.some(v => v > 0) || sicpmCVs.some(v => v > 0)) {
-                // For simplicity, show CPM CV (can be enhanced to show both)
-                const cvData = condLabels.map(c => normCVByCondition[c].cpm || normCVByCondition[c].sicpm || 0);
-                renderBarChart('chart-norm-cv', cvData, condLabels);
-            } else {
-                document.getElementById('chart-norm-cv').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">Insufficient data for CV calculation</div>';
-            }
-        } else {
-            document.getElementById('chart-norm-cv').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No normalization data available</div>';
-        }
-        
-        // PI vs depth scatter plot
-        const piVsDepthPairs = rows.filter(r => r.median_pausing_index != null && r.input_reads != null && isFinite(r.median_pausing_index) && r.input_reads > 0);
-        if (piVsDepthPairs.length > 0) {
-            const depths = piVsDepthPairs.map(r => (r.input_reads || 0) / 1e6); // Convert to millions
-            const pis = piVsDepthPairs.map(r => r.median_pausing_index);
-            const sampleLabels = piVsDepthPairs.map(r => r.sample_id);
-            renderScatterPlot('chart-pi-vs-depth', depths, pis, 'Read Depth (M)', 'Median Pausing Index', sampleLabels);
-        } else {
-            document.getElementById('chart-pi-vs-depth').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted)">No pausing index or depth data available</div>';
-        }
-        
-        // ===== SAMPLE TABLE =====
-        const tbody = document.getElementById('sample-table-body');
-        const searchInput = document.getElementById('sample-search');
-        const condFilter = document.getElementById('condition-filter');
-        
-        // Populate condition filter
-        conditions.forEach(c => {
-            const opt = document.createElement('option');
-            opt.value = c;
-            opt.textContent = c;
-            condFilter.appendChild(opt);
-        });
-        
-        function renderTable(data) {
-            tbody.innerHTML = data.map(row => {
-                // Format duplication percentage
-                let dupDisplay = '-';
-                if (row.umi_deduplication_enabled === true) {
-                    dupDisplay = row.umi_deduplication_percent != null ? row.umi_deduplication_percent.toFixed(1) + '%' : '-';
-                } else if (row.duplicate_percent != null) {
-                    dupDisplay = row.duplicate_percent.toFixed(1) + '%';
-                } else {
-                    dupDisplay = 'No deduplication done';
-                }
-                
-                const depthTitle = row.input_reads_source === 'fallback_functional' ? 'Estimated (functional reads)' : row.input_reads_source === 'fallback_dedup' ? 'Estimated (dedup reads)' : '';
-                const reportUrl = '../samples/' + encodeURIComponent(row.sample_id) + '/' + encodeURIComponent(row.sample_id) + '.report.html';
-                return `<tr>
-                    <td><strong><a href="${reportUrl}" target="_blank">${row.sample_id}</a></strong></td>
-                    <td>${row.condition || '-'}</td>
-                    <td>${row.timepoint || '-'}</td>
-                    <td>${row.replicate || '-'}</td>
-                    <td${depthTitle ? ` title="${depthTitle}"` : ''}>${((row.input_reads || 0) / 1e6).toFixed(1)}M</td>
-                    <td>${formatNumber(row.reads_total_functional || 0)}</td>
-                    <td>${dupDisplay}</td>
-                    <td>${((row.unlocalized_fraction || 0) * 100).toFixed(1)}%</td>
-                    <td>${(row.divergent_regions || 0).toLocaleString()}</td>
-                    <td>${(row.total_regions || 0).toLocaleString()}</td>
-                    <td>${row.median_pausing_index ? row.median_pausing_index.toFixed(2) : '-'}</td>
-                    <td>${row.median_density ? row.median_density.toFixed(2) : '-'}</td>
-                    <td>${row.cpm_factor ? row.cpm_factor.toFixed(2) : '-'}</td>
-                    <td>${row.crpmsi_factor ? row.crpmsi_factor.toFixed(2) : '-'}</td>
-                </tr>`;
-            }).join('');
-        }
-        
-        function filterTable() {
-            const term = searchInput.value.toLowerCase();
-            const cond = condFilter.value;
-            
-            const filtered = rows.filter(r => {
-                const matchesSearch = (r.sample_id + (r.condition || '') + (r.timepoint || '')).toLowerCase().includes(term);
-                const matchesCond = !cond || r.condition === cond;
-                return matchesSearch && matchesCond;
-            });
-            renderTable(filtered);
-        }
-        
-        searchInput.addEventListener('input', filterTable);
-        condFilter.addEventListener('change', filterTable);
-        
-        // Export CSV
-        document.getElementById('export-csv').addEventListener('click', () => {
-            const headers = ['Sample','Condition','Timepoint','Replicate','Input_Reads','Functional_Reads','Dup_Pct','Unloc_Pct','Div_Regions','Total_Regions','Median_PI','Median_Density','CPM_Factor','siCPM_Factor'];
-            const csv = [headers.join(',')].concat(rows.map(r => {
-                let dupVal = null;
-                if (r.umi_deduplication_enabled === true) {
-                    dupVal = r.umi_deduplication_percent != null ? r.umi_deduplication_percent : null;
-                } else if (r.duplicate_percent != null) {
-                    dupVal = r.duplicate_percent;
-                }
-                const dupOut = dupVal != null ? dupVal.toFixed(2) : '';
-                return [
-                    r.sample_id, r.condition || '', r.timepoint || '', r.replicate || '',
-                    r.input_reads || 0, r.reads_total_functional || 0,
-                    dupOut,
-                    ((r.unlocalized_fraction || 0) * 100).toFixed(2),
-                    r.divergent_regions || 0, r.total_regions || 0,
-                    r.median_pausing_index || '', r.median_density || '',
-                    r.cpm_factor || '', r.crpmsi_factor || ''
-                ].join(',');
-            })).join('\\n');
-            const blob = new Blob([csv], { type: 'text/csv' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'tracktx_cohort_metrics.csv';
-            a.click();
-        });
-        
-        renderTable(rows);
-        
-        // Smooth scroll for navigation
-        document.querySelectorAll('.nav-pills a').forEach(link => {
-            link.addEventListener('click', (e) => {
-                e.preventDefault();
-                const targetId = link.getAttribute('href').substring(1);
-                const target = document.getElementById(targetId);
-                if (target) {
-                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                }
-            });
-        });
-        
-        console.log('Report fully loaded');
+  // ---------- line chart (trends) ----------
+  function drawTrend() {
+    var el = document.getElementById('chart-trend');
+    if (!el) return;
+    var sel = document.getElementById('trend-metric');
+    var metric = TREND_METRICS.find(function (m) { return m.key === sel.value; }) || TREND_METRICS[0];
+    // group by condition; x = numeric timepoint
+    var series = {};
+    rows.forEach(function (r) {
+      var tp = parseTP(r.timepoint); if (tp == null) return;
+      var v = metric.get(r); if (!isNum(v)) return;
+      var c = r.condition || 'Unknown';
+      (series[c] = series[c] || []).push({ x: tp, y: v, row: r });
     });
-    </script>
-    """
+    var names = Object.keys(series).filter(function (c) { return series[c].length; });
+    names.forEach(function (c) { series[c].sort(function (a, b) { return a.x - b.x; }); });
+    var allPts = names.reduce(function (a, c) { return a.concat(series[c]); }, []);
+    if (allPts.length < 2) { empty(el, 'Numeric timepoints required for trends'); document.getElementById('trend-legend').innerHTML = ''; return; }
+    var W = widthOf(el), H = 300, m = { t: 16, r: 16, b: 44, l: 52 };
+    var iw = W - m.l - m.r, ih = H - m.t - m.b;
+    var xs = allPts.map(function (p) { return p.x; }), ys = allPts.map(function (p) { return p.y; });
+    var xMin = Math.min.apply(null, xs), xMax = Math.max.apply(null, xs);
+    var yMin = Math.min.apply(null, ys.concat(metric.zero ? [0] : [])), yMax = Math.max.apply(null, ys);
+    var yr = (yMax - yMin) || 1; yMin -= yr * 0.08; yMax += yr * 0.08;
+    if (xMin === xMax) xMax = xMin + 1;
+    var sx = function (v) { return m.l + (v - xMin) / (xMax - xMin) * iw; };
+    var sy = function (v) { return m.t + ih - (v - yMin) / (yMax - yMin) * ih; };
+    var s = svgEl(W, H);
+    for (var g = 0; g <= 4; g++) { var gy = m.t + ih * g / 4; s += '<line x1="' + m.l + '" y1="' + gy + '" x2="' + (W - m.r) + '" y2="' + gy + '" stroke="var(--grid)"/>'; s += txt(m.l - 8, gy + 3, fmt(yMax - (yMax - yMin) * g / 4), { anchor: 'end', size: 9 }); }
+    // x ticks at actual timepoints
+    uniq(xs).sort(function (a, b) { return a - b; }).forEach(function (xv) { s += txt(sx(xv), H - m.b + 14, String(xv), { size: 9 }); });
+    s += txt(m.l + iw / 2, H - 3, metric.x || 'Timepoint', { size: 9, weight: '600' });
+    s += '<text x="13" y="' + (m.t + ih / 2) + '" text-anchor="middle" font-size="9" font-weight="600" fill="var(--muted)" transform="rotate(-90 13 ' + (m.t + ih / 2) + ')">' + metric.label + '</text>';
+    names.forEach(function (c) {
+      var col = condColor[c] || ACCENT, pp = series[c];
+      var path = pp.map(function (p, i) { return (i ? 'L' : 'M') + sx(p.x).toFixed(1) + ' ' + sy(p.y).toFixed(1); }).join(' ');
+      s += '<path d="' + path + '" fill="none" stroke="' + col + '" stroke-width="2" opacity="0.9"/>';
+      pp.forEach(function (p) {
+        s += '<circle class="tp" data-id="' + esc(p.row.sample_id) + '" cx="' + sx(p.x).toFixed(1) + '" cy="' + sy(p.y).toFixed(1) + '" r="' + (isHl(p.row.sample_id) ? 6.5 : 4) + '" fill="' + col + '" stroke="var(--card)" stroke-width="1.5" opacity="' + dim(p.row.sample_id) + '" style="cursor:pointer"/>';
+      });
+    });
+    s += '</svg>'; el.innerHTML = s;
+    el.querySelectorAll('circle.tp').forEach(function (c) {
+      var id = c.getAttribute('data-id'), p = allPts.find(function (q) { return q.row.sample_id === id; });
+      c.addEventListener('mousemove', function (e) { ttShow(rowTip(p.row, tipRow(metric.label, fmt(p.y), condColor[p.row.condition || 'Unknown']))); ttMove(e); });
+      c.addEventListener('mouseleave', ttHide);
+      c.addEventListener('click', function () { ttHide(); setHighlight(id); });
+    });
+    document.getElementById('trend-legend').innerHTML = names.map(function (c) { return '<span class="item"><span class="sw" style="background:' + (condColor[c] || ACCENT) + '"></span>' + esc(c) + '</span>'; }).join('');
+    document.getElementById('trend-note').textContent = metric.note || '';
+  }
+
+  // ---------- localized region keys + helpers ----------
+  var locKeys = region_keys.filter(function (k) { return !/localized/i.test(k); });
+  function locSum(r) { return locKeys.reduce(function (a, k) { return a + (r['func_' + k] || 0); }, 0); }
+  function dupVal(r) { return r.umi_deduplication_enabled === true ? (isNum(r.umi_deduplication_percent) ? r.umi_deduplication_percent : null) : (isNum(r.duplicate_percent) ? r.duplicate_percent : null); }
+  var hasUMI = rows.some(function (r) { return r.umi_deduplication_enabled === true; });
+
+  var TREND_METRICS = [
+    { key: 'pi', label: 'Median pausing index', get: function (r) { return r.median_pausing_index; }, note: 'Higher = more promoter-proximal pausing.' },
+    { key: 'div', label: 'Divergent loci', get: function (r) { return r.divergent_regions; }, zero: true },
+    { key: 'depth', label: 'Read depth (M)', get: function (r) { return isNum(r.input_reads) ? r.input_reads / 1e6 : null; }, zero: true },
+    { key: 'prom', label: 'Promoter share (%)', get: function (r) { var t = locSum(r); return t ? (r['func_Promoter'] || 0) / t * 100 : null; } },
+    { key: 'body', label: 'Gene-body share (%)', get: function (r) { var t = locSum(r); return t ? (r['func_Gene body'] || 0) / t * 100 : null; } },
+    { key: 'unloc', label: 'Unlocalized (%)', get: function (r) { return isNum(r.unlocalized_fraction) ? r.unlocalized_fraction * 100 : null; }, zero: true }
+  ];
+
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+  // ===================== BUILD =====================
+  document.getElementById('hdr-samples').textContent = rows.length + ' samples · ' + conditions.length + ' condition' + (conditions.length !== 1 ? 's' : '');
+
+  // KPI strip
+  (function () {
+    var depths = rows.map(function (r) { return r.input_reads; }).filter(function (v) { return isNum(v) && v > 0; }).map(function (v) { return v / 1e6; });
+    var pis = rows.map(function (r) { return r.median_pausing_index; }).filter(function (v) { return isNum(v) && v > 0; });
+    var unlocs = rows.map(function (r) { return r.unlocalized_fraction; }).filter(isNum);
+    var totalDiv = rows.reduce(function (a, r) { return a + (r.divergent_regions || 0); }, 0);
+    var kpis = [
+      { l: 'Samples', v: rows.length, s: conditions.length + ' conditions' },
+      { l: 'Median depth', v: depths.length ? median(depths).toFixed(1) + 'M' : '–', s: 'usable reads' },
+      { l: 'Median pausing', v: pis.length ? median(pis).toFixed(2) : '–', s: 'PI (len-norm)' },
+      { l: 'Total divergent', v: fmtInt(totalDiv), s: 'loci (Σ samples)' },
+      { l: 'Median unlocalized', v: unlocs.length ? (median(unlocs) * 100).toFixed(1) + '%' : '–', s: 'off-feature' }
+    ];
+    document.getElementById('kpi-strip').innerHTML = kpis.map(function (k) { return '<div class="kpi"><div class="k-label">' + k.l + '</div><div class="k-value">' + k.v + '</div><div class="k-sub">' + k.s + '</div></div>'; }).join('');
+  })();
+
+  // Design matrix
+  (function () {
+    var tps = uniq(rows.map(function (r) { return r.timepoint; })).sort(function (a, b) { var na = parseTP(a), nb = parseTP(b); if (na != null && nb != null) return na - nb; return String(a).localeCompare(String(b)); });
+    var conds = conditions.slice();
+    var head = '<tr><th>Condition \\ tp</th>' + tps.map(function (t) { return '<th>' + esc(t == null || t === '' ? '–' : t) + '</th>'; }).join('') + '</tr>';
+    var body = conds.map(function (c) {
+      return '<tr><th style="text-align:left">' + esc(c) + '</th>' + tps.map(function (t) {
+        var n = rows.filter(function (r) { return (r.condition || 'Unknown') === c && r.timepoint === t; }).length;
+        return n ? '<td class="has">' + n + '</td>' : '<td class="empty-cell">·</td>';
+      }).join('') + '</tr>';
+    }).join('');
+    document.getElementById('design-table').innerHTML = head + body;
+  })();
+
+  // Condition cards
+  (function () {
+    var html = conditions.map(function (c) {
+      var rs = rows.filter(function (r) { return (r.condition || 'Unknown') === c; });
+      var d = rs.map(function (r) { return r.input_reads; }).filter(function (v) { return isNum(v) && v > 0; }).map(function (v) { return v / 1e6; });
+      var pi = rs.map(function (r) { return r.median_pausing_index; }).filter(function (v) { return isNum(v) && v > 0; });
+      var dvar = cv(d);
+      var flag = dvar == null ? '' : dvar < 20 ? '<span class="flag ok">consistent</span>' : dvar < 40 ? '<span class="flag warn">moderate</span>' : '<span class="flag fail">variable</span>';
+      return '<div class="cond-card" style="--cond:' + (condColor[c] || ACCENT) + '">' +
+        '<div class="cc-name">' + esc(c) + ' <span style="color:var(--faint);font-weight:500">· ' + rs.length + '</span></div>' +
+        '<div class="cc-row">Depth ' + (d.length ? median(d).toFixed(1) + 'M' : '–') + ' · PI ' + (pi.length ? median(pi).toFixed(2) : '–') + '</div>' +
+        '<div class="cc-row">Replicates ' + (dvar == null ? 'n/a' : 'CV ' + dvar.toFixed(0) + '%') + ' ' + flag + '</div>' +
+        '</div>';
+    }).join('');
+    document.getElementById('condition-cards').innerHTML = html;
+  })();
+
+  // Trends
+  (function () {
+    var numericTPs = uniq(rows.map(function (r) { return parseTP(r.timepoint); }).filter(function (v) { return v != null; }));
+    if (numericTPs.length < 2) {
+      document.getElementById('trends').style.display = 'none';
+      var nl = document.querySelector('#nav a[href="#trends"]'); if (nl) nl.style.display = 'none';
+      return;
+    }
+    var sel = document.getElementById('trend-metric');
+    sel.innerHTML = TREND_METRICS.map(function (m) { return '<option value="' + m.key + '">' + m.label + '</option>'; }).join('');
+    sel.addEventListener('change', drawTrend);
+    register(drawTrend); drawTrend();
+  })();
+
+  // QC charts
+  drawBars('chart-depth', function () { return orderedRows().map(function (r) { return { id: r.sample_id, value: isNum(r.input_reads) ? r.input_reads / 1e6 : null, row: r }; }); },
+    { tipLabel: 'Depth', tipFmt: function (v) { return v.toFixed(1) + 'M'; }, valFmt: function (v) { return v.toFixed(0); }, threshold: { warn: 5 },
+      colorFn: function (d) { if (state.colorByCondition) return barColor(d.row); var v = d.value; return v == null ? '#ccc' : v >= 10 ? 'var(--ok)' : v >= 5 ? 'var(--warn)' : 'var(--fail)'; } });
+  document.getElementById('dup-title').textContent = hasUMI ? 'UMI-dedup %' : 'Duplication %';
+  drawBars('chart-dup', function () { return orderedRows().map(function (r) { return { id: r.sample_id, value: dupVal(r), row: r }; }); },
+    { tipLabel: hasUMI ? 'UMI-dedup' : 'Dup', tipFmt: function (v) { return v.toFixed(1) + '%'; }, emptyMsg: 'No deduplication performed' });
+  drawBars('chart-mm', function () { return orderedRows().map(function (r) { return { id: r.sample_id, value: isNum(r.multimapper_percent) ? r.multimapper_percent : null, row: r }; }); },
+    { tipLabel: 'Multimap', tipFmt: function (v) { return v.toFixed(1) + '%'; } });
+  drawBars('chart-unloc', function () { return orderedRows().map(function (r) { return { id: r.sample_id, value: isNum(r.unlocalized_fraction) ? r.unlocalized_fraction * 100 : null, row: r }; }); },
+    { tipLabel: 'Unlocalized', tipFmt: function (v) { return v.toFixed(1) + '%'; }, threshold: { warn: 20 } });
+
+  // Divergent
+  (function () {
+    var dv = rows.map(function (r) { return r.divergent_regions || 0; });
+    document.getElementById('div-chips').innerHTML = chip('Total', fmtInt(dv.reduce(function (a, b) { return a + b; }, 0))) + chip('Median/sample', fmtInt(median(dv))) + chip('Range', fmtInt(Math.min.apply(null, dv)) + '–' + fmtInt(Math.max.apply(null, dv)));
+    drawBars('chart-div', function () { return orderedRows().map(function (r) { return { id: r.sample_id, value: r.divergent_regions || 0, row: r }; }); }, { tipLabel: 'Loci', tipFmt: fmtInt });
+    var byc = {}; rows.forEach(function (r) { var c = r.condition || 'Unknown'; (byc[c] = byc[c] || []).push(r.divergent_regions || 0); });
+    var citems = Object.keys(byc).map(function (c) { return { id: 'cond:' + c, label: c, value: mean(byc[c]), row: { sample_id: c, condition: c, timepoint: null } }; });
+    drawBars('chart-div-cond', function () { return citems; }, { tipLabel: 'Mean', tipFmt: fmtInt, colorFn: function (d) { return condColor[d.label] || ACCENT; } });
+  })();
+
+  // Pausing
+  (function () {
+    var pis = rows.map(function (r) { return r.median_pausing_index; }).filter(function (v) { return isNum(v) && v > 0; });
+    if (pis.length) document.getElementById('pi-chips').innerHTML = chip('Median', median(pis).toFixed(2)) + chip('Mean', mean(pis).toFixed(2)) + chip('Range', Math.min.apply(null, pis).toFixed(2) + '–' + Math.max.apply(null, pis).toFixed(2));
+    drawBars('chart-pi', function () { return orderedRows().map(function (r) { return { id: r.sample_id, value: isNum(r.median_pausing_index) && r.median_pausing_index > 0 ? r.median_pausing_index : null, row: r }; }); },
+      { tipLabel: 'Median PI', tipFmt: function (v) { return v.toFixed(2); }, valFmt: function (v) { return v.toFixed(1); }, emptyMsg: 'No pausing index data' });
+    drawScatter('chart-pi-depth', function () { return rows.filter(function (r) { return isNum(r.median_pausing_index) && isNum(r.input_reads) && r.input_reads > 0; }).map(function (r) { return { id: r.sample_id, x: r.input_reads / 1e6, y: r.median_pausing_index, row: r }; }); },
+      'Read depth (M)', 'Median PI', { emptyMsg: 'No PI / depth pairs' });
+  })();
+
+  // Functional regions
+  (function () {
+    if (!locKeys.length) { empty(document.getElementById('chart-composition')); empty(document.getElementById('chart-region-totals')); return; }
+    drawStacked('chart-composition', 'composition-legend', locKeys);
+    var totItems = locKeys.map(function (k) { return { label: k, value: region_totals[k] || 0 }; }).sort(function (a, b) { return b.value - a.value; });
+    drawHBars('chart-region-totals', totItems, { colorFn: function (d) { return regionColor(d.label); } });
+    // region table
+    var thead = document.querySelector('#region-table thead');
+    var tbody = document.querySelector('#region-table tbody');
+    thead.innerHTML = '<tr><th class="lft">Sample</th>' + locKeys.map(function (k) { return '<th>' + esc(k) + '</th>'; }).join('') + '</tr>';
+    function fillRegion() {
+      tbody.innerHTML = orderedRows().map(function (r) {
+        return '<tr data-id="' + esc(r.sample_id) + '"' + (isHl(r.sample_id) ? ' class="hl"' : '') + '><td class="lft">' + esc(shortName(r.sample_id)) + '</td>' +
+          locKeys.map(function (k) { return '<td class="num">' + fmtInt(r['count_' + k] || 0) + '</td>'; }).join('') + '</tr>';
+      }).join('');
+      bindRowClicks(tbody);
+    }
+    register(fillRegion); fillRegion();
+  })();
+
+  // Normalization
+  (function () {
+    var cpm = rows.map(function (r) { return r.cpm_factor; }).filter(isNum);
+    var si = rows.map(function (r) { return r.crpmsi_factor; }).filter(isNum);
+    document.getElementById('norm-chips').innerHTML =
+      chip('CPM samples', cpm.length) + chip('siCPM samples', si.length) +
+      chip('CPM range', cpm.length ? cpm.reduce(mn).toFixed(3) + '–' + cpm.reduce(mx).toFixed(3) : '–') +
+      chip('siCPM range', si.length ? si.reduce(mn).toFixed(3) + '–' + si.reduce(mx).toFixed(3) : '–');
+    drawBars('chart-cpm', function () { return orderedRows().map(function (r) { return { id: r.sample_id, value: isNum(r.cpm_factor) ? r.cpm_factor : null, row: r }; }); }, { tipLabel: 'CPM', tipFmt: function (v) { return v.toFixed(4); }, emptyMsg: 'No CPM factors' });
+    drawBars('chart-sicpm', function () { return orderedRows().map(function (r) { return { id: r.sample_id, value: isNum(r.crpmsi_factor) ? r.crpmsi_factor : null, row: r }; }); }, { tipLabel: 'siCPM', tipFmt: function (v) { return v.toFixed(4); }, emptyMsg: 'No spike-in factors' });
+    drawScatter('chart-cpm-sicpm', function () { return rows.filter(function (r) { return isNum(r.cpm_factor) && isNum(r.crpmsi_factor); }).map(function (r) { return { id: r.sample_id, x: r.cpm_factor, y: r.crpmsi_factor, row: r }; }); }, 'CPM factor', 'siCPM factor', { emptyMsg: 'No CPM/siCPM pairs' });
+  })();
+  function mn(a, b) { return Math.min(a, b); } function mx(a, b) { return Math.max(a, b); }
+  function chip(l, v) { return '<div class="chip"><div class="c-label">' + l + '</div><div class="c-value">' + v + '</div></div>'; }
+
+  // Sample table
+  (function () {
+    var COLS = [
+      { k: 'sample_id', t: 'Sample', lft: true, fmt: function (r) { var u = '../samples/' + encodeURIComponent(r.sample_id) + '/' + encodeURIComponent(r.sample_id) + '.report.html'; return '<a href="' + u + '" target="_blank">' + esc(shortName(r.sample_id)) + '</a>'; }, val: function (r) { return r.sample_id; } },
+      { k: 'condition', t: 'Condition', lft: true, val: function (r) { return r.condition || ''; }, fmt: function (r) { return esc(r.condition || '–'); } },
+      { k: 'timepoint', t: 'Time', val: function (r) { var n = parseTP(r.timepoint); return n == null ? r.timepoint : n; }, fmt: function (r) { return esc(r.timepoint != null ? r.timepoint : '–'); } },
+      { k: 'input_reads', t: 'Depth', val: function (r) { return r.input_reads || 0; }, fmt: function (r) { return ((r.input_reads || 0) / 1e6).toFixed(1) + 'M'; } },
+      { k: 'reads_total_functional', t: 'Func reads', val: function (r) { return r.reads_total_functional || 0; }, fmt: function (r) { return fmt(r.reads_total_functional || 0); } },
+      { k: 'dup', t: hasUMI ? 'UMI-dd%' : 'Dup%', val: function (r) { return dupVal(r) == null ? -1 : dupVal(r); }, fmt: function (r) { var v = dupVal(r); return v == null ? '–' : v.toFixed(1) + '%'; } },
+      { k: 'unlocalized_fraction', t: 'Unloc%', val: function (r) { return r.unlocalized_fraction || 0; }, fmt: function (r) { return ((r.unlocalized_fraction || 0) * 100).toFixed(1) + '%'; } },
+      { k: 'multimapper_percent', t: 'MM%', val: function (r) { return isNum(r.multimapper_percent) ? r.multimapper_percent : -1; }, fmt: function (r) { return isNum(r.multimapper_percent) ? r.multimapper_percent.toFixed(1) + '%' : '–'; } },
+      { k: 'divergent_regions', t: 'Div loci', val: function (r) { return r.divergent_regions || 0; }, fmt: function (r) { return fmtInt(r.divergent_regions || 0); } },
+      { k: 'median_pausing_index', t: 'Med PI', val: function (r) { return isNum(r.median_pausing_index) ? r.median_pausing_index : -1; }, fmt: function (r) { return isNum(r.median_pausing_index) ? r.median_pausing_index.toFixed(2) : '–'; } },
+      { k: 'cpm_factor', t: 'CPM', val: function (r) { return isNum(r.cpm_factor) ? r.cpm_factor : -1; }, fmt: function (r) { return isNum(r.cpm_factor) ? r.cpm_factor.toFixed(4) : '–'; } },
+      { k: 'crpmsi_factor', t: 'siCPM', val: function (r) { return isNum(r.crpmsi_factor) ? r.crpmsi_factor : -1; }, fmt: function (r) { return isNum(r.crpmsi_factor) ? r.crpmsi_factor.toFixed(4) : '–'; } }
+    ];
+    var sortK = null, sortDir = 1;
+    var thead = document.getElementById('sample-thead');
+    thead.innerHTML = COLS.map(function (c) { return '<th class="sortable' + (c.lft ? ' lft' : '') + '" data-k="' + c.k + '">' + c.t + ' <span class="arrow"></span></th>'; }).join('');
+    var tbody = document.getElementById('sample-tbody');
+    var search = document.getElementById('sample-search');
+    var condFilter = document.getElementById('condition-filter');
+    conditions.forEach(function (c) { var o = document.createElement('option'); o.value = c; o.textContent = c; condFilter.appendChild(o); });
+
+    function current() {
+      var term = search.value.toLowerCase(), cond = condFilter.value;
+      var data = rows.filter(function (r) {
+        var hay = (r.sample_id + ' ' + (r.condition || '') + ' ' + (r.timepoint || '')).toLowerCase();
+        return hay.indexOf(term) >= 0 && (!cond || r.condition === cond);
+      });
+      if (sortK) { var col = COLS.find(function (c) { return c.k === sortK; }); data.sort(function (a, b) { var va = col.val(a), vb = col.val(b); if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * sortDir; return String(va).localeCompare(String(vb)) * sortDir; }); }
+      else { data = orderedRows().filter(function (r) { return data.indexOf(r) >= 0; }); }
+      return data;
+    }
+    function render() {
+      tbody.innerHTML = current().map(function (r) {
+        return '<tr data-id="' + esc(r.sample_id) + '"' + (isHl(r.sample_id) ? ' class="hl"' : '') + '>' + COLS.map(function (c) { return '<td class="' + (c.lft ? 'lft' : 'num') + '">' + c.fmt(r) + '</td>'; }).join('') + '</tr>';
+      }).join('');
+      bindRowClicks(tbody);
+      thead.querySelectorAll('th').forEach(function (th) { var a = th.querySelector('.arrow'); a.textContent = th.getAttribute('data-k') === sortK ? (sortDir > 0 ? '▲' : '▼') : ''; });
+    }
+    thead.querySelectorAll('th').forEach(function (th) { th.addEventListener('click', function () { var k = th.getAttribute('data-k'); if (sortK === k) sortDir *= -1; else { sortK = k; sortDir = 1; } render(); }); });
+    search.addEventListener('input', render);
+    condFilter.addEventListener('change', render);
+    register(render); render();
+
+    document.getElementById('export-csv').addEventListener('click', function () {
+      var head = COLS.map(function (c) { return c.t; });
+      var lines = [head.join(',')].concat(current().map(function (r) { return COLS.map(function (c) { var v = c.val(r); return typeof v === 'string' && v.indexOf(',') >= 0 ? '"' + v + '"' : v; }).join(','); }));
+      var blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+      var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'tracktx_cohort_metrics.csv'; a.click();
+    });
+  })();
+
+  function bindRowClicks(tbody) {
+    tbody.querySelectorAll('tr[data-id]').forEach(function (tr) { tr.addEventListener('click', function (e) { if (e.target.tagName === 'A') return; setHighlight(tr.getAttribute('data-id')); }); });
+  }
+  function syncTableHl() {
+    document.querySelectorAll('tr[data-id]').forEach(function (tr) { tr.classList.toggle('hl', tr.getAttribute('data-id') === state.highlight); });
+  }
+
+  // Methodology
+  document.getElementById('methodology').innerHTML = [
+    ['Read depth', 'total_reads_raw (qc_pol.json)', 'samtools view -c -F 0x900 on the aligned BAM; falls back to dedup or functional reads if QC parsing failed.'],
+    ['Duplication', '100 × duplicate / total reads', 'From samtools stats (flag 0x400). UMI deduplication uses reads_before/after when enabled.'],
+    ['Multimapper %', '100 × (1 − unique / mapped)', 'Uniqueness = NH==1 when bowtie2 -k multimapping is active, else MAPQ≥threshold. High values flag repetitive genomes.'],
+    ['Divergent loci', 'count from divergent BED', 'Gaussian Mixture Model + FDR control; one value per sample.'],
+    ['Pausing index', '(TSS density) / (gene-body density)', 'pi_len_norm = (tss_count/tss_width) / (body_count/body_len); median over genes. >1.5 strong, ≈1 balanced, <1 elongation.'],
+    ['Functional signal', 'Σ |pos|+|neg| reads per region', 'Promoter, Gene body, CPS, Enhancers, Termination window, DivergentTx from normalized bedGraphs.'],
+    ['Unlocalized fraction', 'unlocalized / (functional + unlocalized)', 'Reads outside annotated features; <20% typical.'],
+    ['CPM / siCPM', 'CPM = 1e6/total_mapped; siCPM = CPM × spike_ctrl/spike_sample', 'Convert raw counts to normalized signal in tracks and density tables.']
+  ].map(function (m) { return '<div class="method-row"><div class="m-name">' + m[0] + '</div><div class="m-formula">' + esc(m[1]) + '</div><div class="m-desc">' + esc(m[2]) + '</div></div>'; }).join('');
+
+  // controls
+  document.getElementById('order-seg').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    state.order = b.getAttribute('data-order');
+    this.querySelectorAll('button').forEach(function (x) { x.classList.toggle('on', x === b); });
+    redrawAll();
+  });
+  document.getElementById('color-by-cond').addEventListener('change', function () { state.colorByCondition = this.checked; redrawAll(); });
+  document.getElementById('hl-clear').addEventListener('click', function () { state.highlight = null; document.getElementById('hl-banner').style.display = 'none'; redrawAll(); syncTableHl(); });
+
+  // nav scroll-spy
+  (function () {
+    var links = Array.prototype.slice.call(document.querySelectorAll('#nav a'));
+    var secs = links.map(function (a) { return document.getElementById(a.getAttribute('href').slice(1)); });
+    function spy() {
+      var y = window.scrollY + 90, idx = 0;
+      secs.forEach(function (s, i) { if (s && s.offsetTop <= y) idx = i; });
+      links.forEach(function (a, i) { a.classList.toggle('active', i === idx); });
+    }
+    window.addEventListener('scroll', spy, { passive: true }); spy();
+  })();
+
+  // responsive redraw
+  var rt; window.addEventListener('resize', function () { clearTimeout(rt); rt = setTimeout(redrawAll, 180); });
+
+  console.log('TrackTx cohort report ready:', rows.length, 'samples');
+})();
+</script>
+'''
     
     generate_html_report(
         data_json,
