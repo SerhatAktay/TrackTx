@@ -263,35 +263,15 @@ process generate_coverage_tracks {
     fi
     
     echo "TRACKS | BIGWIG | Converting: \$(basename \${bedgraph}) → \$(basename \${bigwig})"
-    
-    # Sort bedGraph (required for bedGraphToBigWig)
-    # Cap per-sort memory and spill to disk: with several coverage jobs running
-    # in parallel on large (T2T) genomes, unbounded in-memory sorts can exhaust
-    # RAM and get OOM-killed, leaving a truncated bedGraph. Sort to a temp file
-    # and only replace the original on success so a killed sort can't corrupt it.
-    echo "TRACKS | BIGWIG | Sorting bedGraph..."
-    # Cap sort memory so it stays in memory instead of spilling thousands of
-    # tiny temp files to disk (catastrophic on slow/USB work dirs), WITHOUT
-    # oversubscribing the task's RAM. Up to 4 generate_coverage jobs run
-    # concurrently (pos/neg sorts within each are sequential, but across jobs
-    # they overlap), so each sort may only safely claim ~1/4 of the 70% budget
-    # — otherwise concurrent sorts collectively request >100% of task.memory
-    # and get OOM-killed (as happened: 4 * 4G > 7G). Falls back to disk only if
-    # truly needed, using a fast temp dir (never the USB-backed work dir via
-    # "-T ."). Override with SORT_MEM / SORT_TMPDIR.
-    : "\${SORT_MEM:=\$(( ${task.memory.toGiga()} * 70 / 100 / 4 ))G}"
-    : "\${SORT_TMP:=\${SORT_TMPDIR:-/tmp}}"
-    mkdir -p "\${SORT_TMP}" 2>/dev/null || SORT_TMP=/tmp
-    if ! LC_ALL=C sort -S "\${SORT_MEM}" -T "\${SORT_TMP}" -k1,1 -k2,2n "\${bedgraph}" > "\${bedgraph}.sorted"; then
-      echo "TRACKS | ERROR | sort failed (likely OOM) for: \${bedgraph}"
-      rm -f "\${bedgraph}.sorted"
-      return 1
-    fi
-    mv -f "\${bedgraph}.sorted" "\${bedgraph}"
-    
+
+    # NOTE: bedGraphs reaching here are ALREADY coordinate-sorted — generate_coverage
+    # pipes "bedtools genomecov | sort" so the on-disk bedGraph is written once,
+    # already sorted. This removes a full write+read+rewrite of every (often
+    # >1 GB) bedGraph on the work disk, which is the dominant cost when work/ is
+    # on a slow/USB-backed volume. Do NOT re-sort here.
     local line_count=\$(wc -l < "\${bedgraph}" | tr -d ' ')
-    echo "TRACKS | BIGWIG | Sorted bedGraph: \${line_count} lines"
-    
+    echo "TRACKS | BIGWIG | Pre-sorted bedGraph: \${line_count} lines"
+
     # Convert to BigWig with timeout
     if ! timeout \${BIGWIG_TIMEOUT} bedGraphToBigWig "\${bedgraph}" genome.sizes "\${bigwig}"; then
       echo "TRACKS | ERROR | BigWig conversion failed or timed out: \${bedgraph}"
@@ -319,32 +299,47 @@ process generate_coverage_tracks {
       return 1
     fi
     
-    # Positive strand coverage using direct BAM processing
-    echo "TRACKS | COVERAGE | Computing positive strand..."
+    # Sort budget: cap per-sort memory so it stays in RAM rather than spilling
+    # thousands of tiny temp files (catastrophic on slow/USB work dirs), without
+    # oversubscribing the task's RAM. Up to 4 generate_coverage jobs run
+    # concurrently (pos/neg sorts within each are sequential, but across jobs they
+    # overlap), so each sort claims ~1/4 of the 70% budget. Temp goes to a fast
+    # dir (never the USB-backed work dir). Override with SORT_MEM / SORT_TMPDIR.
+    : "\${SORT_MEM:=\$(( ${task.memory.toGiga()} * 70 / 100 / 4 ))G}"
+    : "\${SORT_TMP:=\${SORT_TMPDIR:-/tmp}}"
+    mkdir -p "\${SORT_TMP}" 2>/dev/null || SORT_TMP=/tmp
+
+    # Positive strand coverage, sorted in a single streamed pass.
+    # genomecov | sort writes the (already-sorted) bedGraph to disk ONCE instead
+    # of write-unsorted → read → re-sort → rewrite. pipefail (set at top) makes
+    # a genomecov failure fail the whole pipe.
+    echo "TRACKS | COVERAGE | Computing positive strand (genomecov | sort)..."
     if ! bedtools genomecov \\
       -ibam "\${bam}" \\
       -\${end_type} \\
       -strand + \\
       -bg \\
+      | LC_ALL=C sort -S "\${SORT_MEM}" -T "\${SORT_TMP}" -k1,1 -k2,2n \\
       > "\${prefix}.pos.bedgraph"; then
-      echo "TRACKS | ERROR | Failed to generate positive strand coverage"
+      echo "TRACKS | ERROR | Failed to generate/sort positive strand coverage"
       return 1
     fi
-    
+
     local pos_lines=\$(wc -l < "\${prefix}.pos.bedgraph" | tr -d ' ')
     local pos_size=\$(stat -c%s "\${prefix}.pos.bedgraph" 2>/dev/null || stat -f%z "\${prefix}.pos.bedgraph" 2>/dev/null || echo "unknown")
     echo "TRACKS | COVERAGE | Positive strand: \${pos_lines} regions (\${pos_size} bytes)"
-    
-    # Negative strand coverage (mirrored with -scale -1)
-    echo "TRACKS | COVERAGE | Computing negative strand (mirrored with -scale -1)..."
+
+    # Negative strand coverage (mirrored with -scale -1), sorted in one pass.
+    echo "TRACKS | COVERAGE | Computing negative strand (mirrored with -scale -1 | sort)..."
     if ! bedtools genomecov \\
       -ibam "\${bam}" \\
       -\${end_type} \\
       -strand - \\
       -bg \\
       -scale -1 \\
+      | LC_ALL=C sort -S "\${SORT_MEM}" -T "\${SORT_TMP}" -k1,1 -k2,2n \\
       > "\${prefix}.neg.bedgraph"; then
-      echo "TRACKS | ERROR | Failed to generate negative strand coverage"
+      echo "TRACKS | ERROR | Failed to generate/sort negative strand coverage"
       return 1
     fi
     

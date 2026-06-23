@@ -306,9 +306,11 @@ Paths are relative to: ${projectDir}"""
 
     // storeDir cache location for raw SRA FASTQs (must mirror the storeDir
     // closure in modules/02_download_sra_samples.nf).
-    def sraCacheDir = (params.get('publish_sra_fastq')?.toString() != 'false')
-        ? "${outputDir}/00_sra_cache"
-        : "${outputDir}/.sra_cache"
+    def sraCacheDir = params.get('sra_cache_dir')
+        ? "${params.get('sra_cache_dir')}"
+        : ((params.get('publish_sra_fastq')?.toString() != 'false')
+            ? "${outputDir}/00_sra_cache"
+            : "${outputDir}/.sra_cache")
 
     // 1) Samples already preprocessed (trimmed FASTQs present) → skip download
     //    AND preprocessing entirely.
@@ -812,12 +814,19 @@ Paths are relative to: ${projectDir}"""
     }
     .join(functional_regions_bed_ch)
     .join(
-      norm_tracks_ch.map { sid, pos3_cpm, neg3_cpm, _factors, _c, _t, _r ->
-        def normDir     = "${params.output_dir}/05_normalized_tracks/${sid}"
-        def pos3_sicpm  = file("${normDir}/sicpm/3p/${sid}.3p.pos.sicpm.bedgraph")
-        def neg3_sicpm  = file("${normDir}/sicpm/3p/${sid}.3p.neg.sicpm.bedgraph")
-        tuple(sid, tuple(pos3_cpm, neg3_cpm, pos3_sicpm, neg3_sicpm))
-      }
+      // CPM + siCPM 3' bedGraphs, both taken from Nextflow channels (work dir).
+      // Previously the siCPM tracks were read from the publish dir at a wrong path
+      // (sicpm/3p/ — never existed; real layout is 3p/), so siCPM silently fell back
+      // to CPM. Joining the module-08 sicpm3p_bg channel fixes that AND removes the
+      // dependency on bedGraphs being published, so output.bedgraph=false is safe.
+      norm_tracks_ch
+        .map { sid, pos3_cpm, neg3_cpm, _factors, _c, _t, _r ->
+          tuple(sid, pos3_cpm, neg3_cpm)
+        }
+        .join(normalize_coverage_tracks.out.sicpm3p_bg)
+        .map { sid, pos3_cpm, neg3_cpm, pos3_sicpm, neg3_sicpm ->
+          tuple(sid, tuple(pos3_cpm, neg3_cpm, pos3_sicpm, neg3_sicpm))
+        }
     )
     .map { sid, bam_data, bed, norm_data ->
       def (bam, c, t, r) = bam_data

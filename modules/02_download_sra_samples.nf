@@ -54,13 +54,18 @@ process download_sra_samples {
   // the work/ directory has been deleted. Cache is keyed per SRA accession so adding new
   // samples never invalidates existing downloads.
   //
-  // publish_sra_fastq=true  (default): cache in results/00_sra_cache/<SRR>/  — visible in results
-  // publish_sra_fastq=false          : cache in results/.sra_cache/<SRR>/    — hidden from results
+  // params.sra_cache_dir (if set): cache OFF the results drive at <sra_cache_dir>/<SRR>/
+  //   — keeps the large raw-FASTQ resume cache out of the results deliverable.
+  // else publish_sra_fastq=true  (default): cache in results/00_sra_cache/<SRR>/  — visible in results
+  // else publish_sra_fastq=false          : cache in results/.sra_cache/<SRR>/    — hidden from results
   //   In false mode the primary re-run safeguard is the trimmed-FASTQ check in main.nf (STEP 3).
   //   The hidden .sra_cache/ acts as a secondary fallback. Clean it up with: rm -rf results/.sra_cache/
-  storeDir { params.get('publish_sra_fastq')?.toString() != 'false'
-      ? "${params.output_dir}/00_sra_cache/${sra_id}"
-      : "${params.output_dir}/.sra_cache/${sra_id}" }
+  // NOTE: this closure MUST stay in sync with the sraCacheDir definition in main.nf (STEP 3).
+  storeDir { params.get('sra_cache_dir')
+      ? "${params.get('sra_cache_dir')}/${sra_id}"
+      : (params.get('publish_sra_fastq')?.toString() != 'false'
+          ? "${params.output_dir}/00_sra_cache/${sra_id}"
+          : "${params.output_dir}/.sra_cache/${sra_id}") }
 
   // ── Inputs ────────────────────────────────────────────────────────────────
   input:

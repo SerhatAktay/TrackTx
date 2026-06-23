@@ -40,6 +40,7 @@ dependencies:
   - sed
   - grep
   - bc                  # Simple arithmetic in shell steps
+  - jq                  # JSON parsing in cohort report aggregation (module 15)
   - curl                # Downloads in several modules (UCSC, custom URLs)
   - rsync               # Preferred UCSC fetch path when available
   - pigz                # Faster gzip; used when bgzip is unavailable
@@ -54,6 +55,7 @@ dependencies:
   # ── I/O & QC ───────────────────────────────────────────────────────────
   - fastqc              # Standard per-sample QC (HTML reports)
   - multiqc             # Aggregated QC reporting
+  - deeptools           # Cohort PCA + correlation heatmap (module 16); guarded but expected
   - seqkit              # Fast FASTQ/FASTA utilities
   - seqtk               # FASTQ/FASTA manipulation (reverse-complement for PRO-seq)
   - sra-tools           # fasterq-dump / prefetch (download_sra_samples module)

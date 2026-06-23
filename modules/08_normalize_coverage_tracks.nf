@@ -109,6 +109,17 @@ process normalize_coverage_tracks {
     path "3p/${sample_id}.3p.pos.cpm.bedgraph", emit: pos3_cpm_bg
     path "3p/${sample_id}.3p.neg.cpm.bedgraph", emit: neg3_cpm_bg
 
+    // siCPM 3' bedGraphs, keyed by sample for joining downstream. These files are
+    // ALWAYS produced (real siCPM values, or an empty file when siCPM is
+    // unavailable), so they are safe to stage. Emitting them here lets module 11
+    // receive siCPM via the Nextflow channel (work dir) instead of reading the
+    // publish dir — which was both pointing at a wrong path AND would break when
+    // output.bedgraph=false (bedGraphs not published).
+    tuple val(sample_id),
+          path("3p/${sample_id}.3p.pos.sicpm.bedgraph"),
+          path("3p/${sample_id}.3p.neg.sicpm.bedgraph"),
+          emit: sicpm3p_bg
+
     // Documentation and manifest
     path "README_normalization.txt", emit: readme
     path "tracks_manifest.tsv",      emit: manifest
