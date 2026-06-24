@@ -609,17 +609,19 @@ check_disk_space() {
     # Use timeout to avoid hang on external/slow drives (df can block indefinitely)
     local df_tmp
     df_tmp=$(mktemp 2>/dev/null || echo "/tmp/tracktx_df_$$")
-    # Ask df for GB-sized blocks on both platforms so we read column 4 directly
-    # and don't depend on the default block size (macOS historically 512-byte).
-    local df_args="-g ."
-    [[ "$OSTYPE" != "darwin"* ]] && df_args="-BG ."
+    # Use -Pk: POSIX single-line output in 1024-byte blocks. Both flags are
+    # supported by BSD df (macOS) AND GNU coreutils df (which a conda/brew env
+    # can put on PATH). Avoid -g: GNU df rejects it, which under `set -e -o
+    # pipefail` silently aborts the whole script. Append `|| true` so a df
+    # failure falls through to the 0-fallback instead of killing the run.
+    local df_args="-Pk ."
 
     if has_command timeout; then
-        df_out=$(timeout 5s df $df_args 2>/dev/null | tail -1)
+        df_out=$(timeout 5s df $df_args 2>/dev/null | tail -1) || true
     elif has_command gtimeout; then
-        df_out=$(gtimeout 5s df $df_args 2>/dev/null | tail -1)
+        df_out=$(gtimeout 5s df $df_args 2>/dev/null | tail -1) || true
     else
-        # macOS: no timeout; run in background and kill if slow
+        # No timeout available: run in background and kill if slow
         df $df_args 2>/dev/null > "$df_tmp" &
         local pid=$!
         local i=0
@@ -633,20 +635,19 @@ check_disk_space() {
             df_out=""
         else
             wait "$pid" 2>/dev/null
-            df_out=$(tail -1 "$df_tmp" 2>/dev/null)
+            df_out=$(tail -1 "$df_tmp" 2>/dev/null) || true
         fi
         rm -f "$df_tmp" 2>/dev/null
     fi
 
-    # Column 4 = available space, now in GB (1G blocks) on both platforms
-    local avail_gb
-    avail_gb=$(echo "$df_out" | awk '{print $4}' | sed 's/G//')
-
-    # Fallback if df failed or timed out
-    avail_gb=${avail_gb:-0}
-    if [[ ! "$avail_gb" =~ ^[0-9]+$ ]]; then
-        avail_gb=0
+    # POSIX -k output: column 4 = available space in 1024-byte blocks → GB
+    local avail_kb
+    avail_kb=$(echo "$df_out" | awk '{print $4}')
+    avail_kb=${avail_kb:-0}
+    if [[ ! "$avail_kb" =~ ^[0-9]+$ ]]; then
+        avail_kb=0
     fi
+    local avail_gb=$(( avail_kb / 1048576 ))
 
     if [[ $avail_gb -lt $required_gb ]]; then
         warning "Low disk space: ${avail_gb} GB available (recommend ${required_gb}+ GB for ${n_samples} sample(s))"
