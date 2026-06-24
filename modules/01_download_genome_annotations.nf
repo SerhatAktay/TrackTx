@@ -117,22 +117,92 @@ process download_genome_annotations {
 
   # UCSC RefSeq (default)
   # UCSC uses two filename conventions depending on the assembly:
-  #   1. Prefixed:   \${ASM}.ncbiRefSeq.gtf.gz  (most assemblies)
+  #   1. Prefixed:   \${ASM}.ncbiRefSeq.gtf.gz  (most assemblies, incl. hs1)
   #   2. Unprefixed: ncbiRefSeq.gtf.gz          (some assemblies, e.g. canFam6)
-  # We resolve the correct URL dynamically via HTTP HEAD checks rather than
-  # hardcoding per-assembly exceptions, so this works for any genome.
+  # We resolve the correct URL dynamically by probing candidates in priority
+  # order, so this works for any genome.
   UCSC_BASE_HTTPS="https://hgdownload.soe.ucsc.edu/goldenPath/\${ASM}/bigZips/genes"
 
+  # Probe whether a URL exists. NOTE: UCSC hgdownload does NOT reliably answer
+  # HTTP HEAD requests for these .gtf.gz files (HEAD returns errors even when
+  # the file exists and GET succeeds — this previously broke hs1). So we probe
+  # with a 1-byte ranged GET instead, which UCSC honours correctly.
+  _url_exists() {
+    curl -fsSL --max-time 15 --retry 2 --retry-delay 2 -r 0-0 -o /dev/null "\$1" 2>/dev/null
+  }
+
+  # Candidate GTF filenames under .../bigZips/genes/, in priority order.
+  UCSC_GTF_CANDIDATES=( \\
+    "\${ASM}.ncbiRefSeq.gtf.gz" \\
+    "ncbiRefSeq.gtf.gz" \\
+    "\${ASM}.refGene.gtf.gz" \\
+    "refGene.gtf.gz" )
+
+  # NCBI RefSeq direct-download base URL per assembly (final fallback when all
+  # of UCSC is unreachable). The path encodes the GCF accession split into
+  # 3-digit groups, e.g. GCF_009914755.1 -> /GCF/009/914/755/.
+  _ncbi_refseq_base() {
+    case "\${ASM}" in
+      hg38|GRCh38) echo "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.40_GRCh38.p14" ;;
+      hg19|GRCh37) echo "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/405/GCF_000001405.25_GRCh37.p13" ;;
+      mm39|GRCm39) echo "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/635/GCF_000001635.27_GRCm39" ;;
+      mm10|GRCm38) echo "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/635/GCF_000001635.26_GRCm38.p6" ;;
+      hs1)         echo "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/009/914/755/GCF_009914755.1_T2T-CHM13v2.0" ;;
+      *) return 1 ;;
+    esac
+  }
+
+  # Download RefSeq GTF straight from NCBI and rename sequence IDs to UCSC-style
+  # chromosome names (chr1, chrX, ...) using the assembly_report.txt shipped in
+  # the same NCBI directory. Writes the decompressed, renamed GTF to \$1.
+  # Returns non-zero if no NCBI mapping exists or any download fails.
+  _fetch_ncbi_refseq() {
+    local out="\$1" base acc gtf_url rep_url tmpdir
+    base="\$(_ncbi_refseq_base)" || { echo "GTF | FETCH | No NCBI RefSeq mapping for \${ASM}" >&2; return 1; }
+    acc="\$(basename "\${base}")"
+    gtf_url="\${base}/\${acc}_genomic.gtf.gz"
+    rep_url="\${base}/\${acc}_assembly_report.txt"
+    tmpdir="\$(mktemp -d "\${CACHE_DIR}/.ncbi_\${ASM}.XXXXXX")"
+
+    echo "GTF | FETCH | NCBI assembly report: \${rep_url}" >&2
+    if ! curl -fsSL --retry 3 --retry-delay 4 "\${rep_url}" > "\${tmpdir}/report.txt"; then
+      echo "GTF | FETCH | Failed to fetch NCBI assembly report" >&2
+      rm -rf "\${tmpdir}"; return 1
+    fi
+
+    echo "GTF | FETCH | NCBI RefSeq GTF: \${gtf_url}" >&2
+    if ! curl -fsSL --retry 3 --retry-delay 4 "\${gtf_url}" | gunzip -c > "\${tmpdir}/raw.gtf"; then
+      echo "GTF | FETCH | Failed to fetch NCBI RefSeq GTF" >&2
+      rm -rf "\${tmpdir}"; return 1
+    fi
+
+    # Build RefSeq-Accn (col 7) -> UCSC-style-name (col 10) map, skipping
+    # comment lines and entries with no UCSC name ('na').
+    awk -F'\\t' '!/^#/ && \$7!="na" && \$10!="na" {print \$7"\\t"\$10}' \\
+      "\${tmpdir}/report.txt" > "\${tmpdir}/chrmap.tsv"
+
+    local mapped
+    mapped=\$(wc -l < "\${tmpdir}/chrmap.tsv" | tr -d ' ')
+    echo "GTF | FETCH | Renaming sequence IDs to UCSC convention (\${mapped} contigs mapped)" >&2
+
+    # Rename column 1 of the GTF using the map; lines whose seqid has no UCSC
+    # equivalent are dropped (they would not match the UCSC genome index).
+    awk -F'\\t' 'BEGIN{OFS="\\t"}
+      NR==FNR { m[\$1]=\$2; next }
+      /^#/    { print; next }
+      (\$1 in m) { \$1=m[\$1]; print }' \\
+      "\${tmpdir}/chrmap.tsv" "\${tmpdir}/raw.gtf" > "\${out}"
+
+    rm -rf "\${tmpdir}"
+    [[ -s "\${out}" ]]
+  }
+
   _resolve_ucsc_gtf_url() {
-    for url in \\
-      "\${UCSC_BASE_HTTPS}/\${ASM}.ncbiRefSeq.gtf.gz" \\
-      "\${UCSC_BASE_HTTPS}/ncbiRefSeq.gtf.gz" \\
-      "\${UCSC_BASE_HTTPS}/\${ASM}.refGene.gtf.gz" \\
-      "\${UCSC_BASE_HTTPS}/refGene.gtf.gz"
-    do
-      echo "GTF | FETCH | Probing: \${url}" >&2
-      if curl -fsSI --max-time 10 "\${url}" >/dev/null 2>&1; then
-        echo "\${url}"
+    local f
+    for f in "\${UCSC_GTF_CANDIDATES[@]}"; do
+      echo "GTF | FETCH | Probing: \${UCSC_BASE_HTTPS}/\${f}" >&2
+      if _url_exists "\${UCSC_BASE_HTTPS}/\${f}"; then
+        echo "\${UCSC_BASE_HTTPS}/\${f}"
         return 0
       fi
     done
@@ -286,44 +356,54 @@ process download_genome_annotations {
       fi
     fi
 
-    # ── Source 4: UCSC (rsync → https fallback) ──
+    # ── Source 4: UCSC rsync → UCSC HTTPS → NCBI RefSeq ──
     if [[ \${FETCH_SUCCESS} -eq 0 && "\${ASM}" != "other" ]]; then
       echo "GTF | FETCH | Downloading from UCSC: \${ASM}"
 
-      # Dynamically resolve which GTF filename UCSC uses for this assembly.
-      # Candidates are probed in priority order via HTTP HEAD (no data transfer).
-      echo "GTF | FETCH | Resolving UCSC GTF URL for \${ASM}..."
-      if HTTPS_URL=\$(_resolve_ucsc_gtf_url); then
-        echo "GTF | FETCH | Resolved URL: \${HTTPS_URL}"
-        # Derive rsync URL from the resolved HTTPS URL
-        RSYNC_URL="\$(echo "\${HTTPS_URL}" | sed 's|https://|rsync://|')"
-      else
-        tracktx_error "download_genome_annotations" \\
-          "Could not find a GTF file on UCSC for assembly: \${ASM}" \\
-          "Check UCSC availability or supply a custom GTF via --gtf_url / --gtf_path"
-      fi
-
-      # Try rsync first (faster, resumable)
+      # 4a) UCSC rsync first (faster, resumable). Try each candidate filename
+      #     directly — no HTTPS probe needed, so this still works if the UCSC
+      #     web frontend is down but rsync is up.
       if command -v rsync >/dev/null 2>&1; then
-        echo "GTF | FETCH | Attempting rsync download..."
-        if rsync --quiet "\${RSYNC_URL}" - 2>/dev/null | gunzip -c > "\${GTF_TEMP}"; then
-          FETCH_SUCCESS=1
-          echo "GTF | FETCH | Rsync download successful"
-        else
-          echo "GTF | FETCH | Rsync failed, will try HTTPS..."
-        fi
+        for f in "\${UCSC_GTF_CANDIDATES[@]}"; do
+          RSYNC_URL="rsync://hgdownload.soe.ucsc.edu/goldenPath/\${ASM}/bigZips/genes/\${f}"
+          echo "GTF | FETCH | Attempting rsync: \${RSYNC_URL}"
+          if rsync --quiet "\${RSYNC_URL}" - 2>/dev/null | gunzip -c > "\${GTF_TEMP}" && [[ -s "\${GTF_TEMP}" ]]; then
+            FETCH_SUCCESS=1
+            echo "GTF | FETCH | Rsync download successful (\${f})"
+            break
+          fi
+        done
       else
-        echo "GTF | FETCH | Rsync not available, using HTTPS..."
+        echo "GTF | FETCH | rsync not available, will try HTTPS..."
       fi
 
-      # Fallback to HTTPS
+      # 4b) UCSC HTTPS — resolve the correct candidate via ranged-GET probe.
       if [[ \${FETCH_SUCCESS} -eq 0 ]]; then
-        echo "GTF | FETCH | Downloading via HTTPS..."
-        if curl -fsSL --retry 3 --retry-delay 4 "\${HTTPS_URL}" | gunzip -c > "\${GTF_TEMP}"; then
-          FETCH_SUCCESS=1
-          echo "GTF | FETCH | HTTPS download successful"
+        echo "GTF | FETCH | Resolving UCSC HTTPS GTF URL for \${ASM}..."
+        if HTTPS_URL=\$(_resolve_ucsc_gtf_url); then
+          echo "GTF | FETCH | Resolved URL: \${HTTPS_URL}"
+          echo "GTF | FETCH | Downloading via HTTPS..."
+          if curl -fsSL --retry 3 --retry-delay 4 "\${HTTPS_URL}" | gunzip -c > "\${GTF_TEMP}" && [[ -s "\${GTF_TEMP}" ]]; then
+            FETCH_SUCCESS=1
+            echo "GTF | FETCH | HTTPS download successful"
+          else
+            echo "GTF | FETCH | HTTPS download failed, will try NCBI RefSeq..."
+          fi
         else
-          tracktx_error "download_genome_annotations" "HTTPS download failed" "Check network and UCSC availability"
+          echo "GTF | FETCH | UCSC unavailable, will try NCBI RefSeq..."
+        fi
+      fi
+
+      # 4c) NCBI RefSeq direct (final fallback) — seq IDs renamed to UCSC names.
+      if [[ \${FETCH_SUCCESS} -eq 0 ]]; then
+        echo "GTF | FETCH | Falling back to NCBI RefSeq for \${ASM}..."
+        if _fetch_ncbi_refseq "\${GTF_TEMP}"; then
+          FETCH_SUCCESS=1
+          echo "GTF | FETCH | NCBI RefSeq download successful"
+        else
+          tracktx_error "download_genome_annotations" \\
+            "Could not obtain GTF from UCSC (rsync/HTTPS) or NCBI RefSeq for assembly: \${ASM}" \\
+            "Check network, UCSC/NCBI availability, or supply a custom GTF via --gtf_url / --gtf_path"
         fi
       fi
     fi
