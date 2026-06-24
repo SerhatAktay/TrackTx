@@ -370,21 +370,42 @@ def looks_like_hash(s: str) -> bool:
 # ═══════════════════════════════════════════════════════════════
 
 def predict_completion_eta(world: World) -> Optional[float]:
-    """Estimate seconds until pipeline completion based on process stats"""
+    """Estimate seconds until pipeline completion.
+
+    Combines (a) the remaining time on the currently-running tasks with
+    (b) a rough estimate for queued tasks, spread across the available
+    parallelism. Previously this only returned the single longest running
+    task's remaining time and ignored the queue entirely, badly
+    under-estimating ETA whenever work was still waiting to start.
+    """
     running = [t for t in world.tasks.values() if t.state == "RUNNING"]
-    if not running:
+    queued = [t for t in world.tasks.values()
+              if t.state not in ("RUNNING", "COMPLETED", "FAILED", "CACHED", "KILLED")]
+    if not running and not queued:
         return 0.0
-    
-    # Use process averages to estimate remaining time
-    max_remaining = 0.0
+
+    def _avg(name: str) -> Optional[float]:
+        stats = world.proc_stats.get(name)
+        return stats.avg_duration if stats else None
+
+    # (a) Remaining time on running tasks
+    running_remaining = 0.0
     for task in running:
-        stats = world.proc_stats.get(task.name)
-        if stats and stats.avg_duration:
-            runtime = task.runtime() or 0
-            remaining = max(0, stats.avg_duration - runtime)
-            max_remaining = max(max_remaining, remaining)
-    
-    return max_remaining if max_remaining > 0 else None
+        avg = _avg(task.name)
+        if avg:
+            running_remaining = max(running_remaining, max(0.0, avg - (task.runtime() or 0)))
+
+    # (b) Queued work, divided by how many tasks can run at once
+    parallelism = max(1, len(running) or get_ncpu() // 2 or 1)
+    queued_work = 0.0
+    for task in queued:
+        avg = _avg(task.name)
+        if avg:
+            queued_work += avg
+    queued_eta = queued_work / parallelism if queued_work else 0.0
+
+    eta = running_remaining + queued_eta
+    return eta if eta > 0 else None
 
 def identify_slow_tasks(world: World) -> List[Task]:
     """Find tasks running >1.5x their process average"""
@@ -479,21 +500,37 @@ def guess_work_root(log_path: str, cli: str) -> str:
             return c
     return abspath(os.environ.get("NXF_WORK") or "work")
 
+_NCPU_CACHE: Optional[int] = None
+
+def get_ncpu() -> int:
+    """Return CPU count (cached — it never changes during a run)"""
+    global _NCPU_CACHE
+    if _NCPU_CACHE is not None:
+        return _NCPU_CACHE
+    n = 0
+    try:
+        if sys.platform.startswith("darwin"):
+            n = int(subprocess.check_output(["sysctl", "-n", "hw.ncpu"], text=True))
+        else:
+            n = int(subprocess.check_output(["bash", "-lc", "nproc 2>/dev/null || getconf _NPROCESSORS_ONLN"], text=True))
+    except Exception:
+        n = os.cpu_count() or 0
+    _NCPU_CACHE = n
+    return n
+
 def sys_metrics() -> Tuple[int, int, str]:
     """Get system CPU%, memory%, and load average"""
     cpu = 0
     mem = 0
     load = "0.00"
-    
+
     try:
+        ncpu = max(1, get_ncpu())
         if sys.platform.startswith("darwin"):
-            ncpu = int(subprocess.check_output(["sysctl", "-n", "hw.ncpu"], text=True))
             vals = [float(x) for x in subprocess.check_output(["ps", "-A", "-o", "%cpu="], text=True).split() if x.strip()]
-            cpu = int(round(min(100.0, max(0.0, sum(vals) / max(1, ncpu)))))
         else:
-            ncpu = int(subprocess.check_output(["bash", "-lc", "nproc 2>/dev/null || getconf _NPROCESSORS_ONLN"], text=True))
             vals = [float(x) for x in subprocess.check_output(["bash", "-lc", "ps -A -o %cpu= || true"], text=True).split() if x.strip()]
-            cpu = int(round(min(100.0, max(0.0, sum(vals) / max(1, ncpu)))))
+        cpu = int(round(min(100.0, max(0.0, sum(vals) / ncpu))))
     except Exception:
         pass
     
@@ -1007,8 +1044,20 @@ def _ps_snapshot() -> List[Tuple[int, int, float, float, str]]:
         pass
     return out
 
+# Docker is slow to query; cache the workdir→container map and stats briefly so
+# we don't spawn `docker ps`/`inspect`/`stats` for every task on every refresh.
+_DOCKER_MAP_CACHE: Tuple[float, Dict[str, str]] = (0.0, {})
+_DOCKER_STATS_CACHE: Tuple[float, Dict[str, Tuple[Optional[float], Optional[float]]]] = (0.0, {})
+_DOCKER_CACHE_TTL = 4.0  # seconds
+
 def docker_containers_map() -> Dict[str, str]:
-    """Map work directories to Docker container IDs"""
+    """Map work directories to Docker container IDs (cached for a few seconds)"""
+    global _DOCKER_MAP_CACHE
+    now = time.time()
+    ts, cached = _DOCKER_MAP_CACHE
+    if now - ts < _DOCKER_CACHE_TTL:
+        return cached
+
     mapping = {}
     try:
         out = subprocess.check_output(
@@ -1017,22 +1066,74 @@ def docker_containers_map() -> Dict[str, str]:
         )
         container_ids = [cid.strip() for cid in out.strip().splitlines() if cid.strip()]
 
-        for container_id in container_ids:
+        # One `docker inspect` for ALL containers instead of one per container.
+        if container_ids:
             try:
                 cmd_out = subprocess.check_output(
-                    ["docker", "inspect", container_id, "--format", "{{.Path}} {{join .Args \" \"}}"],
+                    ["docker", "inspect", "--format",
+                     "{{.Id}}\t{{.Path}} {{join .Args \" \"}}"] + container_ids,
                     text=True, stderr=subprocess.DEVNULL
                 )
-                # Match work dir: .../work/xx/hash (with optional trailing / or .command.run)
-                match = re.search(r'(/[^\s]+/work/[0-9a-f]{2}/[0-9a-f]+)', cmd_out)
-                if match:
-                    workdir = os.path.normpath(match.group(1).rstrip("/"))
-                    mapping[workdir] = container_id
+                for ln in cmd_out.splitlines():
+                    if "\t" not in ln:
+                        continue
+                    cid, rest = ln.split("\t", 1)
+                    match = re.search(r'(/[^\s]+/work/[0-9a-f]{2}/[0-9a-f]+)', rest)
+                    if match:
+                        workdir = os.path.normpath(match.group(1).rstrip("/"))
+                        mapping[workdir] = cid.strip()[:12]
             except Exception:
-                continue
+                pass
     except Exception:
         pass
+    _DOCKER_MAP_CACHE = (now, mapping)
     return mapping
+
+def docker_stats_all() -> Dict[str, Tuple[Optional[float], Optional[float]]]:
+    """Single `docker stats --no-stream` for all running containers (cached).
+
+    Returns {short_id: (cpu_pct, rss_mb)}. One subprocess instead of one
+    blocking ~1s call per container per refresh.
+    """
+    global _DOCKER_STATS_CACHE
+    now = time.time()
+    ts, cached = _DOCKER_STATS_CACHE
+    if now - ts < _DOCKER_CACHE_TTL:
+        return cached
+
+    stats: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
+    try:
+        out = subprocess.check_output(
+            ["docker", "stats", "--no-stream", "--format",
+             "{{.ID}}\t{{.CPUPerc}}\t{{.MemUsage}}"],
+            text=True, stderr=subprocess.DEVNULL, timeout=5
+        )
+        for ln in out.strip().splitlines():
+            parts = ln.split("\t")
+            if len(parts) < 3:
+                continue
+            cid = parts[0].strip()[:12]
+            cpu_str = parts[1].strip().rstrip('%')
+            try:
+                cpu = float(cpu_str) if cpu_str else None
+            except ValueError:
+                cpu = None
+            mem_str = parts[2].split('/')[0].strip()
+            rss_mb: Optional[float] = None
+            try:
+                if 'GiB' in mem_str or 'GB' in mem_str:
+                    rss_mb = float(mem_str.replace('GiB', '').replace('GB', '').strip()) * 1024
+                elif 'MiB' in mem_str or 'MB' in mem_str:
+                    rss_mb = float(mem_str.replace('MiB', '').replace('MB', '').strip())
+                elif 'KiB' in mem_str or 'KB' in mem_str:
+                    rss_mb = float(mem_str.replace('KiB', '').replace('KB', '').strip()) / 1024
+            except ValueError:
+                rss_mb = None
+            stats[cid] = (cpu, rss_mb)
+    except Exception:
+        pass
+    _DOCKER_STATS_CACHE = (now, stats)
+    return stats
 
 def docker_stats_for_container(container_id: str) -> Tuple[Optional[float], Optional[float]]:
     """Get %cpu, rss_mb for Docker container"""
@@ -1374,9 +1475,12 @@ def classify(world: World):
     active_dirs = running_dirs(roots)
     seen_ids = set()
     
-    # Get Docker container mapping (if using Docker executor)
+    # Get Docker container mapping + stats (if using Docker executor).
+    # Both are cached and batched so this is at most two subprocesses per refresh,
+    # not one-per-container.
     docker_map = docker_containers_map()
-    
+    docker_stats = docker_stats_all() if docker_map else {}
+
     for d in active_dirs:
         tid = "/".join(d.rstrip("/").split("/")[-2:])
         seen_ids.add(tid)
@@ -1396,7 +1500,7 @@ def classify(world: World):
                     if key != tid:
                         try:
                             del world.tasks[key]
-                        except:
+                        except Exception:
                             pass
                     break
         
@@ -1414,7 +1518,7 @@ def classify(world: World):
         d_norm = os.path.normpath(d.rstrip("/"))
         container_id = docker_map.get(d_norm) or docker_map.get(d)
         if container_id:
-            cpu, rss = docker_stats_for_container(container_id)
+            cpu, rss = docker_stats.get(container_id, (None, None))
             if cpu is not None:
                 t.metrics.cpu_pct = cpu
                 got_metrics = True
@@ -1531,25 +1635,29 @@ def classify(world: World):
         if not (t.name or t.tag):
             ensure_task_label_from_fs(world, t)
     
-    # Update process stats
+    # Update process stats. Tally per-name counts in a single pass (was O(N^2):
+    # a nested scan of all tasks for every task) and set total = sum of states so
+    # it stays consistent with the displayed breakdown.
+    counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for t in world.tasks.values():
         if not t.name:
             continue
-        if t.name not in world.proc_stats:
-            world.proc_stats[t.name] = ProcessStats(name=t.name)
-        
-        ps = world.proc_stats[t.name]
-        ps.total = max(ps.total, 1)  # Ensure at least 1
-        
-        if t.state == "RUNNING":
-            ps.running = len([x for x in world.tasks.values() if x.name == t.name and x.state == "RUNNING"])
-        elif t.state == "COMPLETED":
-            ps.completed = len([x for x in world.tasks.values() if x.name == t.name and x.state == "COMPLETED"])
-            ps.update(t)
-        elif t.state == "FAILED":
-            ps.failed = len([x for x in world.tasks.values() if x.name == t.name and x.state == "FAILED"])
-        elif t.state == "CACHED":
-            ps.cached = len([x for x in world.tasks.values() if x.name == t.name and x.state == "CACHED"])
+        counts[t.name][t.state or ""] += 1
+
+    for name, c in counts.items():
+        if name not in world.proc_stats:
+            world.proc_stats[name] = ProcessStats(name=name)
+        ps = world.proc_stats[name]
+        ps.running = c.get("RUNNING", 0)
+        ps.completed = c.get("COMPLETED", 0)
+        ps.failed = c.get("FAILED", 0)
+        ps.cached = c.get("CACHED", 0)
+        ps.total = ps.running + ps.completed + ps.failed + ps.cached + c.get("KILLED", 0)
+
+    # Record durations for completed tasks (for avg/median/p95)
+    for t in world.tasks.values():
+        if t.name and t.state == "COMPLETED":
+            world.proc_stats[t.name].update(t)
     
     # Mark slow tasks
     for t in run:
@@ -1804,13 +1912,7 @@ class TUI:
         # Compute cores in use
         cores_in_use = sum([max(0.0, t.metrics.cpus or 0) for t in run])
         if self.w.ncpu <= 0:
-            try:
-                if sys.platform.startswith("darwin"):
-                    self.w.ncpu = int(subprocess.check_output(["sysctl", "-n", "hw.ncpu"], text=True))
-                else:
-                    self.w.ncpu = int(subprocess.check_output(["bash", "-lc", "nproc 2>/dev/null || getconf _NPROCESSORS_ONLN"], text=True))
-            except Exception:
-                pass
+            self.w.ncpu = get_ncpu()
         
         # Progress: snapshot-based (completed+cached vs all known tasks)
         pct = C.get("progress_pct", 0)
@@ -2079,10 +2181,9 @@ def main():
     if a.resolve_hash:
         key = a.resolve_hash.strip()
         wanted = key.split("/")[-1]
-        
-        if os.path.isfile(log):
-            bootstrap(w, log)
-        
+
+        # Note: the log was already bootstrapped above during startup; don't
+        # re-parse it here (that double-counted every task).
         for row in tail_trace(w):
             apply_trace_row(w, row, time.time())
         
@@ -2230,10 +2331,10 @@ def main():
             stop_keys = {"stop": False}
             filter_state = {"proc": None}
             def _key_thread():
+                import sys, termios, tty, select
+                fd = sys.stdin.fileno()
+                old = termios.tcgetattr(fd)
                 try:
-                    import sys, termios, tty, select
-                    fd = sys.stdin.fileno()
-                    old = termios.tcgetattr(fd)
                     tty.setcbreak(fd)
                     while not stop_keys["stop"]:
                         r,_,_ = select.select([sys.stdin], [], [], 0.05)
@@ -2272,9 +2373,16 @@ def main():
                                 except ValueError:
                                     idx = 0
                                 filter_state['sort'] = order[(idx+1) % len(order)]
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
                 except Exception:
                     pass
+                finally:
+                    # Always restore the terminal, even if the Live loop exits
+                    # while we're blocked in select() — otherwise the user's
+                    # shell is left in cbreak/no-echo mode after quitting.
+                    try:
+                        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                    except Exception:
+                        pass
 
             def render():
                 import shutil
@@ -2297,17 +2405,12 @@ def main():
                 if mode:
                     hdr.append(f"Mode: {mode}\n")
                 # compute cores-in-use and ETA similar to curses UI
-                run,que,C=classify(w)
+                # (classify() already called once above — do not call it again,
+                #  it walks the work dir + queries Docker and is expensive)
                 cores_in_use = sum([max(0.0, t.metrics.cpus) for t in run if t.metrics.cpus is not None])
                 # determine total cores
                 if w.ncpu <= 0:
-                    try:
-                        if sys.platform.startswith("darwin"):
-                            w.ncpu=int(subprocess.check_output(["sysctl","-n","hw.ncpu"],text=True))
-                        else:
-                            w.ncpu=int(subprocess.check_output(["bash","-lc","nproc 2>/dev/null || getconf _NPROCESSORS_ONLN"],text=True))
-                    except Exception:
-                        w.ncpu = 0
+                    w.ncpu = get_ncpu()
                 # fallback cores-in-use using sum of cpu_pct when cpus missing
                 if cores_in_use <= 0 and w.ncpu>0:
                     approx = 0.0

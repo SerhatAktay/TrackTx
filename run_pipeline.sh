@@ -118,6 +118,8 @@ detect_hpc() {
 
 # Check if path is on network storage (NFS, SMB, etc.)
 # Uses timeout to avoid hanging on stale/slow NFS mounts
+# NOTE: Linux-only — `df -T` (filesystem type) is not available on macOS, so
+# network mounts on a Mac are intentionally treated as local here.
 is_network_storage() {
     local path="${1:-.}"
 
@@ -607,7 +609,9 @@ check_disk_space() {
     # Use timeout to avoid hang on external/slow drives (df can block indefinitely)
     local df_tmp
     df_tmp=$(mktemp 2>/dev/null || echo "/tmp/tracktx_df_$$")
-    local df_args="."
+    # Ask df for GB-sized blocks on both platforms so we read column 4 directly
+    # and don't depend on the default block size (macOS historically 512-byte).
+    local df_args="-g ."
     [[ "$OSTYPE" != "darwin"* ]] && df_args="-BG ."
 
     if has_command timeout; then
@@ -634,14 +638,9 @@ check_disk_space() {
         rm -f "$df_tmp" 2>/dev/null
     fi
 
+    # Column 4 = available space, now in GB (1G blocks) on both platforms
     local avail_gb
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        local avail_blocks
-        avail_blocks=$(echo "$df_out" | awk '{print $4}')
-        avail_gb=$((avail_blocks / 2097152))  # 512-byte blocks to GB
-    else
-        avail_gb=$(echo "$df_out" | awk '{print $4}' | sed 's/G//')
-    fi
+    avail_gb=$(echo "$df_out" | awk '{print $4}' | sed 's/G//')
 
     # Fallback if df failed or timed out
     avail_gb=${avail_gb:-0}
@@ -1118,6 +1117,9 @@ main() {
     local NF_VERSION
     # Anchor to the manifest `version = '...'` line (^\s*version=), so we don't
     # accidentally match `nextflowVersion = '>=26.04.0'` and pull the wrong tag.
+    # The image tag must match a published tag of ghcr.io/serhataktay/tracktx —
+    # keep manifest.version in nextflow.config in sync with the pushed image tag,
+    # or the fallback "3.0" below will be pulled.
     NF_VERSION=$(grep -E "^\s*version\s*=" nextflow.config 2>/dev/null | head -1 | grep -oE "[0-9][0-9.]*" || echo "3.0")
     local TRACKTX_IMAGE="ghcr.io/serhataktay/tracktx:${NF_VERSION}"
 
@@ -1127,7 +1129,11 @@ main() {
             echo -e "  Image:   ${BOLD}${TRACKTX_IMAGE}${NC}"
             echo ""
             info "Pulling image (may take a few minutes on first run)..."
-            if docker pull "$TRACKTX_IMAGE" 2>&1 | grep -v "scout\|What's next\|View a summary\|^ghcr.io"; then
+            # Key success off docker's own exit code (PIPESTATUS[0]), NOT the
+            # trailing grep — when every output line matches the filter, grep
+            # exits non-zero and would otherwise report a false "Pull failed".
+            docker pull "$TRACKTX_IMAGE" 2>&1 | grep -v "scout\|What's next\|View a summary\|^ghcr.io" || true
+            if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
                 success "Image ready"
             else
                 warning "Pull failed — using cached image (pipeline will still run if cached)"
