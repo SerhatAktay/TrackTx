@@ -301,11 +301,11 @@ process generate_coverage_tracks {
     
     # Sort budget: cap per-sort memory so it stays in RAM rather than spilling
     # thousands of tiny temp files (catastrophic on slow/USB work dirs), without
-    # oversubscribing the task's RAM. Up to 4 generate_coverage jobs run
-    # concurrently (pos/neg sorts within each are sequential, but across jobs they
-    # overlap), so each sort claims ~1/4 of the 70% budget. Temp goes to a fast
-    # dir (never the USB-backed work dir). Override with SORT_MEM / SORT_TMPDIR.
-    : "\${SORT_MEM:=\$(( ${task.memory.toGiga()} * 70 / 100 / 4 ))G}"
+    # oversubscribing the task's RAM. SORT_MEM and the concurrency cap (MAX_PAR)
+    # are computed together in the concurrency section below and exported, so this
+    # default is just a standalone fallback. Temp goes to a fast dir (never the
+    # USB-backed work dir). Override with SORT_MEM / SORT_TMPDIR.
+    : "\${SORT_MEM:=\$(( ${task.memory.toGiga()} * 50 / 100 / 2 ))G}"
     : "\${SORT_TMP:=\${SORT_TMPDIR:-/tmp}}"
     mkdir -p "\${SORT_TMP}" 2>/dev/null || SORT_TMP=/tmp
 
@@ -556,25 +556,57 @@ process generate_coverage_tracks {
   echo "TRACKS | 3P | Generating 3' end coverage tracks..."
   echo "────────────────────────────────────────────────────────────────────────"
 
-  # All four jobs are independent (different BAM inputs, different output
-  # prefixes) and each is single-threaded, so they run concurrently on
-  # separate cores.  Log output will be interleaved; each job identifies
+  # The four coverage jobs are independent, but each is NOT free in RAM:
+  #   • bedtools genomecov -ibam allocates a full-length counts array for the
+  #     current chromosome (~1 GB for hs1 chr1), and
+  #   • its sort buffers up to SORT_MEM.
+  # Running all four at once (genomecov + sort × 4) overruns the task memory
+  # cgroup on memory-modest hosts and the kernel OOM-kills a genomecov
+  # (observed: allMap 3' "Killed" with this process capped at a few GB). So cap
+  # concurrency by the task's memory budget instead of always launching 4.
+  #
+  # Budget each running job at ~2 GB peak (genomecov array + sort buffer) and
+  # use up to ~70% of the task memory, never more than the allotted CPUs.
+  MEM_GB=${task.memory.toGiga()}
+  MAX_PAR=\$(( MEM_GB * 70 / 100 / 2 ))
+  [ "\${MAX_PAR}" -lt 1 ] && MAX_PAR=1
+  [ "\${MAX_PAR}" -gt ${task.cpus} ] && MAX_PAR=${task.cpus}
+  MAX_PAR=\${TRACKS_MAX_PAR:-\${MAX_PAR}}
+
+  # Per-sort memory scaled to the chosen concurrency (≤50% of budget shared
+  # across the at-most-MAX_PAR concurrent sorts). Temp on a fast dir, not USB.
+  SORT_MEM=\$(( MEM_GB * 50 / 100 / MAX_PAR ))
+  [ "\${SORT_MEM}" -lt 1 ] && SORT_MEM=1
+  export SORT_MEM="\${SORT_MEM}G"
+  export SORT_TMP="\${SORT_TMPDIR:-/tmp}"
+  echo "TRACKS | 3P | Concurrency: \${MAX_PAR} parallel job(s), SORT_MEM=\${SORT_MEM} each (task mem=\${MEM_GB}G)"
+
+  # Throttled fan-out: never let more than MAX_PAR generate_coverage run at once.
+  # Each job records its own failure to a flag file so all per-job errors land in
+  # the log before we abort. Log output is interleaved; each job identifies
   # itself via its BAM filename in the TRACKS | COVERAGE messages.
+  COV_FAIL_FLAG="cov_fail.flag"
+  rm -f "\${COV_FAIL_FLAG}"
+
+  run_cov() {
+    generate_coverage "\$1" "\$2" "\$3" || echo "FAIL: \$3" >> "\${COV_FAIL_FLAG}"
+  }
+  throttle() {
+    while [ "\$(jobs -rp | wc -l)" -ge "\${MAX_PAR}" ]; do
+      wait -n 2>/dev/null || true
+    done
+  }
+
   # Use the PE-filtered BAMs (Read2-only) in PE mode; full BAMs in SE mode.
-  pids=()
-  generate_coverage "\${BAM_FOR_COVERAGE}"        "3" "3p/\${SAMPLE_ID}.3p"        & pids+=(\$!)
-  generate_coverage "\${ALLMAP_BAM_FOR_COVERAGE}" "3" "3p/\${SAMPLE_ID}.allMap.3p" & pids+=(\$!)
-  generate_coverage "\${BAM_FOR_COVERAGE}"        "5" "5p/\${SAMPLE_ID}.5p"        & pids+=(\$!)
-  generate_coverage "\${ALLMAP_BAM_FOR_COVERAGE}" "5" "5p/\${SAMPLE_ID}.allMap.5p" & pids+=(\$!)
+  throttle; run_cov "\${BAM_FOR_COVERAGE}"        "3" "3p/\${SAMPLE_ID}.3p"        &
+  throttle; run_cov "\${ALLMAP_BAM_FOR_COVERAGE}" "3" "3p/\${SAMPLE_ID}.allMap.3p" &
+  throttle; run_cov "\${BAM_FOR_COVERAGE}"        "5" "5p/\${SAMPLE_ID}.5p"        &
+  throttle; run_cov "\${ALLMAP_BAM_FOR_COVERAGE}" "5" "5p/\${SAMPLE_ID}.allMap.5p" &
+  wait
 
-  # Wait for all jobs; collect failures rather than exiting on the first one
-  # so all error messages appear in the log before tracktx_error aborts.
-  COVERAGE_FAILED=0
-  for pid in "\${pids[@]}"; do
-    wait "\${pid}" || COVERAGE_FAILED=1
-  done
-
-  if [[ \${COVERAGE_FAILED} -ne 0 ]]; then
+  if [[ -s "\${COV_FAIL_FLAG}" ]]; then
+    echo "TRACKS | ERROR | Failed coverage jobs:"
+    sed 's/^/TRACKS | ERROR |   /' "\${COV_FAIL_FLAG}"
     tracktx_error "generate_coverage_tracks" "One or more coverage generation jobs failed" "Check tracks.log for per-job error messages"
   fi
 
