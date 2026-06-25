@@ -585,24 +585,45 @@ process generate_coverage_tracks {
   # Each job records its own failure to a flag file so all per-job errors land in
   # the log before we abort. Log output is interleaved; each job identifies
   # itself via its BAM filename in the TRACKS | COVERAGE messages.
+  #
+  # IMPORTANT: track our OWN job PIDs explicitly and wait on those PIDs only.
+  # We must NOT use bare \`wait\` or \`wait -n\`: the \`exec > >(tee ...)\` process
+  # substitutions at the top of this script spawn long-lived \`tee\` children that
+  # never exit until the script's FDs close, so a bare wait would block on them
+  # forever ("process hasn't exited" → Nextflow kills the hung task). Likewise we
+  # throttle by polling our tracked PIDs with \`kill -0\`, not \`jobs\`.
   COV_FAIL_FLAG="cov_fail.flag"
   rm -f "\${COV_FAIL_FLAG}"
 
   run_cov() {
     generate_coverage "\$1" "\$2" "\$3" || echo "FAIL: \$3" >> "\${COV_FAIL_FLAG}"
   }
-  throttle() {
-    while [ "\$(jobs -rp | wc -l)" -ge "\${MAX_PAR}" ]; do
-      wait -n 2>/dev/null || true
+
+  COV_PIDS=()
+  launch_cov() {
+    # Block until fewer than MAX_PAR of OUR jobs are still alive.
+    while :; do
+      local alive=0 p
+      for p in "\${COV_PIDS[@]:-}"; do
+        [ -n "\${p}" ] && kill -0 "\${p}" 2>/dev/null && alive=\$(( alive + 1 ))
+      done
+      [ "\${alive}" -lt "\${MAX_PAR}" ] && break
+      sleep 0.5
     done
+    run_cov "\$1" "\$2" "\$3" &
+    COV_PIDS+=(\$!)
   }
 
   # Use the PE-filtered BAMs (Read2-only) in PE mode; full BAMs in SE mode.
-  throttle; run_cov "\${BAM_FOR_COVERAGE}"        "3" "3p/\${SAMPLE_ID}.3p"        &
-  throttle; run_cov "\${ALLMAP_BAM_FOR_COVERAGE}" "3" "3p/\${SAMPLE_ID}.allMap.3p" &
-  throttle; run_cov "\${BAM_FOR_COVERAGE}"        "5" "5p/\${SAMPLE_ID}.5p"        &
-  throttle; run_cov "\${ALLMAP_BAM_FOR_COVERAGE}" "5" "5p/\${SAMPLE_ID}.allMap.5p" &
-  wait
+  launch_cov "\${BAM_FOR_COVERAGE}"        "3" "3p/\${SAMPLE_ID}.3p"
+  launch_cov "\${ALLMAP_BAM_FOR_COVERAGE}" "3" "3p/\${SAMPLE_ID}.allMap.3p"
+  launch_cov "\${BAM_FOR_COVERAGE}"        "5" "5p/\${SAMPLE_ID}.5p"
+  launch_cov "\${ALLMAP_BAM_FOR_COVERAGE}" "5" "5p/\${SAMPLE_ID}.allMap.5p"
+
+  # Wait on each of our jobs specifically (never bare wait — see note above).
+  for p in "\${COV_PIDS[@]}"; do
+    wait "\${p}" || true
+  done
 
   if [[ -s "\${COV_FAIL_FLAG}" ]]; then
     echo "TRACKS | ERROR | Failed coverage jobs:"
