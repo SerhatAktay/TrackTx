@@ -150,12 +150,17 @@ def open_text_file(path: str):
     Returns:
         File handle (text mode)
     """
+    # newline="\n": only split lines on LF. With the default (universal newline)
+    # mode, a stray CR mid-line — e.g. "chr6\r\tBestRefSeq..." from a GTF whose
+    # chromosomes were renamed using a CRLF NCBI assembly report — would be
+    # treated as a line break, leaving the data line starting with a tab and an
+    # empty chromosome field. Callers strip the remaining CR per line.
     if is_gzipped(path):
         import gzip
         import io
-        return io.TextIOWrapper(gzip.open(path, "rb"), encoding="utf-8", errors="replace")
+        return io.TextIOWrapper(gzip.open(path, "rb"), encoding="utf-8", errors="replace", newline="\n")
     else:
-        return open(path, "r", encoding="utf-8", errors="replace")
+        return open(path, "r", encoding="utf-8", errors="replace", newline="\n")
 
 def parse_gtf_attributes(attr_string: str) -> Dict[str, str]:
     """
@@ -288,13 +293,20 @@ def count_reads_pysam(bed_path: Path, bam_path: str, region_type: str) -> Dict[s
 
         skipped_chroms: set = set()
         for i, line in enumerate(regions, 1):
-            fields = line.strip().split("\t")
+            fields = line.replace("\r", "").rstrip("\n").split("\t")
             if len(fields) < 4:
                 continue
 
-            chrom    = fields[0]
-            start    = int(fields[1])
-            end      = int(fields[2])
+            # Guard coordinate parsing: a single malformed line must not abort
+            # the whole (memory-efficient) pysam path into the bedtools fallback,
+            # which loads the entire BAM and can OOM under process concurrency.
+            try:
+                chrom    = fields[0]
+                start    = int(fields[1])
+                end      = int(fields[2])
+            except (ValueError, IndexError):
+                log_warning(f"Skipping malformed {region_type} BED line: {line.rstrip()!r}")
+                continue
             gene_id  = fields[3]
             # BED strand column is col 6 (index 5); default to '+' if absent
             strand   = fields[5] if len(fields) >= 6 else "+"
@@ -461,6 +473,10 @@ def parse_gtf_file(
 
             if line_count % 100000 == 0:
                 log_info(f"Parsed {line_count:,} GTF lines...")
+
+            # Strip any stray CR (from CRLF-derived GTFs) so the chromosome
+            # field stays clean ("chr6", not "chr6\r") and matches the BAM.
+            line = line.replace("\r", "")
 
             if not line.strip() or line.startswith("#"):
                 continue

@@ -178,7 +178,10 @@ process download_genome_annotations {
 
     # Build RefSeq-Accn (col 7) -> UCSC-style-name (col 10) map, skipping
     # comment lines and entries with no UCSC name ('na').
-    awk -F'\\t' '!/^#/ && \$7!="na" && \$10!="na" {print \$7"\\t"\$10}' \\
+    # NCBI assembly_report.txt ships with CRLF line endings, so the last field
+    # ($10, the UCSC name) retains a trailing \\r → "chr6\\r". Strip it first,
+    # otherwise every renamed seqid gets a stray CR and fails to match the BAM.
+    awk -F'\\t' '{sub(/\\r\$/,"")} !/^#/ && \$7!="na" && \$10!="na" {print \$7"\\t"\$10}' \\
       "\${tmpdir}/report.txt" > "\${tmpdir}/chrmap.tsv"
 
     local mapped
