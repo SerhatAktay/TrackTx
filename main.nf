@@ -853,54 +853,30 @@ Paths are relative to: ${projectDir}"""
   def pol_sorted = pol_gene_ch
     .toSortedList { a, b -> a[0] <=> b[0] }
 
-  def samples_lines = pol_sorted
-    .flatMap { sorted_list ->
-      sorted_list.withIndex().collect { item, idx ->
-        def (sid, _genes, c, t, r) = item
-        "${sid}\t${c ?: 'NA'}\t${t ?: 'NA'}\t${r ?: '1'}\tmetric_${idx + 1}"
-      }
-    }
-
-  def samples_tsv = channel
-    .of('sample_id\tcondition\ttimepoint\treplicate\tfile')
-    .concat(samples_lines)
-    .collectFile(
-      name:    'samples.tsv',
-      newLine: true
-    )
-    .map { tsv_file ->
-      def clean_text = tsv_file.text
-        .replace('﻿', '')
-        .replace('\r', '')
-
-      def lines = clean_text.readLines()
+  // Build the manifest atomically from the SAME sorted list used for file staging,
+  // so the metric_N indices and the manifest rows stay in lock-step (one row per
+  // staged file). Null-safe by design — NOT Groovy-falsy: integer 0 is falsy in
+  // Groovy, so the previous `${t ?: 'NA'}` / `${r ?: '1'}` silently rewrote the
+  // untreated baseline (timepoint 0) and a downstream re-parse then dropped that
+  // row entirely, so the control was missing from the merged table, every heatmap
+  // and all contrasts. Generate the full text in one pass to avoid that path.
+  def samples_tsv = pol_sorted
+    .map { sorted_list ->
       def header = 'sample_id\tcondition\ttimepoint\treplicate\tfile'
-      def clean_lines = [header]
-      def rejected = []
-
-      lines.drop(1).each { line ->
-        if (line.trim() && line != header) {
-          def cols = line.split('\t', -1)
-          if (cols.size() == 5 && cols[4] && cols[4] != 'file') {
-            clean_lines << line
-          } else {
-            rejected << "cols=${cols.size()} file_col='${cols.size() > 4 ? cols[4] : 'N/A'}' | ${line.take(80)}..."
-          }
-        }
+      def rows = sorted_list.withIndex().collect { item, idx ->
+        def (sid, _genes, c, t, r) = item
+        def cc = (c == null || c.toString().trim() == '') ? 'NA' : c
+        def tt = (t == null || t.toString().trim() == '') ? 'NA' : t
+        def rr = (r == null || r.toString().trim() == '') ? '1'  : r
+        "${sid}\t${cc}\t${tt}\t${rr}\tmetric_${idx + 1}"
       }
-
-      if (clean_lines.size() == 1) {
-        def rawCount  = lines.size() - 1
-        def rejectMsg = rejected ? "\n  Rejected rows (first 5): ${rejected.take(5).join('\n  ')}" : ''
-        error """STEP 12 | ERROR | No valid samples in Pol-II aggregate TSV
-Raw data rows: ${rawCount} | Valid after parse: ${clean_lines.size() - 1}${rejectMsg}
-This usually means no samples reached calculate_polymerase_occupancy_metrics."""
+      if (rows.isEmpty()) {
+        error 'STEP 13 | ERROR | No samples reached calculate_polymerase_occupancy_metrics — cannot build Pol-II aggregate manifest.'
       }
-
-      tsv_file.text = clean_lines.join('\n') + '\n'
-    if (params.verbose) log.info "STEP 14 | INPUT | Samples TSV prepared: ${clean_lines.size() - 1} samples"
-      tsv_file
+      if (params.verbose) log.info "STEP 13 | INPUT | Samples TSV prepared: ${rows.size()} samples"
+      ([header] + rows).join('\n') + '\n'
     }
+    .collectFile(name: 'samples.tsv', newLine: false)
 
   def pol_files_ch = pol_sorted
     .flatMap { sorted_list ->

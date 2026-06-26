@@ -402,6 +402,26 @@ neg3      = args[2+2*n:2+3*n]
 pos5      = args[2+3*n:2+4*n]
 neg5      = args[2+4*n:2+5*n]
 
+# The run-on efficiency metric is a 5'/3' signal ratio and is only meaningful
+# when 5' end tracks exist. Single-end PRO-seq (emit_5p=false) produces no 5'
+# track, so rather than emit a misleading NaN / 'insufficient_data' table (which
+# looks like a failure), write an explicit not-applicable table and skip the
+# per-gene computation entirely.
+def _has_signal(paths):
+    return any(p and os.path.isfile(p) and os.path.getsize(p) > 0 for p in paths)
+
+if not _has_signal(pos5) and not _has_signal(neg5):
+    _hdr = ['sample_id', 'n_genes_used', 'median_5p3p_ratio',
+            'mean_5p3p_ratio', 'interpretation']
+    _rows = ['\\t'.join(_hdr)]
+    for _sid in sids:
+        _rows.append(f\"{_sid}\\t0\\tNA\\tNA\\tnot_applicable_no_5p_track\")
+    with open('runon_efficiency.tsv', 'w') as _f:
+        _f.write('\\n'.join(_rows) + '\\n')
+    print(\"Run-on efficiency: no 5' tracks present (single-end / emit_5p=false) \"
+          \"- metric not applicable; wrote not_applicable table.\", file=sys.stderr)
+    sys.exit(0)
+
 MIN_GENE_LEN = 10_000
 TSS_SKIP     = 500    # skip first 500 bp after TSS
 TES_SKIP     = 500    # skip last  500 bp before TES

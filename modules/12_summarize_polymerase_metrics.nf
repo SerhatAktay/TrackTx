@@ -169,9 +169,21 @@ process summarize_polymerase_metrics {
 
   echo "AGGREGATE | STAGE | Manifest rewritten with symlink names"
 
-  # Parse contrasts from params
+  # Parse contrasts from params.
+  # Accepts three spec shapes and normalizes them to the "variable:num,denom"
+  # format expected by compare_pol_metrics.py:
+  #   • 4-element [cond1, tp1, cond2, tp2]  -> group:cond1_tp1,cond2_tp2  (treatment vs control)
+  #   • 3-element [variable, num, denom]    -> variable:num,denom
+  #   • already-formatted "variable:num,denom" string -> passed through
   cat > contrasts.txt <<'CONTRASTEOF'
-${((params.pol?.contrasts ?: []) as List).join('\n')}
+${((params.pol?.contrasts ?: []) as List).collect { spec ->
+    if (spec instanceof List) {
+        def s = spec as List
+        if (s.size() == 4) { 'group:' + s[0] + '_' + s[1] + ',' + s[2] + '_' + s[3] }
+        else if (s.size() == 3) { '' + s[0] + ':' + s[1] + ',' + s[2] }
+        else { s.join(',') }
+    } else { spec.toString() }
+}.join('\n')}
 CONTRASTEOF
 
   # Count contrasts

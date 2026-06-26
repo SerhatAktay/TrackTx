@@ -364,8 +364,12 @@ def _compute_contrast_with_stats(
     if num_df.empty or denom_df.empty:
         return None
 
-    # Aggregate per (gene_id, gene_name, level): collect values from all replicates
-    id_cols = ["gene_id", "gene_name", level_col]
+    # Aggregate per (gene_id, gene_name, level): collect values from all replicates.
+    # When level_col is None (direct group-vs-group, e.g. an unpaired
+    # treatment-vs-control contrast), there is no shared level to pair on, so we
+    # compare the two groups directly per gene.
+    paired = level_col is not None
+    id_cols = ["gene_id", "gene_name", level_col] if paired else ["gene_id", "gene_name"]
     num_agg = (
         num_df.groupby(id_cols)[metric]
         .apply(lambda x: x.dropna().tolist())
@@ -405,7 +409,7 @@ def _compute_contrast_with_stats(
     result["log2FC"] = stats_df["log2FC"]
     result["pvalue"] = stats_df["pvalue"]
     result["group_by"] = group_by
-    result["level"] = result[level_col]
+    result["level"] = result[level_col] if paired else "all"
     result["contrast"] = f"{variable}:{numerator}_vs_{denominator}"
     result["metric"] = metric
     return result[[
@@ -437,7 +441,7 @@ def compute_single_contrast(
     Returns:
         DataFrame with contrast results including pvalue, or None
     """
-    if variable not in ["condition", "timepoint"]:
+    if variable not in ["condition", "timepoint", "group"]:
         log_warning(f"Unsupported contrast variable: {variable}")
         return None
 
@@ -450,10 +454,15 @@ def compute_single_contrast(
                 merged_df, variable, numerator, denominator, metric,
                 group_by="timepoint", level_col="timepoint",
             )
-        else:
+        elif variable == "timepoint":
             df = _compute_contrast_with_stats(
                 merged_df, variable, numerator, denominator, metric,
                 group_by="condition", level_col="condition",
+            )
+        else:  # group — direct, unpaired group-vs-group (e.g. treatment vs control)
+            df = _compute_contrast_with_stats(
+                merged_df, variable, numerator, denominator, metric,
+                group_by="group", level_col=None,
             )
         if df is not None and not df.empty:
             results.append(df)
@@ -489,6 +498,13 @@ def compute_all_contrasts(
 
     working_df = merged_df.copy()
     working_df = coerce_numeric_columns(working_df, metrics)
+
+    # Synthetic composite key for direct group-vs-group contrasts (condition+timepoint),
+    # e.g. "celastrol_40" vs "no_treatment_0". Mirrors how the pipeline names groups.
+    if "condition" in working_df.columns and "timepoint" in working_df.columns:
+        working_df["group"] = (
+            working_df["condition"].astype(str) + "_" + working_df["timepoint"].astype(str)
+        )
 
     all_results = []
     for i, (variable, numerator, denominator) in enumerate(contrast_specs, 1):
