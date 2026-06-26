@@ -56,7 +56,7 @@ import matplotlib.pyplot as plt
 # CONSTANTS
 # =============================================================================
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 LOG_PREFIX = "[COMPARE]"
 
 # Required columns in samples manifest
@@ -67,6 +67,18 @@ REQUIRED_METRIC_COLS = ["gene_id", "gene_name", "pi_len_norm", "pi_raw", "body_c
 
 # Metrics available for analysis
 AVAILABLE_METRICS = ["pi_len_norm", "pi_raw", "body_cpm", "tss_cpm"]
+
+# --- Differential contrast defaults (assay-agnostic; no biology hardcoded) ---
+# DEFAULT_PRIOR_COUNT: additive prior ("prior count", edgeR-style) used in the
+#   log2 fold-change so that genes with near-zero signal in one group cannot
+#   produce extreme fold-changes. log2((num + prior)/(denom + prior)). In the
+#   units of the contrasted metric (CPM for *_cpm; index units for pausing).
+# DEFAULT_MIN_EXPR: independent expression filter. A gene is flagged
+#   passes_filter=True when max(numerator, denominator) >= this value, i.e. it is
+#   detectable in at least one of the two groups (keeps genuine on/off switches,
+#   excludes genes that are ~0 in both). Reported as a flag — rows are NOT dropped.
+DEFAULT_PRIOR_COUNT = 1.0
+DEFAULT_MIN_EXPR = 1.0
 
 # =============================================================================
 # LOGGING UTILITIES
@@ -317,7 +329,21 @@ def safe_log2_fold_change(numerator: pd.Series, denominator: pd.Series) -> pd.Se
     Returns:
         Log2 fold change values
     """
-    return np.log2((numerator.astype(float) + 1e-9) / (denominator.astype(float) + 1e-9))
+    return safe_log2_fold_change_prior(numerator, denominator, DEFAULT_PRIOR_COUNT)
+
+
+def safe_log2_fold_change_prior(numerator, denominator, prior_count: float):
+    """
+    Log2 fold change with an additive prior count (edgeR-style shrinkage).
+
+    Using a prior on the scale of the data (rather than a vanishing 1e-9
+    pseudocount) prevents genes with near-zero signal in one group from
+    producing extreme, meaningless fold-changes: a gene going 0 -> 0.7 with
+    prior=1 yields log2(1.7/1.0)=0.77 instead of ~30. Assay-agnostic.
+    """
+    num = np.asarray(numerator, dtype=float)
+    den = np.asarray(denominator, dtype=float)
+    return np.log2((num + prior_count) / (den + prior_count))
 
 
 def benjamini_hochberg(pvalues: np.ndarray) -> np.ndarray:
@@ -369,6 +395,8 @@ def _compute_contrast_with_stats(
     metric: str,
     group_by: str,
     level_col: str,
+    prior_count: float = DEFAULT_PRIOR_COUNT,
+    min_expr: float = DEFAULT_MIN_EXPR,
 ) -> Optional[pd.DataFrame]:
     """
     Compute contrast for one metric using replicate-level data with Mann-Whitney U test.
@@ -410,7 +438,8 @@ def _compute_contrast_with_stats(
             return pd.Series({"numerator": np.nan, "denominator": np.nan, "log2FC": np.nan, "pvalue": np.nan})
         med_n = np.median(nv)
         med_d = np.median(dv)
-        log2fc = np.log2((med_n + 1e-9) / (med_d + 1e-9))
+        # Prior-count shrinkage: stops near-zero groups from exploding log2FC.
+        log2fc = float(np.log2((med_n + prior_count) / (med_d + prior_count)))
         try:
             _, pval = stats.mannwhitneyu(nv, dv, alternative="two-sided")
         except Exception:
@@ -427,9 +456,19 @@ def _compute_contrast_with_stats(
     result["level"] = result[level_col] if paired else "all"
     result["contrast"] = f"{variable}:{numerator}_vs_{denominator}"
     result["metric"] = metric
+    # Independent expression filter (reported as a flag — rows are NOT dropped):
+    #   expr_mean    : mean of the two group values (DESeq2 baseMean analogue)
+    #   passes_filter: detectable in >=1 group (max >= min_expr). Keeps genuine
+    #                  on/off switches; excludes genes that are ~0 in both groups,
+    #                  which are the source of pseudocount-driven extreme log2FC.
+    num_v = result["numerator"].astype(float)
+    den_v = result["denominator"].astype(float)
+    result["expr_mean"] = 0.5 * (num_v + den_v)
+    result["passes_filter"] = (np.maximum(num_v, den_v) >= float(min_expr))
     return result[[
         "gene_id", "gene_name", "group_by", "level",
-        "contrast", "metric", "numerator", "denominator", "log2FC", "pvalue"
+        "contrast", "metric", "numerator", "denominator", "log2FC", "pvalue",
+        "expr_mean", "passes_filter"
     ]]
 
 
@@ -439,6 +478,8 @@ def compute_single_contrast(
     numerator: str,
     denominator: str,
     metrics: List[str],
+    prior_count: float = DEFAULT_PRIOR_COUNT,
+    min_expr: float = DEFAULT_MIN_EXPR,
 ) -> Optional[pd.DataFrame]:
     """
     Compute a single contrast with replicate-level statistical testing.
@@ -468,16 +509,19 @@ def compute_single_contrast(
             df = _compute_contrast_with_stats(
                 merged_df, variable, numerator, denominator, metric,
                 group_by="timepoint", level_col="timepoint",
+                prior_count=prior_count, min_expr=min_expr,
             )
         elif variable == "timepoint":
             df = _compute_contrast_with_stats(
                 merged_df, variable, numerator, denominator, metric,
                 group_by="condition", level_col="condition",
+                prior_count=prior_count, min_expr=min_expr,
             )
         else:  # group — direct, unpaired group-vs-group (e.g. treatment vs control)
             df = _compute_contrast_with_stats(
                 merged_df, variable, numerator, denominator, metric,
                 group_by="group", level_col=None,
+                prior_count=prior_count, min_expr=min_expr,
             )
         if df is not None and not df.empty:
             results.append(df)
@@ -490,6 +534,8 @@ def compute_all_contrasts(
     merged_df: pd.DataFrame,
     contrast_specs: List[Tuple[str, str, str]],
     metrics: List[str],
+    prior_count: float = DEFAULT_PRIOR_COUNT,
+    min_expr: float = DEFAULT_MIN_EXPR,
 ) -> Optional[pd.DataFrame]:
     """
     Compute all specified contrasts with replicate-level statistical testing.
@@ -531,6 +577,8 @@ def compute_all_contrasts(
             numerator,
             denominator,
             metrics,
+            prior_count=prior_count,
+            min_expr=min_expr,
         )
 
         if result is not None and not result.empty:
@@ -550,7 +598,18 @@ def compute_all_contrasts(
         padj_arr[idx] = benjamini_hochberg(grp["pvalue"].values)
     contrasts_df["padj"] = padj_arr
 
+    # Stable column order. Keep log2FC/pvalue/padj at positions 9/10/11 (downstream
+    # log-parsing in module 12 reads those by index); append the new filter columns.
+    col_order = [
+        "gene_id", "gene_name", "group_by", "level", "contrast", "metric",
+        "numerator", "denominator", "log2FC", "pvalue", "padj",
+        "expr_mean", "passes_filter",
+    ]
+    contrasts_df = contrasts_df[[c for c in col_order if c in contrasts_df.columns]]
+
+    n_pass = int(contrasts_df["passes_filter"].sum()) if "passes_filter" in contrasts_df else 0
     log("CONTRAST", f"Generated {len(contrasts_df):,} contrast results (log2FC, pvalue, padj)")
+    log("CONTRAST", f"Passing expression filter (max>={min_expr}): {n_pass:,} of {len(contrasts_df):,}")
     return contrasts_df
 
 # =============================================================================
@@ -572,15 +631,26 @@ def create_ma_plot(
     """
     if contrast_df is None or contrast_df.empty:
         return
-    
-    # Calculate mean expression (log2)
-    mean_expr = 0.5 * np.log2(
-        (contrast_df["numerator"].astype(float) + 1e-9) *
-        (contrast_df["denominator"].astype(float) + 1e-9)
-    )
-    
+
+    # Restrict to genes passing the expression filter so the plot is not dominated
+    # by undetectable genes whose fold-changes are pseudocount artifacts. Falls
+    # back to all rows if the column is absent (older inputs).
+    if "passes_filter" in contrast_df.columns:
+        contrast_df = contrast_df[contrast_df["passes_filter"] == True]  # noqa: E712
+    if contrast_df.empty:
+        return
+
+    # Mean expression (log2). Use the precomputed expr_mean when available.
+    if "expr_mean" in contrast_df.columns:
+        mean_expr = np.log2(contrast_df["expr_mean"].astype(float) + 1.0)
+    else:
+        mean_expr = 0.5 * np.log2(
+            (contrast_df["numerator"].astype(float) + 1.0) *
+            (contrast_df["denominator"].astype(float) + 1.0)
+        )
+
     log2fc = contrast_df["log2FC"]
-    
+
     # Create plot
     plt.figure(figsize=(6, 5), dpi=130)
     plt.scatter(mean_expr, log2fc, s=6, alpha=0.6, edgecolors="none")
@@ -812,6 +882,24 @@ def main():
         help=f"Comma-separated metrics for contrasts [default: {','.join(AVAILABLE_METRICS)}]"
     )
     parser.add_argument(
+        "--prior-count",
+        type=float,
+        default=DEFAULT_PRIOR_COUNT,
+        help=(
+            "Additive prior count for log2 fold-change shrinkage (edgeR-style); "
+            f"prevents extreme FC from near-zero groups [default: {DEFAULT_PRIOR_COUNT}]"
+        ),
+    )
+    parser.add_argument(
+        "--min-expr",
+        type=float,
+        default=DEFAULT_MIN_EXPR,
+        help=(
+            "Independent expression filter: gene flagged passes_filter when "
+            f"max(numerator, denominator) >= this value [default: {DEFAULT_MIN_EXPR}]"
+        ),
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {VERSION}"
@@ -874,6 +962,8 @@ def main():
                 merged_df,
                 contrast_specs,
                 contrast_metrics,
+                prior_count=args.prior_count,
+                min_expr=args.min_expr,
             )
             
             if contrasts_df is not None and not contrasts_df.empty:

@@ -116,6 +116,10 @@ process summarize_polymerase_metrics {
   # Parameters
   TOP_N=${params.pol?.top_n ?: 100}
   ENABLE_PLOTS=\$([[ "${params.pol?.plots}" == "false" ]] && echo 0 || echo 1)
+  # Differential filtering (assay-agnostic; script has the same defaults):
+  #   prior_count : log2FC shrinkage prior; min_expr : expression filter floor.
+  PRIOR_COUNT=${params.pol?.prior_count ?: 1.0}
+  MIN_EXPR=${params.pol?.min_expr ?: 1.0}
 
   echo "AGGREGATE | CONFIG | Samples manifest: \${SAMPLES_TSV}"
   echo "AGGREGATE | CONFIG | Aggregator script: \${AGGREGATOR_SCRIPT}"
@@ -304,6 +308,8 @@ CONTRASTEOF
     --samples-tsv "\${SAMPLES_TSV}"
     --out-merged pol_gene_metrics_merged.tsv
     --top-n "\${TOP_N}"
+    --prior-count "\${PRIOR_COUNT}"
+    --min-expr "\${MIN_EXPR}"
   )
 
   # Add contrasts if specified
