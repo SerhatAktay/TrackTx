@@ -335,14 +335,29 @@ def benjamini_hochberg(pvalues: np.ndarray) -> np.ndarray:
     valid = np.isfinite(p)
     if not np.any(valid):
         return padj
-    n = np.sum(valid)
-    order = np.argsort(p)
-    p_sorted = p[order]
-    padj_sorted = np.minimum(1, p_sorted * n / np.arange(1, n + 1, dtype=float))
-    # Ensure monotonicity
-    for i in range(1, n):
-        padj_sorted[i] = min(padj_sorted[i], padj_sorted[i - 1])
-    padj[order] = padj_sorted
+
+    # Rank ONLY the finite p-values. NaNs (e.g. genes where a group had no signal,
+    # or merged-replicate contrasts where a Mann-Whitney U test is undefined for
+    # n=1 vs n=1) are excluded from the test count and left as NaN in the output.
+    # Operating on the full array while counting only finite values broadcasts
+    # mismatched shapes — the bug this replaces.
+    idx_valid = np.flatnonzero(valid)
+    pv = p[idx_valid]
+    n = pv.size
+
+    order = np.argsort(pv)
+    pv_sorted = pv[order]
+    ranks = np.arange(1, n + 1, dtype=float)
+    padj_sorted = np.minimum(1.0, pv_sorted * n / ranks)
+
+    # Enforce BH monotonicity as a step-up: sweep from the largest p-value down so
+    # each adjusted value is no greater than the next-larger rank's value.
+    for i in range(n - 2, -1, -1):
+        padj_sorted[i] = min(padj_sorted[i], padj_sorted[i + 1])
+
+    padj_valid = np.empty(n, dtype=float)
+    padj_valid[order] = padj_sorted
+    padj[idx_valid] = padj_valid
     return padj
 
 
