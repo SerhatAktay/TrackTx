@@ -51,12 +51,6 @@ def resolveSamplesheetPath(p, projectDir) {
   return f.isAbsolute() ? f : new File(projectDir.toString(), s)
 }
 
-// Resolve an expected output path; returns path string or empty string if absent
-def resolveOutputPath(path) {
-  def f = file(path)
-  return f.exists() ? f.toString() : ''
-}
-
 // ============================================================================
 // MODULE IMPORTS
 // Paths inlined (def MOD = ... was a top-level statement, not allowed in strict)
@@ -75,6 +69,8 @@ include { normalize_coverage_tracks                                 } from './mo
 include { detect_divergent_transcription                            } from './modules/09_detect_divergent_transcription.nf'
 include { assign_signal_to_functional_regions                       } from './modules/10_assign_signal_to_functional_regions.nf'
 include { calculate_polymerase_occupancy_metrics                    } from './modules/11_calculate_polymerase_occupancy_metrics.nf'
+include { calculate_polymerase_occupancy_metrics as pol_metrics_per_replicate } from './modules/11_calculate_polymerase_occupancy_metrics.nf'
+include { collect_pol_metrics_per_replicate                         } from './modules/11b_collect_pol_metrics_per_replicate.nf'
 include { summarize_polymerase_metrics                              } from './modules/12_summarize_polymerase_metrics.nf'
 include { quality_control_aligned_reads                             } from './modules/13_quality_control_aligned_reads.nf'
 include { generate_per_sample_reports                               } from './modules/14_generate_per_sample_reports.nf'
@@ -220,13 +216,13 @@ Paths are relative to: ${projectDir}"""
   // STEP 1: Download Annotations
   // ══════════════════════════════════════════════════════════════════════════
 
-  def assetsDir0  = params.assets_dir ?: "${projectDir}/assets"
-  def noGtfPath0  = "${assetsDir0}/NO_GTF"
-  new File(assetsDir0).mkdirs()
-  if (!new File(noGtfPath0).exists()) new File(noGtfPath0).text = ''
-  def _customAnnotationFile = (params.gtf_path?.trim())
-    ? file(params.gtf_path, checkIfExists: true)
-    : file(noGtfPath0)
+  // Fail fast if a custom GTF path was supplied but does not exist. (Module 01
+  // consumes params.gtf_path internally when reference_genome='other'; checking
+  // here is cheaper than failing deep inside a task. The previous NO_GTF sentinel
+  // + _customAnnotationFile variable were never used downstream and were removed.)
+  if (params.gtf_path?.trim()) {
+    file(params.gtf_path, checkIfExists: true)
+  }
 
   if (params.verbose) {
     log.info "-".multiply(80)
@@ -521,6 +517,47 @@ Paths are relative to: ${projectDir}"""
     if (params.verbose) log.info "STEP 6 | ALIGN | ${sid} alignment complete"
   }
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // STEP 6c: Collect the GENUINE bowtie2 alignment rates into one run-level table
+  //
+  // The per-sample QC JSON computes "mapped_reads" from the already-filtered BAM,
+  // so its map rate is ~100% and not the true overall alignment rate. The real
+  // numbers live in each replicate's aligner_summary.tsv (from bowtie2). Gather
+  // them, tagged with sample identity, into a single glanceable TSV.
+  // ──────────────────────────────────────────────────────────────────────────
+  align_reads_to_genome.out.align_summary_tagged
+    .map { sid, summ, c, t, r ->
+      def m = [:]
+      try {
+        file(summ).readLines().each { ln ->
+          def p = ln.split('\t')
+          if (p.size() == 2) m[p[0]] = p[1]
+        }
+      } catch (Exception e) { /* leave blanks if unreadable */ }
+      // Use genome_overall_aln_rate_pct (the REAL bowtie2 rate), not
+      // genome_map_rate_pct (post-filter, always ~100%). spike_fraction_pct =
+      // spike-mapped / genome-mapped × 100 — a real Drosophila spike-in is
+      // typically 1–10%; <~0.5% means there is effectively no spike-in and
+      // siCPM normalization is not trustworthy.
+      // PE note: both counts are per-read-RECORD (genome primary flagstat counts
+      // both mates; spike is SE-aligned on the unaligned mates), so the ratio is
+      // dimensionally consistent in PE — do NOT "halve" it for paired-end.
+      def gmap = (m['genome_mapped_reads'] ?: '').isInteger() ? (m['genome_mapped_reads'] as long) : 0L
+      def smap = (m['spike_mapped_reads'] ?: '').isInteger() ? (m['spike_mapped_reads'] as long) : 0L
+      def spikeFrac = (gmap > 0) ? String.format('%.3f', (smap / (gmap as double)) * 100.0) : 'NA'
+      "${sid}\t${c}\t${t}\t${r}\t${m['genome_total_reads'] ?: 'NA'}\t${m['genome_mapped_reads'] ?: 'NA'}\t${m['genome_overall_aln_rate_pct'] ?: 'NA'}\t${m['spike_mapped_reads'] ?: 'NA'}\t${spikeFrac}"
+    }
+    .toSortedList()
+    .map { lines ->
+      def header = 'sample_id\tcondition\ttimepoint\treplicate\tgenome_total_reads\tgenome_mapped_reads\tgenome_overall_aln_rate_pct\tspike_mapped_reads\tspike_fraction_pct'
+      ([header] + lines).join('\n') + '\n'
+    }
+    .collectFile(
+      name:     'alignment_rates_summary.tsv',
+      storeDir: "${params.output_dir}/02_alignments",
+      newLine:  false
+    )
+
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 6b: Replicate Concordance Check & BAM Merging (optional)
   // ══════════════════════════════════════════════════════════════════════════
@@ -733,7 +770,11 @@ Paths are relative to: ${projectDir}"""
     channel.value(params.advanced?.divergent_calibration_percentile ?: 65.0),
     channel.value(params.advanced?.divergent_calibration_sum_multiplier ?: 1.5),
     channel.value(params.advanced?.divergent_calibration_background_lower ?: false),
-    channel.value(params.advanced?.divergent_merge_gap ?: 150)
+    channel.value(params.advanced?.divergent_merge_gap ?: 150),
+    // Opt-in fallback: when no region passes the (approximate) FDR, keep this
+    // top fraction by score instead of returning zero. 0.0 = disabled, so a
+    // genuinely empty/noisy sample legitimately yields no divergent sites.
+    channel.value(params.advanced?.divergent_fallback_top_frac ?: 0.0)
   )
 
   def divergent_tx_ch = detect_divergent_transcription.out.bed
@@ -795,7 +836,7 @@ Paths are relative to: ${projectDir}"""
     if (file(bed).exists() && file(bed).size() > 0) {
       count = file(bed).readLines().findAll { ln -> !ln.startsWith('#') }.size()
     }
-    if (params.verbose) log.info "STEP 12 | COMPLETE | ${sid} → ${count} functional regions annotated"
+    if (params.verbose) log.info "STEP 11 | COMPLETE | ${sid} → ${count} functional regions annotated"
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -834,7 +875,9 @@ Paths are relative to: ${projectDir}"""
       tuple(sid, bam, bed, pos_cpm, neg_cpm, pos_si, neg_si, c, t, r)
     }
 
-  calculate_polymerase_occupancy_metrics(pol_input_ch, gtf_ch)
+  // Pol-II metrics use the genes.tsv catalog (same gene model as functional
+  // regions), not the raw GTF, so promoter-signal and pausing-index TSS agree.
+  calculate_polymerase_occupancy_metrics(pol_input_ch, genes_ch)
 
   def pol_gene_ch    = calculate_polymerase_occupancy_metrics.out.genes
   def pol_density_ch = calculate_polymerase_occupancy_metrics.out.density
@@ -885,6 +928,60 @@ Paths are relative to: ${projectDir}"""
 
   summarize_polymerase_metrics(samples_tsv, pol_files_ch.collect())
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // STEP 13b: Per-replicate Pol-II gene metrics (differential-analysis hand-off)
+  //
+  // When replicates are merged, the cohort table above is n=1 per condition and
+  // cannot support per-gene statistics. Here we run the SAME gene-metric
+  // calculation on each individual replicate BAM (captured pre-merge from
+  // align_reads_to_genome) and concatenate to a tidy long table the user can
+  // feed into DESeq2/edgeR. Gene metrics depend only on BAM + GTF, so the
+  // functional-region bed and normalized bedGraph inputs are passed as empty
+  // placeholders (density output is skipped; gene metrics are unaffected).
+  // ──────────────────────────────────────────────────────────────────────────
+  if (params.replicates?.merge == true) {
+    if (params.verbose) {
+      log.info "-".multiply(80)
+      log.info "STEP 13b | Per-replicate Pol-II metrics (differential hand-off)"
+      log.info "-".multiply(80)
+    }
+
+    def per_rep_pol_in = align_reads_to_genome.out[0]
+      .map { sid, filt_bam, _all_bam, _spike, c, t, r ->
+        tuple(sid, filt_bam,
+              file(noBGPath),                 // func_bed placeholder (empty → density skipped)
+              file(noBGPosPath), file(noBGNegPath),   // cpm 3' bedGraphs (empty)
+              file(noBGPosPath), file(noBGNegPath),   // siCPM 3' bedGraphs (empty)
+              c, t, r)
+      }
+
+    pol_metrics_per_replicate(per_rep_pol_in, genes_ch)
+
+    def per_rep_sorted = pol_metrics_per_replicate.out.genes
+      .toSortedList { a, b -> a[0] <=> b[0] }
+
+    def per_rep_manifest = per_rep_sorted
+      .map { sorted_list ->
+        def header = 'sample_id\tcondition\ttimepoint\treplicate\tfile'
+        def rows = sorted_list.withIndex().collect { item, idx ->
+          def (sid, _genes, c, t, r) = item
+          def cc = (c == null || c.toString().trim() == '') ? 'NA' : c
+          def tt = (t == null || t.toString().trim() == '') ? 'NA' : t
+          def rr = (r == null || r.toString().trim() == '') ? '1'  : r
+          "${sid}\t${cc}\t${tt}\t${rr}\tmetric_${idx + 1}"
+        }
+        ([header] + rows).join('\n') + '\n'
+      }
+      .collectFile(name: 'per_replicate_samples.tsv', newLine: false)
+
+    def per_rep_files = per_rep_sorted
+      .flatMap { sorted_list ->
+        sorted_list.collect { _sid, genes, _c, _t, _r -> file(genes) }
+      }
+
+    collect_pol_metrics_per_replicate(per_rep_manifest, per_rep_files.collect())
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 14: Quality Control
   // ══════════════════════════════════════════════════════════════════════════
@@ -927,6 +1024,21 @@ Paths are relative to: ${projectDir}"""
 
 
 
+  // Report track-link availability is now decided from the REAL produced files
+  // carried on Nextflow channels (raw allMap 3' bedGraphs from module 06; CPM
+  // 3' BigWigs from module 08's report_bw emit), not by probing the publish dir
+  // with resolveOutputPath. The link TEXT is still the canonical published path
+  // (so the report references the stable results layout, not ephemeral work
+  // files), and availability also honours the publish toggles so we never link
+  // to a track the user chose not to publish. This removes the previous silent
+  // blanking (and a latent wrong "cpm/3p/" publish path that never resolved).
+  def report_allmap_raw_kv = allmap3p_pair_ch
+    .map { sid, ap3, an3, _bwp, _bwn, _c, _t, _r -> tuple(sid, file(ap3), file(an3)) }
+  def report_bw_kv = normalize_coverage_tracks.out.report_bw
+    .map { sid, pcpm, ncpm, ampcpm, amncpm ->
+      tuple(sid, file(pcpm), file(ncpm), file(ampcpm), file(amncpm))
+    }
+
   def report_input_ch = aligned_ch
     .map { sid, _bam, _all, _spike, c, t, r ->
       tuple(sid, tuple(c ?: 'NA', t ?: 'NA', r ?: '1'))
@@ -938,16 +1050,37 @@ Paths are relative to: ${projectDir}"""
     .join(norm_factors_ch.map  { sid, nf, _c, _t, _r    -> tuple(sid, nf) })
     .join(dedup_stats_ch.map   { sid, dedup, _c, _t, _r -> tuple(sid, dedup) })
     .join(qc_json_meta_ch.map  { sid, qc, _c, _t, _r    -> tuple(sid, qc) })
-    .map { sid, meta, div_bed, fsum, dens, paus, norm, dedup, qc ->
+    .join(report_allmap_raw_kv)
+    .join(report_bw_kv)
+    .map { sid, meta, div_bed, fsum, dens, paus, norm, dedup, qc,
+           ap3, an3, pcpm, ncpm, ampcpm, amncpm ->
       def (c, t, r) = meta
-      def normDir   = "${params.output_dir}/05_normalized_tracks/${sid}"
-      def tracksDir = "${params.output_dir}/03_genome_tracks/${sid}"
-      def bw_pos3          = resolveOutputPath("${normDir}/cpm/3p/${sid}.3p.pos.cpm.bw")
-      def bw_neg3          = resolveOutputPath("${normDir}/cpm/3p/${sid}.3p.neg.cpm.bw")
-      def bw_allmap_pos3   = resolveOutputPath("${normDir}/cpm/3p/${sid}.allMap.3p.pos.cpm.bw")
-      def bw_allmap_neg3   = resolveOutputPath("${normDir}/cpm/3p/${sid}.allMap.3p.neg.cpm.bw")
-      def raw_allmap_pos3  = resolveOutputPath("${tracksDir}/3p/${sid}.allMap.3p.pos.bedgraph")
-      def raw_allmap_neg3  = resolveOutputPath("${tracksDir}/3p/${sid}.allMap.3p.neg.bedgraph")
+      // Absolute published paths so the links are clickable from the report HTML
+      // (params.output_dir may be relative, e.g. './results_test_PE').
+      def normDir   = file("${params.output_dir}/05_normalized_tracks/${sid}").toString()
+      def tracksDir = file("${params.output_dir}/03_genome_tracks/${sid}").toString()
+
+      def outMap      = (params.output instanceof Map) ? params.output : [:]
+      def emitAllmap  = (params.norm?.emit_allmap?.toString() != 'false')
+      def pubBedgraph = (outMap.get('bedgraph')?.toString() != 'false')
+      def pubRaw      = (outMap.get('raw_tracks')?.toString() != 'false')
+      // NF26 strict parser rejects calling a NAMED local closure (`has(x)`); a
+      // Closure-typed var invoked via .call() is accepted.
+      Closure<Boolean> has = { f -> (f && f.exists() && f.size() > 0) as Boolean }
+
+      // raw allMap 3' bedGraph is published only when raw_tracks + bedgraph +
+      // allMap are all enabled (mirrors module 06 saveAs).
+      def rawAllmapPub = emitAllmap && pubBedgraph && pubRaw
+      def raw_allmap_pos3 = (rawAllmapPub && has.call(ap3)) ? "${tracksDir}/3p/${sid}.allMap.3p.pos.bedgraph" : ''
+      def raw_allmap_neg3 = (rawAllmapPub && has.call(an3)) ? "${tracksDir}/3p/${sid}.allMap.3p.neg.bedgraph" : ''
+
+      // CPM BigWigs are always published when produced (non-empty); allMap CPM
+      // only when emit_allmap is on.
+      def bw_pos3        = has.call(pcpm)  ? "${normDir}/3p/${sid}.3p.pos.cpm.bw" : ''
+      def bw_neg3        = has.call(ncpm)  ? "${normDir}/3p/${sid}.3p.neg.cpm.bw" : ''
+      def bw_allmap_pos3 = (emitAllmap && has.call(ampcpm)) ? "${normDir}/3p/${sid}.allMap.3p.pos.cpm.bw" : ''
+      def bw_allmap_neg3 = (emitAllmap && has.call(amncpm)) ? "${normDir}/3p/${sid}.allMap.3p.neg.cpm.bw" : ''
+
       tuple(
         sid,
         div_bed, fsum, dens, paus,
@@ -996,17 +1129,25 @@ Paths are relative to: ${projectDir}"""
     .join(bw5p_pair_ch.map     { sid, p5bg, n5bg, _bwp5, _bwn5, _c, _t, _r -> tuple(sid, p5bg, n5bg) })
     .join(allmap3p_pair_ch.map { sid, _ap3,  _an3,  bwap, bwan, _c, _t, _r -> tuple(sid, bwap, bwan) })
 
-  // Gather across all samples into sorted lists (toSortedList by sample_id)
-  def cohort_bw_pos3    = cohort_tracks_ch.map { _sid, _p3bg, _n3bg, bwp, _bwn, _c, _t, _r, _p5bg, _n5bg, _bwap, _bwan -> bwp.toString()   }.toSortedList()
-  def cohort_bw_neg3    = cohort_tracks_ch.map { _sid, _p3bg, _n3bg, _bwp, bwn, _c, _t, _r, _p5bg, _n5bg, _bwap, _bwan -> bwn.toString()   }.toSortedList()
-  def cohort_bw_ampos3  = cohort_tracks_ch.map { _sid, _p3bg, _n3bg, _bwp, _bwn, _c, _t, _r, _p5bg, _n5bg, bwap, _bwan -> bwap.toString()  }.toSortedList()
-  def cohort_bw_amneg3  = cohort_tracks_ch.map { _sid, _p3bg, _n3bg, _bwp, _bwn, _c, _t, _r, _p5bg, _n5bg, _bwap, bwan -> bwan.toString()  }.toSortedList()
-  def cohort_sample_ids = cohort_tracks_ch.map { sid, _p3bg, _n3bg, _bwp, _bwn, _c, _t, _r, _p5bg, _n5bg, _bwap, _bwan -> sid              }.toSortedList()
-  def cohort_conditions = cohort_tracks_ch.map { _sid, _p3bg, _n3bg, _bwp, _bwn, c, _t, _r, _p5bg, _n5bg, _bwap, _bwan -> c ?: 'unknown'  }.toSortedList()
-  def cohort_pos3_bg    = cohort_tracks_ch.map { _sid, p3bg, _n3bg, _bwp, _bwn, _c, _t, _r, _p5bg, _n5bg, _bwap, _bwan -> p3bg.toString()  }.toSortedList()
-  def cohort_neg3_bg    = cohort_tracks_ch.map { _sid, _p3bg, n3bg, _bwp, _bwn, _c, _t, _r, _p5bg, _n5bg, _bwap, _bwan -> n3bg.toString()  }.toSortedList()
-  def cohort_pos5_bg    = cohort_tracks_ch.map { _sid, _p3bg, _n3bg, _bwp, _bwn, _c, _t, _r, p5bg, _n5bg, _bwap, _bwan -> p5bg.toString()  }.toSortedList()
-  def cohort_neg5_bg    = cohort_tracks_ch.map { _sid, _p3bg, _n3bg, _bwp, _bwn, _c, _t, _r, _p5bg, n5bg, _bwap, _bwan -> n5bg.toString()  }.toSortedList()
+  // Gather across all samples into ONE list sorted by sample_id, then project
+  // each column out of that SAME ordered list. Sorting each column independently
+  // (the previous approach) only kept the path-bearing columns aligned because
+  // every BigWig path embeds the sid; the condition column — sorted by its own
+  // value — could land out of order, mis-mapping conditions to samples in the
+  // IGV/deepTools panel. Projecting from a single sorted tuple list guarantees
+  // element i refers to the same sample across every list.
+  def cohort_sorted = cohort_tracks_ch.toSortedList { a, b -> a[0] <=> b[0] }
+
+  def cohort_bw_pos3    = cohort_sorted.map { rows -> rows.collect { it[3].toString()  } }
+  def cohort_bw_neg3    = cohort_sorted.map { rows -> rows.collect { it[4].toString()  } }
+  def cohort_bw_ampos3  = cohort_sorted.map { rows -> rows.collect { it[10].toString() } }
+  def cohort_bw_amneg3  = cohort_sorted.map { rows -> rows.collect { it[11].toString() } }
+  def cohort_sample_ids = cohort_sorted.map { rows -> rows.collect { it[0]             } }
+  def cohort_conditions = cohort_sorted.map { rows -> rows.collect { it[5] ?: 'unknown' } }
+  def cohort_pos3_bg    = cohort_sorted.map { rows -> rows.collect { it[1].toString()  } }
+  def cohort_neg3_bg    = cohort_sorted.map { rows -> rows.collect { it[2].toString()  } }
+  def cohort_pos5_bg    = cohort_sorted.map { rows -> rows.collect { it[8].toString()  } }
+  def cohort_neg5_bg    = cohort_sorted.map { rows -> rows.collect { it[9].toString()  } }
 
   // Collect all QC log files staged into a single directory for MultiQC.
   // Includes: bowtie2 logs, flagstats, trimming logs — all already emitted

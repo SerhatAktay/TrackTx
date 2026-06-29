@@ -392,13 +392,17 @@ def auto_body_offset(
     """
     Choose an organism-aware body offset from the gene-length distribution.
 
-    Strategy:
-      - Compute the 25th percentile of gene lengths across all parsed features.
-      - Use max(user_offset_min, P25 * 0.20) as the effective offset_min.
-      - This scales the offset down automatically for compact genomes
-        (Drosophila ~3–4 kb median, C. elegans ~2 kb) while leaving human/mouse
-        (median ~30 kb) unchanged.
-      - A hard floor of 200 bp is kept so the offset never collapses to zero.
+    Strategy (median-gated — only shrink for genuinely compact genomes):
+      - Look at the MEDIAN gene length across parsed features.
+      - If median >= COMPACT_MEDIAN_BP (mammalian-scale, e.g. human/mouse), keep
+        the user's --body-offset-min unchanged. The previous version took
+        min(user, P25*0.2); because P25 over all transcript/gene records is small
+        even in human, that silently shrank the body offset below the documented
+        2000 bp for EVERY organism, pulling the promoter-proximal pause peak into
+        the "body" and deflating the pausing index. Gating on the median fixes
+        that: human/mouse stay at 2000 bp, only compact genomes shrink.
+      - For compact genomes (small median), scale the offset to 20% of P25 with a
+        200 bp hard floor, but never above the user value.
       - The caller still applies body_offset_frac on top of this minimum.
 
     Args:
@@ -412,19 +416,39 @@ def auto_body_offset(
     if not gene_lengths:
         return user_offset_min
 
+    # Genomes whose median gene length is at least this are treated as "large"
+    # and keep the user offset unchanged. NOTE: this is the median over ALL genes
+    # in the catalog, which is pulled DOWN by the many small ncRNAs — observed
+    # ~5.9 kb for human/T2T RefSeq (NOT the ~24 kb protein-coding median). Truly
+    # compact genomes (Drosophila / C. elegans) sit at ~2–3 kb. So the separating
+    # threshold must be a few kb, not tens of kb: an earlier 10 kb value wrongly
+    # classified human as compact and shrank the offset to 200 bp. 4 kb keeps
+    # human/mouse (~5–6 kb) at the user offset while still shrinking for fly/worm.
+    # body_offset_min is overridable per-organism if a particular annotation's
+    # all-gene median falls on the wrong side of this heuristic.
+    COMPACT_MEDIAN_BP = 4_000
+
     arr = sorted(gene_lengths)
     p25_idx = max(0, int(len(arr) * 0.25) - 1)
     p25 = arr[p25_idx]
     median_idx = len(arr) // 2
     median = arr[median_idx]
 
-    # Scale offset to 20% of P25, but never below 200 bp
-    auto_min = max(200, int(p25 * 0.20))
-    effective = min(user_offset_min, auto_min)   # take smaller of user & auto
+    if median >= COMPACT_MEDIAN_BP:
+        log_info(
+            f"Gene length distribution: P25={p25:,} bp, median={median:,} bp "
+            f"(>= {COMPACT_MEDIAN_BP:,} bp) → large genome; keeping user "
+            f"body_offset_min={user_offset_min:,} bp"
+        )
+        return user_offset_min
 
+    # Compact genome: scale offset to 20% of P25 (>=200 bp), never above user.
+    auto_min = max(200, int(p25 * 0.20))
+    effective = min(user_offset_min, auto_min)
     log_info(
         f"Gene length distribution: P25={p25:,} bp, median={median:,} bp "
-        f"→ auto body_offset_min={auto_min:,} bp "
+        f"(< {COMPACT_MEDIAN_BP:,} bp) → compact genome; auto "
+        f"body_offset_min={auto_min:,} bp "
         f"(user requested {user_offset_min:,}; using {effective:,})"
     )
     return effective
@@ -604,6 +628,111 @@ def parse_gtf_file(
         ))
 
     log("PARSE", f"Extracted {len(genes):,} unique genes")
+    return genes
+
+
+def parse_catalog_file(
+    catalog_path: str,
+    tss_window: int,
+    body_offset_min: int,
+    body_offset_frac: float
+) -> List[Tuple]:
+    """
+    Parse the gtf_to_catalog genes.tsv (one row per gene) and build the same
+    (gene_id, gene_name, chrom, strand, tss_lo, tss_hi, body_lo, body_hi,
+    body_len, gene_length) tuples that parse_gtf_file produces.
+
+    Using this catalog (instead of re-parsing the raw GTF and picking the longest
+    transcript) makes the TSS/TES used for the pausing index IDENTICAL to the
+    TSS/TES used by functional-region calling (module 10), which also consumes
+    this catalog. Columns: gene_id, gene_name, chr, strand, start, end, tss, tes,
+    biotype (tss/tes already strand-resolved by gtf_to_catalog: for '-' genes
+    tss = txEnd, tes = txStart).
+    """
+    log("PARSE", f"Reading gene catalog: {catalog_path}")
+
+    rows: List[Tuple] = []
+    with open_text_file(catalog_path) as f:
+        header = f.readline()
+        cols = [c.strip().lstrip("﻿").lower() for c in header.rstrip("\n").split("\t")]
+
+        def cidx(*names):
+            for n in names:
+                if n in cols:
+                    return cols.index(n)
+            return None
+
+        i_id     = cidx("gene_id", "id")
+        i_name   = cidx("gene_name", "name", "symbol")
+        i_chr    = cidx("chr", "chrom", "chromosome", "seqname")
+        i_strand = cidx("strand", "orientation")
+        i_start  = cidx("start", "gene_start")
+        i_end    = cidx("end", "gene_end")
+        i_tss    = cidx("tss", "tx_start", "txstart")
+        i_tes    = cidx("tes", "tx_end", "txend")
+
+        if None in (i_id, i_chr, i_strand, i_start, i_end):
+            log_error("Catalog missing required columns (need gene_id, chr, strand, start, end)")
+            return []
+
+        for line in f:
+            line = line.replace("\r", "")
+            if not line.strip() or line.startswith("#"):
+                continue
+            p = line.rstrip("\n").split("\t")
+            try:
+                gid    = p[i_id]
+                gname  = p[i_name] if (i_name is not None and i_name < len(p) and p[i_name]) else gid
+                chrom  = p[i_chr]
+                strand = p[i_strand] if p[i_strand] in ("+", "-") else "+"
+                gstart = int(float(p[i_start]))
+                gend   = int(float(p[i_end]))
+                tss    = int(float(p[i_tss])) if (i_tss is not None and p[i_tss] != "") else (gstart if strand == "+" else gend)
+                tes    = int(float(p[i_tes])) if (i_tes is not None and p[i_tes] != "") else (gend if strand == "+" else gstart)
+            except (ValueError, IndexError):
+                continue
+            if gend <= gstart:
+                continue
+            rows.append((gid, gname, chrom, strand, gstart, gend, tss, tes))
+
+    if not rows:
+        log_warning("No usable rows parsed from gene catalog")
+        return []
+
+    all_lengths = [max(1, e - s) for (_, _, _, _, s, e, _, _) in rows]
+    effective_offset_min = auto_body_offset(all_lengths, body_offset_min, body_offset_frac)
+
+    genes: List[Tuple] = []
+    max_body_span = 500_000
+    for (gid, gname, chrom, strand, gstart, gend, tss, tes) in rows:
+        gene_length = max(1, gend - gstart)
+        offset = max(effective_offset_min, int(gene_length * body_offset_frac))
+
+        if strand == "+":
+            body_lo = min(tss + offset, tes)
+            body_hi = tes
+        else:
+            body_lo = tes
+            body_hi = max(tes, tss - offset)
+
+        if body_hi < body_lo:
+            body_lo, body_hi = body_hi, body_lo
+        body_lo  = max(0, body_lo)
+        body_len = max(0, body_hi - body_lo)
+        tss_lo   = max(0, tss - tss_window)
+        tss_hi   = tss + tss_window
+
+        if body_len > max_body_span:
+            if strand == "+":
+                body_hi = body_lo + max_body_span
+            else:
+                body_lo = max(0, body_hi - max_body_span)
+            body_len = body_hi - body_lo
+
+        genes.append((gid, gname, chrom, strand, tss_lo, tss_hi,
+                      body_lo, body_hi, body_len, gene_length))
+
+    log("PARSE", f"Extracted {len(genes):,} genes from catalog")
     return genes
 
 # =============================================================================
@@ -868,7 +997,11 @@ def main():
     )
     
     parser.add_argument("--bam", required=True, help="Input BAM file")
-    parser.add_argument("--gtf", required=True, help="Gene annotation GTF file")
+    parser.add_argument("--gtf", required=False, default=None,
+                       help="Gene annotation GTF file (used only if --genes is not given)")
+    parser.add_argument("--genes", required=False, default=None,
+                       help="gtf_to_catalog genes.tsv catalog. PREFERRED: makes TSS/TES "
+                            "identical to functional-region calling. If given, --gtf is ignored.")
     parser.add_argument("--tss-win", type=int, default=50, 
                        help="TSS window size (±bp) [default: 50]")
     parser.add_argument("--body-offset-min", type=int, default=2000,
@@ -902,7 +1035,7 @@ def main():
     # Start
     log("START", f"calculate_pol_metrics.py v{VERSION}")
     log("START", f"BAM: {args.bam}")
-    log("START", f"GTF: {args.gtf}")
+    log("START", f"Gene source: {args.genes or args.gtf or '(none)'}")
     
     # Configuration
     log("CONFIG", f"TSS window: ±{args.tss_win} bp")
@@ -926,15 +1059,29 @@ def main():
         tss_bed = tmpdir / "tss.bed"
         body_bed = tmpdir / "body.bed"
         
-        # Parse GTF
+        # Parse gene model. Prefer the gtf_to_catalog genes.tsv catalog (so the
+        # TSS/TES match functional-region calling exactly); fall back to raw GTF.
         log("═" * 70, "")
-        genes = parse_gtf_file(
-            args.gtf,
-            feature_types,
-            args.tss_win,
-            args.body_offset_min,
-            args.body_offset_frac
-        )
+        if args.genes:
+            log("CONFIG", f"Gene source: catalog ({args.genes})")
+            genes = parse_catalog_file(
+                args.genes,
+                args.tss_win,
+                args.body_offset_min,
+                args.body_offset_frac
+            )
+        elif args.gtf:
+            log("CONFIG", f"Gene source: GTF ({args.gtf})")
+            genes = parse_gtf_file(
+                args.gtf,
+                feature_types,
+                args.tss_win,
+                args.body_offset_min,
+                args.body_offset_frac
+            )
+        else:
+            log_error("No gene source provided: pass --genes (catalog) or --gtf")
+            raise SystemExit(2)
         
         # Check if genes were found
         if not genes:

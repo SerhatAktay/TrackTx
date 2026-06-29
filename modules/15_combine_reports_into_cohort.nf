@@ -396,7 +396,7 @@ def runon_html():
                 v = row.get(h, \"\")
                 if h == \"interpretation\":
                     cells.append(f\"<td>{badge(v)}</td>\")
-                elif h in (\"ratio_5p_3p\",\"efficiency_5p_3p\",\"run_on_ratio\"):
+                elif h in (\"ratio_5p_3p\",\"efficiency_5p_3p\",\"run_on_ratio\",\"median_distal_proximal_ratio\",\"mean_distal_proximal_ratio\"):
                     try:    cells.append(f\"<td><strong>{float(v):.3f}</strong></td>\")
                     except: cells.append(f\"<td>{v}</td>\")
                 else:
@@ -600,8 +600,8 @@ html = f\"\"\"<!DOCTYPE html>
     <div class=\"runon-section\">
       <div class=\"runon-header\">
         <span style=\"font-size:1.4rem\">&#9879;</span>
-        <h3>5&prime; / 3&prime; Signal Ratio</h3>
-        <p>Measures nascent RNA synthesis quality over gene bodies &ge;&thinsp;10&thinsp;kb</p>
+        <h3>Run-on falloff (3&prime;/5&prime; of gene body)</h3>
+        <p>Distal-vs-proximal Pol II signal over gene bodies &ge;&thinsp;10&thinsp;kb &mdash; ~1 = even coverage (Pol II reaches the 3&prime; end), &lt;&thinsp;0.3 = strong 5&prime;&rarr;3&prime; falloff</p>
       </div>
       {runon_html()}
     </div>

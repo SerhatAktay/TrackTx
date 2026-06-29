@@ -409,6 +409,14 @@ def normalize_sample_data(
         "density_reason": metrics.get("density_reason"),
         # Read depth: prefer QC total_reads_raw; fallback to dedup_reads or reads_total_functional
         **(_resolve_input_reads(qc, json_data, reads_total_functional)),
+        # Uniquely-mapped reads (NH==1 / MAPQ>=threshold). 'unique_reads_nh1' is
+        # the correctly named field; 'dedup_reads' is kept as a back-compat alias
+        # (it is NOT PCR-deduplicated unless umi_deduplication_enabled is true).
+        "unique_reads_nh1": (
+            (qc.get("unique_reads_nh1") if qc else None)
+            or (qc.get("dedup_reads_mapq_ge") if qc else None)
+            or json_data.get("dedup_reads")
+        ),
         "dedup_reads": (
             (qc.get("dedup_reads_mapq_ge") if qc else None) or json_data.get("dedup_reads")
         ),
@@ -547,7 +555,7 @@ def build_cohort_dataframe(
     # Core columns
     core_cols = [
         "sample_id", "condition", "timepoint", "replicate",
-        "input_reads", "input_reads_source", "dedup_reads", "duplicate_percent",
+        "input_reads", "input_reads_source", "unique_reads_nh1", "dedup_reads", "duplicate_percent",
         "multimapper_percent", "uniqueness_method",
         "divergent_regions", "total_regions", "reads_total_functional",
         "median_pausing_index", "median_density",
@@ -621,7 +629,7 @@ def write_json_output(
     # Build column list
     core_cols = [
         "sample_id", "condition", "timepoint", "replicate",
-        "input_reads", "input_reads_source", "dedup_reads", "duplicate_percent",
+        "input_reads", "input_reads_source", "unique_reads_nh1", "dedup_reads", "duplicate_percent",
         "multimapper_percent", "uniqueness_method",
         "divergent_regions", "total_regions", "reads_total_functional",
         "median_pausing_index", "median_density",

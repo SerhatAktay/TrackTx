@@ -120,6 +120,17 @@ process normalize_coverage_tracks {
           path("3p/${sample_id}.3p.neg.sicpm.bedgraph"),
           emit: sicpm3p_bg
 
+    // CPM 3' BigWigs handed to the per-sample report (module 14) via channel, so
+    // its track-link availability no longer depends on probing the publish dir.
+    // All four ALWAYS exist (0-byte placeholder when a track wasn't produced;
+    // the report treats 0-byte as "not available"). See section 9c.
+    tuple val(sample_id),
+          path("3p/${sample_id}.3p.pos.cpm.bw"),
+          path("3p/${sample_id}.3p.neg.cpm.bw"),
+          path("3p/${sample_id}.allMap.3p.pos.cpm.bw"),
+          path("3p/${sample_id}.allMap.3p.neg.cpm.bw"),
+          emit: report_bw
+
     // Documentation and manifest
     path "README_normalization.txt", emit: readme
     path "tracks_manifest.tsv",      emit: manifest
@@ -191,8 +202,11 @@ process normalize_coverage_tracks {
   elif [[ "\${EMIT_5P_SETTING}" == "false" ]]; then
     EMIT_5P=0
   else
-    # Auto mode: enable if 5' inputs exist
-    if [[ -e "\${POS5}" || -e "\${NEG5}" ]]; then
+    # Auto mode: enable only if 5' inputs are NON-EMPTY. main.nf always supplies
+    # an existing empty sentinel (EMPTY_5P_*.bedgraph), so testing -e here always
+    # passed and forced 5' normalization of empty inputs every run. Test -s so the
+    # intended "skip when there is no 5' data" actually triggers.
+    if [[ -s "\${POS5}" || -s "\${NEG5}" ]]; then
       EMIT_5P=1
     else
       EMIT_5P=0
@@ -313,21 +327,36 @@ if sample_main > 0:
 else:
     fac_cpm = 0.0
 
-# Find control sample for siCPM
+# Find control sample for siCPM.
+#
+# Match on condition == control_label and pick the LOWEST replicate number.
+# IMPORTANT: merged replicates are emitted with replicate = 0 (not 1), so the
+# previous `rep in ('1','r1','R1')` test never matched a merged control and the
+# code silently fell back to "first sample with spike", i.e. an arbitrary
+# (often wrong) reference. Treating replicate as a number and taking the minimum
+# selects rep 1 when present and the merged rep-0 track when replicates are
+# pooled. Only consider rows that actually have spike reads.
 control_row = None
 
-# First try: match control_label and replicate 1
-for row in rows:
-    cond = normalize_str(row.get('condition', ''))
-    rep = str(row.get('replicate', '')).strip()
-    if cond == control_label and rep in ('1', 'r1', 'R1'):
-        control_row = row
-        break
+def _rep_num(r):
+    s = str(r.get('replicate', '')).strip().lower().lstrip('r')
+    try:
+        return int(float(s))
+    except (ValueError, TypeError):
+        return 10**9
+
+control_candidates = [
+    r for r in rows
+    if normalize_str(r.get('condition', '')) == control_label
+    and int(r.get('spike_reads', 0) or 0) > 0
+]
+if control_candidates:
+    control_row = sorted(control_candidates, key=_rep_num)[0]
 
 # Fallback: first sample with spike_reads > 0
 if control_row is None:
     for row in rows:
-        if int(row.get('spike_reads', 0)) > 0:
+        if int(row.get('spike_reads', 0) or 0) > 0:
             control_row = row
             break
 
@@ -603,6 +632,22 @@ PYSCRIPT
   else
     echo "NORMALIZE | ALLMAP5P | Skipping allMap 5' tracks"
   fi
+
+  ###########################################################################
+  # 9c) GUARANTEE PER-SAMPLE-REPORT BIGWIGS EXIST
+  ###########################################################################
+  # The per-sample report (module 14) receives these 4 CPM BigWigs through the
+  # report_bw channel, so its track-link availability is decided from real
+  # produced files instead of probing the publish directory. Touch a 0-byte
+  # placeholder for any not produced (allMap when emit_allmap=false; all .bw when
+  # emit_bw=false) so the output binding always succeeds; 0-byte = not available.
+  for RBW in \\
+    "3p/\${SAMPLE_ID}.3p.pos.cpm.bw" \\
+    "3p/\${SAMPLE_ID}.3p.neg.cpm.bw" \\
+    "3p/\${SAMPLE_ID}.allMap.3p.pos.cpm.bw" \\
+    "3p/\${SAMPLE_ID}.allMap.3p.neg.cpm.bw"; do
+    [[ -e "\${RBW}" ]] || : > "\${RBW}"
+  done
 
   ###########################################################################
   # 10) CREATE NORMALIZATION FACTORS FILE

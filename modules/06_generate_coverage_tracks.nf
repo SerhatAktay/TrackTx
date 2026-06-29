@@ -468,10 +468,35 @@ process generate_coverage_tracks {
     } > "\${SAMPLE_ID}.dedup_stats.txt"
   fi
 
-  # Copy INPUT_BAM to named output for downstream (pol uses same BAM as tracks)
-  echo "TRACKS | OUTPUT | Copying BAM used for tracks (deduped when UMI on)..."
-  cp "\${INPUT_BAM}" bam_for_downstream.bam
-  samtools index -@ \${THREADS} bam_for_downstream.bam
+  # ── Optional: also UMI-deduplicate the allMap BAM (off by default) ──────────
+  # When UMI dedup is on, the MAIN tracks use the deduped BAM but allMap tracks
+  # use the raw allMap BAM, so the two are deduped inconsistently. Enable
+  # params.umi.dedup_allmap=true to dedup allMap too. OFF by default because
+  # umi_tools dedup is designed for unique alignments; on a bowtie2 -k multimapper
+  # BAM (NH>1, MAPQ=255) its position-based dedup is approximate. Falls back to the
+  # original allMap BAM on any failure, so the standard path is never broken.
+  DEDUP_ALLMAP="${(params.umi?.dedup_allmap == true) ? 'true' : 'false'}"
+  if [[ "\${UMI_ENABLED}" == "true" && \${UMI_LENGTH} -gt 0 && "\${DEDUP_ALLMAP}" == "true" ]] \\
+     && command -v umi_tools >/dev/null 2>&1; then
+    echo "TRACKS | DEDUP | Also UMI-deduplicating allMap BAM (experimental for multimappers)..."
+    cp "\${ALLMAP_BAM}" allmap_in.bam
+    samtools index -@ \${THREADS} allmap_in.bam
+    PAIRED_FLAG=""
+    [[ "\${IS_PE}" == "true" ]] && PAIRED_FLAG="--paired"
+    if umi_tools dedup \${PAIRED_FLAG} -I allmap_in.bam -S allmap_dedup.bam --log=allmap_dedup.log; then
+      samtools index -@ \${THREADS} allmap_dedup.bam
+      ALLMAP_BAM="allmap_dedup.bam"
+      echo "TRACKS | DEDUP | allMap deduplicated"
+    else
+      echo "TRACKS | WARNING | allMap dedup failed; using original allMap BAM"
+    fi
+  fi
+
+  # NOTE: bam_for_downstream.bam (consumed by module 11 for Pol-II gene metrics)
+  # is created AFTER the PE mate-filtering step below, so that in paired-end mode
+  # it is the SAME signal-mate-only BAM the coverage tracks use. Previously it was
+  # the full (both-mate) deduped BAM, so gene metrics counted the noise mate too,
+  # inflating tss_cpm/body_cpm relative to the tracks. See section 4c.
 
   ###########################################################################
   # 4b) PE MATE FILTERING FOR 3'/5' COVERAGE TRACKS
@@ -483,40 +508,58 @@ process generate_coverage_tracks {
   #   Read1 (flag 64)  = original R2  → 5' end of fragment, NOT the Pol II position
   #   Read2 (flag 128) = RC(R1)       → 3' end of nascent RNA = Pol II position ✓
   #
-  # Using the full paired BAM for -3 coverage would add one noise hit (from
-  # Read1/R2) for every correct Pol II hit (from Read2/RC(R1)), distorting track
-  # shapes. For SE data both reads carry signal, so no filtering is needed.
+  # Using the full paired BAM for -3 coverage would add one noise hit (from the
+  # non-signal mate) for every correct Pol II hit, distorting track shapes. For
+  # SE data both reads carry signal, so no filtering is needed.
   #
-  # The allMap BAM is handled the same way so allMap tracks stay comparable.
+  # Which mate carries the signal end is configurable: params.align.pe_signal_mate
+  # = 'read2' (default, flag 128 = RC(R1), matches the module-05 layout above) or
+  # 'read1' (flag 64) for chemistries where R1 carries the signal end. NOTE: using
+  # 'read1' generally also requires a matching alignment orientation in module 05.
+  #
+  # The allMap BAM is mate-filtered the same way so allMap tracks stay comparable.
+  PE_SIGNAL_MATE="${params.align?.pe_signal_mate ?: 'read2'}"
+  if [[ "\${PE_SIGNAL_MATE}" == "read1" ]]; then PE_MATE_FLAG=64; else PE_MATE_FLAG=128; fi
 
   BAM_FOR_COVERAGE="\${INPUT_BAM}"
   ALLMAP_BAM_FOR_COVERAGE="\${ALLMAP_BAM}"
 
   if [[ "\${IS_PE}" == "true" ]]; then
     echo "────────────────────────────────────────────────────────────────────────"
-    echo "TRACKS | PE_FILTER | Paired-end: extracting Read2 (RC(R1)) only for coverage tracks..."
-    echo "TRACKS | PE_FILTER | (flag 128 = second-in-pair = the nascent RNA 3'-end read)"
+    echo "TRACKS | PE_FILTER | Paired-end: keeping only the signal mate (\${PE_SIGNAL_MATE}, flag \${PE_MATE_FLAG}) for coverage..."
     echo "────────────────────────────────────────────────────────────────────────"
 
-    samtools view -@ "\${THREADS}" -f 128 -b "\${INPUT_BAM}" \\
+    samtools view -@ "\${THREADS}" -f \${PE_MATE_FLAG} -b "\${INPUT_BAM}" \\
       | samtools sort -@ "\${THREADS}" -o pe_r2_main.bam
     samtools index -@ "\${THREADS}" pe_r2_main.bam
 
-    samtools view -@ "\${THREADS}" -f 128 -b "\${ALLMAP_BAM}" \\
+    samtools view -@ "\${THREADS}" -f \${PE_MATE_FLAG} -b "\${ALLMAP_BAM}" \\
       | samtools sort -@ "\${THREADS}" -o pe_r2_allmap.bam
     samtools index -@ "\${THREADS}" pe_r2_allmap.bam
 
     R2_MAIN_COUNT=\$(samtools view -c -F 4 pe_r2_main.bam)
     R2_ALLMAP_COUNT=\$(samtools view -c -F 4 pe_r2_allmap.bam)
-    echo "TRACKS | PE_FILTER | Main BAM Read2 count:   \${R2_MAIN_COUNT}"
-    echo "TRACKS | PE_FILTER | AllMap BAM Read2 count: \${R2_ALLMAP_COUNT}"
+    echo "TRACKS | PE_FILTER | Main BAM signal-mate count:   \${R2_MAIN_COUNT}"
+    echo "TRACKS | PE_FILTER | AllMap BAM signal-mate count: \${R2_ALLMAP_COUNT}"
 
     BAM_FOR_COVERAGE="pe_r2_main.bam"
     ALLMAP_BAM_FOR_COVERAGE="pe_r2_allmap.bam"
-    echo "TRACKS | PE_FILTER | Coverage tracks will use Read2-only BAMs"
+    echo "TRACKS | PE_FILTER | Coverage tracks will use signal-mate-only BAMs"
   else
     echo "TRACKS | PE_FILTER | Single-end mode: using full BAM for coverage"
   fi
+
+  ###########################################################################
+  # 4c) BAM HANDED TO DOWNSTREAM POL-II METRICS (module 11)
+  ###########################################################################
+  #
+  # Use the SAME BAM the coverage tracks use: in PE this is the Read2-only
+  # (flag 128 = RC(R1) = Pol II 3' end) BAM, in SE the full deduped BAM. This
+  # keeps gene-level TSS/body counts consistent with the published tracks
+  # instead of counting both mates in PE.
+  echo "TRACKS | OUTPUT | Copying BAM used for tracks + Pol-II metrics (deduped when UMI on)..."
+  cp "\${BAM_FOR_COVERAGE}" bam_for_downstream.bam
+  samtools index -@ \${THREADS} bam_for_downstream.bam
 
   ###########################################################################
   # 5) PREPARE GENOME SIZES
@@ -766,13 +809,14 @@ Main vs AllMap BAM Tracks:
     • Includes secondary alignments (multimappers)
     • Higher background signal
     • Use for multimapper-aware analyses
-    • Used by divergent transcription detection
+    • NOTE: divergent transcription detection uses the MAIN (primary) 3' tracks,
+      not allMap (see main.nf STEP 10 wiring)
 
 DOWNSTREAM USAGE
 ────────────────────────────────────────────────────────────────────────────
   These raw tracks will be:
   1. Normalized to CPM and siCPM (next module)
-  2. Used for divergent transcription detection (allMap 3' tracks)
+  2. Used for divergent transcription detection (main 3' tracks)
   3. Used for functional region calling (main 3' tracks)
   4. Used for Pol-II metrics calculation (normalized versions)
 

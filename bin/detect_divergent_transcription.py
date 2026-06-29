@@ -81,7 +81,15 @@ Output:
     ap.add_argument("--sum-thr", type=float, default=None,
                     help="Minimum peak total signal (default: auto-calibrate)")
     ap.add_argument("--fdr", type=float, default=0.05,
-                    help="False discovery rate threshold (default: 0.05)")
+                    help="APPROXIMATE FDR / score-stringency threshold (default: 0.05). "
+                         "NOTE: this is a posterior-based cutoff from the GMM, NOT a "
+                         "p-value Benjamini-Hochberg FDR — treat it as a stringency "
+                         "knob, not a strict FDR guarantee.")
+    ap.add_argument("--fallback-top-frac", type=float, default=0.0,
+                    help="If >0, and NO region passes the FDR/stringency cutoff, keep "
+                         "this top fraction of regions by score instead of returning "
+                         "zero (e.g. 0.10 = top 10%%). Default 0.0 = disabled, so a "
+                         "genuinely noisy/empty sample legitimately yields no sites.")
     
     # Calibration parameters (when using auto)
     ap.add_argument("--calibration-percentile", type=float, default=75.0,
@@ -639,7 +647,8 @@ def extract_features(
 def score_with_mixture_model(
     features_df: pd.DataFrame,
     fdr_threshold: float,
-    quiet: bool = False
+    quiet: bool = False,
+    fallback_top_frac: float = 0.0
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Score regions using Gaussian Mixture Model and apply approximate FDR control.
@@ -716,14 +725,23 @@ def score_with_mixture_model(
     fdr = cumulative_fp / cumulative_calls
     
     passing = fdr <= fdr_threshold
-    
+
     if not passing.any():
-        log(f"  WARNING: No regions pass FDR={fdr_threshold}", quiet)
-        log(f"  Taking top 10% by score as fallback", quiet)
-        n_pass = max(100, len(sorted_scores) // 10)
+        if fallback_top_frac and fallback_top_frac > 0:
+            n_pass = max(1, int(len(sorted_scores) * float(fallback_top_frac)))
+            log(f"  WARNING: No regions pass FDR={fdr_threshold}; "
+                f"fallback enabled → keeping top {fallback_top_frac:.0%} "
+                f"({n_pass:,} regions) by score", quiet)
+        else:
+            # Opt-in fallback is OFF (default): a sample that legitimately has no
+            # divergent transcription returns ZERO sites rather than being forced
+            # to emit its noisiest top-10%. Set --fallback-top-frac to override.
+            log(f"  No regions pass FDR={fdr_threshold}; returning 0 sites "
+                f"(set --fallback-top-frac > 0 to keep a top fraction instead)", quiet)
+            return np.zeros(len(features_df), dtype=bool), scores
     else:
         n_pass = np.where(passing)[0][-1] + 1
-    
+
     mask = np.array([False] * len(features_df))
     mask[sorted_idx[:n_pass]] = True
     
@@ -894,9 +912,33 @@ def main():
             pieces.append(result)
     
     if not pieces:
-        log("ERROR: No paired peaks found")
-        sys.exit(1)
-    
+        # No candidate pairs at all. This is a legitimate (if unusual) result for
+        # a very quiet sample — emit empty, valid outputs and exit 0 rather than
+        # aborting the whole pipeline. Mirrors the opt-in-fallback behaviour: a
+        # sample with no divergent transcription returns zero sites.
+        log("No paired peaks found — writing empty output (0 divergent sites)")
+        open(args.out, 'w').close()
+        if args.write_summary:
+            with open(args.write_summary, 'w') as f:
+                f.write("sample\tn_pos_pk\tn_neg_pk\tn_pairs_raw\tn_dt\twall_s\n")
+                f.write(f"{args.sample}\t{len(pos_peaks)}\t{len(neg_peaks)}\t0\t0\t"
+                        f"{time.time()-start_time:.1f}\n")
+        if not args.no_report:
+            report_path = args.report if args.report else args.out.replace('.bed', '_qc.txt')
+            try:
+                with open(report_path, 'w') as f:
+                    f.write("DIVERGENT TRANSCRIPTION — QC REPORT\n")
+                    f.write(f"Sample: {args.sample}\n")
+                    f.write(f"Positive peaks: {len(pos_peaks)}\n")
+                    f.write(f"Negative peaks: {len(neg_peaks)}\n")
+                    f.write("Candidate pairs: 0\nFinal regions: 0\n")
+                    f.write("No paired peaks were found (no bidirectional signal "
+                            "within the pairing window).\n")
+            except Exception:
+                pass
+        print("\nCOMPLETE — 0 divergent regions (no paired peaks)")
+        return
+
     paired = pd.concat(pieces, ignore_index=True)
     log(f"  → {len(paired):,} candidate pairs", args.quiet)
     
@@ -907,7 +949,7 @@ def main():
     # Statistical scoring and FDR filtering
     log("[7/7] Statistical scoring...")
     passing_mask, scores = score_with_mixture_model(
-        features_df, args.fdr, args.quiet
+        features_df, args.fdr, args.quiet, args.fallback_top_frac
     )
     
     # Build final results

@@ -276,7 +276,11 @@ def find_active_promoters_and_enhancers(all_genes: list, dt_bed: str) -> tuple[l
     3. DT sites NOT overlapping → Enhancers
     4. Return active genes (for creating gene-based regions later)
     """
-    # Create promoter regions for ALL genes (TSS ±tss_active_pm for active gene detection)
+    # Create promoter regions for ALL genes (TSS ±tss_active_pm for active gene detection).
+    # The name column carries the UNIQUE gene_id (not the symbol): gene symbols are
+    # not unique (paralogs, readthroughs, _1/_2 duplicates), so matching active genes
+    # by symbol let one active gene switch on its namesakes' regions. Matching by
+    # gene_id removes that collision.
     pm = args.tss_active_pm
     promoter_regions_bed = OUT / f"all_promoter_regions_TSS_pm{pm}.bed"
     with open(promoter_regions_bed, "w") as f:
@@ -284,32 +288,32 @@ def find_active_promoters_and_enhancers(all_genes: list, dt_bed: str) -> tuple[l
             prom_start = gene['TSS'] - pm
             prom_end = gene['TSS'] + pm
             prom_start, prom_end = clamp(prom_start, prom_end)
-            f.write(f"{gene['chrom']}\t{prom_start}\t{prom_end}\t{gene['gname']}\t.\t{gene['strand']}\n")
-    
+            f.write(f"{gene['chrom']}\t{prom_start}\t{prom_end}\t{gene['gid']}\t.\t{gene['strand']}\n")
+
     sort_bed(str(promoter_regions_bed))
-    
+
     # Identify which genes have DT sites at their promoters (TSS ±tss_active_pm)
     genes_with_promoters_bed = OUT / "genes_with_active_promoters.bed"
-    run([BT, "intersect", "-u", "-wa", "-a", str(promoter_regions_bed), "-b", dt_bed], 
+    run([BT, "intersect", "-u", "-wa", "-a", str(promoter_regions_bed), "-b", dt_bed],
         str(genes_with_promoters_bed))
-    
+
     # DT sites NOT overlapping gene promoters = Enhancers
     enhancers_bed = OUT / "enhancers.bed"
-    run([BT, "intersect", "-v", "-a", dt_bed, "-b", str(promoter_regions_bed)], 
+    run([BT, "intersect", "-v", "-a", dt_bed, "-b", str(promoter_regions_bed)],
         str(enhancers_bed))
-    
-    # Read active gene names from the intersection
-    active_names = set()
+
+    # Read active gene IDs from the intersection (col 4 = gene_id, unique)
+    active_ids = set()
     if Path(genes_with_promoters_bed).exists():
         with open(genes_with_promoters_bed) as f:
             for ln in f:
                 if ln.strip() and not ln.startswith(("#", "track", "browser")):
                     fields = split_fields(ln)
                     if len(fields) >= 4:
-                        active_names.add(fields[3])  # gene name
-    
-    # Filter to active genes only
-    active_genes = [g for g in all_genes if g['gname'] in active_names]
+                        active_ids.add(fields[3])  # gene_id
+
+    # Filter to active genes only (by unique gene_id)
+    active_genes = [g for g in all_genes if g['gid'] in active_ids]
     
     # Count 
     n_dt_at_promoters = wc_effective_lines(str(genes_with_promoters_bed))

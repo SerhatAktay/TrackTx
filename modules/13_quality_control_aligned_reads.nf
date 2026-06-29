@@ -539,12 +539,12 @@ process quality_control_aligned_reads {
 
   RE_NUM='^[0-9]+\\.?[0-9]*\$'
   RE_FRAC='^0?\\.?[0-9]+\\.?[0-9]*\$'
-  if [[ -n "\${FAIL_MAP_RATE}" && "\${FAIL_MAP_RATE}" =~ \$RE_NUM ]]; then
-    MAP_INT=\${MAP_PERCENT%.*}
-    if [[ \${MAP_INT:-0} -lt \${FAIL_MAP_RATE%.*} ]]; then
-      tracktx_error "quality_control_aligned_reads" "Mapping rate \${MAP_PERCENT}% below threshold \${FAIL_MAP_RATE}%" "Improve library/alignment or set params.qc.fail_map_rate_below = null to disable" 2
-    fi
-  fi
+
+  # NOTE: the fail_map_rate_below gate is intentionally NOT enforced here. This
+  # module only sees the primary-filtered BAM, where unmapped reads are already
+  # removed, so the "mapping rate" computed from it is tautologically ~100% and
+  # could never trip the threshold. The gate is enforced in
+  # 05_align_reads_to_genome.nf using bowtie2's genuine overall alignment rate.
 
   if [[ -n "\${FAIL_STRAND}" && "\${FAIL_STRAND}" =~ \$RE_FRAC ]]; then
     MINUS_FRAC=\$(awk -v f=\${PLUS_FRAC} 'BEGIN{printf "%.4f", 1-f}')
@@ -579,7 +579,8 @@ process quality_control_aligned_reads {
   "sequencing_mode": "\$([ \${IS_PAIRED} -eq 1 ] && echo "paired-end" || echo "single-end")",
   "total_reads_raw": \${TOTAL_READS},
   "mapped_reads": \${MAPPED_READS},
-  "map_rate_percent": \${MAP_PERCENT},
+  "_comment_map_rate": "primary_retained_percent is reads kept in the primary-filtered BAM; it is NOT the alignment rate (~100% by construction). The genuine overall alignment rate is in 02_alignments/alignment_rates_summary.tsv (genome_overall_aln_rate_pct).",
+  "primary_retained_percent": \${MAP_PERCENT},
   "duplicate_reads": \${DUP_READS},
   "duplicate_perc_of_total": \${DUP_PERCENT},
   "mapq_ge_\${MAPQ_THRESHOLD}_reads": \${MAPQ_READS},

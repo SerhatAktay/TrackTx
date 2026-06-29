@@ -5,6 +5,15 @@
 // Purpose:
 //   Collects mapped read counts from alignment BAM files for normalization
 //
+// NAME NOTE:
+//   Despite the name "quantify_reads_per_gene", this module does NOT produce
+//   per-gene counts. It computes whole-library totals (main / allMap / spike
+//   mapped reads via samtools idxstats) that module 08 uses as CPM/siCPM library
+//   sizes. Per-gene quantification lives in module 11 (calculate_pol_metrics.py).
+//   The process name is retained only because it is referenced by withName
+//   selectors in nextflow.config; renaming it would silently drop those resource
+//   directives.
+//
 // Features:
 //   • Counts from three BAM sources:
 //     - Main BAM: Primary filtered alignments
@@ -443,24 +452,12 @@ DOCEOF
     tracktx_error "quantify_reads_per_gene" "Output TSV missing or empty" "Check quantify_reads_per_gene.log in work dir"
   fi
 
-  # Check TSV has 2 lines (header + data)
+  # Report TSV shape (informational; this file is a fixed 2-line / 7-column table
+  # written by printf just above, so a hard check added no safety and the strict
+  # validation was disabled long-term — removed rather than left as dead comments).
   LINE_COUNT=\$(wc -l < "\${SAMPLE_ID}.counts.tsv" | tr -d ' ')
-  echo "COUNTS | VALIDATE | TSV has \${LINE_COUNT} lines"
-  # Temporarily disabled strict validation
-  # if [[ \${LINE_COUNT} -ne 2 ]]; then
-  #   echo "COUNTS | ERROR | TSV should have exactly 2 lines, found \${LINE_COUNT}"
-  #   exit 1
-  # fi
-
-  # Check TSV has 7 columns
   COLUMN_COUNT=\$(head -2 "\${SAMPLE_ID}.counts.tsv" | tail -1 | awk -F'\\t' '{print NF}')
-  echo "COUNTS | VALIDATE | TSV has \${COLUMN_COUNT} columns"
-  # Temporarily disabled strict validation
-  # if [[ \${COLUMN_COUNT} -ne 7 ]]; then
-  #   echo "COUNTS | ERROR | TSV should have 7 columns, found \${COLUMN_COUNT}"
-  #   exit 1
-  # fi
-
+  echo "COUNTS | VALIDATE | TSV has \${LINE_COUNT} lines, \${COLUMN_COUNT} columns"
   echo "COUNTS | VALIDATE | TSV format validated"
 
   ###########################################################################

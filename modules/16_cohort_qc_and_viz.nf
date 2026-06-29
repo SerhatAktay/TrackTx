@@ -402,41 +402,100 @@ neg3      = args[2+2*n:2+3*n]
 pos5      = args[2+3*n:2+4*n]
 neg5      = args[2+4*n:2+5*n]
 
-# The run-on efficiency metric is a 5'/3' signal ratio and is only meaningful
-# when 5' end tracks exist. Single-end PRO-seq (emit_5p=false) produces no 5'
-# track, so rather than emit a misleading NaN / 'insufficient_data' table (which
-# looks like a failure), write an explicit not-applicable table and skip the
-# per-gene computation entirely.
-def _has_signal(paths):
-    return any(p and os.path.isfile(p) and os.path.getsize(p) > 0 for p in paths)
-
-if not _has_signal(pos5) and not _has_signal(neg5):
-    _hdr = ['sample_id', 'n_genes_used', 'median_5p3p_ratio',
-            'mean_5p3p_ratio', 'interpretation']
-    _rows = ['\\t'.join(_hdr)]
-    for _sid in sids:
-        _rows.append(f\"{_sid}\\t0\\tNA\\tNA\\tnot_applicable_no_5p_track\")
-    with open('runon_efficiency.tsv', 'w') as _f:
-        _f.write('\\n'.join(_rows) + '\\n')
-    print(\"Run-on efficiency: no 5' tracks present (single-end / emit_5p=false) \"
-          \"- metric not applicable; wrote not_applicable table.\", file=sys.stderr)
-    sys.exit(0)
+# Run-on efficiency = POSITIONAL 5'->3' falloff of Pol II (3' end) signal along
+# long gene bodies. For each gene the body is split into a 5'-proximal half and a
+# 3'-distal half; the metric is distal/proximal 3'-signal. Even coverage (Pol II
+# reaches the 3' end) -> ~1; a 5'->3' drop-off (poor/short run-on) -> <<1.
+#
+# Why not the old 5'-end-track / 3'-end-track ratio? Each short PRO-seq read has
+# ONE 5' end and ONE 3' end only ~tens of bp apart; for any read inside the body
+# BOTH ends fall in the same window, so that ratio is ~1 for every gene
+# regardless of run-on quality (it compared a number to itself). The positional
+# split is the real falloff measure AND uses only the 3' track, so it also works
+# for single-end (the old metric needed 5' tracks and was skipped for SE).
+# pos5/neg5 are still accepted as args for call-site stability but are unused.
 
 MIN_GENE_LEN = 10_000
-TSS_SKIP     = 500    # skip first 500 bp after TSS
-TES_SKIP     = 500    # skip last  500 bp before TES
-MIN_SIGNAL   = 1.0    # minimum 3' signal to include gene
+TSS_SKIP     = 500    # skip first 500 bp after TSS (avoid promoter-proximal pause)
+TES_SKIP     = 500    # skip last  500 bp before TES (avoid the cleavage site)
+MIN_SIGNAL   = 1.0    # minimum proximal-half 3' signal to include a gene
+BIN          = 100_000   # genomic bin size for the region-overlap index (bp)
 
-BIN = 100_000   # genomic bin size for the gene-overlap index (bp)
+# ---- Parse gene bodies (gtf_to_catalog genes.tsv schema, BED6 fallback) ----
+genes = []   # (chrom, body_lo, body_hi, strand)
+def _is_int(x):
+    return x.lstrip('-').isdigit()
+
+if os.path.isfile(genes_bed):
+    with open(genes_bed) as f:
+        first = f.readline()
+        hdr = [c.strip().lower() for c in first.rstrip('\\n').split('\\t')]
+        col = {name: i for i, name in enumerate(hdr)}
+        is_catalog = all(k in col for k in ('chr', 'start', 'end', 'strand'))
+
+        def _emit(chrom, start, end, strand):
+            if end - start < MIN_GENE_LEN:
+                return
+            if strand == '+':
+                body_lo = start + TSS_SKIP; body_hi = end - TES_SKIP
+            else:
+                body_lo = start + TES_SKIP; body_hi = end - TSS_SKIP
+            if body_hi <= body_lo:
+                return
+            genes.append((chrom, body_lo, body_hi, strand))
+
+        def _parse_line(line, catalog):
+            if not line.strip() or line.startswith('#'):
+                return
+            p = line.rstrip('\\n').split('\\t') if '\\t' in line else line.split()
+            try:
+                if catalog:
+                    chrom  = p[col['chr']]
+                    start  = int(p[col['start']]); end = int(p[col['end']])
+                    strand = p[col['strand']] if p[col['strand']] in ('+', '-') else '+'
+                else:
+                    if len(p) < 6 or not (_is_int(p[1]) and _is_int(p[2])):
+                        return
+                    chrom, start, end, strand = p[0], int(p[1]), int(p[2]), p[5]
+            except (ValueError, IndexError, KeyError):
+                return
+            _emit(chrom, start, end, strand)
+
+        if not is_catalog and len(hdr) >= 6 and _is_int(hdr[1]) and _is_int(hdr[2]):
+            _parse_line(first, catalog=False)
+        for line in f:
+            _parse_line(line, catalog=is_catalog)
+else:
+    print(f\"WARNING: genes_bed not found: {genes_bed}\", file=sys.stderr)
+
+print(f\"Loaded {len(genes)} gene bodies (>={MIN_GENE_LEN} bp)\", file=sys.stderr)
+
+# ---- Split each body into 5'-proximal and 3'-distal halves ----
+# regions[2*gi] = proximal half, regions[2*gi+1] = distal half (strand-aware).
+regions = []        # (chrom, lo, hi)
+reg_strand = []
+for (chrom, blo, bhi, strand) in genes:
+    mid = (blo + bhi) // 2
+    if strand == '+':
+        prox = (chrom, blo, mid); dist = (chrom, mid, bhi)
+    else:
+        prox = (chrom, mid, bhi); dist = (chrom, blo, mid)
+    regions.append(prox); reg_strand.append(strand)
+    regions.append(dist); reg_strand.append(strand)
+
+# Build the (chrom, bin) -> [region indices] index once.
+region_bins = {}
+for ri, (rchrom, rlo, rhi) in enumerate(regions):
+    for b in range(rlo // BIN, rhi // BIN + 1):
+        region_bins.setdefault((rchrom, b), []).append(ri)
 
 def accumulate(path, acc):
-    # Stream one bedGraph file once and add abs(signal) * overlap into acc[gi]
-    # for every gene body that overlaps each interval. Memory stays O(n_genes)
-    # instead of loading the whole genome-wide bedGraph into RAM (the previous
-    # load_bedgraph approach OOM-killed the process on T2T single-nt tracks).
+    # Stream one bedGraph once, add abs(signal)*overlap into acc[ri] for every
+    # half-region overlapping each interval. O(n_regions) memory (no genome-wide
+    # load — that OOM-killed T2T single-nt tracks).
     if not path or not os.path.isfile(path) or os.path.getsize(path) == 0:
         return
-    get = gene_bins.get
+    get = region_bins.get
     with open(path) as f:
         for line in f:
             if not line or line[0] == '#':
@@ -451,8 +510,7 @@ def accumulate(path, acc):
                 continue
             if v == 0.0 or e <= s:
                 continue
-            b0 = s // BIN
-            b1 = (e - 1) // BIN
+            b0 = s // BIN; b1 = (e - 1) // BIN
             if b0 == b1:
                 cands = get((chrom, b0))
                 if not cands:
@@ -465,90 +523,47 @@ def accumulate(path, acc):
                         cands.update(c)
                 if not cands:
                     continue
-            for gi in cands:
-                lo = genes[gi][1]; hi = genes[gi][2]
+            for ri in cands:
+                lo = regions[ri][1]; hi = regions[ri][2]
                 ov = (e if e < hi else hi) - (s if s > lo else lo)
                 if ov > 0:
-                    acc[gi] += v * ov
+                    acc[ri] += v * ov
 
-# Parse gene bodies from BED6
-genes = []
-if os.path.isfile(genes_bed):
-    with open(genes_bed) as f:
-        for line in f:
-            if not line.strip() or line.startswith('#'):
-                continue
-            p = line.split()
-            if len(p) < 6:
-                continue
-            # Skip header row (e.g. "gene_name  chrom  start  end ..." or
-            # "chrom  start  end  name  score  strand") — columns 2 and 3
-            # must be numeric coordinates for a real BED record.
-            if not (p[1].lstrip('-').isdigit() and p[2].lstrip('-').isdigit()):
-                continue
-            chrom, start, end, name, _, strand = p[0], int(p[1]), int(p[2]), p[3], p[4], p[5]
-            length = end - start
-            if length < MIN_GENE_LEN:
-                continue
-            if strand == '+':
-                body_lo = start + TSS_SKIP
-                body_hi = end   - TES_SKIP
-            else:
-                body_lo = start + TES_SKIP
-                body_hi = end   - TSS_SKIP
-            if body_hi <= body_lo:
-                continue
-            genes.append((chrom, body_lo, body_hi, strand))
-else:
-    print(f\"WARNING: genes_bed not found: {genes_bed}\", file=sys.stderr)
-
-print(f\"Loaded {len(genes)} gene bodies (>={MIN_GENE_LEN} bp)\", file=sys.stderr)
-
-# Build the (chrom, bin) -> [gene indices] index once. Each gene body is
-# registered in every bin it spans so accumulate() can look up candidates fast.
-gene_bins = {}
-for gi, (gchrom, glo, ghi, gstrand) in enumerate(genes):
-    for b in range(glo // BIN, ghi // BIN + 1):
-        gene_bins.setdefault((gchrom, b), []).append(gi)
-
-header = ['sample_id', 'n_genes_used', 'median_5p3p_ratio',
-          'mean_5p3p_ratio', 'interpretation']
+header = ['sample_id', 'n_genes_used', 'median_distal_proximal_ratio',
+          'mean_distal_proximal_ratio', 'interpretation']
 rows = ['\\t'.join(header)]
 
-ng = len(genes)
+ng = len(genes); nr = len(regions)
 for i, sid in enumerate(sids):
-    a_p3 = [0.0] * ng; a_n3 = [0.0] * ng
-    a_p5 = [0.0] * ng; a_n5 = [0.0] * ng
+    a_p3 = [0.0] * nr; a_n3 = [0.0] * nr
     if i < len(pos3): accumulate(pos3[i], a_p3)
     if i < len(neg3): accumulate(neg3[i], a_n3)
-    if i < len(pos5): accumulate(pos5[i], a_p5)
-    if i < len(neg5): accumulate(neg5[i], a_n5)
 
     ratios = []
     for gi in range(ng):
-        strand = genes[gi][3]
-        if strand == '+':
-            sig3 = a_p3[gi]; sig5 = a_p5[gi]
-        else:
-            sig3 = a_n3[gi]; sig5 = a_n5[gi]
-        if sig3 < MIN_SIGNAL:
+        strand = reg_strand[2 * gi]
+        arr = a_p3 if strand == '+' else a_n3
+        prox = arr[2 * gi]; dist = arr[2 * gi + 1]
+        if prox < MIN_SIGNAL:
             continue
-        ratios.append(sig5 / sig3 if sig3 > 0 else 0.0)
+        ratios.append(dist / prox)
 
     if ratios:
         ratios.sort()
         mid = len(ratios) // 2
         med = ratios[mid] if len(ratios) % 2 == 1 else (ratios[mid-1] + ratios[mid]) / 2
         avg = sum(ratios) / len(ratios)
-        if   med >= 0.7: interp = \"excellent\"
-        elif med >= 0.4: interp = \"good\"
-        elif med >= 0.2: interp = \"moderate — check run-on time\"
+        # Bands are heuristic and relative — even good libraries dip below 1 due
+        # to legitimate 5' pausing enrichment; compare across samples.
+        if   med >= 0.8: interp = \"excellent\"
+        elif med >= 0.5: interp = \"good\"
+        elif med >= 0.3: interp = \"moderate — check run-on time\"
         else:            interp = \"poor — consider longer run-on\"
     else:
         med, avg, interp = float('nan'), float('nan'), \"insufficient_data\"
 
     rows.append(f\"{sid}\\t{len(ratios)}\\t{med:.4f}\\t{avg:.4f}\\t{interp}\")
-    print(f\"  {sid}: median 5p/3p = {med:.4f} ({interp})\", file=sys.stderr)
+    print(f\"  {sid}: median distal/proximal = {med:.4f} ({interp})\", file=sys.stderr)
 
 with open('runon_efficiency.tsv', 'w') as f:
     f.write('\\n'.join(rows) + '\\n')

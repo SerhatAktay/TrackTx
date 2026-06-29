@@ -219,14 +219,28 @@ process assign_signal_to_functional_regions {
   fi
   echo "FUNCREGION | VALIDATE | Python script: \${FGR_SCRIPT}"
 
-  # Check required input files
-  for FILE in "\${DIV_BED}" "\${POS_BG}" "\${NEG_BG}" "\${GENES_TSV}" "\${TSS_BED}" "\${TES_BED}"; do
+  # Check required input files. NOTE: DIV_BED is deliberately NOT in this strict
+  # list — an EMPTY divergent BED is a legitimate result (a quiet sample with no
+  # divergent transcription, especially now that module 09's top-fraction fallback
+  # is opt-in). functional_regions.py handles zero divergent sites gracefully
+  # (no active genes → all signal becomes non-localized), so we only require that
+  # the file EXISTS, and warn if it is empty rather than aborting the run.
+  for FILE in "\${POS_BG}" "\${NEG_BG}" "\${GENES_TSV}" "\${TSS_BED}" "\${TES_BED}"; do
     if [[ ! -s "\${FILE}" ]]; then
-      tracktx_error "assign_signal_to_functional_regions" "Missing or empty input: \${FILE}" "Check upstream modules (detect_divergent_transcription, normalize_coverage_tracks, download_genome_annotations)"
+      tracktx_error "assign_signal_to_functional_regions" "Missing or empty input: \${FILE}" "Check upstream modules (normalize_coverage_tracks, download_genome_annotations)"
     fi
     FILE_SIZE=\$(stat -c%s "\${FILE}" 2>/dev/null || stat -f%z "\${FILE}" 2>/dev/null || echo "unknown")
     echo "FUNCREGION | VALIDATE | \$(basename \${FILE}): \${FILE_SIZE} bytes"
   done
+
+  if [[ ! -e "\${DIV_BED}" ]]; then
+    tracktx_error "assign_signal_to_functional_regions" "Divergent BED not found: \${DIV_BED}" "Check detect_divergent_transcription output"
+  elif [[ ! -s "\${DIV_BED}" ]]; then
+    echo "FUNCREGION | VALIDATE | WARNING: divergent BED is empty — 0 divergent sites; all signal will fall to non-localized (no active genes)."
+  else
+    DIV_BED_SIZE=\$(stat -c%s "\${DIV_BED}" 2>/dev/null || stat -f%z "\${DIV_BED}" 2>/dev/null || echo "unknown")
+    echo "FUNCREGION | VALIDATE | \$(basename \${DIV_BED}): \${DIV_BED_SIZE} bytes"
+  fi
 
   # Count input features
   DIV_COUNT=\$(grep -v '^#' "\${DIV_BED}" 2>/dev/null | wc -l | tr -d ' ' || echo 0)

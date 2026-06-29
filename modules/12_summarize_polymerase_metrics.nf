@@ -179,8 +179,18 @@ process summarize_polymerase_metrics {
   #   • 4-element [cond1, tp1, cond2, tp2]  -> group:cond1_tp1,cond2_tp2  (treatment vs control)
   #   • 3-element [variable, num, denom]    -> variable:num,denom
   #   • already-formatted "variable:num,denom" string -> passed through
+  #
+  # NOTE: when replicates are merged (params.replicates.merge=true) every
+  # condition collapses to a single pooled track (n=1), so a per-gene contrast
+  # has zero residual degrees of freedom and every p-value is forced to 1.0.
+  # Emitting such a table (and its MA plots) is statistically meaningless and
+  # misleading, so contrasts are force-disabled in the merged case. The merged
+  # summary table and descriptive heatmaps are still produced. For real
+  # differential testing use the per-replicate handoff table written by
+  # 11b_collect_pol_metrics_per_replicate (08b_pol_metrics_per_replicate/) as
+  # input to DESeq2/edgeR downstream.
   cat > contrasts.txt <<'CONTRASTEOF'
-${((params.pol?.contrasts ?: []) as List).collect { spec ->
+${(params.replicates?.merge == true) ? '' : ((params.pol?.contrasts ?: []) as List).collect { spec ->
     if (spec instanceof List) {
         def s = spec as List
         if (s.size() == 4) { 'group:' + s[0] + '_' + s[1] + ',' + s[2] + '_' + s[3] }
@@ -193,6 +203,7 @@ CONTRASTEOF
   # Count contrasts
   CONTRAST_COUNT=\$( (grep -v '^\$' contrasts.txt || true) | wc -l | tr -d ' ' )
   echo "AGGREGATE | CONFIG | Contrasts: \${CONTRAST_COUNT}"
+${(params.replicates?.merge == true) ? '  echo "AGGREGATE | CONFIG | Contrasts force-disabled: replicates were merged (n=1 per group, p-values not estimable). Use 08b_pol_metrics_per_replicate/ for differential testing."' : ''}
 
   if [[ \${CONTRAST_COUNT} -gt 0 ]]; then
     echo "AGGREGATE | CONFIG | Contrast specifications:"

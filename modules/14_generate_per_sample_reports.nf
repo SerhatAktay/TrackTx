@@ -232,33 +232,33 @@ process generate_per_sample_reports {
 
   echo "REPORT | TRACKS | Validating track file links..."
 
-  # Helper to validate track link (URL or file path)
+  # Helper to validate track link (URL or published file path).
+  # IMPORTANT: a NON-EMPTY link is treated as available WITHOUT a filesystem
+  # existence check. Availability is decided upstream in main.nf from the real
+  # produced files on Nextflow channels; the link itself is the *published*
+  # results path (e.g. /…/05_normalized_tracks/…/x.cpm.bw), which is NOT visible
+  # from inside this task's sandbox (work dir / Docker mount). The previous
+  # existence re-check (\${link} stat) therefore always failed and dropped every
+  # link ("Available tracks: 0/6"), even though the files exist in results. Empty
+  # string = not provided (main.nf emits '' when the track wasn't produced or its
+  # publish toggle is off).
   validate_track() {
     local label="\$1"
     local link="\$2"
-    
-    # Empty is OK (optional)
+
     if [[ -z "\${link}" ]]; then
       echo "REPORT | TRACKS | \${label}: not provided"
       return 1
     fi
-    
-    # Check if it's a URL
+
     if [[ "\${link}" =~ ^https?:// ]]; then
       echo "REPORT | TRACKS | \${label}: URL (\${link})"
       return 0
     fi
-    
-    # Check if file exists
-    if [[ -e "\${link}" ]]; then
-      LINK_SIZE=\$(stat -c%s "\${link}" 2>/dev/null || stat -f%z "\${link}" 2>/dev/null || echo "unknown")
-      echo "REPORT | TRACKS | \${label}: file (\${LINK_SIZE} bytes)"
-      return 0
-    fi
-    
-    # Not found
-    echo "REPORT | TRACKS | \${label}: not found (\${link})"
-    return 1
+
+    # Non-empty published path → trust upstream validation (do not stat sandbox).
+    echo "REPORT | TRACKS | \${label}: published path (\${link})"
+    return 0
   }
 
   # Track availability flags
@@ -307,10 +307,14 @@ process generate_per_sample_reports {
   # Parse QC JSON for key metrics
   if command -v jq >/dev/null 2>&1 && [[ -s "\${QC_JSON}" ]]; then
     TOTAL_READS=\$(jq -r '.total_reads_raw // 0' "\${QC_JSON}" 2>/dev/null || echo 0)
-    MAP_RATE=\$(jq -r '.map_rate_percent // 0' "\${QC_JSON}" 2>/dev/null || echo 0)
+    # NOTE: module 13's qc_pol.json has no 'map_rate_percent' key (the genuine
+    # overall alignment rate lives in 02_alignments/alignment_rates_summary.tsv,
+    # not here). Use the unique/MAPQ-pass percent that IS present so this stops
+    # silently reporting 0.
+    MAP_RATE=\$(jq -r '.mapq_pass_percent // .unique_pass_percent // 0' "\${QC_JSON}" 2>/dev/null || echo 0)
     DUP_RATE=\$(jq -r '.duplicate_perc_of_total // 0' "\${QC_JSON}" 2>/dev/null || echo 0)
     echo "REPORT | PARSE | Total reads: \${TOTAL_READS}"
-    echo "REPORT | PARSE | Mapping rate: \${MAP_RATE}%"
+    echo "REPORT | PARSE | Unique/MAPQ-pass rate: \${MAP_RATE}%"
     echo "REPORT | PARSE | Duplicate rate: \${DUP_RATE}%"
   else
     echo "REPORT | PARSE | jq not available, skipping QC metrics"
@@ -338,6 +342,7 @@ process generate_per_sample_reports {
     --out-tsv "\${OUT_TSV}"
     --out-json "\${OUT_JSON}"
     --out-plots-html "\${OUT_PLOTS}"
+    --pi-min-body-count "${params.pol?.pi_min_body_count ?: 10}"
   )
 
   echo "REPORT | BUILD | Base arguments: \${#RENDERER_ARGS[@]}"
@@ -587,7 +592,8 @@ REPORT CONTENTS DETAILS
 
 2. Quality Control
    • Total reads: \${TOTAL_READS:-NA}
-   • Mapping rate: \${MAP_RATE:-NA}%
+   • Unique/MAPQ-pass rate: \${MAP_RATE:-NA}%   (genuine overall alignment rate is in
+     02_alignments/alignment_rates_summary.tsv, not in this per-sample report)
    • Duplicate rate: \${DUP_RATE:-NA}%
    • Strand balance
    • Coverage depth

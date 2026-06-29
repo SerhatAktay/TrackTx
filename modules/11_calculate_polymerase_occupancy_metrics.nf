@@ -79,7 +79,10 @@ process calculate_polymerase_occupancy_metrics {
           path(pos3_cpm_bg), path(neg3_cpm_bg),
           path(pos3_sicpm_bg), path(neg3_sicpm_bg),
           val(cond), val(tp), val(rep)
-    path gtf
+    // Gene model: the gtf_to_catalog genes.tsv catalog (NOT the raw GTF). Using
+    // the same catalog as functional-region calling (module 10) makes the TSS/TES
+    // for the pausing index identical to those used for promoter signal.
+    path genes_cat
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:
@@ -133,7 +136,7 @@ process calculate_polymerase_occupancy_metrics {
   # Input files
   IN_BAM="${in_bam}"
   FUNC_BED="${func_bed}"
-  GTF_FILE="${gtf}"
+  GENES_CAT="${genes_cat}"
   CALC_SCRIPT="\$(command -v calculate_pol_metrics.py)"
 
   # Coverage tracks
@@ -174,7 +177,7 @@ process calculate_polymerase_occupancy_metrics {
   echo "POL | CONFIG | Input Files:"
   echo "POL | CONFIG |   BAM: \$(basename \${IN_BAM})"
   echo "POL | CONFIG |   Functional regions: \$(basename \${FUNC_BED})"
-  echo "POL | CONFIG |   GTF: \$(basename \${GTF_FILE})"
+  echo "POL | CONFIG |   Gene catalog: \$(basename \${GENES_CAT})"
   echo ""
   echo "POL | CONFIG | Coverage Tracks:"
   echo "POL | CONFIG |   CPM: \$(basename \${POS_CPM}), \$(basename \${NEG_CPM})"
@@ -219,13 +222,13 @@ process calculate_polymerase_occupancy_metrics {
   BAM_SIZE=\$(stat -c%s "\${IN_BAM}" 2>/dev/null || stat -f%z "\${IN_BAM}" 2>/dev/null || echo "unknown")
   echo "POL | VALIDATE | BAM: \${BAM_SIZE} bytes"
 
-  # Check GTF
-  if [[ ! -e "\${GTF_FILE}" ]]; then
-    tracktx_error "calculate_polymerase_occupancy_metrics" "GTF file missing: \${GTF_FILE}" "Check download_genome_annotations module"
+  # Check gene catalog
+  if [[ ! -s "\${GENES_CAT}" ]]; then
+    tracktx_error "calculate_polymerase_occupancy_metrics" "Gene catalog missing or empty: \${GENES_CAT}" "Check download_genome_annotations (genes.tsv) module"
   fi
-  GTF_SIZE=\$(stat -c%s "\${GTF_FILE}" 2>/dev/null || stat -f%z "\${GTF_FILE}" 2>/dev/null || echo "unknown")
-  GTF_LINES=\$(wc -l < "\${GTF_FILE}" 2>/dev/null | tr -d ' ' || echo 0)
-  echo "POL | VALIDATE | GTF: \${GTF_SIZE} bytes (\${GTF_LINES} lines)"
+  GENES_SIZE=\$(stat -c%s "\${GENES_CAT}" 2>/dev/null || stat -f%z "\${GENES_CAT}" 2>/dev/null || echo "unknown")
+  GENES_LINES=\$(wc -l < "\${GENES_CAT}" 2>/dev/null | tr -d ' ' || echo 0)
+  echo "POL | VALIDATE | Gene catalog: \${GENES_SIZE} bytes (\${GENES_LINES} lines)"
 
   # Check CPM tracks (required)
   for TRACK in "\${POS_CPM}" "\${NEG_CPM}"; do
@@ -469,7 +472,7 @@ process calculate_polymerase_occupancy_metrics {
   set +e
   \${PYTHON_CMD} "\${CALC_SCRIPT}" \\
     --bam filtered.bam \\
-    --gtf "\${GTF_FILE}" \\
+    --genes "\${GENES_CAT}" \\
     --tss-win \${TSS_WIN} \\
     --body-offset-min \${BODY_OFFSET_MIN} \\
     --body-offset-frac \${BODY_OFFSET_FRAC} \\
@@ -790,8 +793,10 @@ DOCEOF
 
   if [[ -s pausing_index.tsv ]]; then
     PAUSING_COLS=\$(head -1 pausing_index.tsv | awk -F'\\t' '{print NF}')
-    if [[ \${PAUSING_COLS} -ne 7 ]]; then
-      echo "POL | WARNING | Pausing index has \${PAUSING_COLS} columns, expected 7"
+    # calculate_pol_metrics.py emits 8 columns:
+    #   gene_id chrom strand tss_count gene_body_count pi_raw pi_len_norm is_truncated
+    if [[ \${PAUSING_COLS} -ne 8 ]]; then
+      echo "POL | WARNING | Pausing index has \${PAUSING_COLS} columns, expected 8"
     fi
   fi
 

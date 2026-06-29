@@ -38,6 +38,12 @@ ap.add_argument("--out-tsv", required=True)
 ap.add_argument("--out-json", required=True)
 ap.add_argument("--out-plots-html", required=True)
 ap.add_argument("--plots", type=int, default=0)
+# Coverage floor for the SUMMARY median pausing index: only genes with
+# gene_body_count >= this are used for the headline median, so it isn't dominated
+# by 1-read genes on shallow/subsetted data (length-normalized PI ≈ body_len/tss_width
+# when counts are ~1). The per-gene pausing_index.tsv is unaffected. Falls back to
+# all valid genes if too few clear the floor. 0 = disabled.
+ap.add_argument("--pi-min-body-count", type=int, default=10)
 
 # Optional track links (strings; may be empty; can be URLs or paths)
 ap.add_argument("--pos3-cpm-bw", default=None)
@@ -290,6 +296,7 @@ def main():
         reads_total_func = 0.0
 
     median_pausing = float("nan")
+    n_pausing_covered = 0
     if not pausing.empty:
         low = [c.lower() for c in pausing.columns]
         pi_col = None
@@ -297,11 +304,28 @@ def main():
             if cand in low:
                 pi_col = pausing.columns[low.index(cand)]
                 break
+        bc_col = None
+        for cand in ("gene_body_count","body_count"):
+            if cand in low:
+                bc_col = pausing.columns[low.index(cand)]
+                break
         if pi_col is not None:
-            # Use only genes with valid PI (exclude nan/inf; gene_body_count>0 typically)
-            valid_pi = pd.to_numeric(pausing[pi_col], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-            if len(valid_pi) > 0:
-                median_pausing = float(np.median(valid_pi))
+            pi_num = pd.to_numeric(pausing[pi_col], errors="coerce").replace([np.inf, -np.inf], np.nan)
+            valid = pi_num.notna()
+            # Coverage floor: prefer genes with enough body reads so the headline
+            # median isn't inflated by 1-read genes (length-normalized PI tends to
+            # body_len/tss_width when counts are ~1). Fall back to all valid genes
+            # if too few clear the floor (shallow / subsetted data).
+            sel = valid
+            if bc_col is not None and args.pi_min_body_count > 0:
+                bc = pd.to_numeric(pausing[bc_col], errors="coerce").fillna(0)
+                covered = valid & (bc >= args.pi_min_body_count)
+                if int(covered.sum()) >= 20:
+                    sel = covered
+            vals = pi_num[sel].dropna()
+            n_pausing_covered = int(len(vals))
+            if len(vals) > 0:
+                median_pausing = float(np.median(vals))
 
     median_density = float("nan")
     density_source = None
@@ -421,6 +445,8 @@ def main():
             total_functional_regions=int(total_regions),
             reads_total_functional=float(reads_total_func),
             median_pausing_index=None if np.isnan(median_pausing) else float(median_pausing),
+            pausing_genes_used=int(n_pausing_covered),
+            pausing_min_body_count=int(args.pi_min_body_count),
             median_functional_cpm=None if np.isnan(median_density) else float(median_density),
             unlocalized_fraction=unlocalized_fraction,
             cpm_factor=None if (cpm_factor is None or np.isnan(cpm_factor)) else float(cpm_factor),
@@ -430,6 +456,12 @@ def main():
         ),
         qc=dict(
             total_reads_raw=input_reads,
+            # Uniquely-mapped reads (NH==1 when bowtie2 -k multimapping is active,
+            # else MAPQ>=threshold). NOT PCR-deduplicated unless UMI dedup is on
+            # (see umi_deduplication_enabled). 'dedup_reads_mapq_ge' is retained
+            # for back-compat; 'unique_reads_nh1' is the preferred, correctly
+            # named field.
+            unique_reads_nh1=dedup_reads,
             dedup_reads_mapq_ge=dedup_reads,
             duplicate_percent=duplicate_percent,
             umi_deduplication_enabled=umi_enabled,
@@ -752,7 +784,7 @@ def main():
       <h2>At-a-glance</h2>
       <div class="grid">
         {kpi("Total input reads", row["qc"]["total_reads_raw"], "qc_pol.json")}
-        {kpi(f"De-dup unique reads ({uniq_label})", row["qc"]["dedup_reads_mapq_ge"],
+        {kpi(f"Unique reads ({uniq_label})", row["qc"]["dedup_reads_mapq_ge"],
              ("Low coverage expected for subset data. " if (row["qc"].get("mean_coverage_depth") or 1) < 0.1 else "") + "qc_pol.json")}
         {kpi("Multimapper %", "n/a" if multimapper_percent is None else f"{multimapper_percent}%",
              ("High values flag repetitive genomes / low-complexity libraries. " if (multimapper_percent or 0) > 50 else "") + "1 − unique / mapped")}

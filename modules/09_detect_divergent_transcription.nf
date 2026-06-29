@@ -113,6 +113,7 @@ process detect_divergent_transcription {
     val calibration_sum_multiplier
     val calibration_background_lower
     val merge_gap
+    val fallback_top_frac
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:
@@ -176,6 +177,7 @@ process detect_divergent_transcription {
   CAL_SUM_MULT=${calibration_sum_multiplier}
   CAL_BG_LOWER=${calibration_background_lower}
   MERGE_GAP=${merge_gap}
+  FALLBACK_TOP_FRAC=${fallback_top_frac}
 
   # Feature flags
   DO_QC=\$([[ "${params.advanced?.divergent_qc}" == "false" ]] && echo 0 || echo 1)
@@ -322,6 +324,7 @@ process detect_divergent_transcription {
     --calibration-percentile "\${CAL_PERCENTILE}" \\
     --calibration-sum-multiplier "\${CAL_SUM_MULT}" \\
     --merge-gap    "\${MERGE_GAP}" \\
+    --fallback-top-frac "\${FALLBACK_TOP_FRAC}" \\
     --ncores       "\${THREADS}" \\
     --write-summary "divergent_summary.tsv" \\
     \${THRESHOLD_ARG} \\
@@ -452,9 +455,12 @@ STATISTICAL APPROACH
   Major algorithmic upgrade from threshold-based to statistical detection:
   
   1. Auto-Calibration:
-     • Automatically determines optimal thresholds from background distribution
-     • threshold = 95th percentile of background signal
-     • sum_thr = 10x threshold
+     • Automatically determines thresholds from the background distribution
+     • threshold = configurable percentile of background signal
+       (pipeline default ≈ 65th; script default 75th — both more permissive
+       than the older 95th-percentile setting)
+     • sum_thr = threshold × configurable multiplier (pipeline default ≈ 1.5×;
+       script default 3×)
      • Eliminates need for manual parameter tuning
      • Adapts to varying sequencing depths
   
@@ -490,10 +496,10 @@ ALGORITHM
   1. Load strand-specific 3' bedGraphs (positive and negative strands)
   
   2. Auto-calibrate detection thresholds:
-     - Sample 100K random bins to estimate background
+     - Sample up to 100K random bins to estimate background
      - Calculate mean, std, and percentiles
-     - Set threshold = 95th percentile
-     - Set sum_thr = 10x threshold
+     - Set threshold = configured percentile (pipeline default ≈ 65th)
+     - Set sum_thr = threshold × configured multiplier (pipeline default ≈ 1.5×)
   
   3. Call peak blocks on each strand:
      - Filter bins by threshold
@@ -552,13 +558,18 @@ SAMPLE INFORMATION
 DETECTION PARAMETERS
 ────────────────────────────────────────────────────────────────────────────
   Threshold:            \${THRESHOLD}
-    Per-bin signal minimum (auto = 95th percentile of background)
-  
+    Per-bin signal minimum (auto = configured percentile of background,
+    pipeline default ≈ 65th)
+
   Sum Threshold:        \${SUM_THR}
-    Minimum total signal for peak blocks (auto = 10x threshold)
-  
+    Minimum total signal for peak blocks (auto = threshold × configured
+    multiplier, pipeline default ≈ 1.5×)
+
   FDR Threshold:        \${FDR}
-    False discovery rate for filtering (e.g., 0.05 = 5% expected false positives)
+    APPROXIMATE false discovery rate (posterior-based, NOT a p-value
+    Benjamini-Hochberg FDR). Treat as a score-stringency knob, not a strict
+    FDR guarantee. When no region passes, the detector returns ZERO sites
+    unless divergent_fallback_top_frac > 0 (opt-in top-fraction fallback).
   
   Pairing Window:       \${NT_WINDOW} bp
     Maximum distance for initial pairing (edge-to-edge or overlapping)

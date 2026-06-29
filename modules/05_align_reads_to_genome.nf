@@ -75,6 +75,10 @@ process align_reads_to_genome {
     path "*.flagstat",                  emit: flagstats
     path "*.idxstats",                  emit: idxstats
     path "aligner_summary.tsv",         emit: align_summary
+    // Same file, tagged with identity so the genuine bowtie2 alignment rate can
+    // be collected into a single run-level table (see STEP 6c in main.nf).
+    tuple val(sample_id), path("aligner_summary.tsv"),
+          val(condition), val(timepoint), val(replicate), emit: align_summary_tagged
     path "insert_size.tsv", optional: true, emit: insert_size
 
     path "README_alignment.txt"
@@ -513,6 +517,24 @@ PYEND
     echo -e "genome_map_rate_pct\\t\${mpr}"
     echo -e "genome_secondary_reads\\t\${sec}"
     echo -e "genome_duplicate_reads\\t\${dup}"
+
+    # TRUE overall alignment rate. NOTE: genome_map_rate_pct above is computed
+    # from the already-filtered/mapped BAM, so it is ~100% and NOT the real
+    # alignment rate. The genuine figure (reads aligning to the genome out of all
+    # input reads) is only in bowtie2's own stderr log. Capture it here so it is
+    # reportable without digging through logs.
+    ovr=\$(awk -F'%' '/overall alignment rate/ {gsub(/[^0-9.]/,"",\$1); print \$1; exit}' bowtie2_primary.log 2>/dev/null)
+    aln0=\$(awk '/aligned 0 times/ {print \$1; exit}' bowtie2_primary.log 2>/dev/null)
+    aln1=\$(awk '/aligned exactly 1 time/ {print \$1; exit}' bowtie2_primary.log 2>/dev/null)
+    alnM=\$(awk '/aligned >1 times/ {print \$1; exit}' bowtie2_primary.log 2>/dev/null)
+    [[ -n "\$ovr"  ]] || ovr=NA
+    [[ -n "\$aln0" ]] || aln0=NA
+    [[ -n "\$aln1" ]] || aln1=NA
+    [[ -n "\$alnM" ]] || alnM=NA
+    echo -e "genome_overall_aln_rate_pct\\t\${ovr}"
+    echo -e "genome_unaligned_reads\\t\${aln0}"
+    echo -e "genome_unique_aln_reads\\t\${aln1}"
+    echo -e "genome_multi_aln_reads\\t\${alnM}"
     
     # Spike-in alignment metrics
     stot=\$(awk '/in total/ {print \$1}' "\${SAMPLE_ID}_spikein.flagstat")
@@ -548,6 +570,28 @@ PYEND
   } > aligner_summary.tsv
 
   echo "ALIGN | SUMMARY | Alignment summary created"
+
+  ###########################################################################
+  # 8b) MAPPING-RATE QC GATE (enforced here, where the TRUE rate is known)
+  #
+  # bowtie2 reports the genuine overall alignment rate to stderr; we parsed it
+  # into aligner_summary.tsv as genome_overall_aln_rate_pct. Enforce the
+  # fail_map_rate_below threshold per replicate, BEFORE merge/tracks, so a bad
+  # library fails fast. (Module 13 cannot do this: it only ever sees the
+  # primary-filtered BAM, where the rate is tautologically ~100%.)
+  ###########################################################################
+  FAIL_MAP_RATE="${params.qc?.fail_map_rate_below ?: ''}"
+  if [[ -n "\${FAIL_MAP_RATE}" && "\${FAIL_MAP_RATE}" =~ ^[0-9]+\\.?[0-9]*\$ ]]; then
+    TRUE_RATE=\$(awk -F'\\t' '\$1=="genome_overall_aln_rate_pct"{print \$2; exit}' aligner_summary.tsv)
+    if [[ -n "\${TRUE_RATE}" && "\${TRUE_RATE}" != "NA" && "\${TRUE_RATE}" =~ ^[0-9]+\\.?[0-9]*\$ ]]; then
+      if awk -v r="\${TRUE_RATE}" -v t="\${FAIL_MAP_RATE}" 'BEGIN{exit (r+0 < t+0)?0:1}'; then
+        tracktx_error "align_reads_to_genome" "Overall alignment rate \${TRUE_RATE}% below threshold \${FAIL_MAP_RATE}% for \${SAMPLE_ID}" "Check library/adapter/genome, or set params.qc.fail_map_rate_below = null to disable" 2
+      fi
+      echo "ALIGN | QC | Overall alignment rate \${TRUE_RATE}% ≥ threshold \${FAIL_MAP_RATE}% — pass"
+    else
+      echo "ALIGN | QC | WARN | Could not read genome_overall_aln_rate_pct; skipping map-rate gate for \${SAMPLE_ID}"
+    fi
+  fi
 
   # Extract insert size distribution for paired-end
   if [[ "\${IS_PE}" == "true" ]]; then
