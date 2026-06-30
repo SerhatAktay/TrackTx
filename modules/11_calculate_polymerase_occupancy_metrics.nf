@@ -76,8 +76,10 @@ process calculate_polymerase_occupancy_metrics {
     tuple val(sid),
           path(in_bam),
           path(func_bed),
-          path(pos3_cpm_bg), path(neg3_cpm_bg),
-          path(pos3_sicpm_bg), path(neg3_sicpm_bg),
+          path(pos3_cpm_bg,   stageAs: 'track_cpm_pos.bedgraph'),
+          path(neg3_cpm_bg,   stageAs: 'track_cpm_neg.bedgraph'),
+          path(pos3_sicpm_bg, stageAs: 'track_sicpm_pos.bedgraph'),
+          path(neg3_sicpm_bg, stageAs: 'track_sicpm_neg.bedgraph'),
           val(cond), val(tp), val(rep)
     // Gene model: the gtf_to_catalog genes.tsv catalog (NOT the raw GTF). Using
     // the same catalog as functional-region calling (module 10) makes the TSS/TES
