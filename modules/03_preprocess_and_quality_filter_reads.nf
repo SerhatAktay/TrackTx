@@ -59,19 +59,18 @@
 //
 // ============================================================================
 
-nextflow.enable.dsl = 2
 
 process preprocess_and_quality_filter_reads {
 
   tag    { sample_id }
   label  'conda'
-  cache  params.preprocess_reads_lenient_cache ? 'lenient' : 'deep'
+  cache      'lenient'
 
-  publishDir "${params.output_dir}/01_trimmed_fastq/${sample_id}",
+  publishDir { "${params.output_dir}/01_trimmed_fastq/${sample_id}" },
              mode: params.publish_mode,
              overwrite: true,
              saveAs: { filename ->
-               if (params.get('publish_trimmed_fastq') == false) return null  // Skip entire folder to save ~900 MB/sample
+               if (params.get('publish_trimmed_fastq')?.toString() == 'false') return null  // Skip entire folder to save ~900 MB/sample
                def name = filename instanceof Path ? filename.getFileName().toString() : filename.toString()
                // Only publish processed outputs, NOT the raw input FASTQ files
                // This prevents duplicating large raw FASTQ files in the results folder
@@ -114,130 +113,109 @@ process preprocess_and_quality_filter_reads {
     path 'README_01_trimmed_fastq.txt'
 
   // ── Main Script ───────────────────────────────────────────────────────────
-  shell:
-  trimEnabled   = params.adapter_trimming?.enabled == true ? 'true' : 'false'
-  trimAdapter1  = (params.adapter_trimming?.adapter1 ?: '').toString()
-  trimAdapter2  = (params.adapter_trimming?.adapter2 ?: '').toString()
-  trimMinlen    = params.adapter_trimming?.minlen ?: 0
-  bc1Enabled    = params.barcode?.enabled == true ? 'true' : 'false'
-  bc1Length     = params.barcode?.length ?: 0
-  bc1Location   = (params.barcode?.location ?: '5').toString()
-  bc2Enabled    = params.barcode?.r2_enabled == true ? 'true' : 'false'
-  bc2Length     = params.barcode?.r2_length ?: 0
-  bc2Location   = (params.barcode?.r2_location ?: '5').toString()
-  umiEnabled03  = params.umi?.enabled == true ? 'true' : 'false'
-  umiLength03   = params.umi?.length ?: 0
-  umiLocation03 = (params.umi?.location ?: '5').toString()
-  '''
+  script:
+  """
   #!/usr/bin/env bash
   set -euo pipefail
   export LC_ALL=C
   # umi_tools imports matplotlib; avoid font-cache stall
-  export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
+  export MPLCONFIGDIR="\${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
-  exec > >(tee -a preprocess_reads.log)
+  # tee stdout (not plain redirect) so .command.out also receives the live
+  # "PREP |" progress — otherwise the monitor has nothing to tail for this process.
+  exec > >(tee preprocess_reads.log)
   exec 2> >(tee -a preprocess_reads.log >&2)
 
-  tracktx_error() {
-    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
-    echo "" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "TRACKTX ERROR" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "Module:  \${module}" >&2
-    echo "Problem: \${problem}" >&2
-    echo "Fix:     \${fix}" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    exit "\$code"
-  }
+  # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
+  source tracktx_error_fragment.sh
   trap 'tracktx_error "preprocess_and_quality_filter_reads" "Unexpected process failure" "Check preprocess_reads.log in work dir"' ERR
 
-  TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "PREP | START | sample=!{sample_id} | mode=!{data_type ?: "SE"} | ts=${TIMESTAMP}"
+  echo "PREP | START | sample=${sample_id} | mode=${data_type ?: "SE"} | ts=\${TIMESTAMP}"
   echo "════════════════════════════════════════════════════════════════════════"
 
   ###########################################################################
   # 1) CONFIGURATION
   ###########################################################################
 
-  SAMPLE_ID='!{sample_id}'
-  THREADS=!{task.cpus}
-  MODE='!{(data_type ?: "SE").toString()}'
+  SAMPLE_ID='${sample_id}'
+  THREADS=${task.cpus}
+  MODE='${(data_type ?: "SE").toString()}'
   
-  R1='!{reads[0]}'
-  R2='!{(reads.size() > 1 ? reads[1] : "")}'
+  R1='${reads[0]}'
+  R2='${(reads.size() > 1 ? reads[1] : "")}'
 
-  echo "PREP | CONFIG | Sample ID: ${SAMPLE_ID}"
-  echo "PREP | CONFIG | Mode: ${MODE}"
-  echo "PREP | CONFIG | Threads: ${THREADS}"
-  echo "PREP | CONFIG | R1: ${R1}"
-  if [[ -n "${R2}" ]]; then
-    echo "PREP | CONFIG | R2: ${R2}"
+  echo "PREP | CONFIG | Sample ID: \${SAMPLE_ID}"
+  echo "PREP | CONFIG | Mode: \${MODE}"
+  echo "PREP | CONFIG | Threads: \${THREADS}"
+  echo "PREP | CONFIG | R1: \${R1}"
+  if [[ -n "\${R2}" ]]; then
+    echo "PREP | CONFIG | R2: \${R2}"
   fi
 
   # ── Adapter Trimming Parameters ──
-  TRIM_ENABLED=$([ '!{trimEnabled}' = 'true' ] && echo 1 || echo 0)
-  ADAPTER1='!{trimAdapter1}'
-  ADAPTER2='!{trimAdapter2}'
-  USER_MINLEN=!{trimMinlen}
+  TRIM_ENABLED=\$([ '${params.adapter_trimming?.enabled == true}' = 'true' ] && echo 1 || echo 0)
+  ADAPTER1='${(params.adapter_trimming?.adapter1 ?: "").toString()}'
+  ADAPTER2='${(params.adapter_trimming?.adapter2 ?: "").toString()}'
+  USER_MINLEN=${(params.adapter_trimming?.minlen ?: 0)}
 
-  echo "PREP | CONFIG | Adapter trimming: $([ ${TRIM_ENABLED} -eq 1 ] && echo "enabled" || echo "disabled")"
-  if [[ ${TRIM_ENABLED} -eq 1 ]]; then
-    echo "PREP | CONFIG | Adapter 1: ${ADAPTER1:-none}"
-    echo "PREP | CONFIG | Adapter 2: ${ADAPTER2:-none}"
+  echo "PREP | CONFIG | Adapter trimming: \$([ \${TRIM_ENABLED} -eq 1 ] && echo "enabled" || echo "disabled")"
+  if [[ \${TRIM_ENABLED} -eq 1 ]]; then
+    echo "PREP | CONFIG | Adapter 1: \${ADAPTER1:-none}"
+    echo "PREP | CONFIG | Adapter 2: \${ADAPTER2:-none}"
   fi
 
   # ── Barcode Parameters ──
-  BC1_ENABLED=$([ '!{bc1Enabled}' = 'true' ] && echo 1 || echo 0)
-  BC1_LENGTH=!{bc1Length}
-  BC1_LOCATION='!{bc1Location}'
+  BC1_ENABLED=\$([ '${params.barcode?.enabled == true}' = 'true' ] && echo 1 || echo 0)
+  BC1_LENGTH=${(params.barcode?.length ?: 0)}
+  BC1_LOCATION='${(params.barcode?.location ?: "5").toString()}'
 
-  BC2_ENABLED=$([ '!{bc2Enabled}' = 'true' ] && echo 1 || echo 0)
-  BC2_LENGTH=!{bc2Length}
-  BC2_LOCATION='!{bc2Location}'
+  BC2_ENABLED=\$([ '${params.barcode?.r2_enabled == true}' = 'true' ] && echo 1 || echo 0)
+  BC2_LENGTH=${(params.barcode?.r2_length ?: 0)}
+  BC2_LOCATION='${(params.barcode?.r2_location ?: "5").toString()}'
 
-  echo "PREP | CONFIG | Barcode R1: $([ ${BC1_ENABLED} -eq 1 ] && echo "enabled (${BC1_LENGTH}bp, ${BC1_LOCATION}')" || echo "disabled")"
-  if [[ "${MODE}" == "PE" ]]; then
-    echo "PREP | CONFIG | Barcode R2: $([ ${BC2_ENABLED} -eq 1 ] && echo "enabled (${BC2_LENGTH}bp, ${BC2_LOCATION}')" || echo "disabled")"
+  echo "PREP | CONFIG | Barcode R1: \$([ \${BC1_ENABLED} -eq 1 ] && echo "enabled (\${BC1_LENGTH}bp, \${BC1_LOCATION}')" || echo "disabled")"
+  if [[ "\${MODE}" == "PE" ]]; then
+    echo "PREP | CONFIG | Barcode R2: \$([ \${BC2_ENABLED} -eq 1 ] && echo "enabled (\${BC2_LENGTH}bp, \${BC2_LOCATION}')" || echo "disabled")"
   fi
 
   # ── UMI Parameters ──
-  UMI_ENABLED=$([ '!{umiEnabled03}' = 'true' ] && echo 1 || echo 0)
-  UMI_LENGTH=!{umiLength03}
-  UMI_LOCATION='!{umiLocation03}'
+  UMI_ENABLED=\$([ '${params.umi?.enabled == true}' = 'true' ] && echo 1 || echo 0)
+  UMI_LENGTH=${(params.umi?.length ?: 0)}
+  UMI_LOCATION='${(params.umi?.location ?: "5").toString()}'
 
-  echo "PREP | CONFIG | UMI: $([ ${UMI_ENABLED} -eq 1 ] && echo "enabled (${UMI_LENGTH}bp, ${UMI_LOCATION}')" || echo "disabled")"
+  echo "PREP | CONFIG | UMI: \$([ \${UMI_ENABLED} -eq 1 ] && echo "enabled (\${UMI_LENGTH}bp, \${UMI_LOCATION}')" || echo "disabled")"
 
   # ── QC Parameters ──
-  QC_ENABLED=$([ '!{(params.qc?.enabled == null ? true : params.qc?.enabled)}' = 'true' ] && echo 1 || echo 0)
-  QC_RAW=$([ '!{(params.fastqc_raw == null ? true : params.fastqc_raw)}' = 'true' ] && echo 1 || echo 0)
-  FINAL_MINLEN=!{(params.advanced?.prep_insert_minlen ?: 12)}
+  QC_ENABLED=\$([ '${(params.qc?.enabled == null ? true : params.qc?.enabled)}' = 'true' ] && echo 1 || echo 0)
+  QC_RAW=\$([ '${(params.fastqc_raw == null ? true : params.fastqc_raw)}' = 'true' ] && echo 1 || echo 0)
+  FINAL_MINLEN=${(params.advanced?.prep_insert_minlen ?: 12)}
 
-  echo "PREP | CONFIG | QC (FastQC): $([ ${QC_ENABLED} -eq 1 ] && echo "enabled" || echo "disabled")"
-  echo "PREP | CONFIG | QC on raw reads: $([ ${QC_RAW} -eq 1 ] && echo "yes" || echo "no")"
-  echo "PREP | CONFIG | Final minimum length: ${FINAL_MINLEN}bp"
+  echo "PREP | CONFIG | QC (FastQC): \$([ \${QC_ENABLED} -eq 1 ] && echo "enabled" || echo "disabled")"
+  echo "PREP | CONFIG | QC on raw reads: \$([ \${QC_RAW} -eq 1 ] && echo "yes" || echo "no")"
+  echo "PREP | CONFIG | Final minimum length: \${FINAL_MINLEN}bp"
 
   # ── Calculate Length Requirements ──
-  if [[ "${MODE}" == "PE" && -n "${R2}" ]]; then
-    BARCODE_LOSS=$(( (BC1_ENABLED == 1 ? BC1_LENGTH : 0) + (BC2_ENABLED == 1 ? BC2_LENGTH : 0) ))
+  if [[ "\${MODE}" == "PE" && -n "\${R2}" ]]; then
+    BARCODE_LOSS=\$(( (BC1_ENABLED == 1 ? BC1_LENGTH : 0) + (BC2_ENABLED == 1 ? BC2_LENGTH : 0) ))
   else
-    BARCODE_LOSS=$(( (BC1_ENABLED == 1 ? BC1_LENGTH : 0) ))
+    BARCODE_LOSS=\$(( (BC1_ENABLED == 1 ? BC1_LENGTH : 0) ))
   fi
   
-  UMI_LOSS=$(( UMI_ENABLED == 1 ? UMI_LENGTH : 0 ))
-  AUTO_MINLEN=$(( FINAL_MINLEN + BARCODE_LOSS + UMI_LOSS ))
-  EFFECTIVE_MINLEN=$(( USER_MINLEN > AUTO_MINLEN ? USER_MINLEN : AUTO_MINLEN ))
-  PRE_UMI_MINLEN=$(( FINAL_MINLEN + UMI_LOSS ))
+  UMI_LOSS=\$(( UMI_ENABLED == 1 ? UMI_LENGTH : 0 ))
+  AUTO_MINLEN=\$(( FINAL_MINLEN + BARCODE_LOSS + UMI_LOSS ))
+  EFFECTIVE_MINLEN=\$(( USER_MINLEN > AUTO_MINLEN ? USER_MINLEN : AUTO_MINLEN ))
+  PRE_UMI_MINLEN=\$(( FINAL_MINLEN + UMI_LOSS ))
 
   echo "PREP | CONFIG | Length calculations:"
-  echo "PREP | CONFIG |   Barcode loss: ${BARCODE_LOSS}bp"
-  echo "PREP | CONFIG |   UMI loss: ${UMI_LOSS}bp"
-  echo "PREP | CONFIG |   Auto min length (pre-UMI): ${AUTO_MINLEN}bp"
-  echo "PREP | CONFIG |   User min length: ${USER_MINLEN}bp"
-  echo "PREP | CONFIG |   Effective min length (pre-UMI): ${EFFECTIVE_MINLEN}bp"
-  echo "PREP | CONFIG |   Min length (post-UMI): ${PRE_UMI_MINLEN}bp"
+  echo "PREP | CONFIG |   Barcode loss: \${BARCODE_LOSS}bp"
+  echo "PREP | CONFIG |   UMI loss: \${UMI_LOSS}bp"
+  echo "PREP | CONFIG |   Auto min length (pre-UMI): \${AUTO_MINLEN}bp"
+  echo "PREP | CONFIG |   User min length: \${USER_MINLEN}bp"
+  echo "PREP | CONFIG |   Effective min length (pre-UMI): \${EFFECTIVE_MINLEN}bp"
+  echo "PREP | CONFIG |   Min length (post-UMI): \${PRE_UMI_MINLEN}bp"
 
   ###########################################################################
   # 2) VALIDATE INPUTS
@@ -249,70 +227,70 @@ process preprocess_and_quality_filter_reads {
   # Case 1: Symlink from download_sra_samples (SRR_R1.fastq -> SRR_R1.fastq.gz). Use target, do NOT mv
   #   (mv would overwrite the real .gz file with the symlink and break it).
   # Case 2: Regular file with .fastq extension but gzip magic bytes. Rename to .gz.
-  # IMPORTANT: This function is used with $(fix_gzip_extension "${R1}"). Only the final
+  # IMPORTANT: This function is used with \$(fix_gzip_extension "\${R1}"). Only the final
   # path must go to stdout; all log messages must use >&2.
   fix_gzip_extension() {
-    local f="$1"
-    [[ -z "$f" || ! -e "$f" ]] && echo "$f" && return
-    [[ "$f" == *.gz ]] && echo "$f" && return
+    local f="\$1"
+    [[ -z "\$f" || ! -e "\$f" ]] && echo "\$f" && return
+    [[ "\$f" == *.gz ]] && echo "\$f" && return
     # Symlink: use target (the actual .gz file) - do not mv
-    if [[ -L "$f" ]]; then
+    if [[ -L "\$f" ]]; then
       local dir base target
-      dir=$(dirname "$f")
-      base=$(basename "$f")
-      target=$(readlink "$f")  # target may be relative
-      if [[ "$target" != /* ]]; then
-        target="${dir}/${target}"
+      dir=\$(dirname "\$f")
+      base=\$(basename "\$f")
+      target=\$(readlink "\$f")  # target may be relative
+      if [[ "\$target" != /* ]]; then
+        target="\${dir}/\${target}"
       fi
-      if [[ -f "$target" && "$target" == *.gz ]]; then
-        echo "PREP | VALIDATE | Detected symlink .fastq -> .gz, using target: $target" >&2
-        echo "$target"
+      if [[ -f "\$target" && "\$target" == *.gz ]]; then
+        echo "PREP | VALIDATE | Detected symlink .fastq -> .gz, using target: \$target" >&2
+        echo "\$target"
         return
       fi
     fi
     # Regular file: check gzip magic bytes
     local magic
-    magic=$(head -c 2 "$f" 2>/dev/null | od -A n -t x1 2>/dev/null | tr -d ' \n' | head -c 4)
-    if [[ "$magic" == "1f8b" ]]; then
-      echo "PREP | VALIDATE | Detected gzipped content with .fastq extension, renaming to .gz: $f" >&2
-      mv "$f" "${f}.gz"
-      echo "${f}.gz"
+    magic=\$(head -c 2 "\$f" 2>/dev/null | od -A n -t x1 2>/dev/null | tr -d ' \\n' | head -c 4)
+    if [[ "\$magic" == "1f8b" ]]; then
+      echo "PREP | VALIDATE | Detected gzipped content with .fastq extension, renaming to .gz: \$f" >&2
+      mv "\$f" "\${f}.gz"
+      echo "\${f}.gz"
     else
-      echo "$f"
+      echo "\$f"
     fi
   }
   # fix_gzip_extension returns path via stdout; use tail -1 so only the path is used
   # (defensive: if any log line were echoed to stdout, the path is always last)
-  R1_FIXED=$(fix_gzip_extension "${R1}")
-  R1=$(echo "${R1_FIXED}" | tail -1)
-  if [[ -n "${R2}" && -f "${R2}" ]]; then
-    R2_FIXED=$(fix_gzip_extension "${R2}")
-    R2=$(echo "${R2_FIXED}" | tail -1)
+  R1_FIXED=\$(fix_gzip_extension "\${R1}")
+  R1=\$(echo "\${R1_FIXED}" | tail -1)
+  if [[ -n "\${R2}" && -f "\${R2}" ]]; then
+    R2_FIXED=\$(fix_gzip_extension "\${R2}")
+    R2=\$(echo "\${R2_FIXED}" | tail -1)
   fi
 
-  if [[ "${MODE}" != "SE" && "${MODE}" != "PE" ]]; then
-    tracktx_error "preprocess_and_quality_filter_reads" "Mode must be SE or PE, got: ${MODE}" "Check data_type parameter"
+  if [[ "\${MODE}" != "SE" && "\${MODE}" != "PE" ]]; then
+    tracktx_error "preprocess_and_quality_filter_reads" "Mode must be SE or PE, got: \${MODE}" "Check data_type parameter"
   fi
 
-  if [[ "${MODE}" == "PE" && -z "${R2}" ]]; then
+  if [[ "\${MODE}" == "PE" && -z "\${R2}" ]]; then
     tracktx_error "preprocess_and_quality_filter_reads" "Paired-end mode but R2 file is missing" "Add file2 to samplesheet for PE samples"
   fi
 
-  if [[ ! -f "${R1}" ]]; then
-    tracktx_error "preprocess_and_quality_filter_reads" "R1 file not found: ${R1}" "Check samplesheet file1 paths"
+  if [[ ! -f "\${R1}" ]]; then
+    tracktx_error "preprocess_and_quality_filter_reads" "R1 file not found: \${R1}" "Check samplesheet file1 paths"
   fi
 
-  if [[ "${MODE}" == "PE" && ! -f "${R2}" ]]; then
-    tracktx_error "preprocess_and_quality_filter_reads" "R2 file not found: ${R2}" "Check samplesheet file2 paths"
+  if [[ "\${MODE}" == "PE" && ! -f "\${R2}" ]]; then
+    tracktx_error "preprocess_and_quality_filter_reads" "R2 file not found: \${R2}" "Check samplesheet file2 paths"
   fi
 
   # Check file sizes
-  R1_SIZE=$(stat -c%s "${R1}" 2>/dev/null || stat -f%z "${R1}" 2>/dev/null || echo "unknown")
-  echo "PREP | VALIDATE | R1 size: ${R1_SIZE} bytes"
+  R1_SIZE=\$(stat -c%s "\${R1}" 2>/dev/null || stat -f%z "\${R1}" 2>/dev/null || echo "unknown")
+  echo "PREP | VALIDATE | R1 size: \${R1_SIZE} bytes"
   
-  if [[ "${MODE}" == "PE" ]]; then
-    R2_SIZE=$(stat -c%s "${R2}" 2>/dev/null || stat -f%z "${R2}" 2>/dev/null || echo "unknown")
-    echo "PREP | VALIDATE | R2 size: ${R2_SIZE} bytes"
+  if [[ "\${MODE}" == "PE" ]]; then
+    R2_SIZE=\$(stat -c%s "\${R2}" 2>/dev/null || stat -f%z "\${R2}" 2>/dev/null || echo "unknown")
+    echo "PREP | VALIDATE | R2 size: \${R2_SIZE} bytes"
   fi
 
   echo "PREP | VALIDATE | Input validation complete"
@@ -323,11 +301,11 @@ process preprocess_and_quality_filter_reads {
 
   # Count reads in FASTQ file (handles .gz)
   count_reads() {
-    local file="$1"
-    if [[ "$file" == *.gz ]]; then
-      gzip -cd "$file" | awk 'END{print NR/4}' 2>/dev/null || echo 0
+    local file="\$1"
+    if [[ "\$file" == *.gz ]]; then
+      gzip -cd "\$file" | awk 'END{print NR/4}' 2>/dev/null || echo 0
     else
-      awk 'END{print NR/4}' "$file" 2>/dev/null || echo 0
+      awk 'END{print NR/4}' "\$file" 2>/dev/null || echo 0
     fi
   }
 
@@ -337,13 +315,13 @@ process preprocess_and_quality_filter_reads {
 
   mkdir -p fastqc_raw
 
-  if [[ ${QC_RAW} -eq 1 && ${QC_ENABLED} -eq 1 ]]; then
+  if [[ \${QC_RAW} -eq 1 && \${QC_ENABLED} -eq 1 ]]; then
     echo "PREP | QC-RAW | Running FastQC on raw reads..."
     
-    if [[ "${MODE}" == "PE" ]]; then
-      fastqc --quiet --threads "${THREADS}" -o fastqc_raw "${R1}" "${R2}"
+    if [[ "\${MODE}" == "PE" ]]; then
+      fastqc --quiet --threads "\${THREADS}" -o fastqc_raw "\${R1}" "\${R2}"
     else
-      fastqc --quiet --threads "${THREADS}" -o fastqc_raw "${R1}"
+      fastqc --quiet --threads "\${THREADS}" -o fastqc_raw "\${R1}"
     fi
     
     echo "PREP | QC-RAW | FastQC reports generated"
@@ -360,57 +338,57 @@ process preprocess_and_quality_filter_reads {
   echo "PREP | CUTADAPT | Output: preumi_R*.fastq"
 
   # Build cutadapt command
-  CUTADAPT_CMD=("-j" "${THREADS}")
+  CUTADAPT_CMD=("-j" "\${THREADS}")
   
   # Minimum length filter (pre-UMI)
-  CUTADAPT_CMD+=("-m" "${PRE_UMI_MINLEN}")
-  echo "PREP | CUTADAPT | Minimum length filter: ${PRE_UMI_MINLEN}bp"
+  CUTADAPT_CMD+=("-m" "\${PRE_UMI_MINLEN}")
+  echo "PREP | CUTADAPT | Minimum length filter: \${PRE_UMI_MINLEN}bp"
 
   # Adapter trimming
-  if [[ ${TRIM_ENABLED} -eq 1 ]]; then
-    if [[ -n "${ADAPTER1}" ]]; then
-      CUTADAPT_CMD+=("-a" "${ADAPTER1}")
-      echo "PREP | CUTADAPT | R1 adapter: ${ADAPTER1}"
+  if [[ \${TRIM_ENABLED} -eq 1 ]]; then
+    if [[ -n "\${ADAPTER1}" ]]; then
+      CUTADAPT_CMD+=("-a" "\${ADAPTER1}")
+      echo "PREP | CUTADAPT | R1 adapter: \${ADAPTER1}"
     fi
-    if [[ "${MODE}" == "PE" && -n "${ADAPTER2}" ]]; then
-      CUTADAPT_CMD+=("-A" "${ADAPTER2}")
-      echo "PREP | CUTADAPT | R2 adapter: ${ADAPTER2}"
+    if [[ "\${MODE}" == "PE" && -n "\${ADAPTER2}" ]]; then
+      CUTADAPT_CMD+=("-A" "\${ADAPTER2}")
+      echo "PREP | CUTADAPT | R2 adapter: \${ADAPTER2}"
     fi
   fi
 
   # Barcode removal (R1)
-  if [[ ${BC1_ENABLED} -eq 1 && ${BC1_LENGTH} -gt 0 ]]; then
-    if [[ "${BC1_LOCATION}" == "3" ]]; then
-      CUTADAPT_CMD+=("-u" "-${BC1_LENGTH}")
-      echo "PREP | CUTADAPT | R1 barcode: ${BC1_LENGTH}bp from 3' end"
+  if [[ \${BC1_ENABLED} -eq 1 && \${BC1_LENGTH} -gt 0 ]]; then
+    if [[ "\${BC1_LOCATION}" == "3" ]]; then
+      CUTADAPT_CMD+=("-u" "-\${BC1_LENGTH}")
+      echo "PREP | CUTADAPT | R1 barcode: \${BC1_LENGTH}bp from 3' end"
     else
-      CUTADAPT_CMD+=("-u" "${BC1_LENGTH}")
-      echo "PREP | CUTADAPT | R1 barcode: ${BC1_LENGTH}bp from 5' end"
+      CUTADAPT_CMD+=("-u" "\${BC1_LENGTH}")
+      echo "PREP | CUTADAPT | R1 barcode: \${BC1_LENGTH}bp from 5' end"
     fi
   fi
 
   # Barcode removal (R2)
-  if [[ "${MODE}" == "PE" && ${BC2_ENABLED} -eq 1 && ${BC2_LENGTH} -gt 0 ]]; then
-    if [[ "${BC2_LOCATION}" == "3" ]]; then
-      CUTADAPT_CMD+=("-U" "-${BC2_LENGTH}")
-      echo "PREP | CUTADAPT | R2 barcode: ${BC2_LENGTH}bp from 3' end"
+  if [[ "\${MODE}" == "PE" && \${BC2_ENABLED} -eq 1 && \${BC2_LENGTH} -gt 0 ]]; then
+    if [[ "\${BC2_LOCATION}" == "3" ]]; then
+      CUTADAPT_CMD+=("-U" "-\${BC2_LENGTH}")
+      echo "PREP | CUTADAPT | R2 barcode: \${BC2_LENGTH}bp from 3' end"
     else
-      CUTADAPT_CMD+=("-U" "${BC2_LENGTH}")
-      echo "PREP | CUTADAPT | R2 barcode: ${BC2_LENGTH}bp from 5' end"
+      CUTADAPT_CMD+=("-U" "\${BC2_LENGTH}")
+      echo "PREP | CUTADAPT | R2 barcode: \${BC2_LENGTH}bp from 5' end"
     fi
   fi
 
   # Run cutadapt
   echo "PREP | CUTADAPT | Processing reads..."
-  if [[ "${MODE}" == "PE" ]]; then
-    cutadapt "${CUTADAPT_CMD[@]}" \
-             -o preumi_R1.fastq \
-             -p preumi_R2.fastq \
-             "${R1}" "${R2}" | tee cutadapt_report.txt
+  if [[ "\${MODE}" == "PE" ]]; then
+    cutadapt "\${CUTADAPT_CMD[@]}" \\
+             -o preumi_R1.fastq \\
+             -p preumi_R2.fastq \\
+             "\${R1}" "\${R2}" | tee cutadapt_report.txt
   else
-    cutadapt "${CUTADAPT_CMD[@]}" \
-             -o preumi_R1.fastq \
-             "${R1}" | tee cutadapt_report.txt
+    cutadapt "\${CUTADAPT_CMD[@]}" \\
+             -o preumi_R1.fastq \\
+             "\${R1}" | tee cutadapt_report.txt
   fi
 
   echo "PREP | CUTADAPT | Trimming complete"
@@ -419,31 +397,31 @@ process preprocess_and_quality_filter_reads {
   # 6) UMI EXTRACTION
   ###########################################################################
 
-  if [[ ${UMI_ENABLED} -eq 1 && ${UMI_LENGTH} -gt 0 ]]; then
+  if [[ \${UMI_ENABLED} -eq 1 && \${UMI_LENGTH} -gt 0 ]]; then
     echo "PREP | UMI | Extracting UMI sequences..."
-    echo "PREP | UMI | Length: ${UMI_LENGTH}bp"
-    echo "PREP | UMI | Location: ${UMI_LOCATION}' end"
+    echo "PREP | UMI | Length: \${UMI_LENGTH}bp"
+    echo "PREP | UMI | Location: \${UMI_LOCATION}' end"
 
     # Build UMI pattern (e.g., NNNNNN for 6bp UMI)
-    UMI_PATTERN=$(printf 'N%.0s' $(seq 1 ${UMI_LENGTH}))
+    UMI_PATTERN=\$(printf 'N%.0s' \$(seq 1 \${UMI_LENGTH}))
     
     # Location flag
     UMI_END_FLAG=""
-    if [[ "${UMI_LOCATION}" == "3" ]]; then
+    if [[ "\${UMI_LOCATION}" == "3" ]]; then
       UMI_END_FLAG="--3prime"
     fi
 
     # Extract UMI
-    if [[ "${MODE}" == "PE" ]]; then
-      umi_tools extract \
-        --bc-pattern="${UMI_PATTERN}" ${UMI_END_FLAG} \
-        -I preumi_R1.fastq -S final_R1.fastq \
-        --read2-in preumi_R2.fastq --read2-out final_R2.fastq \
+    if [[ "\${MODE}" == "PE" ]]; then
+      umi_tools extract \\
+        --bc-pattern="\${UMI_PATTERN}" \${UMI_END_FLAG} \\
+        -I preumi_R1.fastq -S final_R1.fastq \\
+        --read2-in preumi_R2.fastq --read2-out final_R2.fastq \\
         --log=umi_extract.log
     else
-      umi_tools extract \
-        --bc-pattern="${UMI_PATTERN}" ${UMI_END_FLAG} \
-        -I preumi_R1.fastq -S final_R1.fastq \
+      umi_tools extract \\
+        --bc-pattern="\${UMI_PATTERN}" \${UMI_END_FLAG} \\
+        -I preumi_R1.fastq -S final_R1.fastq \\
         --log=umi_extract.log
       
       # Create empty R2 for SE (consistent tuple shape)
@@ -455,7 +433,7 @@ process preprocess_and_quality_filter_reads {
   else
     echo "PREP | UMI | UMI extraction disabled, passing through..."
     
-    if [[ "${MODE}" == "PE" ]]; then
+    if [[ "\${MODE}" == "PE" ]]; then
       cp -f preumi_R1.fastq final_R1.fastq
       cp -f preumi_R2.fastq final_R2.fastq
     else
@@ -472,13 +450,13 @@ process preprocess_and_quality_filter_reads {
 
   mkdir -p fastqc_final
 
-  if [[ ${QC_ENABLED} -eq 1 ]]; then
+  if [[ \${QC_ENABLED} -eq 1 ]]; then
     echo "PREP | QC-FINAL | Running FastQC on final reads..."
     
-    if [[ "${MODE}" == "PE" ]]; then
-      fastqc --quiet --threads "${THREADS}" -o fastqc_final final_R1.fastq final_R2.fastq
+    if [[ "\${MODE}" == "PE" ]]; then
+      fastqc --quiet --threads "\${THREADS}" -o fastqc_final final_R1.fastq final_R2.fastq
     else
-      fastqc --quiet --threads "${THREADS}" -o fastqc_final final_R1.fastq
+      fastqc --quiet --threads "\${THREADS}" -o fastqc_final final_R1.fastq
     fi
     
     echo "PREP | QC-FINAL | FastQC reports generated"
@@ -494,51 +472,51 @@ process preprocess_and_quality_filter_reads {
   echo "PREP | STATS | Computing read statistics..."
 
   # Count reads at each stage
-  R1_IN=$(count_reads "${R1}")
-  R1_PRE=$(count_reads preumi_R1.fastq)
-  R1_FINAL=$(count_reads final_R1.fastq)
+  R1_IN=\$(count_reads "\${R1}")
+  R1_PRE=\$(count_reads preumi_R1.fastq)
+  R1_FINAL=\$(count_reads final_R1.fastq)
 
-  if [[ "${MODE}" == "PE" ]]; then
-    R2_IN=$(count_reads "${R2}")
-    R2_PRE=$(count_reads preumi_R2.fastq)
-    R2_FINAL=$(count_reads final_R2.fastq)
+  if [[ "\${MODE}" == "PE" ]]; then
+    R2_IN=\$(count_reads "\${R2}")
+    R2_PRE=\$(count_reads preumi_R2.fastq)
+    R2_FINAL=\$(count_reads final_R2.fastq)
   else
     R2_IN=0
     R2_PRE=0
     R2_FINAL=0
   fi
 
-  echo "PREP | STATS | R1: ${R1_IN} → ${R1_PRE} → ${R1_FINAL} reads"
-  if [[ "${MODE}" == "PE" ]]; then
-    echo "PREP | STATS | R2: ${R2_IN} → ${R2_PRE} → ${R2_FINAL} reads"
+  echo "PREP | STATS | R1: \${R1_IN} → \${R1_PRE} → \${R1_FINAL} reads"
+  if [[ "\${MODE}" == "PE" ]]; then
+    echo "PREP | STATS | R2: \${R2_IN} → \${R2_PRE} → \${R2_FINAL} reads"
   fi
 
   # Trimming statistics
   {
-    echo -e "sample_id\tread\treads_in\treads_preumi\tpct_kept_preumi"
+    echo -e "sample_id\\tread\\treads_in\\treads_preumi\\tpct_kept_preumi"
     
-    PCT_R1=$(awk -v a="${R1_IN}" -v b="${R1_PRE}" 'BEGIN{print (a>0)?(b*100.0/a):0}')
-    printf "%s\tR1\t%s\t%s\t%.2f\n" "${SAMPLE_ID}" "${R1_IN}" "${R1_PRE}" "${PCT_R1}"
+    PCT_R1=\$(awk -v a="\${R1_IN}" -v b="\${R1_PRE}" 'BEGIN{print (a>0)?(b*100.0/a):0}')
+    printf "%s\\tR1\\t%s\\t%s\\t%.2f\\n" "\${SAMPLE_ID}" "\${R1_IN}" "\${R1_PRE}" "\${PCT_R1}"
     
-    if [[ "${MODE}" == "PE" ]]; then
-      PCT_R2=$(awk -v a="${R2_IN}" -v b="${R2_PRE}" 'BEGIN{print (a>0)?(b*100.0/a):0}')
-      printf "%s\tR2\t%s\t%s\t%.2f\n" "${SAMPLE_ID}" "${R2_IN}" "${R2_PRE}" "${PCT_R2}"
+    if [[ "\${MODE}" == "PE" ]]; then
+      PCT_R2=\$(awk -v a="\${R2_IN}" -v b="\${R2_PRE}" 'BEGIN{print (a>0)?(b*100.0/a):0}')
+      printf "%s\\tR2\\t%s\\t%s\\t%.2f\\n" "\${SAMPLE_ID}" "\${R2_IN}" "\${R2_PRE}" "\${PCT_R2}"
     fi
   } > trim_stats.tsv
 
   echo "PREP | STATS | Trimming statistics saved: trim_stats.tsv"
 
   # UMI statistics (if UMI enabled)
-  if [[ ${UMI_ENABLED} -eq 1 && ${UMI_LENGTH} -gt 0 ]]; then
+  if [[ \${UMI_ENABLED} -eq 1 && \${UMI_LENGTH} -gt 0 ]]; then
     {
-      echo -e "sample_id\tumi_enabled\tumi_length\tumi_location\tread\treads_preumi\treads_final\tpct_kept_final"
+      echo -e "sample_id\\tumi_enabled\\tumi_length\\tumi_location\\tread\\treads_preumi\\treads_final\\tpct_kept_final"
       
-      PCT_R1_UMI=$(awk -v a="${R1_PRE}" -v b="${R1_FINAL}" 'BEGIN{print (a>0)?(b*100.0/a):0}')
-      printf "%s\t1\t%s\t%s\tR1\t%s\t%s\t%.2f\n" "${SAMPLE_ID}" "${UMI_LENGTH}" "${UMI_LOCATION}" "${R1_PRE}" "${R1_FINAL}" "${PCT_R1_UMI}"
+      PCT_R1_UMI=\$(awk -v a="\${R1_PRE}" -v b="\${R1_FINAL}" 'BEGIN{print (a>0)?(b*100.0/a):0}')
+      printf "%s\\t1\\t%s\\t%s\\tR1\\t%s\\t%s\\t%.2f\\n" "\${SAMPLE_ID}" "\${UMI_LENGTH}" "\${UMI_LOCATION}" "\${R1_PRE}" "\${R1_FINAL}" "\${PCT_R1_UMI}"
       
-      if [[ "${MODE}" == "PE" ]]; then
-        PCT_R2_UMI=$(awk -v a="${R2_PRE}" -v b="${R2_FINAL}" 'BEGIN{print (a>0)?(b*100.0/a):0}')
-        printf "%s\t1\t%s\t%s\tR2\t%s\t%s\t%.2f\n" "${SAMPLE_ID}" "${UMI_LENGTH}" "${UMI_LOCATION}" "${R2_PRE}" "${R2_FINAL}" "${PCT_R2_UMI}"
+      if [[ "\${MODE}" == "PE" ]]; then
+        PCT_R2_UMI=\$(awk -v a="\${R2_PRE}" -v b="\${R2_FINAL}" 'BEGIN{print (a>0)?(b*100.0/a):0}')
+        printf "%s\\t1\\t%s\\t%s\\tR2\\t%s\\t%s\\t%.2f\\n" "\${SAMPLE_ID}" "\${UMI_LENGTH}" "\${UMI_LOCATION}" "\${R2_PRE}" "\${R2_FINAL}" "\${PCT_R2_UMI}"
       fi
     } > umi_stats.tsv
     
@@ -553,7 +531,7 @@ process preprocess_and_quality_filter_reads {
 
   cat > README_01_trimmed_fastq.txt <<'DOCEOF'
 ================================================================================
-FASTQ PREPROCESSING — !{sample_id}
+FASTQ PREPROCESSING — ${sample_id}
 ================================================================================
 
 OVERVIEW
@@ -580,15 +558,15 @@ FILES
 
 PARAMETERS
 ────────────────────────────────────────────────────────────────────────────
-  Sample ID:                  !{sample_id}
-  Mode:                       !{(data_type ?: "SE").toString()}
-  Threads:                    !{task.cpus}
+  Sample ID:                  ${sample_id}
+  Mode:                       ${(data_type ?: "SE").toString()}
+  Threads:                    ${task.cpus}
   
-  Adapter Trimming:           !{trimEnabled == 'true' ? "enabled" : "disabled"}
-  Barcode Removal (R1):       !{bc1Enabled == 'true' ? "enabled" : "disabled"}
-  UMI Extraction:             !{umiEnabled03 == 'true' ? "enabled" : "disabled"}
+  Adapter Trimming:           ${params.adapter_trimming?.enabled == true ? "enabled" : "disabled"}
+  Barcode Removal (R1):       ${params.barcode?.enabled == true ? "enabled" : "disabled"}
+  UMI Extraction:             ${params.umi?.enabled == true ? "enabled" : "disabled"}
   QC Tool:                    FastQC
-  QC Enabled:                 !{(params.qc?.enabled == null ? true : params.qc?.enabled) ? "yes" : "no"}
+  QC Enabled:                 ${(params.qc?.enabled == null ? true : params.qc?.enabled) ? "yes" : "no"}
 
 QUALITY METRICS
 ────────────────────────────────────────────────────────────────────────────
@@ -621,27 +599,27 @@ DOCEOF
   ###########################################################################
 
   # Get final file sizes
-  FINAL_R1_SIZE=$(stat -c%s final_R1.fastq 2>/dev/null || stat -f%z final_R1.fastq 2>/dev/null || echo "unknown")
-  FINAL_R2_SIZE=$(stat -c%s final_R2.fastq 2>/dev/null || stat -f%z final_R2.fastq 2>/dev/null || echo "unknown")
+  FINAL_R1_SIZE=\$(stat -c%s final_R1.fastq 2>/dev/null || stat -f%z final_R1.fastq 2>/dev/null || echo "unknown")
+  FINAL_R2_SIZE=\$(stat -c%s final_R2.fastq 2>/dev/null || stat -f%z final_R2.fastq 2>/dev/null || echo "unknown")
 
   echo "────────────────────────────────────────────────────────────────────────"
-  echo "PREP | SUMMARY | Processing complete for ${SAMPLE_ID}"
-  echo "PREP | SUMMARY | Mode: ${MODE}"
-  echo "PREP | SUMMARY | Input reads (R1): ${R1_IN}"
-  if [[ "${MODE}" == "PE" ]]; then
-    echo "PREP | SUMMARY | Input reads (R2): ${R2_IN}"
+  echo "PREP | SUMMARY | Processing complete for \${SAMPLE_ID}"
+  echo "PREP | SUMMARY | Mode: \${MODE}"
+  echo "PREP | SUMMARY | Input reads (R1): \${R1_IN}"
+  if [[ "\${MODE}" == "PE" ]]; then
+    echo "PREP | SUMMARY | Input reads (R2): \${R2_IN}"
   fi
-  echo "PREP | SUMMARY | Final reads (R1): ${R1_FINAL} ($(awk -v a="${R1_IN}" -v b="${R1_FINAL}" 'BEGIN{printf "%.1f", (a>0)?(b*100.0/a):0}')%)"
-  if [[ "${MODE}" == "PE" ]]; then
-    echo "PREP | SUMMARY | Final reads (R2): ${R2_FINAL} ($(awk -v a="${R2_IN}" -v b="${R2_FINAL}" 'BEGIN{printf "%.1f", (a>0)?(b*100.0/a):0}')%)"
+  echo "PREP | SUMMARY | Final reads (R1): \${R1_FINAL} (\$(awk -v a="\${R1_IN}" -v b="\${R1_FINAL}" 'BEGIN{printf "%.1f", (a>0)?(b*100.0/a):0}')%)"
+  if [[ "\${MODE}" == "PE" ]]; then
+    echo "PREP | SUMMARY | Final reads (R2): \${R2_FINAL} (\$(awk -v a="\${R2_IN}" -v b="\${R2_FINAL}" 'BEGIN{printf "%.1f", (a>0)?(b*100.0/a):0}')%)"
   fi
-  echo "PREP | SUMMARY | Final R1 size: ${FINAL_R1_SIZE} bytes"
-  echo "PREP | SUMMARY | Final R2 size: ${FINAL_R2_SIZE} bytes"
+  echo "PREP | SUMMARY | Final R1 size: \${FINAL_R1_SIZE} bytes"
+  echo "PREP | SUMMARY | Final R2 size: \${FINAL_R2_SIZE} bytes"
   echo "────────────────────────────────────────────────────────────────────────"
 
-  TIMESTAMP_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP_END=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "PREP | COMPLETE | sample=${SAMPLE_ID} | ts=${TIMESTAMP_END}"
+  echo "PREP | COMPLETE | sample=\${SAMPLE_ID} | ts=\${TIMESTAMP_END}"
   echo "════════════════════════════════════════════════════════════════════════"
-  '''
+  """
 }

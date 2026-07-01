@@ -94,6 +94,14 @@ pol:
   contrasts: []
   top_n: 100
   plots: true
+  # Pausing-index gene-body geometry
+  tss_win: 50               # TSS window ±bp
+  body_offset_min: 2000     # Min body start offset after TSS (bp)
+  body_offset_frac: 0.10    # Body start as fraction of gene length
+  # Validity guard: body window must be >= this fraction of gene length, else
+  # the gene is flagged truncated (NaN pausing index). Scales with gene length.
+  min_body_frac: 0.10
+  min_body_len: 0           # Optional absolute body-length floor (bp); 0 = off
 
 # Divergent transcription
 advanced:

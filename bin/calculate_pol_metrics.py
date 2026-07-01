@@ -150,12 +150,17 @@ def open_text_file(path: str):
     Returns:
         File handle (text mode)
     """
+    # newline="\n": only split lines on LF. With the default (universal newline)
+    # mode, a stray CR mid-line — e.g. "chr6\r\tBestRefSeq..." from a GTF whose
+    # chromosomes were renamed using a CRLF NCBI assembly report — would be
+    # treated as a line break, leaving the data line starting with a tab and an
+    # empty chromosome field. Callers strip the remaining CR per line.
     if is_gzipped(path):
         import gzip
         import io
-        return io.TextIOWrapper(gzip.open(path, "rb"), encoding="utf-8", errors="replace")
+        return io.TextIOWrapper(gzip.open(path, "rb"), encoding="utf-8", errors="replace", newline="\n")
     else:
-        return open(path, "r", encoding="utf-8", errors="replace")
+        return open(path, "r", encoding="utf-8", errors="replace", newline="\n")
 
 def parse_gtf_attributes(attr_string: str) -> Dict[str, str]:
     """
@@ -238,31 +243,39 @@ def get_mapped_read_count(bam_path: str) -> int:
 
 def count_reads_pysam(bed_path: Path, bam_path: str, region_type: str) -> Dict[str, int]:
     """
-    Count reads in BED regions using pysam (memory efficient)
-    
+    Count strand-specific reads in BED regions using pysam (memory efficient).
+
+    The BED file must have a strand column (col 6).  Only reads whose mapping
+    strand matches the gene strand are counted, eliminating contamination from
+    antisense transcription at convergently-oriented loci or nearby enhancers.
+
+    Strand logic for PRO-seq (after RC(R1) alignment):
+      Gene +  →  count reads that are NOT reverse (forward-strand reads)
+      Gene -  →  count reads that ARE  reverse  (reverse-strand reads)
+
     Args:
-        bed_path: Path to BED file with regions
+        bed_path: Path to BED file with regions (must include strand col 6)
         region_type: Description of regions (for logging)
         bam_path: Path to BAM file
-        
+
     Returns:
         Dictionary mapping gene_id to read count
     """
     if not bed_path.exists() or bed_path.stat().st_size == 0:
         log_warning(f"Empty {region_type} BED file")
         return {}
-    
+
     # Try pysam first (preferred)
     try:
         import pysam
     except ImportError:
         log_warning("pysam not available, using bedtools intersect")
         return count_reads_bedtools(bed_path, bam_path, region_type)
-    
-    log_info(f"Counting {region_type} reads with pysam...")
 
-    # Verify BAM index exists — pysam.count() silently returns 0 for every region
-    # without an index, producing entirely incorrect output with no error raised.
+    log_info(f"Counting {region_type} reads with pysam (strand-specific)...")
+
+    # Verify BAM index exists — pysam.fetch() needs an index; without it every
+    # region returns 0 with no error raised.
     bam_p = Path(bam_path)
     if not (bam_p.with_suffix(".bai").exists() or Path(bam_path + ".bai").exists()):
         log_warning(f"BAM index (.bai) not found for {bam_path} — falling back to bedtools")
@@ -271,42 +284,59 @@ def count_reads_pysam(bed_path: Path, bam_path: str, region_type: str) -> Dict[s
     try:
         bamfile = pysam.AlignmentFile(bam_path, "rb")
         counts = {}
-        
+
         with open(bed_path) as f:
             regions = [line for line in f if line.strip() and not line.startswith(("#", "track", "browser"))]
-        
+
         total_regions = len(regions)
-        log_info(f"Processing {total_regions:,} {region_type} regions...")
-        
-        skipped_chroms = set()
+        log_info(f"Processing {total_regions:,} {region_type} regions (strand-aware)...")
+
+        skipped_chroms: set = set()
         for i, line in enumerate(regions, 1):
-            fields = line.strip().split("\t")
+            fields = line.replace("\r", "").rstrip("\n").split("\t")
             if len(fields) < 4:
                 continue
 
-            chrom, start, end, gene_id = fields[0], int(fields[1]), int(fields[2]), fields[3]
+            # Guard coordinate parsing: a single malformed line must not abort
+            # the whole (memory-efficient) pysam path into the bedtools fallback,
+            # which loads the entire BAM and can OOM under process concurrency.
+            try:
+                chrom    = fields[0]
+                start    = int(fields[1])
+                end      = int(fields[2])
+            except (ValueError, IndexError):
+                log_warning(f"Skipping malformed {region_type} BED line: {line.rstrip()!r}")
+                continue
+            gene_id  = fields[3]
+            # BED strand column is col 6 (index 5); default to '+' if absent
+            strand   = fields[5] if len(fields) >= 6 else "+"
 
             # Progress indicator every 5000 regions
             if i % 5000 == 0:
                 log_progress(region_type.upper(), i, total_regions)
-
+            
             try:
-                count = bamfile.count(contig=chrom, start=start, stop=end)
+                count = 0
+                for read in bamfile.fetch(contig=chrom, start=start, stop=end):
+                    # Skip unmapped, secondary, and supplementary
+                    if read.is_unmapped or read.is_secondary or read.is_supplementary:
+                        continue
+                    # Strand match: PRO-seq RC(R1) alignment
+                    #   + strand gene → read maps to forward strand (not reverse)
+                    #   - strand gene → read maps to reverse strand
+                    if strand == "+" and not read.is_reverse:
+                        count += 1
+                    elif strand == "-" and read.is_reverse:
+                        count += 1
                 counts[gene_id] = counts.get(gene_id, 0) + count
             except Exception:
-                # Chromosome not in BAM or region query failed — count stays 0
                 skipped_chroms.add(chrom)
                 continue
-
+        
         bamfile.close()
-        if skipped_chroms:
-            log_warning(
-                f"{region_type}: {len(skipped_chroms)} chromosome(s) not found in BAM "
-                f"(counts forced to 0): {', '.join(sorted(skipped_chroms))}"
-            )
         log_info(f"Counted reads for {len(counts):,} genes in {region_type}")
         return counts
-        
+
     except Exception as e:
         log_error(f"pysam counting failed: {e}")
         log_info("Falling back to bedtools intersect")
@@ -314,21 +344,24 @@ def count_reads_pysam(bed_path: Path, bam_path: str, region_type: str) -> Dict[s
 
 def count_reads_bedtools(bed_path: Path, bam_path: str, region_type: str) -> Dict[str, int]:
     """
-    Count reads using bedtools intersect (fallback method)
-    
+    Count strand-specific reads using bedtools intersect (fallback method).
+
+    Uses -s flag so only sense-strand reads are counted, matching the pysam
+    strand-specific logic above.
+
     Args:
-        bed_path: Path to BED file
+        bed_path: Path to BED file (must include strand col 6)
         bam_path: Path to BAM file
         region_type: Description of regions
-        
+
     Returns:
         Dictionary mapping gene_id to read count
     """
-    log_info(f"Counting {region_type} reads with bedtools...")
-    
+    log_info(f"Counting {region_type} reads with bedtools (strand-specific)...")
+
     result = run_command(
-        ["bedtools", "intersect", "-c", "-a", str(bed_path), "-b", bam_path],
-        f"Counting {region_type} overlaps"
+        ["bedtools", "intersect", "-c", "-s", "-a", str(bed_path), "-b", bam_path],
+        f"Counting {region_type} overlaps (strand-specific)"
     )
     
     counts = {}
@@ -351,6 +384,76 @@ def count_reads_bedtools(bed_path: Path, bam_path: str, region_type: str) -> Dic
 # GTF PARSING
 # =============================================================================
 
+def auto_body_offset(
+    gene_lengths: List[int],
+    user_offset_min: int,
+    body_offset_frac: float
+) -> int:
+    """
+    Choose an organism-aware body offset from the gene-length distribution.
+
+    Strategy (median-gated — only shrink for genuinely compact genomes):
+      - Look at the MEDIAN gene length across parsed features.
+      - If median >= COMPACT_MEDIAN_BP (mammalian-scale, e.g. human/mouse), keep
+        the user's --body-offset-min unchanged. The previous version took
+        min(user, P25*0.2); because P25 over all transcript/gene records is small
+        even in human, that silently shrank the body offset below the documented
+        2000 bp for EVERY organism, pulling the promoter-proximal pause peak into
+        the "body" and deflating the pausing index. Gating on the median fixes
+        that: human/mouse stay at 2000 bp, only compact genomes shrink.
+      - For compact genomes (small median), scale the offset to 20% of P25 with a
+        200 bp hard floor, but never above the user value.
+      - The caller still applies body_offset_frac on top of this minimum.
+
+    Args:
+        gene_lengths: List of gene lengths (bp) from the GTF
+        user_offset_min: Value passed via --body-offset-min (default 2000)
+        body_offset_frac: Fraction of gene length also used as offset floor
+
+    Returns:
+        Effective body_offset_min (int bp)
+    """
+    if not gene_lengths:
+        return user_offset_min
+
+    # Genomes whose median gene length is at least this are treated as "large"
+    # and keep the user offset unchanged. NOTE: this is the median over ALL genes
+    # in the catalog, which is pulled DOWN by the many small ncRNAs — observed
+    # ~5.9 kb for human/T2T RefSeq (NOT the ~24 kb protein-coding median). Truly
+    # compact genomes (Drosophila / C. elegans) sit at ~2–3 kb. So the separating
+    # threshold must be a few kb, not tens of kb: an earlier 10 kb value wrongly
+    # classified human as compact and shrank the offset to 200 bp. 4 kb keeps
+    # human/mouse (~5–6 kb) at the user offset while still shrinking for fly/worm.
+    # body_offset_min is overridable per-organism if a particular annotation's
+    # all-gene median falls on the wrong side of this heuristic.
+    COMPACT_MEDIAN_BP = 4_000
+
+    arr = sorted(gene_lengths)
+    p25_idx = max(0, int(len(arr) * 0.25) - 1)
+    p25 = arr[p25_idx]
+    median_idx = len(arr) // 2
+    median = arr[median_idx]
+
+    if median >= COMPACT_MEDIAN_BP:
+        log_info(
+            f"Gene length distribution: P25={p25:,} bp, median={median:,} bp "
+            f"(>= {COMPACT_MEDIAN_BP:,} bp) → large genome; keeping user "
+            f"body_offset_min={user_offset_min:,} bp"
+        )
+        return user_offset_min
+
+    # Compact genome: scale offset to 20% of P25 (>=200 bp), never above user.
+    auto_min = max(200, int(p25 * 0.20))
+    effective = min(user_offset_min, auto_min)
+    log_info(
+        f"Gene length distribution: P25={p25:,} bp, median={median:,} bp "
+        f"(< {COMPACT_MEDIAN_BP:,} bp) → compact genome; auto "
+        f"body_offset_min={auto_min:,} bp "
+        f"(user requested {user_offset_min:,}; using {effective:,})"
+    )
+    return effective
+
+
 def parse_gtf_file(
     gtf_path: str,
     feature_types: set,
@@ -359,112 +462,130 @@ def parse_gtf_file(
     body_offset_frac: float
 ) -> List[Tuple]:
     """
-    Parse GTF file and extract gene coordinates
-    
+    Parse GTF file and extract gene coordinates.
+
+    Body offset is auto-calibrated from the gene-length distribution so the
+    pipeline works correctly for compact genomes (Drosophila, C. elegans) as
+    well as human/mouse without requiring organism-specific parameter tuning.
+
     Args:
         gtf_path: Path to GTF file
         feature_types: Set of acceptable feature types
         tss_window: TSS window size (±bp)
-        body_offset_min: Minimum body offset (bp)
+        body_offset_min: Minimum body offset requested by user (bp); may be
+                         reduced automatically for small-genome organisms
         body_offset_frac: Body offset as fraction of gene length
-        
+
     Returns:
-        List of tuples: (gene_id, gene_name, chrom, strand, 
-                        tss_lo, tss_hi, body_lo, body_hi, body_len)
+        List of tuples: (gene_id, gene_name, chrom, strand,
+                        tss_lo, tss_hi, body_lo, body_hi, body_len, gene_length)
     """
     log("PARSE", f"Reading GTF: {gtf_path}")
-    
-    # Store transcript data per gene
-    gene_data = {}  # gene_id -> {gname, chrom, strand, transcripts[]}
-    
+
+    # ── Pass 1: collect raw feature records ──────────────────────────────────
+    # We store raw coordinates first so we can auto-calibrate the body offset
+    # from the gene-length distribution before committing to final windows.
+
+    # gene_id -> {gname, chrom, strand, raw_transcripts: [(start,end), ...]}
+    gene_data: Dict = {}
     line_count = 0
     feature_count = 0
-    
+
     with open_text_file(gtf_path) as f:
         for line in f:
             line_count += 1
-            
-            # Progress indicator
+
             if line_count % 100000 == 0:
                 log_info(f"Parsed {line_count:,} GTF lines...")
-            
-            # Skip comments and empty lines
+
+            # Strip any stray CR (from CRLF-derived GTFs) so the chromosome
+            # field stays clean ("chr6", not "chr6\r") and matches the BAM.
+            line = line.replace("\r", "")
+
             if not line.strip() or line.startswith("#"):
                 continue
-            
-            # Parse line
+
             fields = line.rstrip("\n").split("\t")
             if len(fields) < 9:
                 continue
-            
-            # Check feature type
+
             feature_type = fields[2]
             if feature_type not in feature_types:
                 continue
-            
+
             feature_count += 1
-            
-            # Extract coordinates
-            chrom = fields[0]
+
+            chrom  = fields[0]
             strand = fields[6]
-            
+
             try:
                 start = int(fields[3])
-                end = int(fields[4])
+                end   = int(fields[4])
             except ValueError:
                 log_warning(f"Invalid coordinates at line {line_count}")
                 continue
-            
+
             if end <= start:
                 log_warning(f"Invalid region (end <= start) at line {line_count}")
                 continue
-            
-            # Parse attributes
-            attrs = parse_gtf_attributes(fields[8])
-            gene_id = attrs["gene_id"]
+
+            attrs     = parse_gtf_attributes(fields[8])
+            gene_id   = attrs["gene_id"]
             gene_name = attrs["gene_name"]
-            
-            # Calculate TSS and body coordinates
-            tss = start if strand == "+" else end
+
+            if gene_id not in gene_data:
+                gene_data[gene_id] = {
+                    "gname": gene_name, "chrom": chrom, "strand": strand,
+                    "raw": []
+                }
+            gene_data[gene_id]["raw"].append((start, end))
+
+    log("PARSE", f"Processed {line_count:,} GTF lines; {feature_count:,} features for {len(gene_data):,} genes")
+
+    # ── Auto-calibrate body_offset_min from gene-length distribution ─────────
+    all_lengths = [max(1, e - s) for d in gene_data.values() for s, e in d["raw"]]
+    effective_offset_min = auto_body_offset(all_lengths, body_offset_min, body_offset_frac)
+
+    # ── Pass 2: compute TSS/body windows with calibrated offset ──────────────
+    # (Re-uses gene_data populated above; no second file read needed.)
+    gene_data_with_windows: Dict = {}
+    for gene_id, d in gene_data.items():
+        gene_data_with_windows[gene_id] = {
+            "gname": d["gname"], "chrom": d["chrom"], "strand": d["strand"],
+            "transcripts": []
+        }
+        for start, end in d["raw"]:
+            strand = d["strand"]
+            tss         = start if strand == "+" else end
             gene_length = max(1, end - start)
-            offset = max(body_offset_min, int(gene_length * body_offset_frac))
-            
+            offset      = max(effective_offset_min, int(gene_length * body_offset_frac))
+
             if strand == "+":
-                body_lo = min(tss + offset, end)  # Clamp: never let body_lo exceed gene end
+                body_lo = min(tss + offset, end)
                 body_hi = end
             else:
                 body_lo = start
-                body_hi = max(start, tss - offset)  # Clamp: never let body_hi fall below body_lo
-            
-            body_lo = max(0, body_lo)
+                body_hi = max(start, tss - offset)
+
+            body_lo  = max(0, body_lo)
             body_len = max(0, body_hi - body_lo)
-            
-            tss_lo = max(0, tss - tss_window)
-            tss_hi = tss + tss_window
-            
-            # Store transcript
-            if gene_id not in gene_data:
-                gene_data[gene_id] = {
-                    'gname': gene_name,
-                    'chrom': chrom,
-                    'strand': strand,
-                    'transcripts': []
-                }
-            
-            gene_data[gene_id]['transcripts'].append((tss_lo, tss_hi, body_lo, body_hi, body_len))
-    
-    log("PARSE", f"Processed {line_count:,} GTF lines")
-    log("PARSE", f"Found {feature_count:,} matching features")
-    
+            tss_lo   = max(0, tss - tss_window)
+            tss_hi   = tss + tss_window
+
+            gene_data_with_windows[gene_id]["transcripts"].append(
+                (tss_lo, tss_hi, body_lo, body_hi, body_len, gene_length)
+            )
+
+    # Swap gene_data to the windowed version for the aggregation step below
+    gene_data = gene_data_with_windows
+
     # Aggregate transcripts per gene
     # Use LONGEST transcript per gene (by body length) instead of union to avoid
     # huge bogus spans from genes with dispersed transcripts (e.g. chrY PAR).
     # Union of distant transcripts produced 90+ Mb TSS windows and wrong PIs.
     log("PARSE", "Aggregating transcript coordinates per gene (longest transcript)...")
     genes = []
-    # TSS span should be ~2*tss_window (slightly less near chrom start due to max(0,...) clamping).
-    # Allow 10 bp slack for that edge case. Anything much larger indicates bad aggregation.
-    max_tss_span = 2 * tss_window + 10
+    max_tss_span = 1000   # Reject genes with TSS window > 1 kb (indicates bad aggregation)
     max_body_span = 500_000  # Cap body at 500 kb; longer suggests multi-locus gene
     
     for gene_id, data in gene_data.items():
@@ -474,7 +595,7 @@ def parse_gtf_file(
 
         # Pick transcript with longest body (most representative for pausing)
         best = max(transcripts, key=lambda t: t[4])  # t[4] = body_len
-        tss_lo, tss_hi, body_lo, body_hi, body_len = best
+        tss_lo, tss_hi, body_lo, body_hi, body_len, gene_length = best
         
         # Sanity: reject genes with bogus TSS span (should be ~2*tss_window)
         tss_span = tss_hi - tss_lo
@@ -489,9 +610,9 @@ def parse_gtf_file(
                 body_hi = body_lo + max_body_span
             else:
                 body_lo = max(0, body_hi - max_body_span)
-            body_len = max(0, body_hi - body_lo)  # Ensure consistency after coord adjustment
+            body_len = body_hi - body_lo  # Ensure consistency after coord adjustment
         else:
-            body_len = max(0, body_hi - body_lo)  # Guard against negative lengths (short genes on - strand)
+            body_len = body_hi - body_lo  # Recompute in case of float rounding
 
         genes.append((
             gene_id,
@@ -502,44 +623,168 @@ def parse_gtf_file(
             tss_hi,
             body_lo,
             body_hi,
-            body_len
+            body_len,
+            gene_length
         ))
-    
+
     log("PARSE", f"Extracted {len(genes):,} unique genes")
+    return genes
+
+
+def parse_catalog_file(
+    catalog_path: str,
+    tss_window: int,
+    body_offset_min: int,
+    body_offset_frac: float
+) -> List[Tuple]:
+    """
+    Parse the gtf_to_catalog genes.tsv (one row per gene) and build the same
+    (gene_id, gene_name, chrom, strand, tss_lo, tss_hi, body_lo, body_hi,
+    body_len, gene_length) tuples that parse_gtf_file produces.
+
+    Using this catalog (instead of re-parsing the raw GTF and picking the longest
+    transcript) makes the TSS/TES used for the pausing index IDENTICAL to the
+    TSS/TES used by functional-region calling (module 10), which also consumes
+    this catalog. Columns: gene_id, gene_name, chr, strand, start, end, tss, tes,
+    biotype (tss/tes already strand-resolved by gtf_to_catalog: for '-' genes
+    tss = txEnd, tes = txStart).
+    """
+    log("PARSE", f"Reading gene catalog: {catalog_path}")
+
+    rows: List[Tuple] = []
+    with open_text_file(catalog_path) as f:
+        header = f.readline()
+        cols = [c.strip().lstrip("﻿").lower() for c in header.rstrip("\n").split("\t")]
+
+        def cidx(*names):
+            for n in names:
+                if n in cols:
+                    return cols.index(n)
+            return None
+
+        i_id     = cidx("gene_id", "id")
+        i_name   = cidx("gene_name", "name", "symbol")
+        i_chr    = cidx("chr", "chrom", "chromosome", "seqname")
+        i_strand = cidx("strand", "orientation")
+        i_start  = cidx("start", "gene_start")
+        i_end    = cidx("end", "gene_end")
+        i_tss    = cidx("tss", "tx_start", "txstart")
+        i_tes    = cidx("tes", "tx_end", "txend")
+
+        if None in (i_id, i_chr, i_strand, i_start, i_end):
+            log_error("Catalog missing required columns (need gene_id, chr, strand, start, end)")
+            return []
+
+        for line in f:
+            line = line.replace("\r", "")
+            if not line.strip() or line.startswith("#"):
+                continue
+            p = line.rstrip("\n").split("\t")
+            try:
+                gid    = p[i_id]
+                gname  = p[i_name] if (i_name is not None and i_name < len(p) and p[i_name]) else gid
+                chrom  = p[i_chr]
+                strand = p[i_strand] if p[i_strand] in ("+", "-") else "+"
+                gstart = int(float(p[i_start]))
+                gend   = int(float(p[i_end]))
+                tss    = int(float(p[i_tss])) if (i_tss is not None and p[i_tss] != "") else (gstart if strand == "+" else gend)
+                tes    = int(float(p[i_tes])) if (i_tes is not None and p[i_tes] != "") else (gend if strand == "+" else gstart)
+            except (ValueError, IndexError):
+                continue
+            if gend <= gstart:
+                continue
+            rows.append((gid, gname, chrom, strand, gstart, gend, tss, tes))
+
+    if not rows:
+        log_warning("No usable rows parsed from gene catalog")
+        return []
+
+    all_lengths = [max(1, e - s) for (_, _, _, _, s, e, _, _) in rows]
+    effective_offset_min = auto_body_offset(all_lengths, body_offset_min, body_offset_frac)
+
+    genes: List[Tuple] = []
+    max_body_span = 500_000
+    for (gid, gname, chrom, strand, gstart, gend, tss, tes) in rows:
+        gene_length = max(1, gend - gstart)
+        offset = max(effective_offset_min, int(gene_length * body_offset_frac))
+
+        if strand == "+":
+            body_lo = min(tss + offset, tes)
+            body_hi = tes
+        else:
+            body_lo = tes
+            body_hi = max(tes, tss - offset)
+
+        if body_hi < body_lo:
+            body_lo, body_hi = body_hi, body_lo
+        body_lo  = max(0, body_lo)
+        body_len = max(0, body_hi - body_lo)
+        tss_lo   = max(0, tss - tss_window)
+        tss_hi   = tss + tss_window
+
+        if body_len > max_body_span:
+            if strand == "+":
+                body_hi = body_lo + max_body_span
+            else:
+                body_lo = max(0, body_hi - max_body_span)
+            body_len = body_hi - body_lo
+
+        genes.append((gid, gname, chrom, strand, tss_lo, tss_hi,
+                      body_lo, body_hi, body_len, gene_length))
+
+    log("PARSE", f"Extracted {len(genes):,} genes from catalog")
     return genes
 
 # =============================================================================
 # BED FILE OPERATIONS
 # =============================================================================
 
+def required_body_len(gene_length: int, min_body_frac: float, min_body_len: int) -> int:
+    """
+    Minimum gene-body window (bp) required for a stable pausing index.
+
+    The threshold scales with gene length: the body must retain at least
+    `min_body_frac` of the gene. Because the body offset is max(2000 bp,
+    10% of L), the body only collapses for short genes, so a fractional
+    floor targets exactly those cases and auto-scales for everything else.
+    `min_body_len` is an optional absolute floor (bp) applied on top.
+    """
+    return max(int(min_body_len), int(min_body_frac * gene_length))
+
 def write_bed_files(
     genes: List[Tuple],
     tss_bed_path: Path,
-    body_bed_path: Path
+    body_bed_path: Path,
+    min_body_frac: float = 0.0,
+    min_body_len: int = 1
 ):
     """
     Write TSS and body BED files
-    
+
     Args:
         genes: List of gene tuples
         tss_bed_path: Output path for TSS BED
         body_bed_path: Output path for body BED
+        min_body_frac: Body must be >= this fraction of gene length
+        min_body_len: Absolute body-length floor (bp)
     """
     log("BED", "Writing BED files...")
-    
+
     tss_count = 0
     body_count = 0
-    
+
     with open(tss_bed_path, "w") as tss_f, open(body_bed_path, "w") as body_f:
-        for (gene_id, gene_name, chrom, strand, tss_lo, tss_hi, 
-             body_lo, body_hi, body_len) in genes:
-            
+        for (gene_id, gene_name, chrom, strand, tss_lo, tss_hi,
+             body_lo, body_hi, body_len, gene_length) in genes:
+
             # TSS window (always write)
             tss_f.write(f"{chrom}\t{tss_lo}\t{tss_hi}\t{gene_id}\t0\t{strand}\n")
             tss_count += 1
-            
-            # Body region (only if length > 0)
-            if body_len > 0:
+
+            # Body region (only if window is a meaningful fraction of the gene;
+            # tiny windows on short genes inflate the pausing index)
+            min_needed = required_body_len(gene_length, min_body_frac, min_body_len)
+            if body_len >= min_needed:
                 body_f.write(f"{chrom}\t{body_lo}\t{body_hi}\t{gene_id}\t0\t{strand}\n")
                 body_count += 1
     
@@ -614,7 +859,9 @@ def write_output_files(
     body_counts: Dict[str, int],
     mapped_reads: int,
     pausing_output: str,
-    genes_output: str
+    genes_output: str,
+    min_body_frac: float = 0.0,
+    min_body_len: int = 1
 ):
     """
     Write pausing index and gene metrics output files
@@ -655,8 +902,8 @@ def write_output_files(
         
         # Write data
         for (gene_id, gene_name, chrom, strand, tss_lo, tss_hi,
-             body_lo, body_hi, body_len) in genes:
-            
+             body_lo, body_hi, body_len, gene_length) in genes:
+
             # Get counts
             tss_count = int(tss_counts.get(gene_id, 0))
             body_count = int(body_counts.get(gene_id, 0))
@@ -664,17 +911,22 @@ def write_output_files(
             # Calculate metrics
             tss_width = max(1, tss_hi - tss_lo)
             
+            # A body window that is too short relative to the gene gives an
+            # unstable elongation density, so treat it as truncated (NaN PI)
+            # rather than dividing by a near-zero body. Threshold scales with
+            # gene length (see required_body_len).
+            body_ok = (body_len >= required_body_len(gene_length, min_body_frac, min_body_len))
+
             # Pausing indices
-            pi_raw = (tss_count / body_count) if body_count > 0 else float("nan")
+            pi_raw = (tss_count / body_count) if (body_count > 0 and body_ok) else float("nan")
             pi_len_norm = (
                 (tss_count / tss_width) / (body_count / body_len)
-                if (body_count > 0 and body_len > 0)
+                if (body_count > 0 and body_ok)
                 else float("nan")
             )
-            
-            # Truncation flag: reflects geometry only (gene too short to have a valid body
-            # region after TSS offset). body_count==0 alone just means no reads — not truncated.
-            is_truncated = int(body_len == 0)
+
+            # Truncation flag
+            is_truncated = int(body_count == 0 or not body_ok)
             
             # CPM and densities
             tss_cpm = tss_count / cpm_denom
@@ -745,13 +997,25 @@ def main():
     )
     
     parser.add_argument("--bam", required=True, help="Input BAM file")
-    parser.add_argument("--gtf", required=True, help="Gene annotation GTF file")
+    parser.add_argument("--gtf", required=False, default=None,
+                       help="Gene annotation GTF file (used only if --genes is not given)")
+    parser.add_argument("--genes", required=False, default=None,
+                       help="gtf_to_catalog genes.tsv catalog. PREFERRED: makes TSS/TES "
+                            "identical to functional-region calling. If given, --gtf is ignored.")
     parser.add_argument("--tss-win", type=int, default=50, 
                        help="TSS window size (±bp) [default: 50]")
     parser.add_argument("--body-offset-min", type=int, default=2000,
                        help="Minimum body offset (bp) [default: 2000]")
     parser.add_argument("--body-offset-frac", type=float, default=0.10,
                        help="Body offset fraction [default: 0.10]")
+    parser.add_argument("--min-body-frac", type=float, default=0.10,
+                       help="Body window must be >= this fraction of gene "
+                            "length for a valid pausing index; shorter bodies "
+                            "are flagged truncated and report NaN PI. Scales "
+                            "with gene length [default: 0.10]")
+    parser.add_argument("--min-body-len", type=int, default=0,
+                       help="Optional absolute body-length floor (bp) applied "
+                            "on top of --min-body-frac [default: 0 = off]")
     parser.add_argument("--feature-types", default="gene,transcript",
                        help="Comma-separated feature types [default: gene,transcript]")
     parser.add_argument("--out-pausing", required=True, 
@@ -771,12 +1035,14 @@ def main():
     # Start
     log("START", f"calculate_pol_metrics.py v{VERSION}")
     log("START", f"BAM: {args.bam}")
-    log("START", f"GTF: {args.gtf}")
+    log("START", f"Gene source: {args.genes or args.gtf or '(none)'}")
     
     # Configuration
     log("CONFIG", f"TSS window: ±{args.tss_win} bp")
     log("CONFIG", f"Body offset min: {args.body_offset_min} bp")
     log("CONFIG", f"Body offset fraction: {args.body_offset_frac}")
+    log("CONFIG", f"Min body fraction: {args.min_body_frac} of gene length")
+    log("CONFIG", f"Min body length floor: {args.min_body_len} bp")
     log("CONFIG", f"Feature types: {args.feature_types}")
     
     # Parse feature types
@@ -793,15 +1059,29 @@ def main():
         tss_bed = tmpdir / "tss.bed"
         body_bed = tmpdir / "body.bed"
         
-        # Parse GTF
+        # Parse gene model. Prefer the gtf_to_catalog genes.tsv catalog (so the
+        # TSS/TES match functional-region calling exactly); fall back to raw GTF.
         log("═" * 70, "")
-        genes = parse_gtf_file(
-            args.gtf,
-            feature_types,
-            args.tss_win,
-            args.body_offset_min,
-            args.body_offset_frac
-        )
+        if args.genes:
+            log("CONFIG", f"Gene source: catalog ({args.genes})")
+            genes = parse_catalog_file(
+                args.genes,
+                args.tss_win,
+                args.body_offset_min,
+                args.body_offset_frac
+            )
+        elif args.gtf:
+            log("CONFIG", f"Gene source: GTF ({args.gtf})")
+            genes = parse_gtf_file(
+                args.gtf,
+                feature_types,
+                args.tss_win,
+                args.body_offset_min,
+                args.body_offset_frac
+            )
+        else:
+            log_error("No gene source provided: pass --genes (catalog) or --gtf")
+            raise SystemExit(2)
         
         # Check if genes were found
         if not genes:
@@ -828,7 +1108,7 @@ def main():
         
         # Write BED files
         log("═" * 70, "")
-        write_bed_files(genes, tss_bed, body_bed)
+        write_bed_files(genes, tss_bed, body_bed, args.min_body_frac, args.min_body_len)
         
         # Extract genome file and sort BEDs
         log("═" * 70, "")
@@ -855,7 +1135,9 @@ def main():
             body_counts,
             mapped,
             args.out_pausing,
-            args.out_genes
+            args.out_genes,
+            args.min_body_frac,
+            args.min_body_len
         )
         
         # Write QC JSON

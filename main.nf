@@ -2,9 +2,6 @@
 // TrackTx — PRO-seq Nascent RNA Analysis Pipeline
 // ============================================================================
 //
-// Purpose:
-//   Complete PRO-seq analysis from FASTQ to functional regions and Pol-II metrics
-//
 // Pipeline Steps:
 //   1.  Download genome annotations (GTF)
 //   2.  Download SRA samples (optional)
@@ -22,123 +19,119 @@
 //   14. Generate per-sample reports
 //   15. Combine reports into cohort
 //
-// Key Updates:
-//   • Divergent transcription uses edge-to-edge distance (not center-to-center)
-//   • Uses primary/unique mapper tracks (not allMap) for clean detection
-//   • Overlap-aware pairing algorithm (overlapping peaks always paired)
-//   • Default pairing window reduced to 500bp (was 800bp)
-//   • Enhanced progress monitoring and validation throughout
-//
-// Inputs:
-//   - Samplesheet CSV (sample metadata + file paths or SRA accessions)
-//   - Reference genome (hg38, mm39, or custom FASTA)
-//   - Spike-in genome (optional)
-//
-// Outputs:
-//   ${params.output_dir}/
-//     ├── 01_annotations/       — GTF, genes, TSS, TES
-//     ├── 02_alignments/        — BAM files, QC metrics
-//     ├── 03_genome_tracks/     — Raw bedGraphs and BigWigs
-//     ├── 04_counts/            — Read counts
-//     ├── 05_normalized_tracks/ — CPM/siCPM tracks
-//     ├── 06_divergent_tx/      — Divergent transcription calls
-//     ├── 07_functional_regions/— Functional region annotations
-//     ├── 08_pol_metrics/      — Per-gene polymerase occupancy metrics
-//     ├── 09_pol_aggregate/    — Cohort-level summaries
-//     ├── 10_qc/                — Quality control reports
-//     └── 11_reports/           — HTML reports
-//
 // ============================================================================
 
-nextflow.enable.dsl = 2
-
 // ============================================================================
-// PARAMETER DEFAULTS (Fallbacks for Module-Specific Parameters)
-// ============================================================================
-// Note: Core parameters (output_dir, samplesheet, etc.) are in nextflow.config
-// These are module-specific defaults that may not be in params.yaml
-
-// Report generation parameters
-params.reports_plots = params.reports_plots ?: 0
-
-// Conda environment overrides (if not using containers)
-params.conda_norm = params.conda_norm ?: null
-params.conda_pol = params.conda_pol ?: null
-
-// QC parameters (used by preprocess_and_quality_filter_reads and quality_control_aligned_reads modules)
-params.qc = params.qc instanceof Map ? params.qc : [:]
-params.qc.enabled = params.qc.enabled != null ? params.qc.enabled : true
-params.qc.mapq = params.qc.mapq ?: 10
-params.qc.dedup = params.qc.dedup != null ? params.qc.dedup : true
-params.qc.depth_max_cov = params.qc.depth_max_cov ?: 0
-// Optional fail thresholds: fail process if metric below value (null = do not fail)
-params.qc.fail_map_rate_below = params.qc.fail_map_rate_below  // e.g. 50 to fail if mapping rate < 50%
-params.qc.fail_strand_min = params.qc.fail_strand_min           // e.g. 0.30 to fail if either strand < 30%
-
-// Polymerase aggregate parameters (used by summarize_polymerase_metrics module)
-params.pol = params.pol instanceof Map ? params.pol : [:]
-params.pol.top_n = params.pol.top_n ?: 100
-params.pol.plots = params.pol.plots != null ? params.pol.plots : true
-
-// ============================================================================
-// HELP MESSAGE
+// PARAMETER DEFAULTS (top-level param declarations — allowed by strict parser)
+// Complex/nested param defaults and all statements live inside workflow TrackTx.
 // ============================================================================
 
-if (params.help) {
-  log.info """
-  ════════════════════════════════════════════════════════════════════════
-  TrackTx Pipeline — PRO-seq Nascent RNA Analysis
-  ════════════════════════════════════════════════════════════════════════
-  
-  Usage:
-    nextflow run main.nf -entry TrackTx -profile docker \\
-      --samplesheet samples.csv \\
-      --reference_genome hg38 \\
-      --output_dir results/
-  
-  Required Parameters:
-    --samplesheet <CSV>           Samplesheet with sample metadata
-    --reference_genome <ID>       Reference genome (hg38, mm39, or 'other')
-    --output_dir <DIR>            Output directory path
-  
-  Optional Parameters:
-    --paired_end                  Enable paired-end mode (default: false)
-    --sample_source <srr|local>   Sample source (default: local)
-    --spikein_genome <ID>         Spike-in genome (optional)
-    --genome_fasta <FASTA>        Custom genome (if reference_genome=other)
-    --spikein_fasta <FASTA>       Custom spike-in (if spikein_genome=other)
-    --debug                       Enable debug logging
-    --verbose                     Enable step-by-step progress logging
-  
-  Profiles:
-    -profile docker               Use Docker containers
-    -profile conda                Use Conda environments
-    -profile local                Local execution
-  
-  Additional Flags:
-    -with-report report.html      Generate execution report
-    -with-timeline timeline.html  Generate timeline
-    -with-dag flowchart.pdf       Generate DAG visualization
-  
-  New:
-    • Divergent transcription uses edge-to-edge distance algorithm
-    • Primary/unique mapper tracks for clean detection
-    • 500bp default pairing window (optimized for promoters)
-    • Overlap-aware pairing (overlapping peaks always paired)
-  
-  For detailed documentation, see README.md
-  ════════════════════════════════════════════════════════════════════════
-  """
-  exit 0
+params.reports_plots    = params.reports_plots    ?: 0
+params.conda_norm       = params.conda_norm       ?: null
+params.conda_pol        = params.conda_pol        ?: null
+
+// ============================================================================
+// TOP-LEVEL HELPER FUNCTION
+// Must be declared at top level (not inside a workflow) in strict syntax.
+// ============================================================================
+
+// Resolve local FASTQ path: use as-is if absolute, else relative to projectDir
+def resolveLocalPath(path) {
+  if (!path?.trim()) return null
+  def p = path.trim()
+  def f = new File(p)
+  return f.isAbsolute() ? file(p) : file("${projectDir}/${p}")
+}
+
+// Resolve samplesheet input file path; returns File or null
+def resolveSamplesheetPath(p, projectDir) {
+  if (!p?.trim()) return null
+  def s = p.trim()
+  def f = new File(s)
+  return f.isAbsolute() ? f : new File(projectDir.toString(), s)
 }
 
 // ============================================================================
-// PARAMETER VALIDATION
+// MODULE IMPORTS
+// Paths inlined (def MOD = ... was a top-level statement, not allowed in strict)
 // ============================================================================
 
-def TIMESTAMP_START = new Date().format("yyyy-MM-dd HH:mm:ss")
+include { download_genome_annotations                               } from './modules/01_download_genome_annotations.nf'
+include { download_sra_samples                                      } from './modules/02_download_sra_samples.nf'
+include { preprocess_and_quality_filter_reads                       } from './modules/03_preprocess_and_quality_filter_reads.nf'
+include { download_genome_and_build_alignment_index as build_index  } from './modules/04_download_genome_and_build_alignment_index.nf'
+include { download_genome_and_build_alignment_index as spike_index  } from './modules/04_download_genome_and_build_alignment_index.nf'
+include { align_reads_to_genome                                     } from './modules/05_align_reads_to_genome.nf'
+include { check_and_merge_replicates                                } from './modules/05b_check_and_merge_replicates.nf'
+include { generate_coverage_tracks                                  } from './modules/06_generate_coverage_tracks.nf'
+include { quantify_reads_per_gene                                   } from './modules/07_quantify_reads_per_gene.nf'
+include { normalize_coverage_tracks                                 } from './modules/08_normalize_coverage_tracks.nf'
+include { detect_divergent_transcription                            } from './modules/09_detect_divergent_transcription.nf'
+include { assign_signal_to_functional_regions                       } from './modules/10_assign_signal_to_functional_regions.nf'
+include { calculate_polymerase_occupancy_metrics                    } from './modules/11_calculate_polymerase_occupancy_metrics.nf'
+include { calculate_polymerase_occupancy_metrics as pol_metrics_per_replicate } from './modules/11_calculate_polymerase_occupancy_metrics.nf'
+include { collect_pol_metrics_per_replicate                         } from './modules/11b_collect_pol_metrics_per_replicate.nf'
+include { summarize_polymerase_metrics                              } from './modules/12_summarize_polymerase_metrics.nf'
+include { quality_control_aligned_reads                             } from './modules/13_quality_control_aligned_reads.nf'
+include { generate_per_sample_reports                               } from './modules/14_generate_per_sample_reports.nf'
+include { combine_reports_into_cohort                               } from './modules/15_combine_reports_into_cohort.nf'
+include { cohort_qc_and_viz                                         } from './modules/16_cohort_qc_and_viz.nf'
 
-log.info """
+// ============================================================================
+// MAIN WORKFLOW
+// ============================================================================
+
+workflow {
+
+  // ── Nested param defaults (complex/conditional — must live inside workflow) ─
+
+  def _qcParams  = params.qc  instanceof Map ? params.qc  : [:]
+  def _polParams = params.pol instanceof Map ? params.pol : [:]
+
+  // ── Help message ───────────────────────────────────────────────────────────
+
+  if (params.help) {
+    log.info """
+    ════════════════════════════════════════════════════════════════════════
+    TrackTx Pipeline — PRO-seq Nascent RNA Analysis
+    ════════════════════════════════════════════════════════════════════════
+
+    Usage:
+      nextflow run main.nf -profile docker \\
+        --samplesheet samples.csv \\
+        --reference_genome hg38 \\
+        --output_dir results/
+
+    Required Parameters:
+      --samplesheet <CSV>           Samplesheet with sample metadata
+      --reference_genome <ID>       Reference genome (hg38, mm39, or 'other')
+      --output_dir <DIR>            Output directory path
+
+    Optional Parameters:
+      --paired_end                  Enable paired-end mode (default: false)
+      --sample_source <srr|local>   Sample source (default: local)
+      --spikein_genome <ID>         Spike-in genome (optional)
+      --genome_fasta <FASTA>        Custom genome (if reference_genome=other)
+      --spikein_fasta <FASTA>       Custom spike-in (if spikein_genome=other)
+      --debug                       Enable debug logging
+      --verbose                     Enable step-by-step progress logging
+
+    Profiles:
+      -profile docker               Use Docker containers
+      -profile conda                Use Conda environments
+      -profile local                Local execution
+
+    For detailed documentation, see README.md
+    ════════════════════════════════════════════════════════════════════════
+    """.stripIndent()
+    exit 0
+  }
+
+  // ── Startup banner ─────────────────────────────────────────────────────────
+
+  def TIMESTAMP_START = new Date().format("yyyy-MM-dd HH:mm:ss")
+
+  log.info """
 ════════════════════════════════════════════════════════════════════════
 TrackTx Pipeline Launch
 ════════════════════════════════════════════════════════════════════════
@@ -153,200 +146,134 @@ Debug mode:       ${params.debug ?: false}
 ════════════════════════════════════════════════════════════════════════
 """.stripIndent()
 
-// Critical parameter validation
-if (!params.output_dir) {
-  error "PIPELINE | ERROR | Missing required parameter: --output_dir"
-}
-if (!params.samplesheet) {
-  error "PIPELINE | ERROR | Missing required parameter: --samplesheet"
-}
-if (!params.reference_genome) {
-  error "PIPELINE | ERROR | Missing required parameter: --reference_genome"
-}
+  // ── Parameter validation ───────────────────────────────────────────────────
 
-// Custom genome validation
-if (params.reference_genome == 'other' && !params.genome_fasta) {
-  error "PIPELINE | ERROR | When reference_genome=other, must provide --genome_fasta"
-}
-if (params.spikein_genome == 'other' && !params.spikein_fasta) {
-  error "PIPELINE | ERROR | When spikein_genome=other, must provide --spikein_fasta"
-}
+  if (!params.output_dir) {
+    error "PIPELINE | ERROR | Missing required parameter: --output_dir"
+  }
+  if (!params.samplesheet) {
+    error "PIPELINE | ERROR | Missing required parameter: --samplesheet"
+  }
+  if (!params.reference_genome) {
+    error "PIPELINE | ERROR | Missing required parameter: --reference_genome"
+  }
+  if (params.reference_genome == 'other' && !params.genome_fasta) {
+    error "PIPELINE | ERROR | When reference_genome=other, must provide --genome_fasta"
+  }
+  if (params.spikein_genome == 'other' && !params.spikein_fasta) {
+    error "PIPELINE | ERROR | When spikein_genome=other, must provide --spikein_fasta"
+  }
 
-// Validate samplesheet exists (resolve relative paths from projectDir)
-def samplesheetPath = params.samplesheet?.trim()
-def samplesheetFile = samplesheetPath && new File(samplesheetPath).isAbsolute() 
-  ? file(samplesheetPath) 
-  : file("${projectDir}/${samplesheetPath ?: 'samplesheet.csv'}")
-if (!samplesheetFile.exists()) {
-  error "PIPELINE | ERROR | Samplesheet not found: ${params.samplesheet}"
-}
+  // Validate samplesheet exists (resolve relative paths from projectDir)
+  def samplesheetPath = params.samplesheet?.trim()
+  def samplesheetFile = (samplesheetPath && new File(samplesheetPath).isAbsolute())
+    ? file(samplesheetPath)
+    : file("${projectDir}/${samplesheetPath ?: 'samplesheet.csv'}")
+  if (!samplesheetFile.exists()) {
+    error "PIPELINE | ERROR | Samplesheet not found: ${params.samplesheet}"
+  }
 
-// Validate samplesheet has at least one data row (fail before workflow starts)
-def samplesheetLines = samplesheetFile.readLines()
-def dataRows = samplesheetLines.drop(1).findAll { it.trim() }
-if (dataRows.isEmpty()) {
-  error "PIPELINE | ERROR | Samplesheet has no data rows. Expected format: sample,condition,timepoint,replicate,file1,file2"
-}
+  def samplesheetLines = samplesheetFile.readLines()
+  def dataRows         = samplesheetLines.drop(1).findAll { row -> row.trim() }
+  if (dataRows.isEmpty()) {
+    error "PIPELINE | ERROR | Samplesheet has no data rows. Expected format: sample,condition,timepoint,replicate,file1,file2"
+  }
 
-// Fail-fast: validate input files exist for local samples (prevents silent skip → confusing Step 13 error)
-if (params.sample_source != 'srr') {
-  def header = samplesheetLines[0]?.split(',')?.collect { it.trim() }
-  def sampleIdx = header?.findIndexOf { it?.toLowerCase() == 'sample' }
-  def file1Idx = header?.findIndexOf { it?.toLowerCase() == 'file1' }
-  def file2Idx = header?.findIndexOf { it?.toLowerCase() == 'file2' }
-  if (sampleIdx != null && sampleIdx >= 0 && file1Idx != null && file1Idx >= 0) {
-    def missing = []
-    dataRows.eachWithIndex { line, i ->
-      def cols = line.split(',', -1).collect { it?.trim() }
-      def sample = cols.size() > sampleIdx ? cols[sampleIdx] : ''
-      def resolve = { String p ->
-        if (!p?.trim()) return null
-        def s = p.trim()
-        def f = new File(s)
-        return f.isAbsolute() ? f : new File(projectDir.toString(), s)
+  // Fail-fast: validate input files exist for local samples
+  if (params.sample_source != 'srr') {
+    def header   = samplesheetLines[0]?.split(',')?.collect { col -> col.trim() }
+    def sampleIdx = header?.findIndexOf { col -> col?.toLowerCase() == 'sample' }
+    def file1Idx  = header?.findIndexOf { col -> col?.toLowerCase() == 'file1' }
+    def file2Idx  = header?.findIndexOf { col -> col?.toLowerCase() == 'file2' }
+    if (sampleIdx != null && sampleIdx >= 0 && file1Idx != null && file1Idx >= 0) {
+      def missing = []
+      dataRows.eachWithIndex { line, _i ->
+        def cols   = line.split(',', -1).collect { col -> col?.trim() }
+        def sample = cols.size() > sampleIdx ? cols[sampleIdx] : ''
+        def f1 = cols.size() > file1Idx ? resolveSamplesheetPath(cols[file1Idx], projectDir) : null
+        def f2 = (params.paired_end && file2Idx != null && file2Idx >= 0 && cols.size() > file2Idx)
+          ? resolveSamplesheetPath(cols[file2Idx], projectDir) : null
+        if (f1 && !f1.exists()) missing << "${sample}: file1 not found: ${f1}"
+        if (f2 && !f2.exists()) missing << "${sample}: file2 not found: ${f2}"
       }
-      def f1 = cols.size() > file1Idx ? resolve(cols[file1Idx]) : null
-      def f2 = (params.paired_end && file2Idx != null && file2Idx >= 0 && cols.size() > file2Idx) ? resolve(cols[file2Idx]) : null
-      if (f1 && !f1.exists()) missing << "${sample}: file1 not found: ${f1}"
-      if (f2 && !f2.exists()) missing << "${sample}: file2 not found: ${f2}"
-    }
-    if (!missing.isEmpty()) {
-      error """PIPELINE | ERROR | Input files not found (${missing.size()} issue(s)).
-  Fix paths in samplesheet or ensure files exist before running.
+      if (!missing.isEmpty()) {
+        error """PIPELINE | ERROR | Input files not found (${missing.size()} issue(s)).
+Fix paths in samplesheet or ensure files exist before running.
 
-  Missing/not found:
-  ${missing.take(10).join('\n  ')}${missing.size() > 10 ? '\n  ... and ' + (missing.size() - 10) + ' more' : ''}
+Missing/not found:
+${missing.take(10).join('\n')}${missing.size() > 10 ? '\n... and ' + (missing.size() - 10) + ' more' : ''}
 
-  Expected format: sample,condition,timepoint,replicate,file1,file2
-  Paths are relative to: ${projectDir}"""
+Expected format: sample,condition,timepoint,replicate,file1,file2
+Paths are relative to: ${projectDir}"""
+      }
     }
   }
-}
 
-if (params.verbose) log.info "PIPELINE | VALIDATE | Parameter validation complete"
-
-// ============================================================================
-// MODULE IMPORTS
-// ============================================================================
-
-def MOD = "${projectDir}/modules"
-
-include { download_genome_annotations                             } from "${MOD}/01_download_genome_annotations.nf"
-include { download_sra_samples                                   } from "${MOD}/02_download_sra_samples.nf"
-include { preprocess_and_quality_filter_reads                    } from "${MOD}/03_preprocess_and_quality_filter_reads.nf"
-include { download_genome_and_build_alignment_index as build_index } from "${MOD}/04_download_genome_and_build_alignment_index.nf"
-include { download_genome_and_build_alignment_index as spike_index } from "${MOD}/04_download_genome_and_build_alignment_index.nf"
-include { align_reads_to_genome                                  } from "${MOD}/05_align_reads_to_genome.nf"
-include { check_and_merge_replicates                             } from "${MOD}/05b_check_and_merge_replicates.nf"
-include { generate_coverage_tracks                               } from "${MOD}/06_generate_coverage_tracks.nf"
-include { quantify_reads_per_gene                                } from "${MOD}/07_quantify_reads_per_gene.nf"
-include { normalize_coverage_tracks                              } from "${MOD}/08_normalize_coverage_tracks.nf"
-include { detect_divergent_transcription                         } from "${MOD}/09_detect_divergent_transcription.nf"
-include { assign_signal_to_functional_regions                    } from "${MOD}/10_assign_signal_to_functional_regions.nf"
-include { calculate_polymerase_occupancy_metrics                 } from "${MOD}/11_calculate_polymerase_occupancy_metrics.nf"
-include { summarize_polymerase_metrics                           } from "${MOD}/12_summarize_polymerase_metrics.nf"
-include { quality_control_aligned_reads                          } from "${MOD}/13_quality_control_aligned_reads.nf"
-include { generate_per_sample_reports                            } from "${MOD}/14_generate_per_sample_reports.nf"
-include { combine_reports_into_cohort                            } from "${MOD}/15_combine_reports_into_cohort.nf"
-
-if (params.verbose) log.info "PIPELINE | IMPORT | All modules loaded successfully"
-
-// Resolve local FASTQ path: use as-is if absolute, else relative to projectDir
-def resolveLocalPath(path) {
-  if (!path?.trim()) return null
-  def p = path.trim()
-  def f = new File(p)
-  return f.isAbsolute() ? file(p) : file("${projectDir}/${p}")
-}
-
-// ============================================================================
-// MAIN WORKFLOW
-// ============================================================================
-
-workflow TrackTx {
-
-  if (params.verbose) {
-    log.info "════════════════════════════════════════════════════════════════════════"
-    log.info "WORKFLOW | Starting TrackTx Analysis"
-    log.info "════════════════════════════════════════════════════════════════════════"
-  }
+  if (params.verbose) log.info "PIPELINE | VALIDATE | Parameter validation complete"
+  if (params.verbose) log.info "PIPELINE | IMPORT | All modules loaded successfully"
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 1: Download Annotations
   // ══════════════════════════════════════════════════════════════════════════
-  
-  // Resolve optional custom annotation file (gtf_path).
-  // Declared here (before use) so Nextflow stages it into the container work
-  // directory — Docker/Singularity can then access it regardless of host path.
-  def assetsDir0 = params.assets_dir ?: "${projectDir}/assets"
-  def noGtfPath0 = "${assetsDir0}/NO_GTF"
-  if (!new File(noGtfPath0).exists()) new File(noGtfPath0).text = ''
-  def customAnnotationFile = (params.gtf_path?.trim())
-    ? file(params.gtf_path, checkIfExists: true)
-    : file(noGtfPath0)
 
-  if (params.verbose) {
-    log.info "─".multiply(80)
-    log.info "STEP 1 | Download Genome Annotations"
-    log.info "─".multiply(80)
+  // Fail fast if a custom GTF path was supplied but does not exist. (Module 01
+  // consumes params.gtf_path internally when reference_genome='other'; checking
+  // here is cheaper than failing deep inside a task. The previous NO_GTF sentinel
+  // + _customAnnotationFile variable were never used downstream and were removed.)
+  if (params.gtf_path?.trim()) {
+    file(params.gtf_path, checkIfExists: true)
   }
 
-  download_genome_annotations(Channel.value(customAnnotationFile))
+  if (params.verbose) {
+    log.info "-".multiply(80)
+    log.info "STEP 1 | Download Genome Annotations"
+    log.info "-".multiply(80)
+  }
 
-  gtf_ch   = download_genome_annotations.out.gtf
-  genes_ch = download_genome_annotations.out.genes
-  tss_ch   = download_genome_annotations.out.tss
-  tes_ch   = download_genome_annotations.out.tes
-  
+  download_genome_annotations()
 
+  def gtf_ch   = download_genome_annotations.out.gtf
+  def genes_ch = download_genome_annotations.out.genes
+  def tss_ch   = download_genome_annotations.out.tss
+  def tes_ch   = download_genome_annotations.out.tes
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 2: Parse Samplesheet
   // ══════════════════════════════════════════════════════════════════════════
-  
+
   if (params.verbose) {
-    log.info "─".multiply(80)
+    log.info "-".multiply(80)
     log.info "STEP 2 | Parse Samplesheet"
-    log.info "─".multiply(80)
+    log.info "-".multiply(80)
     log.info "STEP 2 | INPUT | File: ${params.samplesheet}"
   }
 
-  // Use .tap() to duplicate channel for counting without consuming it
-  samples_ch = Channel
+  def samples_ch = channel
     .fromPath(samplesheetFile)
     .splitCsv(header: true)
     .map { row ->
-      // Validate required fields
       if (!row.sample || !row.file1) {
         error "STEP 2 | ERROR | Samplesheet row missing 'sample' or 'file1': ${row}"
       }
-      
-      // Validate file2 for paired-end local FASTQ mode
       if (params.sample_source != 'srr' && params.paired_end && !row.file2) {
         error "STEP 2 | ERROR | Paired-end mode requires 'file2' for sample ${row.sample}"
       }
-
-      // Build sample ID with replicate
       def sample_id = "${row.sample}_r${row.replicate ?: 1}"
-      
-      // Build reads list based on source (supports absolute or relative paths for local files)
       def reads = (params.sample_source == 'srr')
         ? [row.file1.trim(), row.file2?.trim()]
-        : (params.paired_end 
-            ? [resolveLocalPath(row.file1), resolveLocalPath(row.file2)] 
+        : (params.paired_end
+            ? [resolveLocalPath(row.file1), resolveLocalPath(row.file2)]
             : [resolveLocalPath(row.file1)])
-      
       tuple(
         sample_id,
         reads,
-        (row.treatment ?: row.condition ?: row.sample) ?: '',  // condition (treatment/condition column)
+        (row.treatment ?: row.condition ?: row.sample) ?: '',
         row.timepoint ?: '',
         row.replicate ?: 1
       )
     }
     .tap { samples_for_count }
 
-  // Count samples without consuming main channel; fail fast if none parsed
   samples_for_count.count().subscribe { count ->
     if (count == 0) {
       error "PIPELINE | ERROR | No samples parsed from samplesheet. Check column names (sample, file1), delimiter (comma), and encoding (UTF-8)."
@@ -357,225 +284,221 @@ workflow TrackTx {
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 3: Download SRR Data (optional)
   // ══════════════════════════════════════════════════════════════════════════
-  
-  prepared_input_ch    = null
-  preexisting_clean_ch = Channel.empty()  // Trimmed FASTQs found on disk; bypass download + preprocess
+
+  def prepared_input_ch    = null
+  def preexisting_clean_ch = channel.empty()
 
   if (params.sample_source == 'srr') {
     if (params.verbose) {
-      log.info "─".multiply(80)
+      log.info "-".multiply(80)
       log.info "STEP 3 | Download SRR Data from NCBI"
-      log.info "─".multiply(80)
+      log.info "-".multiply(80)
     }
 
-    // Explicitly evaluate parameter to avoid closure comparison issues
     def isPairedEnd = params.paired_end ? true : false
     def outputDir   = params.output_dir.toString()
 
     if (params.verbose) log.info "STEP 3 | CHECK | Scanning for pre-existing trimmed FASTQs in ${outputDir}/01_trimmed_fastq/"
 
-    // ── Pre-flight check: skip download + preprocess if trimmed FASTQs already exist ──────────
-    // When re-running after the work/ directory has been deleted, Nextflow can no longer resume
-    // from cached task outputs.  If final trimmed FASTQs are already present in results from a
-    // previous run, we reuse them directly and skip both download_sra_samples and
-    // preprocess_and_quality_filter_reads for those samples.
-    //
-    // NOTE: This check relies on publish_trimmed_fastq=true (default).  If publish_trimmed_fastq
-    // is set to false the trimmed FASTQs won't be in results/ and all samples will fall through to
-    // the normal download path.
-    samples_branched = samples_ch.branch { item ->
+    // storeDir cache location for raw SRA FASTQs (must mirror the storeDir
+    // closure in modules/02_download_sra_samples.nf).
+    def sraCacheDir = params.get('sra_cache_dir')
+        ? "${params.get('sra_cache_dir')}"
+        : ((params.get('publish_sra_fastq')?.toString() != 'false')
+            ? "${outputDir}/00_sra_cache"
+            : "${outputDir}/.sra_cache")
+
+    // 1) Samples already preprocessed (trimmed FASTQs present) → skip download
+    //    AND preprocessing entirely.
+    def by_trimmed = samples_ch.branch { item ->
       def sid        = item[0]
       def r1_trimmed = file("${outputDir}/01_trimmed_fastq/${sid}/final_R1.fastq")
       trimmed_exists: r1_trimmed.exists() && r1_trimmed.size() > 0
-      needs_download: true
+      needs_reads:    true
     }
 
-    // Path A — trimmed FASTQs already on disk: reuse them, skip download + preprocessing
-    preexisting_clean_ch = samples_branched.trimmed_exists.map { sid, reads, c, t, r ->
+    preexisting_clean_ch = by_trimmed.trimmed_exists.map { sid, _reads, c, t, r ->
       def r1 = file("${outputDir}/01_trimmed_fastq/${sid}/final_R1.fastq")
       def r2 = file("${outputDir}/01_trimmed_fastq/${sid}/final_R2.fastq")
       if (params.verbose) log.info "STEP 3 | SKIP | ${sid}: trimmed FASTQs found in results — skipping download and preprocessing"
       tuple(sid, r1, r2, c, t, r)
     }
 
-    // Path B — no trimmed FASTQs: run the normal download → preprocess pipeline
+    // 2) Of the rest, split those whose raw FASTQs are already in the storeDir
+    //    cache from those that still need downloading. A fully-stored storeDir
+    //    task is SKIPPED and does NOT re-emit its outputs (Nextflow behaviour),
+    //    which would close the downstream channel empty and deadlock the DAG.
+    //    So we build the input tuple for cached samples directly from disk and
+    //    only run download_sra_samples for the ones actually missing.
+    def by_cache = by_trimmed.needs_reads.branch { item ->
+      def srr = item[1][0]
+      def r1c = file("${sraCacheDir}/${srr}/${srr}_R1.fastq")
+      cached:         r1c.exists() && r1c.size() > 0
+      needs_download: true
+    }
+
+    def cached_input_ch = by_cache.cached.map { sid, reads, c, t, r ->
+      def srr = reads[0]
+      def r1  = file("${sraCacheDir}/${srr}/${srr}_R1.fastq")
+      def r2  = file("${sraCacheDir}/${srr}/${srr}_R2.fastq")
+      if (params.verbose) log.info "STEP 3 | CACHE | ${sid}: raw FASTQs found in ${sraCacheDir}/${srr} — skipping download"
+      tuple(sid, [r1, r2].findAll { it.exists() }, c, t, r)
+    }
+
     download_sra_samples(
-      samples_branched.needs_download.map { sid, reads, c, t, r ->
+      by_cache.needs_download.map { sid, reads, c, t, r ->
         tuple(sid, reads[0], c, t, r, isPairedEnd)
       }
     )
 
-    prepared_input_ch = download_sra_samples.out[0].map { sid, fq1, fq2, c, t, r ->
+    def downloaded_input_ch = download_sra_samples.out[0].map { sid, fq1, fq2, c, t, r ->
+      if (params.verbose) log.info "STEP 3 | DOWNLOAD | ${sid} complete"
       tuple(sid, [file(fq1), file(fq2)].findAll(), c, t, r)
     }
 
-    // Monitor downloads
-    prepared_input_ch.subscribe { sid, _reads, _cond, _time, _rep ->
-      if (params.verbose) log.info "STEP 3 | DOWNLOAD | ${sid} complete"
-    }
-
+    prepared_input_ch = cached_input_ch.mix(downloaded_input_ch)
 
 
   } else {
     if (params.verbose) {
-      log.info "─".multiply(80)
+      log.info "-".multiply(80)
       log.info "STEP 3 | Using Local FASTQ Files"
-      log.info "─".multiply(80)
+      log.info "-".multiply(80)
     }
     prepared_input_ch = samples_ch
+  }
 
-  }
-  
   // ══════════════════════════════════════════════════════════════════════════
-  // STEP 4: Prepare and Clean Input Reads
+  // STEP 4: Preprocess and Clean Input Reads
   // ══════════════════════════════════════════════════════════════════════════
-  
+
   if (params.verbose) {
-    log.info "─".multiply(80)
+    log.info "-".multiply(80)
     log.info "STEP 4 | Preprocess Input Reads"
-    log.info "─".multiply(80)
+    log.info "-".multiply(80)
     log.info "STEP 4 | CONFIG | Mode: ${params.paired_end ? 'Paired-end' : 'Single-end'}"
-    log.info "STEP 4 | CONFIG | Trimming and quality filtering enabled"
   }
-  
-  // Run preprocessing only on samples that need it — those whose trimmed FASTQs were not
-  // found on disk in STEP 3.  For SRR re-runs with an intact results/ folder, prepared_input_ch
-  // may be empty (all samples took the preexisting_clean_ch shortcut), which is fine.
-  (preprocessed_clean_ch, fastqc_ch) = preprocess_and_quality_filter_reads(
+
+  def (preprocessed_clean_ch, _fastqc_ch) = preprocess_and_quality_filter_reads(
     prepared_input_ch,
-    Channel.value(params.paired_end ? 'PE' : 'SE')
+    channel.value(params.paired_end ? 'PE' : 'SE')
   )
 
-  // Merge freshly preprocessed reads with any pre-existing trimmed FASTQs reused from results/.
-  // preexisting_clean_ch is Channel.empty() for local-FASTQ mode and for SRR runs where no
-  // trimmed FASTQs were found, so the mix is a no-op in those cases.
-  clean_fastq_ch = preprocessed_clean_ch.mix(preexisting_clean_ch)
+  def clean_fastq_ch = preprocessed_clean_ch.mix(preexisting_clean_ch)
 
-  // Monitor preprocessing completions (includes both fresh and reused paths)
   clean_fastq_ch.subscribe { sid, _r1, _r2opt, _cond, _time, _rep ->
     if (params.verbose) log.info "STEP 4 | CLEAN | ${sid} preprocessing complete"
   }
 
-  // Create sentinel files for SE mode (R2 placeholder)
-  def assetsDir = params.assets_dir ?: "${projectDir}/assets"
+  // Create sentinel files for SE mode / missing tracks
+  def assetsDir       = params.assets_dir ?: "${projectDir}/assets"
   new File(assetsDir).mkdirs()
-  
-  def noR2Path = "${assetsDir}/NO_R2.fastq"
-  def noBGPath = "${assetsDir}/EMPTY.bedgraph"
-  def noBGPosPath = "${assetsDir}/EMPTY_POS.bedgraph"
-  def noBGNegPath = "${assetsDir}/EMPTY_NEG.bedgraph"
-  // Unique placeholders for normalize_coverage_tracks to avoid staging collisions
-  def noBG5pPosPath = "${assetsDir}/EMPTY_5P_POS.bedgraph"
-  def noBG5pNegPath = "${assetsDir}/EMPTY_5P_NEG.bedgraph"
+
+  def noR2Path        = "${assetsDir}/NO_R2.fastq"
+  def noBGPath        = "${assetsDir}/EMPTY.bedgraph"
+  def noBGPosPath     = "${assetsDir}/EMPTY_POS.bedgraph"
+  def noBGNegPath     = "${assetsDir}/EMPTY_NEG.bedgraph"
+  def noBG5pPosPath   = "${assetsDir}/EMPTY_5P_POS.bedgraph"
+  def noBG5pNegPath   = "${assetsDir}/EMPTY_5P_NEG.bedgraph"
   def noBGAm5pPosPath = "${assetsDir}/EMPTY_AM5P_POS.bedgraph"
   def noBGAm5pNegPath = "${assetsDir}/EMPTY_AM5P_NEG.bedgraph"
-  // Placeholders for align when no spike-in (avoid Channel.empty() AND filename collisions)
-  def noSpikeFaPath  = "${assetsDir}/EMPTY_SPIKE.fa"
-  def noSpikeIdxPath = "${assetsDir}/EMPTY_SPIKE_INDEX.fa"
-  
-  // Create all placeholder files if they don't exist
+  def noSpikeFaPath   = "${assetsDir}/EMPTY_SPIKE.fa"
+  def noSpikeIdxPath  = "${assetsDir}/EMPTY_SPIKE_INDEX.fa"
+
   [noR2Path, noBGPath, noBGPosPath, noBGNegPath,
    noBG5pPosPath, noBG5pNegPath, noBGAm5pPosPath, noBGAm5pNegPath,
    noSpikeFaPath, noSpikeIdxPath].each { path ->
-    if (!new File(path).exists()) {
-      new File(path).text = ''
-    }
+    if (!new File(path).exists()) new File(path).text = ''
   }
-  // Ensure FASTA-compatible content for spike-in placeholders
   new File(noSpikeFaPath).text  = ">none\nN\n"
   new File(noSpikeIdxPath).text = ">none_index\nN\n"
 
-  // Ensure R2 is always present (use sentinel for SE)
-  clean_fastq_with_r2 = clean_fastq_ch.map { sid, r1, r2opt, c, t, r ->
-    def r2_file = (r2opt && file(r2opt).exists() && file(r2opt).size() > 0) 
-      ? file(r2opt) 
+  def clean_fastq_with_r2 = clean_fastq_ch.map { sid, r1, r2opt, c, t, r ->
+    def r2_file = (r2opt && file(r2opt).exists() && file(r2opt).size() > 0)
+      ? file(r2opt)
       : file(noR2Path)
     tuple(sid, r1, r2_file, c, t, r)
   }
 
-
-
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 5: Build Genome Indices
   // ══════════════════════════════════════════════════════════════════════════
-  
+
   if (params.verbose) {
-    log.info "─".multiply(80)
+    log.info "-".multiply(80)
     log.info "STEP 5 | Build Bowtie2 Indices"
-    log.info "─".multiply(80)
+    log.info "-".multiply(80)
   }
 
-  // Primary genome
-  // Use a pre-placed local FASTA if present; otherwise pass [] so Nextflow
-  // stages nothing and the module falls through to its UCSC download logic.
-  reference_fa = params.reference_genome == 'other'
+  def reference_fa = params.reference_genome == 'other'
     ? file(params.genome_fasta)
-    : (file("${projectDir}/genomes/${params.reference_genome}.fa").exists()
-        ? file("${projectDir}/genomes/${params.reference_genome}.fa")
-        : [])
+    : file("${projectDir}/genomes/${params.reference_genome}.fa")
 
   if (params.verbose) log.info "STEP 5 | INDEX | Primary genome: ${params.reference_genome}"
 
   build_index(
-    Channel.value(tuple(
+    channel.value(tuple(
       params.reference_genome == 'other' ? 'custom' : params.reference_genome,
       params.reference_genome == 'other' ? 'custom' : 'ucsc',
       reference_fa
     ))
   )
-  
-  ref_meta_ch = build_index.out.ref_meta
-  ref_idx_ch  = build_index.out.index_files
+
+  def ref_meta_ch = build_index.out.ref_meta
+  def ref_idx_ch  = build_index.out.index_files
 
   if (params.verbose) log.info "STEP 5 | INDEX | Primary genome index built"
 
-  // Spike-in genome (optional)
-  // CRITICAL: When no spike-in, use placeholder channels (not Channel.empty()) so align_reads
-  // receives one value per input and runs. Also ensure placeholder file *names* are distinct
-  // to avoid Nextflow input file name collisions.
   def noSpikeFa  = file(noSpikeFaPath)
   def noSpikeIdx = file(noSpikeIdxPath)
-  spike_meta_ch = Channel.value(tuple('none', 'none', noSpikeFa))
-  spike_idx_ch  = Channel.value(noSpikeIdx)
-  
+  def spike_meta_ch = channel.value(tuple('none', 'none', noSpikeFa))
+  def spike_idx_ch  = channel.value(noSpikeIdx)
+
   if (params.spikein_genome && params.spikein_genome != 'None') {
     if (params.verbose) log.info "STEP 5 | INDEX | Spike-in genome: ${params.spikein_genome}"
-    
-    spike_fa = params.spikein_genome == 'other'
+
+    def spike_fa = params.spikein_genome == 'other'
       ? file(params.spikein_fasta)
-      : (file("${projectDir}/genomes/${params.spikein_genome}.fa").exists()
-          ? file("${projectDir}/genomes/${params.spikein_genome}.fa")
-          : [])
+      : file("${projectDir}/genomes/${params.spikein_genome}.fa")
 
     spike_index(
-      Channel.value(tuple(
+      channel.value(tuple(
         params.spikein_genome == 'other' ? 'custom_spike' : params.spikein_genome,
         params.spikein_genome == 'other' ? 'custom' : 'ucsc',
         spike_fa
       ))
     )
-    
+
     spike_meta_ch = spike_index.out.ref_meta
     spike_idx_ch  = spike_index.out.index_files
-    
+
     if (params.verbose) log.info "STEP 5 | INDEX | Spike-in index built"
   } else {
     if (params.verbose) log.info "STEP 5 | INDEX | No spike-in genome specified (using placeholder)"
   }
 
-
-
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 6: Alignment
   // ══════════════════════════════════════════════════════════════════════════
-  
+
   if (params.verbose) {
-    log.info "─".multiply(80)
+    log.info "-".multiply(80)
     log.info "STEP 6 | Align Reads with Bowtie2"
-    log.info "─".multiply(80)
-    log.info "STEP 6 | CONFIG | Aligner: Bowtie2"
+    log.info "-".multiply(80)
     log.info "STEP 6 | CONFIG | Mode: ${params.paired_end ? 'Paired-end' : 'Single-end'}"
   }
+
+  // Library-type-derived processing (null params auto-derive; see nextflow.config).
+  //   proseq → revcomp R1, 3' signal end;  groseq → no revcomp, 5' signal end.
+  // Robust bool: YAML gives a real Boolean; CLI (--revcomp_r1 false) gives the
+  // String "false" (which `as boolean` would wrongly treat as true).
+  def _rc = params.revcomp_r1
+  def revcompR1 = (_rc == null) ? (params.library_type != 'groseq')
+                  : (_rc instanceof Boolean ? _rc
+                     : (_rc.toString().trim().toLowerCase() in ['true','1','yes','on']))
+  def signalEnd = (params.signal_end ?: (params.library_type == 'groseq' ? '5p' : '3p'))
+                    .toString().toLowerCase()
+  if (params.verbose) log.info "STEP 6 | CONFIG | library_type=${params.library_type} | revcomp_r1=${revcompR1} | signal_end=${signalEnd}"
 
   align_reads_to_genome(
     clean_fastq_with_r2,
@@ -583,63 +506,90 @@ workflow TrackTx {
     ref_idx_ch,
     spike_meta_ch,
     spike_idx_ch,
-    params.paired_end ?: false
+    params.paired_end ?: false,
+    revcompR1,
+    (params.align?.multimap_k ?: 0) as int
   )
-  
-  aligned_ch = align_reads_to_genome.out[0]
 
-  // Monitor alignments
+  def aligned_ch = align_reads_to_genome.out[0]
+
   aligned_ch.subscribe { sid, _bam, _allbam, _spike, _cond, _time, _rep ->
     if (params.verbose) log.info "STEP 6 | ALIGN | ${sid} alignment complete"
   }
 
-  // aligned_ch: (sample_id, sample.bam, sample_allMap.bam, spikein.bam, condition, timepoint, replicate)
+  // ──────────────────────────────────────────────────────────────────────────
+  // STEP 6c: Collect the GENUINE bowtie2 alignment rates into one run-level table
+  //
+  // The per-sample QC JSON computes "mapped_reads" from the already-filtered BAM,
+  // so its map rate is ~100% and not the true overall alignment rate. The real
+  // numbers live in each replicate's aligner_summary.tsv (from bowtie2). Gather
+  // them, tagged with sample identity, into a single glanceable TSV.
+  // ──────────────────────────────────────────────────────────────────────────
+  align_reads_to_genome.out.align_summary_tagged
+    .map { sid, summ, c, t, r ->
+      def m = [:]
+      try {
+        file(summ).readLines().each { ln ->
+          def p = ln.split('\t')
+          if (p.size() == 2) m[p[0]] = p[1]
+        }
+      } catch (Exception e) { /* leave blanks if unreadable */ }
+      // Use genome_overall_aln_rate_pct (the REAL bowtie2 rate), not
+      // genome_map_rate_pct (post-filter, always ~100%). spike_fraction_pct =
+      // spike-mapped / genome-mapped × 100 — a real Drosophila spike-in is
+      // typically 1–10%; <~0.5% means there is effectively no spike-in and
+      // siCPM normalization is not trustworthy.
+      // PE note: both counts are per-read-RECORD (genome primary flagstat counts
+      // both mates; spike is SE-aligned on the unaligned mates), so the ratio is
+      // dimensionally consistent in PE — do NOT "halve" it for paired-end.
+      def gmap = (m['genome_mapped_reads'] ?: '').isInteger() ? (m['genome_mapped_reads'] as long) : 0L
+      def smap = (m['spike_mapped_reads'] ?: '').isInteger() ? (m['spike_mapped_reads'] as long) : 0L
+      def spikeFrac = (gmap > 0) ? String.format(Locale.US, '%.3f', (smap / (gmap as double)) * 100.0) : 'NA'
+      "${sid}\t${c}\t${t}\t${r}\t${m['genome_total_reads'] ?: 'NA'}\t${m['genome_mapped_reads'] ?: 'NA'}\t${m['genome_overall_aln_rate_pct'] ?: 'NA'}\t${m['spike_mapped_reads'] ?: 'NA'}\t${spikeFrac}"
+    }
+    .toSortedList()
+    .map { lines ->
+      def header = 'sample_id\tcondition\ttimepoint\treplicate\tgenome_total_reads\tgenome_mapped_reads\tgenome_overall_aln_rate_pct\tspike_mapped_reads\tspike_fraction_pct'
+      ([header] + lines).join('\n') + '\n'
+    }
+    .collectFile(
+      name:     'alignment_rates_summary.tsv',
+      storeDir: "${params.output_dir}/02_alignments",
+      newLine:  false
+    )
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 6b: Replicate Concordance Check & BAM Merging (optional)
   // ══════════════════════════════════════════════════════════════════════════
-  //
-  // When params.replicates.merge == true:
-  //   - Group BAMs by (condition, timepoint)
-  //   - Compute Pearson/Spearman genome-wide correlation between replicates
-  //   - If min(pairwise corr) >= concordance_min: merge with samtools merge
-  //   - Otherwise: warn and fall back to individual replicates
-  // When disabled (default): aligned_ch passes through unchanged.
 
   if (params.replicates?.merge == true) {
     if (params.verbose) {
-      log.info "─".multiply(80)
+      log.info "-".multiply(80)
       log.info "STEP 6b | Replicate Concordance Check & BAM Merging"
-      log.info "─".multiply(80)
+      log.info "-".multiply(80)
       log.info "STEP 6b | CONFIG | Method: ${params.replicates?.concordance_method ?: 'pearson'}"
       log.info "STEP 6b | CONFIG | Threshold: ${params.replicates?.concordance_min ?: 0.9}"
     }
 
-    // Group by (condition, timepoint) — collect sample IDs and all BAM paths
-    merge_input_ch = aligned_ch
-      .map { sid, filt_bam, all_bam, spike_bam, c, t, r ->
+    def merge_input_ch = aligned_ch
+      .map { sid, filt_bam, all_bam, spike_bam, c, t, _r ->
         tuple(c, t, sid, filt_bam, all_bam, spike_bam ?: file('NO_SPIKE'))
       }
       .groupTuple(by: [0, 1])
-      // → (condition, timepoint, [sample_ids], [filt_bams], [all_bams], [spike_bams])
 
     check_and_merge_replicates(merge_input_ch)
 
-    // Rebuild aligned_ch from merged BAMs (condition+timepoint collapsed to single entry)
-    // merged_bams: (condition, timepoint, merged.bam, allMap.merged.bam, spikein.merged.bam)
-    merged_aligned_ch = check_and_merge_replicates.out.merged_bams
+    def merged_aligned_ch = check_and_merge_replicates.out.merged_bams
       .map { cond, tpt, filt_bam, all_bam, spike_bam ->
         def merged_sid = "${cond}_${tpt}_merged".toString().replaceAll(/[^a-zA-Z0-9_-]/, '_')
         def spike_f = (spike_bam.name != 'NO_SPIKE' && spike_bam.size() > 0) ? spike_bam : null
         tuple(merged_sid, filt_bam, all_bam, spike_f, cond, tpt, 0)
       }
 
-    // Passthrough BAMs for groups that failed concordance (kept as individual replicates)
-    passthrough_aligned_ch = check_and_merge_replicates.out.passthrough_bams
+    def passthrough_aligned_ch = check_and_merge_replicates.out.passthrough_bams
       .map { cond, tpt, filt_bams, all_bams, spike_bams ->
-        // passthrough emits individual files per replicate; join back by filename pattern
         [filt_bams].flatten().withIndex().collect { bam, i ->
-          def allbam  = [all_bams].flatten()[i]
+          def allbam   = [all_bams].flatten()[i]
           def spikebam = [spike_bams].flatten()[i]
           def sid = bam.name.replaceAll(/\.bam$/, '')
           tuple(sid, bam, allbam, spikebam, cond, tpt, i + 1)
@@ -647,13 +597,8 @@ workflow TrackTx {
       }
       .flatMap()
 
-    // Combine merged + passthrough back into a single channel
     aligned_ch = merged_aligned_ch.mix(passthrough_aligned_ch)
 
-    // Collect per-condition concordance TSVs into one cohort-level report.
-    // Each check_and_merge_replicates invocation writes a uniquely-named
-    // <condition>_<timepoint>_concordance.tsv; we concatenate them here so
-    // the full picture (all conditions, pass/fail) is preserved in one file.
     check_and_merge_replicates.out.concordance_report
       .collectFile(
         name:     'concordance_report.tsv',
@@ -662,112 +607,95 @@ workflow TrackTx {
         newLine:    false
       )
 
-    // Monitor
     aligned_ch.subscribe { sid, _bam, _allbam, _spike, _cond, _time, _rep ->
       if (params.verbose) log.info "STEP 6b | MERGE | ${sid} ready for track generation"
     }
-
-  } // end if replicates.merge
-
-
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 7: Generate Coverage Tracks
   // ══════════════════════════════════════════════════════════════════════════
-
+  
   if (params.verbose) {
-    log.info "─".multiply(80)
+    log.info "-".multiply(80)
     log.info "STEP 7 | Generate Coverage Tracks"
-    log.info "─".multiply(80)
-    log.info "STEP 7 | CONFIG | Formats: bedGraph, BigWig"
-    log.info "STEP 7 | CONFIG | Orientations: 3' end (primary), 5' end (optional)"
-    log.info "STEP 7 | CONFIG | Strands: Positive, Negative (separate)"
+    log.info "-".multiply(80)
   }
 
-  genome_fa_ch = ref_meta_ch.map { id, prov, fa -> fa }
+  def genome_fa_ch = ref_meta_ch.map { _id, _prov, fa -> fa }
 
-  tracks_input_ch = aligned_ch.map { sid, filt_bam, all_bam, spike_bam, c, t, r ->
+  def tracks_input_ch = aligned_ch.map { sid, filt_bam, _all_bam, spike_bam, c, t, r ->
     tuple(sid, filt_bam, spike_bam, c, t, r)
   }
 
-  allmap_bam_ch = aligned_ch.map { sid, filt_bam, all_bam, spike_bam, c, t, r ->
+  def allmap_bam_ch = aligned_ch.map { _sid, _filt_bam, all_bam, _spike_bam, _c, _t, _r ->
     all_bam
   }
 
   generate_coverage_tracks(
     tracks_input_ch,
     genome_fa_ch,
-    Channel.value(params.paired_end ? 'true' : 'false'),
+    channel.value(params.paired_end ? 'true' : 'false'),
     allmap_bam_ch
   )
 
-  bw3p_pair_ch    = generate_coverage_tracks.out.bw3p_pair      // PRIMARY/UNIQUE MAPPERS ✓
-  bw5p_pair_ch    = generate_coverage_tracks.out.bw5p_pair
-  allmap3p_pair_ch = generate_coverage_tracks.out.allmap3p_pair  // MULTIMAPPERS (not for divergent tx)
-  allmap5p_pair_ch = generate_coverage_tracks.out.allmap5p_pair
-  tracks_ch       = generate_coverage_tracks.out.track_tuple
-  dedup_stats_ch  = generate_coverage_tracks.out.dedup_stats
+  def bw3p_pair_ch     = generate_coverage_tracks.out.bw3p_pair
+  def bw5p_pair_ch     = generate_coverage_tracks.out.bw5p_pair
+  def allmap3p_pair_ch = generate_coverage_tracks.out.allmap3p_pair
+  def allmap5p_pair_ch = generate_coverage_tracks.out.allmap5p_pair
+  def tracks_ch        = generate_coverage_tracks.out.track_tuple
+  def dedup_stats_ch   = generate_coverage_tracks.out.dedup_stats
 
-  // Monitor track generation
-  tracks_ch.subscribe { sid, _fb, _sb, p3, n3, _p5, _n5, _cond, _time, _rep ->
+  tracks_ch.subscribe { sid, _fb, _sb, _p3, _n3, _p5, _n5, _cond, _time, _rep ->
     if (params.verbose) log.info "STEP 7 | TRACKS | ${sid} → 3' tracks generated"
   }
 
   if (params.debug) {
-    tracks_ch.view { sid, fb, sb, p3, n3, p5, n5, c, t, r ->
+    tracks_ch.view { sid, _fb, _sb, p3, n3, p5, n5, _c, _t, _r ->
       "DEBUG | TRACKS | ${sid} | 3p: ${p3}, ${n3} | 5p: ${p5 ?: 'N/A'}, ${n5 ?: 'N/A'}"
     }
   }
 
-
-
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 8: Collect Read Counts
   // ══════════════════════════════════════════════════════════════════════════
-  
+
   if (params.verbose) {
-    log.info "─".multiply(80)
+    log.info "-".multiply(80)
     log.info "STEP 8 | Collect Read Counts"
-    log.info "─".multiply(80)
-    log.info "STEP 8 | PURPOSE | Read counts for CPM/siCPM normalization"
+    log.info "-".multiply(80)
   }
 
-  counts_tsvs = quantify_reads_per_gene(
+  def counts_tsvs = quantify_reads_per_gene(
     aligned_ch.map { sid, filt_bam, all_bam, spike_bam, c, t, r ->
       tuple(sid, filt_bam, all_bam, spike_bam ?: '-', c, t, r)
     }
   )
 
-  counts_master = counts_tsvs.counts
-    .map { sid, tsv, c, t, r -> tsv }
+  def counts_master = counts_tsvs.counts
+    .map { _sid, tsv, _c, _t, _r -> tsv }
     .collectFile(
-      name: 'counts_master.tsv',
-      storeDir: "${params.output_dir}/04_counts",
+      name:      'counts_master.tsv',
+      storeDir:  "${params.output_dir}/04_counts",
       keepHeader: true,
-      newLine: true
+      newLine:    true
     )
 
-  counts_master.subscribe {
-    if (params.verbose) log.info "STEP 8 | COMPLETE | Master counts file: ${it}"
+  counts_master.subscribe { f ->
+    if (params.verbose) log.info "STEP 8 | COMPLETE | Master counts file: ${f}"
   }
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 9: Normalize Tracks
   // ══════════════════════════════════════════════════════════════════════════
-  
+
   if (params.verbose) {
-    log.info "─".multiply(80)
+    log.info "-".multiply(80)
     log.info "STEP 9 | Normalize Tracks"
-    log.info "─".multiply(80)
-    log.info "STEP 9 | CONFIG | Methods: CPM, siCPM${params.norm?.gene_end_method && params.norm?.gene_end_method != 'none' ? ', gene-end (' + params.norm.gene_end_method + ')' : ''}"
-    log.info "STEP 9 | CONFIG | Tracks: 3' primary, 3' allMap"
-    log.info "STEP 9 | CONFIG | Output structure: per-method subfolders (cpm/, sicpm/, gene_end/)"
+    log.info "-".multiply(80)
   }
 
-  // Prepare inputs - remove redundant metadata from joins for clarity
-  // NOTE: Must wrap paths with file() to ensure proper staging when using path() inputs
-  // NOTE: Use unique placeholder files to avoid Nextflow staging name collisions
-  norm_main_kv = tracks_ch.map { sid, bam, spk, p3, n3, p5, n5, c, t, r ->
+  def norm_main_kv = tracks_ch.map { sid, _bam, _spk, p3, n3, p5, n5, c, t, r ->
     def p3_file = file(p3)
     def n3_file = file(n3)
     def p5_file = (p5 && file(p5).exists() && file(p5).size() > 0) ? file(p5) : file(noBG5pPosPath)
@@ -775,18 +703,17 @@ workflow TrackTx {
     tuple(sid, tuple(p3_file, n3_file, p5_file, n5_file, c, t, r))
   }
 
-  norm_allmap3_kv = allmap3p_pair_ch.map { sid, ap3, an3, bwp, bwn, c, t, r ->
+  def norm_allmap3_kv = allmap3p_pair_ch.map { sid, ap3, an3, _bwp, _bwn, _c, _t, _r ->
     tuple(sid, tuple(file(ap3), file(an3)))
   }
 
-  norm_allmap5_kv = allmap5p_pair_ch.map { sid, ap5, an5, bwp, bwn, c, t, r ->
+  def norm_allmap5_kv = allmap5p_pair_ch.map { sid, ap5, an5, _bwp, _bwn, _c, _t, _r ->
     def ap5_file = (ap5 && file(ap5).exists() && file(ap5).size() > 0) ? file(ap5) : file(noBGAm5pPosPath)
     def an5_file = (an5 && file(an5).exists() && file(an5).size() > 0) ? file(an5) : file(noBGAm5pNegPath)
     tuple(sid, tuple(ap5_file, an5_file))
   }
 
-  // Join using sample_id as key only, rebuild full tuple at end
-  norm_input_ch = norm_main_kv
+  def norm_input_ch = norm_main_kv
     .join(norm_allmap3_kv)
     .join(norm_allmap5_kv)
     .combine(counts_master)
@@ -798,170 +725,149 @@ workflow TrackTx {
       tuple(sid, p3, n3, p5, n5, ap3, an3, ap5, an5, c, t, r, cm, genes)
     }
 
-  // Pass TES BED for gene-end normalization (tes_ch is already a value channel)
-  normalize_coverage_tracks(norm_input_ch, genome_fa_ch, tes_ch)
-  
-  norm_tracks_ch  = normalize_coverage_tracks.out.norm_tuple
-  norm_factors_ch = norm_tracks_ch.map { sid, p3, n3, nf, c, t, r ->
+  normalize_coverage_tracks(norm_input_ch, genome_fa_ch)
+
+  def norm_tracks_ch  = normalize_coverage_tracks.out.norm_tuple
+  def norm_factors_ch = norm_tracks_ch.map { sid, _p3, _n3, nf, c, t, r ->
     tuple(sid, nf, c, t, r)
   }
 
-  // Monitor normalization
   norm_tracks_ch.subscribe { sid, _p3, _n3, _nf, _cond, _time, _rep ->
     if (params.verbose) log.info "STEP 9 | NORMALIZE | ${sid} normalization complete"
   }
 
-
-
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 10: Detect Divergent Transcription
   // ══════════════════════════════════════════════════════════════════════════
-  
+
   if (params.verbose) {
-    log.info "═".multiply(80)
+    log.info "=".multiply(80)
     log.info "STEP 10 | Detect Divergent Transcription"
-    log.info "═".multiply(80)
-    log.info "STEP 10 | CONFIG | Algorithm: Edge-to-edge distance with overlap awareness"
-    log.info "STEP 10 | CONFIG | Default window: 500bp (edge-to-edge gap, not center-to-center)"
-    log.info "STEP 10 | CONFIG | Track source: PRIMARY/UNIQUE mappers (filtered BAM)"
-    log.info "STEP 10 | CONFIG | NOT using allMap (multimapper) tracks"
-    log.info "STEP 10 | CONFIG | Pairing logic: Overlapping peaks always paired, then gap ≤ window"
+    log.info "=".multiply(80)
   }
 
-  // CRITICAL FIX: Use filtered/primary tracks (unique mappers), NOT allMap
-  // 
-  // bw3p_pair_ch     → from sample.bam (filtered = primary/unique mappers) ✓ CORRECT
-  // allmap3p_pair_ch → from sample_allMap.bam (includes multimappers)     ✗ WRONG
-  //
-  // For clean divergent transcription detection, we want primary/unique mappers
-  // to avoid inflated signal in repetitive regions from multimapping reads.
-  //
-  // CACHE FIX: Simple map without groupTuple or file checks to avoid cache invalidation
-  divergent_input_ch = bw3p_pair_ch  // ✓ PRIMARY/UNIQUE MAPPERS
-    .map { sid, pos3_bg, neg3_bg, bwp, bwn, c, t, r ->
-      tuple(sid, pos3_bg, neg3_bg, c, t, r)
+  // Route the configured signal end into divergent calling. PRO-seq uses 3'
+  // (Pol II active site); GRO-seq uses 5' (3' end is not the Pol position).
+  // bw3p_pair and bw5p_pair share the same tuple shape, so the map is identical.
+  def signal_pair_ch = (signalEnd == '5p') ? bw5p_pair_ch : bw3p_pair_ch
+  def divergent_input_ch = signal_pair_ch
+    .map { sid, pos_bg, neg_bg, _bwp, _bwn, c, t, r ->
+      tuple(sid, pos_bg, neg_bg, c, t, r)
     }
-  
-  // Add progress monitoring
+
   divergent_input_ch.subscribe { sid, _pos, _neg, _cond, _time, _rep ->
     if (params.verbose) log.info "STEP 10 | INPUT | Sample ready for detection: ${sid}"
   }
 
-  // Pass parameters explicitly for better cache control
   detect_divergent_transcription(
     divergent_input_ch,
-    Channel.value(params.advanced?.divergent_threshold ?: 'auto'),
-    Channel.value(params.advanced?.divergent_sum_thr ?: 'auto'),
-    Channel.value(params.advanced?.divergent_fdr ?: 0.08),
-    Channel.value(params.advanced?.divergent_nt_window ?: 1000),
-    Channel.value(params.advanced?.divergent_balance ?: 0.0),
-    Channel.value(params.advanced?.divergent_bin_gap ?: 100),
-    Channel.value(params.advanced?.divergent_calibration_percentile ?: 65.0),
-    Channel.value(params.advanced?.divergent_calibration_sum_multiplier ?: 1.5),
-    Channel.value(params.advanced?.divergent_calibration_background_lower ?: false),
-    Channel.value(params.advanced?.divergent_merge_gap ?: 150)
+    channel.value(params.advanced?.divergent_threshold ?: 'auto'),
+    channel.value(params.advanced?.divergent_sum_thr ?: 'auto'),
+    channel.value(params.advanced?.divergent_fdr ?: 0.08),
+    channel.value(params.advanced?.divergent_nt_window ?: 1000),
+    channel.value(params.advanced?.divergent_balance ?: 0.0),
+    channel.value(params.advanced?.divergent_bin_gap ?: 100),
+    channel.value(params.advanced?.divergent_calibration_percentile ?: 65.0),
+    channel.value(params.advanced?.divergent_calibration_sum_multiplier ?: 1.5),
+    channel.value(params.advanced?.divergent_calibration_background_lower ?: false),
+    channel.value(params.advanced?.divergent_merge_gap ?: 150),
+    // Opt-in fallback: when no region passes the (approximate) FDR, keep this
+    // top fraction by score instead of returning zero. 0.0 = disabled, so a
+    // genuinely empty/noisy sample legitimately yields no divergent sites.
+    channel.value(params.advanced?.divergent_fallback_top_frac ?: 0.0)
   )
-  
-  divergent_tx_ch = detect_divergent_transcription.out.bed
-  
-  // Monitor completion with region counts - FIX: Three duplicate _ before!
+
+  def divergent_tx_ch = detect_divergent_transcription.out.bed
+
   divergent_tx_ch.subscribe { sid, bed, _cond, _time, _rep ->
     def count = 0
     if (file(bed).exists() && file(bed).size() > 0) {
-      count = file(bed).readLines().findAll { !it.startsWith('#') }.size()
+      count = file(bed).readLines().findAll { ln -> !ln.startsWith('#') }.size()
     }
     if (params.verbose) log.info "STEP 10 | COMPLETE | ${sid} → ${count} divergent regions detected"
   }
 
-
-
   // ══════════════════════════════════════════════════════════════════════════
-  // STEP 11: Call Functional Regions
+  // STEP 11: Score Divergent Sites (Enhancer vs Gene)
   // ══════════════════════════════════════════════════════════════════════════
-  
+
   if (params.verbose) {
-    log.info "─".multiply(80)
+    log.info "-".multiply(80)
     log.info "STEP 11 | Call Functional Regions"
-    log.info "─".multiply(80)
-    log.info "STEP 11 | CONFIG | Input: Divergent transcription regions + RAW tracks"
-    log.info "STEP 11 | CONFIG | Output: Promoter, enhancer, gene body annotations"
+    log.info "-".multiply(80)
   }
 
-  // IMPORTANT: Use RAW bedGraphs (not normalized) as per original pipeline design
-  func_input_ch = divergent_tx_ch
-    .map { sid, div_bed, c, t, r -> 
+  def func_input_ch = divergent_tx_ch
+    .map { sid, div_bed, c, t, r ->
       tuple(sid, tuple(div_bed, c, t, r))
     }
     .join(
-      tracks_ch.map { sid, bam, spk, pos3_raw, neg3_raw, p5, n5, c, t, r ->
+      tracks_ch.map { sid, _bam, _spk, pos3_raw, neg3_raw, _p5, _n5, c, t, r ->
         tuple(sid, tuple(pos3_raw, neg3_raw, c, t, r))
       }
     )
     .map { sid, div_data, track_data ->
       def (div_bed, c, t, r) = div_data
-      def (pos3_raw, neg3_raw, c2, t2, r2) = track_data
-      // Empty placeholders for siCPM (not used in functional regions calling)
-      // FIX: Use distinct files to avoid input name collision in process
+      def (pos3_raw, neg3_raw, _c2, _t2, _r2) = track_data
       tuple(sid, div_bed, pos3_raw, neg3_raw, file(noBGPosPath), file(noBGNegPath), c, t, r)
     }
 
   assign_signal_to_functional_regions(
     func_input_ch,
     gtf_ch,
-    Channel.value(file("${projectDir}/bin/functional_regions.py")),
+    channel.value(file("${projectDir}/bin/functional_regions.py")),
     genes_ch,
     tss_ch,
     tes_ch
   )
 
-  functional_regions_ch = assign_signal_to_functional_regions.out.main
-  
-  functional_regions_bed_ch = functional_regions_ch.map { sid, bed, fsum, c, t, r ->
+  def functional_regions_ch = assign_signal_to_functional_regions.out.main
+
+  def functional_regions_bed_ch = functional_regions_ch.map { sid, bed, _fsum, _c, _t, _r ->
     tuple(sid, bed)
   }
-  
-  functional_regions_sum_ch = functional_regions_ch.map { sid, bed, fsum, c, t, r ->
+
+  def functional_regions_sum_ch = functional_regions_ch.map { sid, _bed, fsum, c, t, r ->
     tuple(sid, fsum, c, t, r)
   }
 
-  // Monitor functional region calling
   functional_regions_ch.subscribe { sid, bed, _fsum, _cond, _time, _rep ->
     def count = 0
     if (file(bed).exists() && file(bed).size() > 0) {
-      count = file(bed).readLines().findAll { !it.startsWith('#') }.size()
+      count = file(bed).readLines().findAll { ln -> !ln.startsWith('#') }.size()
     }
     if (params.verbose) log.info "STEP 11 | COMPLETE | ${sid} → ${count} functional regions annotated"
   }
 
-
-
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 12: Calculate Pol-II Metrics
   // ══════════════════════════════════════════════════════════════════════════
-  
+
   if (params.verbose) {
-    log.info "─".multiply(80)
+    log.info "-".multiply(80)
     log.info "STEP 12 | Calculate Pol-II Metrics"
-    log.info "─".multiply(80)
-    log.info "STEP 12 | CONFIG | Metrics: Density, pausing index, traveling ratio"
-    log.info "STEP 12 | CONFIG | Input: Normalized CPM/siCPM tracks + functional regions"
+    log.info "-".multiply(80)
   }
 
-  // Prepare Pol-II inputs (uses normalized CPM/siCPM tracks)
-  // Use BAM from generate_coverage_tracks (same BAM as density/tracks; deduped when UMI on)
-  pol_input_ch = generate_coverage_tracks.out.bam_for_tracks
+  def pol_input_ch = generate_coverage_tracks.out.bam_for_tracks
     .map { sid, bam, c, t, r ->
       tuple(sid, tuple(bam, c, t, r))
     }
     .join(functional_regions_bed_ch)
     .join(
-      norm_tracks_ch.map { sid, pos3_cpm, neg3_cpm, factors, c, t, r ->
-        // Construct siCPM paths — now in sicpm/3p/ subfolder (per-method structure)
-        def normDir = "${params.output_dir}/05_normalized_tracks/${sid}"
-        def pos3_sicpm = file("${normDir}/sicpm/3p/${sid}.3p.pos.sicpm.bedgraph")
-        def neg3_sicpm = file("${normDir}/sicpm/3p/${sid}.3p.neg.sicpm.bedgraph")
-        tuple(sid, tuple(pos3_cpm, neg3_cpm, pos3_sicpm, neg3_sicpm))
-      }
+      // CPM + siCPM 3' bedGraphs, both taken from Nextflow channels (work dir).
+      // Previously the siCPM tracks were read from the publish dir at a wrong path
+      // (sicpm/3p/ — never existed; real layout is 3p/), so siCPM silently fell back
+      // to CPM. Joining the module-08 sicpm3p_bg channel fixes that AND removes the
+      // dependency on bedGraphs being published, so output.bedgraph=false is safe.
+      norm_tracks_ch
+        .map { sid, pos3_cpm, neg3_cpm, _factors, _c, _t, _r ->
+          tuple(sid, pos3_cpm, neg3_cpm)
+        }
+        .join(normalize_coverage_tracks.out.sicpm3p_bg)
+        .map { sid, pos3_cpm, neg3_cpm, pos3_sicpm, neg3_sicpm ->
+          tuple(sid, tuple(pos3_cpm, neg3_cpm, pos3_sicpm, neg3_sicpm))
+        }
     )
     .map { sid, bam_data, bed, norm_data ->
       def (bam, c, t, r) = bam_data
@@ -969,116 +875,128 @@ workflow TrackTx {
       tuple(sid, bam, bed, pos_cpm, neg_cpm, pos_si, neg_si, c, t, r)
     }
 
-  calculate_polymerase_occupancy_metrics(pol_input_ch, gtf_ch)
-  
-  pol_gene_ch    = calculate_polymerase_occupancy_metrics.out.genes
-  pol_density_ch = calculate_polymerase_occupancy_metrics.out.density
-  pol_pausing_ch = calculate_polymerase_occupancy_metrics.out.pausing
+  // Pol-II metrics use the genes.tsv catalog (same gene model as functional
+  // regions), not the raw GTF, so promoter-signal and pausing-index TSS agree.
+  calculate_polymerase_occupancy_metrics(pol_input_ch, genes_ch)
+
+  def pol_gene_ch    = calculate_polymerase_occupancy_metrics.out.genes
+  def pol_density_ch = calculate_polymerase_occupancy_metrics.out.density
+  def pol_pausing_ch = calculate_polymerase_occupancy_metrics.out.pausing
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 13: Summarize Pol-II Metrics (Cohort-Level)
   // ══════════════════════════════════════════════════════════════════════════
-  
+
   if (params.verbose) {
-    log.info "─".multiply(80)
+    log.info "-".multiply(80)
     log.info "STEP 13 | Summarize Pol-II Metrics"
-    log.info "─".multiply(80)
-    log.info "STEP 13 | PURPOSE | Cohort-level aggregation and visualization"
+    log.info "-".multiply(80)
   }
 
-  // Sort once and reuse to avoid channel exhaustion
-  pol_sorted = pol_gene_ch
-    .toSortedList { a, b -> a[0] <=> b[0] }  // Sort by sample_id once
+  def pol_sorted = pol_gene_ch
+    .toSortedList { a, b -> a[0] <=> b[0] }
 
-  // Build samples TSV - use sorted list for deterministic indexing (cache-friendly)
-  samples_lines = pol_sorted
-    .flatMap { sorted_list ->
-      sorted_list.withIndex().collect { item, idx ->
-        def (sid, genes, c, t, r) = item
-        // No need to check file existence - Nextflow guarantees output files exist
-        "${sid}\t${c ?: 'NA'}\t${t ?: 'NA'}\t${r ?: '1'}\tmetric_${idx + 1}"
-      }
-    }
-
-  samples_tsv = Channel
-    .of('sample_id\tcondition\ttimepoint\treplicate\tfile')
-    .concat(samples_lines)
-    .collectFile(
-      name: 'samples.tsv',
-      newLine: true
-    )
-    .map { tsv_file ->
-      // Sanitize TSV (remove BOM, carriage returns, duplicate headers)
-      def clean_text = tsv_file.text
-        .replace('\uFEFF', '')
-        .replace('\r', '')
-      
-      def lines = clean_text.readLines()
+  // Build the manifest atomically from the SAME sorted list used for file staging,
+  // so the metric_N indices and the manifest rows stay in lock-step (one row per
+  // staged file). Null-safe by design — NOT Groovy-falsy: integer 0 is falsy in
+  // Groovy, so the previous `${t ?: 'NA'}` / `${r ?: '1'}` silently rewrote the
+  // untreated baseline (timepoint 0) and a downstream re-parse then dropped that
+  // row entirely, so the control was missing from the merged table, every heatmap
+  // and all contrasts. Generate the full text in one pass to avoid that path.
+  def samples_tsv = pol_sorted
+    .map { sorted_list ->
       def header = 'sample_id\tcondition\ttimepoint\treplicate\tfile'
-      def clean_lines = [header]
-      def rejected = []
-      
-      lines.drop(1).each { line ->
-        if (line.trim() && line != header) {
-          def cols = line.split('\t', -1)
-          if (cols.size() == 5 && cols[4] && cols[4] != 'file') {
-            clean_lines << line
-          } else {
-            rejected << "cols=${cols.size()} file_col='${cols.size() > 4 ? cols[4] : 'N/A'}' | ${line.take(80)}..."
-          }
-        }
+      def rows = sorted_list.withIndex().collect { item, idx ->
+        def (sid, _genes, c, t, r) = item
+        def cc = (c == null || c.toString().trim() == '') ? 'NA' : c
+        def tt = (t == null || t.toString().trim() == '') ? 'NA' : t
+        def rr = (r == null || r.toString().trim() == '') ? '1'  : r
+        "${sid}\t${cc}\t${tt}\t${rr}\tmetric_${idx + 1}"
       }
-      
-      if (clean_lines.size() == 1) {
-        def rawCount = lines.size() - 1
-        def rejectMsg = rejected ? "\n  Rejected rows (first 5): ${rejected.take(5).join('\n  ')}" : ''
-        error """STEP 13 | ERROR | No valid samples in Pol-II aggregate TSV
-  Raw data rows: ${rawCount} | Valid after parse: ${clean_lines.size() - 1}${rejectMsg}
-  This usually means no samples reached calculate_polymerase_occupancy_metrics. Possible causes:
-  - An upstream process failed (check preprocess_and_quality_filter_reads, align_reads_to_genome, generate_coverage_tracks, normalize_coverage_tracks)
-  - Sample ID mismatch in join operations (pol_input joins bam_for_tracks + functional_regions + norm_tracks)
-  - Pipeline was interrupted before any sample completed calculate_polymerase_occupancy_metrics
-  - Run with -resume to continue from last successful run, or -resume false to rule out stale cache
-  Check .nextflow.log and work/*/ for failed tasks."""
+      if (rows.isEmpty()) {
+        error 'STEP 13 | ERROR | No samples reached calculate_polymerase_occupancy_metrics — cannot build Pol-II aggregate manifest.'
       }
-      
-      tsv_file.text = clean_lines.join('\n') + '\n'
-      if (params.verbose) log.info "STEP 13 | INPUT | Samples TSV prepared: ${clean_lines.size() - 1} samples"
-      tsv_file
+      if (params.verbose) log.info "STEP 13 | INPUT | Samples TSV prepared: ${rows.size()} samples"
+      ([header] + rows).join('\n') + '\n'
+    }
+    .collectFile(name: 'samples.tsv', newLine: false)
+
+  def pol_files_ch = pol_sorted
+    .flatMap { sorted_list ->
+      sorted_list.collect { _sid, genes, _c, _t, _r -> file(genes) }
     }
 
-  // Collect pol files in same sorted order as TSV for matching indices.
-  // IMPORTANT: reuse pol_sorted (not pol_gene_ch) so both the TSV and the
-  // file list come from the exact same sorted collection.  Subscribing to
-  // pol_gene_ch a second time creates a separate queue consumer that races
-  // with the first one and can silently drop items (observed: one sample
-  // missing from aggregate when 12 samples were present).
-  pol_files_ch = pol_sorted
-    .flatMap { sorted_list ->
-      sorted_list.collect { sid, genes, c, t, r -> file(genes) }
-    }
-  
-  // Combine TSV with collected files and pass to process
   summarize_polymerase_metrics(samples_tsv, pol_files_ch.collect())
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // STEP 13b: Per-replicate Pol-II gene metrics (differential-analysis hand-off)
+  //
+  // When replicates are merged, the cohort table above is n=1 per condition and
+  // cannot support per-gene statistics. Here we run the SAME gene-metric
+  // calculation on each individual replicate BAM (captured pre-merge from
+  // align_reads_to_genome) and concatenate to a tidy long table the user can
+  // feed into DESeq2/edgeR. Gene metrics depend only on BAM + GTF, so the
+  // functional-region bed and normalized bedGraph inputs are passed as empty
+  // placeholders (density output is skipped; gene metrics are unaffected).
+  // ──────────────────────────────────────────────────────────────────────────
+  if (params.replicates?.merge == true) {
+    if (params.verbose) {
+      log.info "-".multiply(80)
+      log.info "STEP 13b | Per-replicate Pol-II metrics (differential hand-off)"
+      log.info "-".multiply(80)
+    }
 
+    def per_rep_pol_in = align_reads_to_genome.out[0]
+      .map { sid, filt_bam, _all_bam, _spike, c, t, r ->
+        tuple(sid, filt_bam,
+              file(noBGPath),                 // func_bed placeholder (empty → density skipped)
+              file(noBGPosPath), file(noBGNegPath),   // cpm 3' bedGraphs (empty)
+              file(noBGPosPath), file(noBGNegPath),   // siCPM 3' bedGraphs (empty)
+              c, t, r)
+      }
+
+    pol_metrics_per_replicate(per_rep_pol_in, genes_ch)
+
+    def per_rep_sorted = pol_metrics_per_replicate.out.genes
+      .toSortedList { a, b -> a[0] <=> b[0] }
+
+    def per_rep_manifest = per_rep_sorted
+      .map { sorted_list ->
+        def header = 'sample_id\tcondition\ttimepoint\treplicate\tfile'
+        def rows = sorted_list.withIndex().collect { item, idx ->
+          def (sid, _genes, c, t, r) = item
+          def cc = (c == null || c.toString().trim() == '') ? 'NA' : c
+          def tt = (t == null || t.toString().trim() == '') ? 'NA' : t
+          def rr = (r == null || r.toString().trim() == '') ? '1'  : r
+          "${sid}\t${cc}\t${tt}\t${rr}\tmetric_${idx + 1}"
+        }
+        ([header] + rows).join('\n') + '\n'
+      }
+      .collectFile(name: 'per_replicate_samples.tsv', newLine: false)
+
+    def per_rep_files = per_rep_sorted
+      .flatMap { sorted_list ->
+        sorted_list.collect { _sid, genes, _c, _t, _r -> file(genes) }
+      }
+
+    collect_pol_metrics_per_replicate(per_rep_manifest, per_rep_files.collect())
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 14: Quality Control
   // ══════════════════════════════════════════════════════════════════════════
-  
+
   if (params.verbose) {
-    log.info "─".multiply(80)
+    log.info "-".multiply(80)
     log.info "STEP 14 | Quality Control Analysis"
-    log.info "─".multiply(80)
-    log.info "STEP 14 | CONFIG | Metrics: Mapping rates, strand bias, coverage depth"
+    log.info "-".multiply(80)
   }
 
-  qc_input_ch = aligned_ch
-    .map { sid, bam, all, spike, c, t, r ->
+  def qc_input_ch = aligned_ch
+    .map { sid, bam, _all, _spike, c, t, r ->
       tuple(sid, tuple(bam, c, t, r))
     }
-    .join(dedup_stats_ch.map { sid, dedup_stats, c, t, r ->
+    .join(dedup_stats_ch.map { sid, dedup_stats, _c, _t, _r ->
       tuple(sid, dedup_stats)
     })
     .map { sid, bam_data, dedup_stats ->
@@ -1087,64 +1005,85 @@ workflow TrackTx {
     }
 
   quality_control_aligned_reads(qc_input_ch)
-  
-  qc_json_meta_ch = quality_control_aligned_reads.out.json_meta
 
-  // Monitor QC completion
+  def qc_json_meta_ch = quality_control_aligned_reads.out.json_meta
+
   qc_json_meta_ch.subscribe { sid, _json, _cond, _time, _rep ->
     if (params.verbose) log.info "STEP 14 | COMPLETE | ${sid} QC analysis finished"
   }
 
-
-
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 15: Generate Per-Sample Reports
   // ══════════════════════════════════════════════════════════════════════════
-  
+
   if (params.verbose) {
-    log.info "─".multiply(80)
+    log.info "-".multiply(80)
     log.info "STEP 15 | Generate Per-Sample Reports"
-    log.info "─".multiply(80)
-    log.info "STEP 15 | CONFIG | Format: HTML with embedded plots"
+    log.info "-".multiply(80)
   }
 
-  // Helper function to resolve file paths safely
-  def resolvePath = { String path ->
-    def f = file(path)
-    f.exists() ? f.toString() : ''
-  }
 
-  // Build comprehensive report input channel
-  report_input_ch = aligned_ch
-    .map { sid, bam, all, spike, c, t, r ->
+
+  // Report track-link availability is now decided from the REAL produced files
+  // carried on Nextflow channels (raw allMap 3' bedGraphs from module 06; CPM
+  // 3' BigWigs from module 08's report_bw emit), not by probing the publish dir
+  // with resolveOutputPath. The link TEXT is still the canonical published path
+  // (so the report references the stable results layout, not ephemeral work
+  // files), and availability also honours the publish toggles so we never link
+  // to a track the user chose not to publish. This removes the previous silent
+  // blanking (and a latent wrong "cpm/3p/" publish path that never resolved).
+  def report_allmap_raw_kv = allmap3p_pair_ch
+    .map { sid, ap3, an3, _bwp, _bwn, _c, _t, _r -> tuple(sid, file(ap3), file(an3)) }
+  def report_bw_kv = normalize_coverage_tracks.out.report_bw
+    .map { sid, pcpm, ncpm, ampcpm, amncpm ->
+      tuple(sid, file(pcpm), file(ncpm), file(ampcpm), file(amncpm))
+    }
+
+  def report_input_ch = aligned_ch
+    .map { sid, _bam, _all, _spike, c, t, r ->
       tuple(sid, tuple(c ?: 'NA', t ?: 'NA', r ?: '1'))
     }
-    .join(divergent_tx_ch.map { sid, bed, c, t, r -> tuple(sid, bed) })
-    .join(functional_regions_sum_ch.map { sid, fsum, c, t, r -> tuple(sid, fsum) })
-    .join(pol_density_ch.map { sid, dens, c, t, r -> tuple(sid, dens) })
-    .join(pol_pausing_ch.map { sid, paus, c, t, r -> tuple(sid, paus) })
-    .join(norm_factors_ch.map { sid, nf, c, t, r -> tuple(sid, nf) })
-    .join(dedup_stats_ch.map { sid, dedup, c, t, r -> tuple(sid, dedup) })
-    .join(qc_json_meta_ch.map { sid, qc, c, t, r -> tuple(sid, qc) })
-    .map { sid, meta, div_bed, fsum, dens, paus, norm, dedup, qc ->
+    .join(divergent_tx_ch.map  { sid, bed, _c, _t, _r   -> tuple(sid, bed) })
+    .join(functional_regions_sum_ch.map { sid, fsum, _c, _t, _r -> tuple(sid, fsum) })
+    .join(pol_density_ch.map   { sid, dens, _c, _t, _r  -> tuple(sid, dens) })
+    .join(pol_pausing_ch.map   { sid, paus, _c, _t, _r  -> tuple(sid, paus) })
+    .join(norm_factors_ch.map  { sid, nf, _c, _t, _r    -> tuple(sid, nf) })
+    .join(dedup_stats_ch.map   { sid, dedup, _c, _t, _r -> tuple(sid, dedup) })
+    .join(qc_json_meta_ch.map  { sid, qc, _c, _t, _r    -> tuple(sid, qc) })
+    .join(report_allmap_raw_kv)
+    .join(report_bw_kv)
+    .map { sid, meta, div_bed, fsum, dens, paus, norm, dedup, qc,
+           ap3, an3, pcpm, ncpm, ampcpm, amncpm ->
       def (c, t, r) = meta
-      
-      // Resolve BigWig and bedGraph paths
-      def normDir = "${params.output_dir}/05_normalized_tracks/${sid}"
-      def tracksDir = "${params.output_dir}/03_genome_tracks/${sid}"
-      
-      // CPM BigWig paths — now in cpm/3p/ subfolder (per-method structure)
-      def bw_pos3 = resolvePath("${normDir}/cpm/3p/${sid}.3p.pos.cpm.bw")
-      def bw_neg3 = resolvePath("${normDir}/cpm/3p/${sid}.3p.neg.cpm.bw")
-      def bw_allmap_pos3 = resolvePath("${normDir}/cpm/3p/${sid}.allMap.3p.pos.cpm.bw")
-      def bw_allmap_neg3 = resolvePath("${normDir}/cpm/3p/${sid}.allMap.3p.neg.cpm.bw")
-      
-      def raw_allmap_pos3 = resolvePath("${tracksDir}/3p/${sid}.allMap.3p.pos.bedgraph")
-      def raw_allmap_neg3 = resolvePath("${tracksDir}/3p/${sid}.allMap.3p.neg.bedgraph")
-      
+      // Absolute published paths so the links are clickable from the report HTML
+      // (params.output_dir may be relative, e.g. './results_test_PE').
+      def normDir   = file("${params.output_dir}/05_normalized_tracks/${sid}").toString()
+      def tracksDir = file("${params.output_dir}/03_genome_tracks/${sid}").toString()
+
+      def outMap      = (params.output instanceof Map) ? params.output : [:]
+      def emitAllmap  = (params.norm?.emit_allmap?.toString() != 'false')
+      def pubBedgraph = (outMap.get('bedgraph')?.toString() != 'false')
+      def pubRaw      = (outMap.get('raw_tracks')?.toString() != 'false')
+      // NF26 strict parser rejects calling a NAMED local closure (`has(x)`); a
+      // Closure-typed var invoked via .call() is accepted.
+      Closure<Boolean> has = { f -> (f && f.exists() && f.size() > 0) as Boolean }
+
+      // raw allMap 3' bedGraph is published only when raw_tracks + bedgraph +
+      // allMap are all enabled (mirrors module 06 saveAs).
+      def rawAllmapPub = emitAllmap && pubBedgraph && pubRaw
+      def raw_allmap_pos3 = (rawAllmapPub && has.call(ap3)) ? "${tracksDir}/3p/${sid}.allMap.3p.pos.bedgraph" : ''
+      def raw_allmap_neg3 = (rawAllmapPub && has.call(an3)) ? "${tracksDir}/3p/${sid}.allMap.3p.neg.bedgraph" : ''
+
+      // CPM BigWigs are always published when produced (non-empty); allMap CPM
+      // only when emit_allmap is on.
+      def bw_pos3        = has.call(pcpm)  ? "${normDir}/3p/${sid}.3p.pos.cpm.bw" : ''
+      def bw_neg3        = has.call(ncpm)  ? "${normDir}/3p/${sid}.3p.neg.cpm.bw" : ''
+      def bw_allmap_pos3 = (emitAllmap && has.call(ampcpm)) ? "${normDir}/3p/${sid}.allMap.3p.pos.cpm.bw" : ''
+      def bw_allmap_neg3 = (emitAllmap && has.call(amncpm)) ? "${normDir}/3p/${sid}.allMap.3p.neg.cpm.bw" : ''
+
       tuple(
-        sid, 
-        div_bed, fsum, dens, paus, 
+        sid,
+        div_bed, fsum, dens, paus,
         norm, dedup, qc,
         raw_allmap_pos3, raw_allmap_neg3,
         bw_pos3, bw_neg3, bw_allmap_pos3, bw_allmap_neg3,
@@ -1153,69 +1092,154 @@ workflow TrackTx {
     }
 
   if (params.debug) {
-    report_input_ch.view { sid, div, fsum, dens, paus, norm, dedup, qc, 
-                                ap, an, bwp, bwn, bwap, bwan, c, t, r ->
+    report_input_ch.view { sid, div, fsum, dens, paus, _norm, _dedup, _qc,
+                                _ap, _an, _bwp, _bwn, _bwap, _bwan, _c, _t, _r ->
       "DEBUG | REPORT | ${sid} | Files: div=${div.name}, fsum=${fsum.name}, " +
       "dens=${dens.name}, paus=${paus.name}"
     }
   }
 
   generate_per_sample_reports(report_input_ch)
-  
-  report_json_ch = generate_per_sample_reports.out[2]
 
-  // Monitor report generation
+  def report_json_ch = generate_per_sample_reports.out[2]
+
   report_json_ch.subscribe { json_file ->
     if (params.verbose) log.info "STEP 15 | COMPLETE | Report generated: ${json_file.name}"
   }
 
-
-
   // ══════════════════════════════════════════════════════════════════════════
-  // STEP 16: Combine Reports
+  // STEP 16: Cohort QC — MultiQC, deepTools PCA/Correlation, IGV, Run-on
+  // (runs first so its outputs feed into the final landing page in Step 17)
   // ══════════════════════════════════════════════════════════════════════════
-  
+
   if (params.verbose) {
-    log.info "─".multiply(80)
-    log.info "STEP 16 | Combine Reports"
-    log.info "─".multiply(80)
-    log.info "STEP 16 | PURPOSE | Generate cohort-level summary report"
+    log.info "-".multiply(80)
+    log.info "STEP 16 | Cohort QC — MultiQC / deepTools / IGV / Run-on Efficiency"
+    log.info "-".multiply(80)
   }
 
-  // Collect reports and stage with sequential names to avoid collisions
-  per_sample_reports = report_json_ch
+  // Collect per-sample BigWig and bedGraph paths in a consistent order.
+  // We join all track channels on sample_id to guarantee ordering alignment,
+  // then collect() into lists for the single cohort-level process invocation.
+
+  // bw3p_pair_ch tuple: (sid, p3bg, n3bg, bwp, bwn, c, t, r)
+  // After joins the cohort_tracks_ch tuple is:
+  //   (sid, p3bg, n3bg, bwp, bwn, c, t, r, p5bg, n5bg, bwap, bwan)
+  def cohort_tracks_ch = bw3p_pair_ch
+    .join(bw5p_pair_ch.map     { sid, p5bg, n5bg, _bwp5, _bwn5, _c, _t, _r -> tuple(sid, p5bg, n5bg) })
+    .join(allmap3p_pair_ch.map { sid, _ap3,  _an3,  bwap, bwan, _c, _t, _r -> tuple(sid, bwap, bwan) })
+
+  // Gather across all samples into ONE list sorted by sample_id, then project
+  // each column out of that SAME ordered list. Sorting each column independently
+  // (the previous approach) only kept the path-bearing columns aligned because
+  // every BigWig path embeds the sid; the condition column — sorted by its own
+  // value — could land out of order, mis-mapping conditions to samples in the
+  // IGV/deepTools panel. Projecting from a single sorted tuple list guarantees
+  // element i refers to the same sample across every list.
+  def cohort_sorted = cohort_tracks_ch.toSortedList { a, b -> a[0] <=> b[0] }
+
+  def cohort_bw_pos3    = cohort_sorted.map { rows -> rows.collect { it[3].toString()  } }
+  def cohort_bw_neg3    = cohort_sorted.map { rows -> rows.collect { it[4].toString()  } }
+  def cohort_bw_ampos3  = cohort_sorted.map { rows -> rows.collect { it[10].toString() } }
+  def cohort_bw_amneg3  = cohort_sorted.map { rows -> rows.collect { it[11].toString() } }
+  def cohort_sample_ids = cohort_sorted.map { rows -> rows.collect { it[0]             } }
+  def cohort_conditions = cohort_sorted.map { rows -> rows.collect { it[5] ?: 'unknown' } }
+  def cohort_pos3_bg    = cohort_sorted.map { rows -> rows.collect { it[1].toString()  } }
+  def cohort_neg3_bg    = cohort_sorted.map { rows -> rows.collect { it[2].toString()  } }
+  def cohort_pos5_bg    = cohort_sorted.map { rows -> rows.collect { it[8].toString()  } }
+  def cohort_neg5_bg    = cohort_sorted.map { rows -> rows.collect { it[9].toString()  } }
+
+  // Collect all QC log files staged into a single directory for MultiQC.
+  // Includes: bowtie2 logs, flagstats, trimming logs — all already emitted
+  // from earlier modules as path outputs that land in the work directory.
+  def multiqc_logs_ch = channel.empty()
+    .mix(align_reads_to_genome.out.align_logs.flatten())
+    .mix(align_reads_to_genome.out.flagstats.flatten())
+    .collect()
+
+  cohort_qc_and_viz(
+    multiqc_logs_ch,
+    cohort_bw_pos3,
+    cohort_bw_neg3,
+    cohort_bw_ampos3,
+    cohort_bw_amneg3,
+    cohort_sample_ids,
+    cohort_conditions,
+    cohort_pos3_bg,
+    cohort_neg3_bg,
+    cohort_pos5_bg,
+    cohort_neg5_bg,
+    genes_ch
+  )
+
+  if (params.verbose) {
+    cohort_qc_and_viz.out.runon_efficiency.subscribe { tsv ->
+      log.info "STEP 16 | COMPLETE | Run-on efficiency: ${tsv.name}"
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // STEP 17: Combine Reports + Landing Page  (final step — runs last)
+  // Module 16 outputs feed into the landing page so it is the definitive
+  // entry point for the full run.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  if (params.verbose) {
+    log.info "-".multiply(80)
+    log.info "STEP 17 | Combine Reports + Landing Page"
+    log.info "-".multiply(80)
+  }
+
+  def per_sample_reports = report_json_ch
     .toSortedList { a, b -> a.name <=> b.name }
 
-  // Pass concordance report to cohort combiner if replicates were merged
-  concordance_for_cohort = (params.replicates?.merge == true)
-    ? Channel.fromPath("${params.output_dir}/02_alignments/_merged/concordance_report.tsv", checkIfExists: false)
+  def concordance_for_cohort = (params.replicates?.merge == true)
+    ? channel.fromPath("${params.output_dir}/02_alignments/_merged/concordance_report.tsv", checkIfExists: false)
              .ifEmpty(file("NO_CONCORDANCE"))
-    : Channel.value(file("NO_CONCORDANCE"))
+    : channel.value(file("NO_CONCORDANCE"))
 
-  combine_reports_into_cohort(per_sample_reports, concordance_for_cohort)
+  // Optional outputs from module 16 — use sentinel file when not produced
+  // (e.g. deepTools plots require ≥2 samples; MultiQC may not be installed)
+  def qc_multiqc_html  = cohort_qc_and_viz.out.multiqc_html .ifEmpty(file("NO_FILE"))
+  def qc_igv_session   = cohort_qc_and_viz.out.igv_session
+  def qc_runon_tsv     = cohort_qc_and_viz.out.runon_efficiency
+  def qc_pca_plot      = cohort_qc_and_viz.out.pca_plot     .ifEmpty(file("NO_FILE"))
+  def qc_corr_heatmap  = cohort_qc_and_viz.out.corr_heatmap .ifEmpty(file("NO_FILE"))
 
-
+  combine_reports_into_cohort(
+    per_sample_reports,
+    concordance_for_cohort,
+    qc_multiqc_html,
+    qc_igv_session,
+    qc_runon_tsv,
+    qc_pca_plot,
+    qc_corr_heatmap
+  )
 
   // ══════════════════════════════════════════════════════════════════════════
   // PIPELINE COMPLETE
   // ══════════════════════════════════════════════════════════════════════════
-  
-  def TIMESTAMP_END = new Date().format("yyyy-MM-dd HH:mm:ss")
-  
+
   if (params.verbose) {
-    log.info "═".multiply(80)
+    def TIMESTAMP_END = new Date().format("yyyy-MM-dd HH:mm:ss")
+    log.info "=".multiply(80)
     log.info "PIPELINE COMPLETE | TrackTx Analysis Finished Successfully"
-    log.info "═".multiply(80)
+    log.info "=".multiply(80)
     log.info "Started:   ${TIMESTAMP_START}"
     log.info "Finished:  ${TIMESTAMP_END}"
     log.info "Results:   ${params.output_dir}"
-    log.info "═".multiply(80)
+    log.info "=".multiply(80)
     log.info ""
     log.info "Next Steps:"
-    log.info "  • Review QC reports in: ${params.output_dir}/10_qc/"
-    log.info "  • Check HTML reports in: ${params.output_dir}/11_reports/"
-    log.info "  • Examine divergent transcription in: ${params.output_dir}/06_divergent_tx/"
-    log.info "  • Analyze Pol-II metrics in: ${params.output_dir}/08_pol_metrics/"
-    log.info "═".multiply(80)
+    log.info "  • MultiQC report:        ${params.output_dir}/12_cohort_qc/multiqc/multiqc_report.html"
+    log.info "  • deepTools PCA:         ${params.output_dir}/12_cohort_qc/deeptools/pca_plot.pdf"
+    log.info "  • Correlation heatmap:   ${params.output_dir}/12_cohort_qc/deeptools/correlation_heatmap.pdf"
+    log.info "  • IGV session:           ${params.output_dir}/12_cohort_qc/igv_session.xml"
+    log.info "  • Run-on efficiency:     ${params.output_dir}/12_cohort_qc/runon_efficiency.tsv"
+    log.info "  • Per-sample QC:         ${params.output_dir}/10_qc/"
+    log.info "  • HTML reports:          ${params.output_dir}/11_reports/"
+    log.info "  • Divergent tx:          ${params.output_dir}/06_divergent_tx/"
+    log.info "  • Pol-II metrics:        ${params.output_dir}/08_pol_metrics/"
+    log.info "=".multiply(80)
   }
 }

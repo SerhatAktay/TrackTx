@@ -34,7 +34,6 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Tuple
-import multiprocessing
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -82,7 +81,15 @@ Output:
     ap.add_argument("--sum-thr", type=float, default=None,
                     help="Minimum peak total signal (default: auto-calibrate)")
     ap.add_argument("--fdr", type=float, default=0.05,
-                    help="False discovery rate threshold (default: 0.05)")
+                    help="APPROXIMATE FDR / score-stringency threshold (default: 0.05). "
+                         "NOTE: this is a posterior-based cutoff from the GMM, NOT a "
+                         "p-value Benjamini-Hochberg FDR — treat it as a stringency "
+                         "knob, not a strict FDR guarantee.")
+    ap.add_argument("--fallback-top-frac", type=float, default=0.0,
+                    help="If >0, and NO region passes the FDR/stringency cutoff, keep "
+                         "this top fraction of regions by score instead of returning "
+                         "zero (e.g. 0.10 = top 10%%). Default 0.0 = disabled, so a "
+                         "genuinely noisy/empty sample legitimately yields no sites.")
     
     # Calibration parameters (when using auto)
     ap.add_argument("--calibration-percentile", type=float, default=75.0,
@@ -106,7 +113,7 @@ Output:
     
     # Performance
     ap.add_argument("--ncores", type=int, default=1,
-                    help="Number of CPU cores for parallel chromosome processing (default: 1)")
+                    help="Number of CPU cores (default: 1, currently unused)")
     
     # Output options
     ap.add_argument("--report", default=None,
@@ -115,11 +122,6 @@ Output:
                     help="Disable QC report generation")
     ap.add_argument("--write-summary", default=None,
                     help="Path to summary TSV file (for pipeline integration)")
-    ap.add_argument("--write-ratios", default=None,
-                    help="Path to write per-region divergence ratios TSV "
-                         "(columns: chrom, start, end, log2_ratio, gmm_component). "
-                         "Contains ALL candidate pairs before FDR filtering, enabling "
-                         "GMM histogram visualisation (Fig 1C).")
     ap.add_argument("--quiet", action="store_true",
                     help="Suppress progress messages")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -144,66 +146,88 @@ def natural_sort_key(s: str) -> List:
 
 class FastBedGraph:
     """
-    Chromosome-indexed bedGraph with prefix-sum arrays for O(log n) range queries.
+    Chromosome-indexed bedGraph for O(log n) region queries.
 
-    Each chromosome stores sorted numpy arrays and a cumulative prefix sum so
-    that any [start, end) range sum is resolved in O(log n) via two binary
-    searches, rather than an O(n) boolean-mask scan of every bin.
+    For sorted, non-overlapping bins (the standard bedGraph layout produced by
+    coverage tools), the set of bins overlapping a query interval [start, end)
+    is contiguous, so the sum of |signal| over that interval can be answered in
+    O(log n) using a prefix-sum array + binary search instead of an O(n) scan.
+
+    This is a drop-in replacement for the previous boolean-mask implementation
+    and returns the *same* value for the same query. If a chromosome's bins are
+    found to overlap (non-standard input), that chromosome transparently falls
+    back to the exact boolean-mask method so results never change.
     """
 
     def __init__(self, df: pd.DataFrame):
-        """Build per-chromosome sorted arrays and prefix sums."""
-        self.by_chrom: Dict[str, dict] = {}
+        """Build per-chromosome prefix-sum index from a bedGraph dataframe."""
+        self.by_chrom = {}
         for chrom, group in df.groupby('chr', sort=False):
-            group  = group.sort_values('start').reset_index(drop=True)
+            group = group.sort_values('start').reset_index(drop=True)
             starts = group['start'].to_numpy()
-            ends   = group['end'].to_numpy()
-            sigs   = group['sig'].abs().to_numpy()
-            # prefix[i] = cumulative sum of sigs[0..i-1]; prefix[0] = 0
-            prefix = np.empty(len(sigs) + 1, dtype=np.float64)
-            prefix[0] = 0.0
-            np.cumsum(sigs, out=prefix[1:])
+            ends = group['end'].to_numpy()
+            absig = group['sig'].to_numpy()
+            absig = np.abs(absig)
+            # Bins are non-overlapping iff every bin ends at/before the next start.
+            nonoverlap = bool(np.all(ends[:-1] <= starts[1:])) if len(starts) > 1 else True
+            # Prefix sum: prefix[k] = sum(absig[:k]); prefix[hi]-prefix[lo] == sum(absig[lo:hi]).
+            prefix = np.concatenate(([0.0], np.cumsum(absig)))
             self.by_chrom[str(chrom)] = {
-                'starts': starts,
-                'ends':   ends,
-                'prefix': prefix,
+                'starts': starts, 'ends': ends, 'absig': absig,
+                'prefix': prefix, 'nonoverlap': nonoverlap, 'group': group,
             }
 
     def query_sum(self, chrom: str, start: int, end: int) -> float:
-        """
-        Query total absolute signal in [start, end).  O(log n).
-
-        Uses binary search on sorted starts/ends arrays and reads the result
-        directly from the pre-computed prefix sum.
-        """
-        if chrom not in self.by_chrom:
+        """Sum of |signal| over bins overlapping [start, end). O(log n)."""
+        c = self.by_chrom.get(str(chrom))
+        if c is None:
             return 0.0
-        d     = self.by_chrom[chrom]
-        left  = int(np.searchsorted(d['ends'],   start, side='right'))
-        right = int(np.searchsorted(d['starts'], end,   side='left'))
-        if right <= left:
+        if c['nonoverlap']:
+            # Overlapping bins form a contiguous block [lo, hi):
+            #   lo = first bin with end  > start  (Condition: bin.end > start)
+            #   hi = first bin with start >= end   (Condition: bin.start < end)
+            lo = int(np.searchsorted(c['ends'], start, side='right'))
+            hi = int(np.searchsorted(c['starts'], end, side='left'))
+            if hi <= lo:
+                return 0.0
+            return float(c['prefix'][hi] - c['prefix'][lo])
+        # Fallback (non-standard overlapping bins): exact mask, same as before.
+        starts, ends, absig = c['starts'], c['ends'], c['absig']
+        mask = (ends > start) & (starts < end)
+        if not mask.any():
             return 0.0
-        return float(d['prefix'][right] - d['prefix'][left])
+        return float(absig[mask].sum())
 
-    def query_sum_batch(self, chrom: str,
-                        starts: np.ndarray,
-                        ends:   np.ndarray) -> np.ndarray:
+    def query_sum_batch(self, chrom_arr, start_arr, end_arr) -> np.ndarray:
         """
-        Vectorised range-sum query for arrays of (start, end) positions.
+        Vectorized query_sum for many regions at once.
 
-        All positions must be on the same chromosome.
-        Returns an ndarray of absolute signal sums, one per input interval.
-        O(k log n) where k = len(starts), n = bins on this chromosome.
+        Groups regions by chromosome and answers each group with a single
+        vectorized searchsorted, returning one sum per input region (same order).
         """
-        if chrom not in self.by_chrom:
-            return np.zeros(len(starts), dtype=np.float64)
-        d      = self.by_chrom[chrom]
-        lefts  = np.searchsorted(d['ends'],   starts, side='right')
-        rights = np.searchsorted(d['starts'], ends,   side='left')
-        valid  = rights > lefts
-        out    = np.zeros(len(starts), dtype=np.float64)
-        if valid.any():
-            out[valid] = d['prefix'][rights[valid]] - d['prefix'][lefts[valid]]
+        n = len(start_arr)
+        out = np.zeros(n, dtype=float)
+        chrom_arr = np.asarray(chrom_arr, dtype=object)
+        start_arr = np.asarray(start_arr)
+        end_arr = np.asarray(end_arr)
+        for chrom in np.unique(chrom_arr):
+            c = self.by_chrom.get(str(chrom))
+            sel = np.where(chrom_arr == chrom)[0]
+            if c is None or sel.size == 0:
+                continue
+            qs = start_arr[sel]
+            qe = end_arr[sel]
+            if c['nonoverlap']:
+                lo = np.searchsorted(c['ends'], qs, side='right')
+                hi = np.searchsorted(c['starts'], qe, side='left')
+                vals = c['prefix'][hi] - c['prefix'][lo]
+                vals[hi <= lo] = 0.0
+                out[sel] = vals
+            else:
+                starts, ends, absig = c['starts'], c['ends'], c['absig']
+                for k, i in enumerate(sel):
+                    mask = (ends > qs[k]) & (starts < qe[k])
+                    out[i] = float(absig[mask].sum()) if mask.any() else 0.0
         return out
 
 
@@ -455,18 +479,13 @@ def pair_peaks_on_chromosome(
         end = np.maximum(pe[i], ne_slice)
         total = pg[i] + ng_slice
         
-        if len(start):
-            pairs.append(pd.DataFrame({
-                'chr':   np.full(len(start), chrom),
-                'start': start.astype(int),
-                'end':   end.astype(int),
-                'total': total.astype(float),
-            }))
-
+        for s, e, t in zip(start, end, total):
+            pairs.append((chrom, int(s), int(e), float(t)))
+    
     if not pairs:
         return pd.DataFrame(columns=["chr", "start", "end", "total"])
-
-    return pd.concat(pairs, ignore_index=True)
+    
+    return pd.DataFrame(pairs, columns=["chr", "start", "end", "total"])
 
 
 def merge_overlapping_regions(
@@ -537,18 +556,22 @@ def extract_features(
     quiet: bool = False
 ) -> pd.DataFrame:
     """
-    Extract features for statistical scoring — fully vectorised.
-
-    Processes regions chromosome-by-chromosome using batch prefix-sum queries
-    (query_sum_batch) and vectorised NumPy/SciPy operations, replacing the
-    former row-by-row iterrows() loop.  Result rows are returned in the same
-    order as paired_df.
-
-    For each paired region computes:
+    Extract features for statistical scoring.
+    
+    For each paired region, computes:
     - Total signal and strand-specific sums
-    - Bayesian balance score (Beta-Binomial model, vectorised)
-    - Local background and signal-to-background ratio (±5 kb flanks)
+    - Bayesian balance score (Beta-Binomial model)
+    - Local background and signal-to-background ratio
     - Region width and signal density
+    
+    Args:
+        paired_df: Paired regions
+        pos_idx: Indexed positive bedGraph
+        neg_idx: Indexed negative bedGraph
+        quiet: Suppress logging
+        
+    Returns:
+        DataFrame with feature columns
     """
     log(f"Extracting features for {len(paired_df):,} regions...", quiet)
 
@@ -559,83 +582,73 @@ def extract_features(
         has_scipy = False
         log("  WARNING: scipy not available, using simple balance", quiet)
 
-    BG_WINDOW = 5000
-    result_parts: List[pd.DataFrame] = []
-
-    for chrom, group in paired_df.groupby('chr', sort=False):
-        chrom  = str(chrom)
-        idx    = group.index          # preserve original row order for realignment
-        starts = group['start'].to_numpy()
-        ends   = group['end'].to_numpy()
-        totals = group['total'].to_numpy()
-
-        # ── Peak signal (batch prefix-sum queries) ────────────────────────
-        pos_sums = np.maximum(pos_idx.query_sum_batch(chrom, starts, ends), 0.01)
-        neg_sums = np.maximum(neg_idx.query_sum_batch(chrom, starts, ends), 0.01)
-        total_signal = np.maximum(totals, pos_sums + neg_sums)
-
-        # ── Bayesian balance score (Beta-Binomial, vectorised) ────────────
-        # Beta(2,2) prior; posterior P(balance ∈ [0.3, 0.7])
-        if has_scipy:
-            alpha_post = 2.0 + pos_sums
-            beta_post  = 2.0 + neg_sums
-            try:
-                balance_bayesian = (
-                    beta_dist.cdf(0.7, alpha_post, beta_post) -
-                    beta_dist.cdf(0.3, alpha_post, beta_post)
-                )
-            except Exception:
-                balance_bayesian = (
-                    np.minimum(pos_sums, neg_sums) /
-                    np.maximum(pos_sums, neg_sums)
-                )
-        else:
-            balance_bayesian = (
-                np.minimum(pos_sums, neg_sums) /
-                np.maximum(pos_sums, neg_sums)
-            )
-
-        # ── Local background (±BG_WINDOW bp flanks, excluding peak) ──────
-        bg_left_start = np.maximum(0, starts - BG_WINDOW)
-        bg_right_end  = ends + BG_WINDOW
-
-        pos_bg = (pos_idx.query_sum_batch(chrom, bg_left_start, starts) +
-                  pos_idx.query_sum_batch(chrom, ends, bg_right_end))
-        neg_bg = (neg_idx.query_sum_batch(chrom, bg_left_start, starts) +
-                  neg_idx.query_sum_batch(chrom, ends, bg_right_end))
-
-        local_bg = np.maximum((pos_bg + neg_bg) / (2 * BG_WINDOW), 0.1)
-
-        # ── Derived features ──────────────────────────────────────────────
-        width        = (ends - starts).astype(float)
-        signal_to_bg = total_signal / np.maximum(0.1, local_bg * width)
-
-        result_parts.append(pd.DataFrame({
-            'total_signal':     total_signal,
-            'log_total':        np.log1p(total_signal),
-            'log2_ratio':       np.log2(pos_sums / neg_sums),  # strand balance as log2(pos/neg)
-            'balance_bayesian': balance_bayesian,
-            'width':            width,
-            'signal_density':   total_signal / np.maximum(1.0, width),
-            'local_bg':         local_bg,
-            'signal_to_bg':     signal_to_bg,
-            'log_snr':          np.log1p(signal_to_bg),
-        }, index=idx))
-
-    if not result_parts:
+    if len(paired_df) == 0:
         return pd.DataFrame(columns=[
-            'total_signal', 'log_total', 'log2_ratio', 'balance_bayesian', 'width',
-            'signal_density', 'local_bg', 'signal_to_bg', 'log_snr'
-        ])
+            'total_signal', 'log_total', 'balance_bayesian', 'width',
+            'signal_density', 'local_bg', 'signal_to_bg', 'log_snr'])
 
-    # Restore original paired_df row order before returning
-    return pd.concat(result_parts).sort_index().reset_index(drop=True)
+    # ── Pull region arrays (vectorized; same values as the previous per-row loop) ──
+    chrom = paired_df['chr'].astype(str).to_numpy()
+    start = paired_df['start'].to_numpy().astype(np.int64)
+    end = paired_df['end'].to_numpy().astype(np.int64)
+    total_from_pairing = paired_df['total'].to_numpy().astype(float)
+
+    window = 5000
+    local_start = np.maximum(0, start - window)
+    local_end = end + window
+
+    # Strand-specific in-region signal (== max(query_sum, 0.01) in original)
+    pos_sum = np.maximum(pos_idx.query_sum_batch(chrom, start, end), 0.01)
+    neg_sum = np.maximum(neg_idx.query_sum_batch(chrom, start, end), 0.01)
+
+    total_signal = np.maximum(total_from_pairing, pos_sum + neg_sum)
+
+    # ── Bayesian balance score (Beta(2,2) prior) ──
+    ratio = np.minimum(pos_sum, neg_sum) / np.maximum(pos_sum, neg_sum)
+    if has_scipy:
+        alpha_post = 2.0 + pos_sum
+        beta_post = 2.0 + neg_sum
+        with np.errstate(all='ignore'):
+            bayes = (beta_dist.cdf(0.7, alpha_post, beta_post)
+                     - beta_dist.cdf(0.3, alpha_post, beta_post)).astype(float)
+        # Original: use bayesian only when total_signal > 1, else ratio;
+        # on any computation failure (NaN) fall back to ratio.
+        bayes = np.where(np.isnan(bayes), ratio, bayes)
+        balance_bayesian = np.where(total_signal > 1, bayes, ratio)
+    else:
+        balance_bayesian = ratio
+
+    # ── Local background (±5 kb flanks, excluding the peak interval) ──
+    pos_bg_sum = (pos_idx.query_sum_batch(chrom, local_start, start)
+                  + pos_idx.query_sum_batch(chrom, end, local_end))
+    neg_bg_sum = (neg_idx.query_sum_batch(chrom, local_start, start)
+                  + neg_idx.query_sum_batch(chrom, end, local_end))
+
+    bg_length = 2 * window
+    local_bg = (pos_bg_sum + neg_bg_sum) / max(1, bg_length)
+    local_bg = np.maximum(local_bg, 0.1)
+
+    # ── Derived features ──
+    width = (end - start)
+    signal_to_bg = total_signal / np.maximum(0.1, local_bg * width)
+
+    return pd.DataFrame({
+        'total_signal': total_signal,
+        'log_total': np.log1p(total_signal),
+        'balance_bayesian': balance_bayesian.astype(float),
+        'width': width,
+        'signal_density': total_signal / np.maximum(1, width),
+        'local_bg': local_bg,
+        'signal_to_bg': signal_to_bg,
+        'log_snr': np.log1p(signal_to_bg),
+    })
 
 
 def score_with_mixture_model(
     features_df: pd.DataFrame,
     fdr_threshold: float,
-    quiet: bool = False
+    quiet: bool = False,
+    fallback_top_frac: float = 0.0
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Score regions using Gaussian Mixture Model and apply approximate FDR control.
@@ -712,14 +725,23 @@ def score_with_mixture_model(
     fdr = cumulative_fp / cumulative_calls
     
     passing = fdr <= fdr_threshold
-    
+
     if not passing.any():
-        log(f"  WARNING: No regions pass FDR={fdr_threshold}", quiet)
-        log(f"  Taking top 10% by score as fallback", quiet)
-        n_pass = max(100, len(sorted_scores) // 10)
+        if fallback_top_frac and fallback_top_frac > 0:
+            n_pass = max(1, int(len(sorted_scores) * float(fallback_top_frac)))
+            log(f"  WARNING: No regions pass FDR={fdr_threshold}; "
+                f"fallback enabled → keeping top {fallback_top_frac:.0%} "
+                f"({n_pass:,} regions) by score", quiet)
+        else:
+            # Opt-in fallback is OFF (default): a sample that legitimately has no
+            # divergent transcription returns ZERO sites rather than being forced
+            # to emit its noisiest top-10%. Set --fallback-top-frac to override.
+            log(f"  No regions pass FDR={fdr_threshold}; returning 0 sites "
+                f"(set --fallback-top-frac > 0 to keep a top fraction instead)", quiet)
+            return np.zeros(len(features_df), dtype=bool), scores
     else:
         n_pass = np.where(passing)[0][-1] + 1
-    
+
     mask = np.array([False] * len(features_df))
     mask[sorted_idx[:n_pass]] = True
     
@@ -877,35 +899,46 @@ def main():
     )
     log(f"  Processing {len(chroms)} chromosomes", args.quiet)
     
-    # Pre-filter peaks per chromosome once (avoids repeated boolean indexing
-    # inside the loop and is required to build picklable args for the pool)
-    pos_by_chrom = {c: pos_peaks[pos_peaks['chr'] == c].reset_index(drop=True)
-                    for c in chroms}
-    neg_by_chrom = {c: neg_peaks[neg_peaks['chr'] == c].reset_index(drop=True)
-                    for c in chroms}
-    chrom_args = [
-        (c, pos_by_chrom[c], neg_by_chrom[c], args.nt_window, args.balance)
-        for c in chroms
-    ]
-
     pieces = []
-    if args.ncores > 1 and len(chroms) > 1:
-        n_workers = min(args.ncores, len(chroms))
-        log(f"  Pairing {len(chroms)} chromosomes using {n_workers} parallel workers...",
-            args.quiet)
-        with multiprocessing.Pool(processes=n_workers) as pool:
-            results = pool.starmap(pair_peaks_on_chromosome, chrom_args)
-        pieces = [r for r in results if not r.empty]
-    else:
-        for ca in chrom_args:
-            result = pair_peaks_on_chromosome(*ca)
-            if not result.empty:
-                pieces.append(result)
+    for chrom in chroms:
+        result = pair_peaks_on_chromosome(
+            chrom,
+            pos_peaks[pos_peaks['chr'] == chrom].reset_index(drop=True),
+            neg_peaks[neg_peaks['chr'] == chrom].reset_index(drop=True),
+            args.nt_window,
+            args.balance
+        )
+        if not result.empty:
+            pieces.append(result)
     
     if not pieces:
-        log("ERROR: No paired peaks found")
-        sys.exit(1)
-    
+        # No candidate pairs at all. This is a legitimate (if unusual) result for
+        # a very quiet sample — emit empty, valid outputs and exit 0 rather than
+        # aborting the whole pipeline. Mirrors the opt-in-fallback behaviour: a
+        # sample with no divergent transcription returns zero sites.
+        log("No paired peaks found — writing empty output (0 divergent sites)")
+        open(args.out, 'w').close()
+        if args.write_summary:
+            with open(args.write_summary, 'w') as f:
+                f.write("sample\tn_pos_pk\tn_neg_pk\tn_pairs_raw\tn_dt\twall_s\n")
+                f.write(f"{args.sample}\t{len(pos_peaks)}\t{len(neg_peaks)}\t0\t0\t"
+                        f"{time.time()-start_time:.1f}\n")
+        if not args.no_report:
+            report_path = args.report if args.report else args.out.replace('.bed', '_qc.txt')
+            try:
+                with open(report_path, 'w') as f:
+                    f.write("DIVERGENT TRANSCRIPTION — QC REPORT\n")
+                    f.write(f"Sample: {args.sample}\n")
+                    f.write(f"Positive peaks: {len(pos_peaks)}\n")
+                    f.write(f"Negative peaks: {len(neg_peaks)}\n")
+                    f.write("Candidate pairs: 0\nFinal regions: 0\n")
+                    f.write("No paired peaks were found (no bidirectional signal "
+                            "within the pairing window).\n")
+            except Exception:
+                pass
+        print("\nCOMPLETE — 0 divergent regions (no paired peaks)")
+        return
+
     paired = pd.concat(pieces, ignore_index=True)
     log(f"  → {len(paired):,} candidate pairs", args.quiet)
     
@@ -916,7 +949,7 @@ def main():
     # Statistical scoring and FDR filtering
     log("[7/7] Statistical scoring...")
     passing_mask, scores = score_with_mixture_model(
-        features_df, args.fdr, args.quiet
+        features_df, args.fdr, args.quiet, args.fallback_top_frac
     )
     
     # Build final results
@@ -934,9 +967,33 @@ def main():
         final = final.sort_values('score', ascending=False).reset_index(drop=True)
     
     # Output results
-    final[['chr', 'start', 'end', 'total', 'score']].to_csv(
-        args.out, sep='\t', header=False, index=False, float_format='%.4f'
-    )
+    #
+    # NOTE: Avoid using DataFrame.to_csv here to reduce sensitivity to
+    # pandas' internal CSV formatter layout (which can vary between versions
+    # and has caused import issues on some systems). Instead, write the
+    # BED5-style output manually from values.
+    with open(args.out, 'w') as out_f:
+        for row in final[['chr', 'start', 'end', 'total', 'score']].itertuples(index=False):
+            chrom, start, end, total, score = row
+            # Coerce numeric fields defensively; fall back to raw value if needed
+            try:
+                start_i = int(start)
+            except Exception:
+                start_i = start
+            try:
+                end_i = int(end)
+            except Exception:
+                end_i = end
+            try:
+                total_v = float(total)
+            except Exception:
+                total_v = total
+            try:
+                score_v = float(score)
+                score_str = f"{score_v:.4f}"
+            except Exception:
+                score_str = str(score)
+            out_f.write(f"{chrom}\t{start_i}\t{end_i}\t{total_v}\t{score_str}\n")
     
     log(f"\nOutput: {args.out} ({len(final):,} regions)", args.quiet)
     
@@ -957,18 +1014,6 @@ def main():
         )
         log(f"QC report: {report_path}", args.quiet)
     
-    # Write per-region divergence ratios (for GMM histogram figure, Fig 1C)
-    if args.write_ratios:
-        ratios_df = pd.DataFrame({
-            'chrom':         paired['chr'].values,
-            'start':         paired['start'].values,
-            'end':           paired['end'].values,
-            'log2_ratio':    features_df['log2_ratio'].values,
-            'gmm_component': passing_mask.astype(int),  # 0 = background, 1 = signal
-        })
-        ratios_df.to_csv(args.write_ratios, sep='\t', index=False)
-        log(f"Divergence ratios: {args.write_ratios} ({len(ratios_df):,} regions)", args.quiet)
-
     # Generate summary TSV (for pipeline integration)
     if args.write_summary:
         elapsed = time.time() - start_time

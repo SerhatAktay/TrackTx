@@ -51,15 +51,14 @@
 //
 // ============================================================================
 
-nextflow.enable.dsl = 2
 
 process generate_coverage_tracks {
 
   tag        { sample_id }
   label      'conda'
-  cache      'deep'
+  cache      'lenient'
 
-  publishDir "${params.output_dir}/03_genome_tracks/${sample_id}",
+  publishDir { "${params.output_dir}/03_genome_tracks/${sample_id}" },
              mode: params.publish_mode,
              overwrite: true,
              saveAs: { filename ->
@@ -68,13 +67,13 @@ process generate_coverage_tracks {
                // Exclude BAM files from publishing - they already exist in 02_alignments/
                if (name.endsWith('.bam') || name.endsWith('.bam.bai')) return null
                // Skip entire folder when output.raw_tracks: false (~150 MB saved)
-               if (params.get('output')?.get('raw_tracks') == false) return null
+               if (params.get('output')?.get('raw_tracks')?.toString() == 'false') return null
                // Skip 5' tracks when norm.emit_5p: false (~75 MB saved)
-               if (params.get('norm')?.get('emit_5p') == false && (pathStr.contains('5p/') || name.contains('.5p.'))) return null
+               if (params.get('norm')?.get('emit_5p')?.toString() == 'false' && (pathStr.contains('5p/') || name.contains('.5p.'))) return null
                // Skip allMap tracks when norm.emit_allmap: false (~25 MB in 03)
-               if (params.get('norm')?.get('emit_allmap') == false && name.contains('allMap')) return null
+               if (params.get('norm')?.get('emit_allmap')?.toString() == 'false' && name.contains('allMap')) return null
                // Skip bedGraphs when output.bedgraph: false (BigWigs sufficient for genome browsers)
-               if (params.get('output')?.get('bedgraph') == false && name.endsWith('.bedgraph')) return null
+               if (params.get('output')?.get('bedgraph')?.toString() == 'false' && name.endsWith('.bedgraph')) return null
                return name
              }
 
@@ -145,37 +144,25 @@ process generate_coverage_tracks {
     path "tracks.log", emit: log
 
   // ── Main Script ───────────────────────────────────────────────────────────
-  shell:
-  umiEnabled = params.umi?.enabled ? 'true' : 'false'
-  umiLength  = params.umi?.length ?: 0
-  '''
+  script:
+  """
   #!/usr/bin/env bash
   set -euo pipefail
   export LC_ALL=C
   # umi_tools imports matplotlib; avoid font-cache stall when UMI dedup is enabled
-  export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
+  export MPLCONFIGDIR="\${TMPDIR:-/tmp}/matplotlib"
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
   exec > >(tee -a tracks.log)
   exec 2> >(tee -a tracks.log >&2)
 
-  tracktx_error() {
-    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
-    echo "" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "TRACKTX ERROR" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "Module:  \${module}" >&2
-    echo "Problem: \${problem}" >&2
-    echo "Fix:     \${fix}" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    exit "\$code"
-  }
+  # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
+  source tracktx_error_fragment.sh
   trap 'tracktx_error "generate_coverage_tracks" "Unexpected process failure" "Check tracks.log in work dir"' ERR
 
-  TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "TRACKS | START | sample=!{sample_id} | ts=${TIMESTAMP}"
+  echo "TRACKS | START | sample=${sample_id} | ts=\${TIMESTAMP}"
   echo "════════════════════════════════════════════════════════════════════════"
 
   ###########################################################################
@@ -184,25 +171,25 @@ process generate_coverage_tracks {
 
   echo "TRACKS | CONFIG | Initializing parameters..."
 
-  SAMPLE_ID="!{sample_id}"
-  THREADS=!{task.cpus}
-  MAIN_BAM="!{filtered_bam}"
-  ALLMAP_BAM="!{allmap_bam}"
-  IS_PE="!{is_paired}"
+  SAMPLE_ID="${sample_id}"
+  THREADS=${task.cpus}
+  MAIN_BAM="${filtered_bam}"
+  ALLMAP_BAM="${allmap_bam}"
+  IS_PE="${is_paired}"
   
-  UMI_ENABLED="!{umiEnabled}"
-  UMI_LENGTH=!{umiLength}
+  UMI_ENABLED="${params.umi?.enabled ? 'true' : 'false'}"
+  UMI_LENGTH=${params.umi?.length ?: 0}
 
   # Constants
   readonly FLAG_PRIMARY_MAPPED=260      # Exclude unmapped(4) + secondary(256)
   readonly BIGWIG_TIMEOUT=600           # Seconds for BigWig conversion
 
-  echo "TRACKS | CONFIG | Sample ID: ${SAMPLE_ID}"
-  echo "TRACKS | CONFIG | Library type: $([ "${IS_PE}" == "true" ] && echo "Paired-end" || echo "Single-end")"
-  echo "TRACKS | CONFIG | Threads: ${THREADS}"
-  echo "TRACKS | CONFIG | UMI deduplication: ${UMI_ENABLED}"
-  if [[ "${UMI_ENABLED}" == "true" ]]; then
-    echo "TRACKS | CONFIG | UMI length: ${UMI_LENGTH} bp"
+  echo "TRACKS | CONFIG | Sample ID: \${SAMPLE_ID}"
+  echo "TRACKS | CONFIG | Library type: \$([ "\${IS_PE}" == "true" ] && echo "Paired-end" || echo "Single-end")"
+  echo "TRACKS | CONFIG | Threads: \${THREADS}"
+  echo "TRACKS | CONFIG | UMI deduplication: \${UMI_ENABLED}"
+  if [[ "\${UMI_ENABLED}" == "true" ]]; then
+    echo "TRACKS | CONFIG | UMI length: \${UMI_LENGTH} bp"
   fi
 
   ###########################################################################
@@ -214,48 +201,48 @@ process generate_coverage_tracks {
   echo "────────────────────────────────────────────────────────────────────────"
 
   # Validate input BAMs
-  if [[ ! -s "${MAIN_BAM}" ]]; then
-    tracktx_error "generate_coverage_tracks" "Main BAM missing or empty: ${MAIN_BAM}" "Check align_reads_to_genome produced sample.bam"
+  if [[ ! -s "\${MAIN_BAM}" ]]; then
+    tracktx_error "generate_coverage_tracks" "Main BAM missing or empty: \${MAIN_BAM}" "Check align_reads_to_genome produced sample.bam"
   fi
-  MAIN_SIZE=$(stat -c%s "${MAIN_BAM}" 2>/dev/null || stat -f%z "${MAIN_BAM}" 2>/dev/null || echo "unknown")
-  echo "TRACKS | VALIDATE | Main BAM: ${MAIN_SIZE} bytes"
+  MAIN_SIZE=\$(stat -c%s "\${MAIN_BAM}" 2>/dev/null || stat -f%z "\${MAIN_BAM}" 2>/dev/null || echo "unknown")
+  echo "TRACKS | VALIDATE | Main BAM: \${MAIN_SIZE} bytes"
 
-  if [[ ! -s "${ALLMAP_BAM}" ]]; then
-    tracktx_error "generate_coverage_tracks" "AllMap BAM missing or empty: ${ALLMAP_BAM}" "Check align_reads_to_genome produced sample_allMap.bam"
+  if [[ ! -s "\${ALLMAP_BAM}" ]]; then
+    tracktx_error "generate_coverage_tracks" "AllMap BAM missing or empty: \${ALLMAP_BAM}" "Check align_reads_to_genome produced sample_allMap.bam"
   fi
-  ALLMAP_SIZE=$(stat -c%s "${ALLMAP_BAM}" 2>/dev/null || stat -f%z "${ALLMAP_BAM}" 2>/dev/null || echo "unknown")
-  echo "TRACKS | VALIDATE | AllMap BAM: ${ALLMAP_SIZE} bytes"
+  ALLMAP_SIZE=\$(stat -c%s "\${ALLMAP_BAM}" 2>/dev/null || stat -f%z "\${ALLMAP_BAM}" 2>/dev/null || echo "unknown")
+  echo "TRACKS | VALIDATE | AllMap BAM: \${ALLMAP_SIZE} bytes"
 
   # Validate required tools
   for TOOL in samtools bedtools bedGraphToBigWig; do
-    if ! command -v ${TOOL} >/dev/null 2>&1; then
-      tracktx_error "generate_coverage_tracks" "Required tool not found: ${TOOL}" "Install ${TOOL} or use -profile docker"
+    if ! command -v \${TOOL} >/dev/null 2>&1; then
+      tracktx_error "generate_coverage_tracks" "Required tool not found: \${TOOL}" "Install \${TOOL} or use -profile docker"
     fi
-    echo "TRACKS | VALIDATE | ${TOOL}: $(command -v ${TOOL})"
+    echo "TRACKS | VALIDATE | \${TOOL}: \$(command -v \${TOOL})"
   done
 
   # Check for umi_tools if UMI dedup is enabled
-  if [[ "${UMI_ENABLED}" == "true" ]]; then
+  if [[ "\${UMI_ENABLED}" == "true" ]]; then
     if command -v umi_tools >/dev/null 2>&1; then
-      echo "TRACKS | VALIDATE | umi_tools: $(command -v umi_tools)"
+      echo "TRACKS | VALIDATE | umi_tools: \$(command -v umi_tools)"
     else
       echo "TRACKS | WARNING | umi_tools not found (will skip deduplication)"
     fi
   fi
 
   # Validate allMap BAM index (create if missing)
-  if [[ ! -s "${ALLMAP_BAM}.bai" ]]; then
+  if [[ ! -s "\${ALLMAP_BAM}.bai" ]]; then
     echo "TRACKS | VALIDATE | Creating allMap BAM index..."
-    samtools index -@ ${THREADS} "${ALLMAP_BAM}"
+    samtools index -@ \${THREADS} "\${ALLMAP_BAM}"
   fi
 
   echo "TRACKS | VALIDATE | All checks passed"
 
   # Report read counts
-  MAIN_READS=$(samtools view -c -F ${FLAG_PRIMARY_MAPPED} "${MAIN_BAM}")
-  ALLMAP_READS=$(samtools view -c -F ${FLAG_PRIMARY_MAPPED} "${ALLMAP_BAM}")
-  echo "TRACKS | VALIDATE | Main BAM reads: ${MAIN_READS}"
-  echo "TRACKS | VALIDATE | AllMap BAM reads: ${ALLMAP_READS}"
+  MAIN_READS=\$(samtools view -c -F \${FLAG_PRIMARY_MAPPED} "\${MAIN_BAM}")
+  ALLMAP_READS=\$(samtools view -c -F \${FLAG_PRIMARY_MAPPED} "\${ALLMAP_BAM}")
+  echo "TRACKS | VALIDATE | Main BAM reads: \${MAIN_READS}"
+  echo "TRACKS | VALIDATE | AllMap BAM reads: \${ALLMAP_READS}"
 
   # Create output directories
   mkdir -p 3p 5p
@@ -267,29 +254,32 @@ process generate_coverage_tracks {
 
   # Convert bedGraph to BigWig with validation
   make_bigwig() {
-    local bedgraph="$1"
-    local bigwig="$2"
+    local bedgraph="\$1"
+    local bigwig="\$2"
     
-    if [[ ! -s "${bedgraph}" ]]; then
-      echo "TRACKS | WARNING | Empty bedGraph, skipping BigWig: ${bedgraph}"
+    if [[ ! -s "\${bedgraph}" ]]; then
+      echo "TRACKS | WARNING | Empty bedGraph, skipping BigWig: \${bedgraph}"
       return 0
     fi
     
-    echo "TRACKS | BIGWIG | Converting: $(basename ${bedgraph}) → $(basename ${bigwig})"
+    echo "TRACKS | BIGWIG | Converting: \$(basename \${bedgraph}) → \$(basename \${bigwig})"
 
-    # bedGraph is written pre-sorted by generate_coverage (genomecov | sort pipe),
-    # so no sort pass is needed here.
-    local line_count=$(wc -l < "${bedgraph}" | tr -d ' ')
-    echo "TRACKS | BIGWIG | bedGraph lines: ${line_count}"
-    
+    # NOTE: bedGraphs reaching here are ALREADY coordinate-sorted — generate_coverage
+    # pipes "bedtools genomecov | sort" so the on-disk bedGraph is written once,
+    # already sorted. This removes a full write+read+rewrite of every (often
+    # >1 GB) bedGraph on the work disk, which is the dominant cost when work/ is
+    # on a slow/USB-backed volume. Do NOT re-sort here.
+    local line_count=\$(wc -l < "\${bedgraph}" | tr -d ' ')
+    echo "TRACKS | BIGWIG | Pre-sorted bedGraph: \${line_count} lines"
+
     # Convert to BigWig with timeout
-    if ! timeout ${BIGWIG_TIMEOUT} bedGraphToBigWig "${bedgraph}" genome.sizes "${bigwig}"; then
-      echo "TRACKS | ERROR | BigWig conversion failed or timed out: ${bedgraph}"
+    if ! timeout \${BIGWIG_TIMEOUT} bedGraphToBigWig "\${bedgraph}" genome.sizes "\${bigwig}"; then
+      echo "TRACKS | ERROR | BigWig conversion failed or timed out: \${bedgraph}"
       return 1
     fi
     
-    local bw_size=$(stat -c%s "${bigwig}" 2>/dev/null || stat -f%z "${bigwig}" 2>/dev/null || echo "unknown")
-    echo "TRACKS | BIGWIG | Created: $(basename ${bigwig}) (${bw_size} bytes)"
+    local bw_size=\$(stat -c%s "\${bigwig}" 2>/dev/null || stat -f%z "\${bigwig}" 2>/dev/null || echo "unknown")
+    echo "TRACKS | BIGWIG | Created: \$(basename \${bigwig}) (\${bw_size} bytes)"
     return 0
   }
 
@@ -297,120 +287,131 @@ process generate_coverage_tracks {
   # CRITICAL: Uses bedtools genomecov -ibam for correct 3'/5' end extraction
   # The -3/-5 flags require BAM CIGAR information (lost in BED conversion)
   generate_coverage() {
-    local bam="$1"
-    local end_type="$2"     # "3" or "5"
-    local prefix="$3"       # Output file prefix
+    local bam="\$1"
+    local end_type="\$2"     # "3" or "5"
+    local prefix="\$3"       # Output file prefix
     
-    echo "TRACKS | COVERAGE | Processing ${end_type}' end coverage for: $(basename ${bam})"
+    echo "TRACKS | COVERAGE | Processing \${end_type}' end coverage for: \$(basename \${bam})"
     
     # Validate BAM
-    if ! samtools quickcheck "${bam}" 2>/dev/null; then
-      echo "TRACKS | ERROR | Invalid BAM file: ${bam}"
+    if ! samtools quickcheck "\${bam}" 2>/dev/null; then
+      echo "TRACKS | ERROR | Invalid BAM file: \${bam}"
       return 1
     fi
     
-    # Positive strand coverage — pipe directly into sort to produce a
-    # pre-sorted bedGraph in one pass, eliminating an intermediate disk write.
-    # set -o pipefail (active globally) ensures bedtools failures propagate.
-    echo "TRACKS | COVERAGE | Computing positive strand..."
-    if ! bedtools genomecov \
-      -ibam "${bam}" \
-      -${end_type} \
-      -strand + \
-      -bg \
-      | LC_ALL=C sort -k1,1 -k2,2n \
-      > "${prefix}.pos.bedgraph"; then
-      echo "TRACKS | ERROR | Failed to generate positive strand coverage"
+    # Sort budget: cap per-sort memory so it stays in RAM rather than spilling
+    # thousands of tiny temp files (catastrophic on slow/USB work dirs), without
+    # oversubscribing the task's RAM. SORT_MEM and the concurrency cap (MAX_PAR)
+    # are computed together in the concurrency section below and exported, so this
+    # default is just a standalone fallback. Temp goes to a fast dir (never the
+    # USB-backed work dir). Override with SORT_MEM / SORT_TMPDIR.
+    : "\${SORT_MEM:=\$(( ${task.memory.toGiga()} * 50 / 100 / 2 ))G}"
+    : "\${SORT_TMP:=\${SORT_TMPDIR:-/tmp}}"
+    mkdir -p "\${SORT_TMP}" 2>/dev/null || SORT_TMP=/tmp
+
+    # Positive strand coverage, sorted in a single streamed pass.
+    # genomecov | sort writes the (already-sorted) bedGraph to disk ONCE instead
+    # of write-unsorted → read → re-sort → rewrite. pipefail (set at top) makes
+    # a genomecov failure fail the whole pipe.
+    echo "TRACKS | COVERAGE | Computing positive strand (genomecov | sort)..."
+    if ! bedtools genomecov \\
+      -ibam "\${bam}" \\
+      -\${end_type} \\
+      -strand + \\
+      -bg \\
+      | LC_ALL=C sort -S "\${SORT_MEM}" -T "\${SORT_TMP}" -k1,1 -k2,2n \\
+      > "\${prefix}.pos.bedgraph"; then
+      echo "TRACKS | ERROR | Failed to generate/sort positive strand coverage"
+      return 1
+    fi
+
+    local pos_lines=\$(wc -l < "\${prefix}.pos.bedgraph" | tr -d ' ')
+    local pos_size=\$(stat -c%s "\${prefix}.pos.bedgraph" 2>/dev/null || stat -f%z "\${prefix}.pos.bedgraph" 2>/dev/null || echo "unknown")
+    echo "TRACKS | COVERAGE | Positive strand: \${pos_lines} regions (\${pos_size} bytes)"
+
+    # Negative strand coverage (mirrored with -scale -1), sorted in one pass.
+    echo "TRACKS | COVERAGE | Computing negative strand (mirrored with -scale -1 | sort)..."
+    if ! bedtools genomecov \\
+      -ibam "\${bam}" \\
+      -\${end_type} \\
+      -strand - \\
+      -bg \\
+      -scale -1 \\
+      | LC_ALL=C sort -S "\${SORT_MEM}" -T "\${SORT_TMP}" -k1,1 -k2,2n \\
+      > "\${prefix}.neg.bedgraph"; then
+      echo "TRACKS | ERROR | Failed to generate/sort negative strand coverage"
       return 1
     fi
     
-    local pos_lines=$(wc -l < "${prefix}.pos.bedgraph" | tr -d ' ')
-    local pos_size=$(stat -c%s "${prefix}.pos.bedgraph" 2>/dev/null || stat -f%z "${prefix}.pos.bedgraph" 2>/dev/null || echo "unknown")
-    echo "TRACKS | COVERAGE | Positive strand: ${pos_lines} regions (${pos_size} bytes)"
-    
-    # Negative strand coverage (mirrored with -scale -1) — same pipe-to-sort pattern.
-    echo "TRACKS | COVERAGE | Computing negative strand (mirrored with -scale -1)..."
-    if ! bedtools genomecov \
-      -ibam "${bam}" \
-      -${end_type} \
-      -strand - \
-      -bg \
-      -scale -1 \
-      | LC_ALL=C sort -k1,1 -k2,2n \
-      > "${prefix}.neg.bedgraph"; then
-      echo "TRACKS | ERROR | Failed to generate negative strand coverage"
-      return 1
-    fi
-    
-    local neg_lines=$(wc -l < "${prefix}.neg.bedgraph" | tr -d ' ')
-    local neg_size=$(stat -c%s "${prefix}.neg.bedgraph" 2>/dev/null || stat -f%z "${prefix}.neg.bedgraph" 2>/dev/null || echo "unknown")
-    echo "TRACKS | COVERAGE | Negative strand: ${neg_lines} regions (${neg_size} bytes)"
+    local neg_lines=\$(wc -l < "\${prefix}.neg.bedgraph" | tr -d ' ')
+    local neg_size=\$(stat -c%s "\${prefix}.neg.bedgraph" 2>/dev/null || stat -f%z "\${prefix}.neg.bedgraph" 2>/dev/null || echo "unknown")
+    echo "TRACKS | COVERAGE | Negative strand: \${neg_lines} regions (\${neg_size} bytes)"
     
     # Convert to BigWig
     echo "TRACKS | COVERAGE | Converting to BigWig format..."
-    if ! make_bigwig "${prefix}.pos.bedgraph" "${prefix}.pos.bw"; then
+    if ! make_bigwig "\${prefix}.pos.bedgraph" "\${prefix}.pos.bw"; then
       echo "TRACKS | ERROR | Failed to create positive strand BigWig"
       return 1
     fi
-    if ! make_bigwig "${prefix}.neg.bedgraph" "${prefix}.neg.bw"; then
+    if ! make_bigwig "\${prefix}.neg.bedgraph" "\${prefix}.neg.bw"; then
       echo "TRACKS | ERROR | Failed to create negative strand BigWig"
       return 1
     fi
     
-    echo "TRACKS | COVERAGE | Complete: ${prefix}"
+    echo "TRACKS | COVERAGE | Complete: \${prefix}"
     return 0
   }
 
   # Perform UMI deduplication if enabled
   perform_umi_dedup() {
-    local input_bam="$1"
-    local output_bam="$2"
-    local is_pe="$3"
+    local input_bam="\$1"
+    local output_bam="\$2"
+    local is_pe="\$3"
     
     echo "TRACKS | DEDUP | Starting UMI deduplication..."
-    echo "TRACKS | DEDUP | Mode: $([ "${is_pe}" == "true" ] && echo "Paired-end" || echo "Single-end")"
+    echo "TRACKS | DEDUP | Mode: \$([ "\${is_pe}" == "true" ] && echo "Paired-end" || echo "Single-end")"
     
-    if [[ "${is_pe}" == "true" ]]; then
-      if ! umi_tools dedup \
-        --paired \
-        -I "${input_bam}" \
-        -S "${output_bam}" \
-        --log="${SAMPLE_ID}.dedup_stats.txt"; then
+    if [[ "\${is_pe}" == "true" ]]; then
+      if ! umi_tools dedup \\
+        --paired \\
+        -I "\${input_bam}" \\
+        -S "\${output_bam}" \\
+        --log="\${SAMPLE_ID}.dedup_stats.txt"; then
         echo "TRACKS | ERROR | umi_tools deduplication failed"
         return 1
       fi
     else
-      if ! umi_tools dedup \
-        -I "${input_bam}" \
-        -S "${output_bam}" \
-        --log="${SAMPLE_ID}.dedup_stats.txt"; then
+      if ! umi_tools dedup \\
+        -I "\${input_bam}" \\
+        -S "\${output_bam}" \\
+        --log="\${SAMPLE_ID}.dedup_stats.txt"; then
         echo "TRACKS | ERROR | umi_tools deduplication failed"
         return 1
       fi
     fi
     
     # Index deduplicated BAM
-    samtools index -@ ${THREADS} "${output_bam}"
+    samtools index -@ \${THREADS} "\${output_bam}"
     
     # Report statistics
-    local before_reads=$(samtools view -c -F ${FLAG_PRIMARY_MAPPED} "${input_bam}")
-    local after_reads=$(samtools view -c -F ${FLAG_PRIMARY_MAPPED} "${output_bam}")
-    local removed=$((before_reads - after_reads))
-    local pct_removed=$(awk -v b="${before_reads}" -v r="${removed}" 'BEGIN{printf "%.2f", (b>0)?(r*100.0/b):0}')
+    local before_reads=\$(samtools view -c -F \${FLAG_PRIMARY_MAPPED} "\${input_bam}")
+    local after_reads=\$(samtools view -c -F \${FLAG_PRIMARY_MAPPED} "\${output_bam}")
+    local removed=\$((before_reads - after_reads))
+    local pct_removed=\$(awk -v b="\${before_reads}" -v r="\${removed}" 'BEGIN{printf "%.2f", (b>0)?(r*100.0/b):0}')
     
-    echo "TRACKS | DEDUP | Reads before: ${before_reads}"
-    echo "TRACKS | DEDUP | Reads after: ${after_reads}"
-    echo "TRACKS | DEDUP | Removed: ${removed} (${pct_removed}%)"
+    echo "TRACKS | DEDUP | Reads before: \${before_reads}"
+    echo "TRACKS | DEDUP | Reads after: \${after_reads}"
+    echo "TRACKS | DEDUP | Removed: \${removed} (\${pct_removed}%)"
     
     # Append summary to stats file
     {
       echo ""
       echo "=== Summary ==="
-      echo "reads_before=${before_reads}"
-      echo "reads_after=${after_reads}"
-      echo "reads_removed=${removed}"
-      echo "percent_removed=${pct_removed}"
-    } >> "${SAMPLE_ID}.dedup_stats.txt"
+      echo "reads_before=\${before_reads}"
+      echo "reads_after=\${after_reads}"
+      echo "reads_removed=\${removed}"
+      echo "percent_removed=\${pct_removed}"
+    } >> "\${SAMPLE_ID}.dedup_stats.txt"
     
     return 0
   }
@@ -424,16 +425,16 @@ process generate_coverage_tracks {
   echo "────────────────────────────────────────────────────────────────────────"
 
   # Start with main BAM
-  INPUT_BAM="${MAIN_BAM}"
+  INPUT_BAM="\${MAIN_BAM}"
 
-  if [[ "${UMI_ENABLED}" == "true" && ${UMI_LENGTH} -gt 0 ]]; then
+  if [[ "\${UMI_ENABLED}" == "true" && \${UMI_LENGTH} -gt 0 ]]; then
     if command -v umi_tools >/dev/null 2>&1; then
       # Create working copy and index
-      cp "${MAIN_BAM}" aligned.bam
-      samtools index -@ ${THREADS} aligned.bam
+      cp "\${MAIN_BAM}" aligned.bam
+      samtools index -@ \${THREADS} aligned.bam
       
       # Perform deduplication
-      if perform_umi_dedup "aligned.bam" "deduplicated.bam" "${IS_PE}"; then
+      if perform_umi_dedup "aligned.bam" "deduplicated.bam" "\${IS_PE}"; then
         INPUT_BAM="deduplicated.bam"
         echo "TRACKS | DEDUP | Using deduplicated BAM for track generation"
       else
@@ -444,7 +445,7 @@ process generate_coverage_tracks {
           echo "reads_before=N/A"
           echo "reads_after=N/A"
           echo "reads_removed=N/A"
-        } > "${SAMPLE_ID}.dedup_stats.txt"
+        } > "\${SAMPLE_ID}.dedup_stats.txt"
       fi
     else
       echo "TRACKS | WARNING | umi_tools not found, skipping deduplication"
@@ -454,7 +455,7 @@ process generate_coverage_tracks {
         echo "reads_before=N/A"
         echo "reads_after=N/A"
         echo "reads_removed=N/A"
-      } > "${SAMPLE_ID}.dedup_stats.txt"
+      } > "\${SAMPLE_ID}.dedup_stats.txt"
     fi
   else
     echo "TRACKS | DEDUP | UMI deduplication disabled"
@@ -464,13 +465,101 @@ process generate_coverage_tracks {
       echo "reads_before=N/A"
       echo "reads_after=N/A"
       echo "reads_removed=N/A"
-    } > "${SAMPLE_ID}.dedup_stats.txt"
+    } > "\${SAMPLE_ID}.dedup_stats.txt"
   fi
 
-  # Copy INPUT_BAM to named output for downstream (pol uses same BAM as tracks)
-  echo "TRACKS | OUTPUT | Copying BAM used for tracks (deduped when UMI on)..."
-  cp "${INPUT_BAM}" bam_for_downstream.bam
-  samtools index -@ ${THREADS} bam_for_downstream.bam
+  # ── Optional: also UMI-deduplicate the allMap BAM (off by default) ──────────
+  # When UMI dedup is on, the MAIN tracks use the deduped BAM but allMap tracks
+  # use the raw allMap BAM, so the two are deduped inconsistently. Enable
+  # params.umi.dedup_allmap=true to dedup allMap too. OFF by default because
+  # umi_tools dedup is designed for unique alignments; on a bowtie2 -k multimapper
+  # BAM (NH>1, MAPQ=255) its position-based dedup is approximate. Falls back to the
+  # original allMap BAM on any failure, so the standard path is never broken.
+  DEDUP_ALLMAP="${(params.umi?.dedup_allmap == true) ? 'true' : 'false'}"
+  if [[ "\${UMI_ENABLED}" == "true" && \${UMI_LENGTH} -gt 0 && "\${DEDUP_ALLMAP}" == "true" ]] \\
+     && command -v umi_tools >/dev/null 2>&1; then
+    echo "TRACKS | DEDUP | Also UMI-deduplicating allMap BAM (experimental for multimappers)..."
+    cp "\${ALLMAP_BAM}" allmap_in.bam
+    samtools index -@ \${THREADS} allmap_in.bam
+    PAIRED_FLAG=""
+    [[ "\${IS_PE}" == "true" ]] && PAIRED_FLAG="--paired"
+    if umi_tools dedup \${PAIRED_FLAG} -I allmap_in.bam -S allmap_dedup.bam --log=allmap_dedup.log; then
+      samtools index -@ \${THREADS} allmap_dedup.bam
+      ALLMAP_BAM="allmap_dedup.bam"
+      echo "TRACKS | DEDUP | allMap deduplicated"
+    else
+      echo "TRACKS | WARNING | allMap dedup failed; using original allMap BAM"
+    fi
+  fi
+
+  # NOTE: bam_for_downstream.bam (consumed by module 11 for Pol-II gene metrics)
+  # is created AFTER the PE mate-filtering step below, so that in paired-end mode
+  # it is the SAME signal-mate-only BAM the coverage tracks use. Previously it was
+  # the full (both-mate) deduped BAM, so gene metrics counted the noise mate too,
+  # inflating tss_cpm/body_cpm relative to the tracks. See section 4c.
+
+  ###########################################################################
+  # 4b) PE MATE FILTERING FOR 3'/5' COVERAGE TRACKS
+  ###########################################################################
+  #
+  # PRO-seq PE alignment layout (from module 05):
+  #   bowtie2 --ff  -1 R2  -2 RC(R1)
+  # In the BAM this becomes:
+  #   Read1 (flag 64)  = original R2  → 5' end of fragment, NOT the Pol II position
+  #   Read2 (flag 128) = RC(R1)       → 3' end of nascent RNA = Pol II position ✓
+  #
+  # Using the full paired BAM for -3 coverage would add one noise hit (from the
+  # non-signal mate) for every correct Pol II hit, distorting track shapes. For
+  # SE data both reads carry signal, so no filtering is needed.
+  #
+  # Which mate carries the signal end is configurable: params.align.pe_signal_mate
+  # = 'read2' (default, flag 128 = RC(R1), matches the module-05 layout above) or
+  # 'read1' (flag 64) for chemistries where R1 carries the signal end. NOTE: using
+  # 'read1' generally also requires a matching alignment orientation in module 05.
+  #
+  # The allMap BAM is mate-filtered the same way so allMap tracks stay comparable.
+  PE_SIGNAL_MATE="${params.align?.pe_signal_mate ?: 'read2'}"
+  if [[ "\${PE_SIGNAL_MATE}" == "read1" ]]; then PE_MATE_FLAG=64; else PE_MATE_FLAG=128; fi
+
+  BAM_FOR_COVERAGE="\${INPUT_BAM}"
+  ALLMAP_BAM_FOR_COVERAGE="\${ALLMAP_BAM}"
+
+  if [[ "\${IS_PE}" == "true" ]]; then
+    echo "────────────────────────────────────────────────────────────────────────"
+    echo "TRACKS | PE_FILTER | Paired-end: keeping only the signal mate (\${PE_SIGNAL_MATE}, flag \${PE_MATE_FLAG}) for coverage..."
+    echo "────────────────────────────────────────────────────────────────────────"
+
+    samtools view -@ "\${THREADS}" -f \${PE_MATE_FLAG} -b "\${INPUT_BAM}" \\
+      | samtools sort -@ "\${THREADS}" -o pe_r2_main.bam
+    samtools index -@ "\${THREADS}" pe_r2_main.bam
+
+    samtools view -@ "\${THREADS}" -f \${PE_MATE_FLAG} -b "\${ALLMAP_BAM}" \\
+      | samtools sort -@ "\${THREADS}" -o pe_r2_allmap.bam
+    samtools index -@ "\${THREADS}" pe_r2_allmap.bam
+
+    R2_MAIN_COUNT=\$(samtools view -c -F 4 pe_r2_main.bam)
+    R2_ALLMAP_COUNT=\$(samtools view -c -F 4 pe_r2_allmap.bam)
+    echo "TRACKS | PE_FILTER | Main BAM signal-mate count:   \${R2_MAIN_COUNT}"
+    echo "TRACKS | PE_FILTER | AllMap BAM signal-mate count: \${R2_ALLMAP_COUNT}"
+
+    BAM_FOR_COVERAGE="pe_r2_main.bam"
+    ALLMAP_BAM_FOR_COVERAGE="pe_r2_allmap.bam"
+    echo "TRACKS | PE_FILTER | Coverage tracks will use signal-mate-only BAMs"
+  else
+    echo "TRACKS | PE_FILTER | Single-end mode: using full BAM for coverage"
+  fi
+
+  ###########################################################################
+  # 4c) BAM HANDED TO DOWNSTREAM POL-II METRICS (module 11)
+  ###########################################################################
+  #
+  # Use the SAME BAM the coverage tracks use: in PE this is the Read2-only
+  # (flag 128 = RC(R1) = Pol II 3' end) BAM, in SE the full deduped BAM. This
+  # keeps gene-level TSS/body counts consistent with the published tracks
+  # instead of counting both mates in PE.
+  echo "TRACKS | OUTPUT | Copying BAM used for tracks + Pol-II metrics (deduped when UMI on)..."
+  cp "\${BAM_FOR_COVERAGE}" bam_for_downstream.bam
+  samtools index -@ \${THREADS} bam_for_downstream.bam
 
   ###########################################################################
   # 5) PREPARE GENOME SIZES
@@ -480,58 +569,121 @@ process generate_coverage_tracks {
   echo "TRACKS | GENOME | Extracting chromosome sizes..."
   echo "────────────────────────────────────────────────────────────────────────"
 
-  # Get chromosome sizes from BAM header (more reliable than FASTA)
-  samtools view -H "${INPUT_BAM}" | \
-    grep '^@SQ' | \
-    cut -f2,3 | \
-    sed 's/SN://g' | \
-    sed 's/LN://g' \
+  # Get chromosome sizes from BAM header (more reliable than FASTA).
+  # Use BAM_FOR_COVERAGE so the sizes match the BAM we'll actually feed to bedtools.
+  samtools view -H "\${BAM_FOR_COVERAGE}" | \\
+    grep '^@SQ' | \\
+    cut -f2,3 | \\
+    sed 's/SN://g' | \\
+    sed 's/LN://g' \\
     > genome.sizes
 
   if [[ ! -s genome.sizes ]]; then
     tracktx_error "generate_coverage_tracks" "Failed to extract chromosome sizes from BAM header" "Check BAM file integrity"
   fi
 
-  CHR_COUNT=$(wc -l < genome.sizes | tr -d ' ')
-  TOTAL_SIZE=$(awk '{sum+=$2} END{print sum}' genome.sizes)
-  echo "TRACKS | GENOME | Chromosomes: ${CHR_COUNT}"
-  echo "TRACKS | GENOME | Total genome size: ${TOTAL_SIZE} bp"
+  CHR_COUNT=\$(wc -l < genome.sizes | tr -d ' ')
+  TOTAL_SIZE=\$(awk '{sum+=\$2} END{print sum}' genome.sizes)
+  echo "TRACKS | GENOME | Chromosomes: \${CHR_COUNT}"
+  echo "TRACKS | GENOME | Total genome size: \${TOTAL_SIZE} bp"
 
   # Display first few chromosomes
   echo "TRACKS | GENOME | First chromosomes:"
   head -5 genome.sizes | sed 's/^/TRACKS | GENOME |   /'
 
   ###########################################################################
-  # 6 + 7) GENERATE 3' AND 5' END COVERAGE (Parallel)
+  # 6) GENERATE 3' END COVERAGE (Always)
   ###########################################################################
 
   echo "────────────────────────────────────────────────────────────────────────"
-  echo "TRACKS | COVERAGE | Launching 4 coverage jobs in parallel..."
-  echo "TRACKS | COVERAGE |   3p/main  |  3p/allMap  |  5p/main  |  5p/allMap"
+  echo "TRACKS | 3P | Generating 3' end coverage tracks..."
   echo "────────────────────────────────────────────────────────────────────────"
 
-  # All four jobs are independent (different BAM inputs, different output
-  # prefixes) and each is single-threaded, so they run concurrently on
-  # separate cores.  Log output will be interleaved; each job identifies
-  # itself via its BAM filename in the TRACKS | COVERAGE messages.
-  pids=()
-  generate_coverage "${INPUT_BAM}"  "3" "3p/${SAMPLE_ID}.3p"        & pids+=($!)
-  generate_coverage "${ALLMAP_BAM}" "3" "3p/${SAMPLE_ID}.allMap.3p" & pids+=($!)
-  generate_coverage "${INPUT_BAM}"  "5" "5p/${SAMPLE_ID}.5p"        & pids+=($!)
-  generate_coverage "${ALLMAP_BAM}" "5" "5p/${SAMPLE_ID}.allMap.5p" & pids+=($!)
+  # The four coverage jobs are independent, but each is NOT free in RAM:
+  #   • bedtools genomecov -ibam allocates a full-length counts array for the
+  #     current chromosome (~1 GB for hs1 chr1), and
+  #   • its sort buffers up to SORT_MEM.
+  # Running all four at once (genomecov + sort × 4) overruns the task memory
+  # cgroup on memory-modest hosts and the kernel OOM-kills a genomecov
+  # (observed: allMap 3' "Killed" with this process capped at a few GB). So cap
+  # concurrency by the task's memory budget instead of always launching 4.
+  #
+  # Budget each running job at ~2 GB peak (genomecov array + sort buffer) and
+  # use up to ~70% of the task memory, never more than the allotted CPUs.
+  MEM_GB=${task.memory.toGiga()}
+  MAX_PAR=\$(( MEM_GB * 70 / 100 / 2 ))
+  [ "\${MAX_PAR}" -lt 1 ] && MAX_PAR=1
+  [ "\${MAX_PAR}" -gt ${task.cpus} ] && MAX_PAR=${task.cpus}
+  MAX_PAR=\${TRACKS_MAX_PAR:-\${MAX_PAR}}
 
-  # Wait for all jobs; collect failures rather than exiting on the first one
-  # so all error messages appear in the log before tracktx_error aborts.
-  COVERAGE_FAILED=0
-  for pid in "${pids[@]}"; do
-    wait "${pid}" || COVERAGE_FAILED=1
+  # Per-sort memory scaled to the chosen concurrency (≤50% of budget shared
+  # across the at-most-MAX_PAR concurrent sorts). Temp on a fast dir, not USB.
+  SORT_MEM=\$(( MEM_GB * 50 / 100 / MAX_PAR ))
+  [ "\${SORT_MEM}" -lt 1 ] && SORT_MEM=1
+  export SORT_MEM="\${SORT_MEM}G"
+  export SORT_TMP="\${SORT_TMPDIR:-/tmp}"
+  echo "TRACKS | 3P | Concurrency: \${MAX_PAR} parallel job(s), SORT_MEM=\${SORT_MEM} each (task mem=\${MEM_GB}G)"
+
+  # Throttled fan-out: never let more than MAX_PAR generate_coverage run at once.
+  # Each job records its own failure to a flag file so all per-job errors land in
+  # the log before we abort. Log output is interleaved; each job identifies
+  # itself via its BAM filename in the TRACKS | COVERAGE messages.
+  #
+  # IMPORTANT: track our OWN job PIDs explicitly and wait on those PIDs only.
+  # We must NOT use bare \`wait\` or \`wait -n\`: the \`exec > >(tee ...)\` process
+  # substitutions at the top of this script spawn long-lived \`tee\` children that
+  # never exit until the script's FDs close, so a bare wait would block on them
+  # forever ("process hasn't exited" → Nextflow kills the hung task). Likewise we
+  # throttle by polling our tracked PIDs with \`kill -0\`, not \`jobs\`.
+  COV_FAIL_FLAG="cov_fail.flag"
+  rm -f "\${COV_FAIL_FLAG}"
+
+  run_cov() {
+    generate_coverage "\$1" "\$2" "\$3" || echo "FAIL: \$3" >> "\${COV_FAIL_FLAG}"
+  }
+
+  COV_PIDS=()
+  launch_cov() {
+    # Block until fewer than MAX_PAR of OUR jobs are still alive.
+    while :; do
+      local alive=0 p
+      for p in "\${COV_PIDS[@]:-}"; do
+        [ -n "\${p}" ] && kill -0 "\${p}" 2>/dev/null && alive=\$(( alive + 1 ))
+      done
+      [ "\${alive}" -lt "\${MAX_PAR}" ] && break
+      sleep 0.5
+    done
+    run_cov "\$1" "\$2" "\$3" &
+    COV_PIDS+=(\$!)
+  }
+
+  # Use the PE-filtered BAMs (Read2-only) in PE mode; full BAMs in SE mode.
+  launch_cov "\${BAM_FOR_COVERAGE}"        "3" "3p/\${SAMPLE_ID}.3p"
+  launch_cov "\${ALLMAP_BAM_FOR_COVERAGE}" "3" "3p/\${SAMPLE_ID}.allMap.3p"
+  launch_cov "\${BAM_FOR_COVERAGE}"        "5" "5p/\${SAMPLE_ID}.5p"
+  launch_cov "\${ALLMAP_BAM_FOR_COVERAGE}" "5" "5p/\${SAMPLE_ID}.allMap.5p"
+
+  # Wait on each of our jobs specifically (never bare wait — see note above).
+  for p in "\${COV_PIDS[@]}"; do
+    wait "\${p}" || true
   done
 
-  if [[ ${COVERAGE_FAILED} -ne 0 ]]; then
+  if [[ -s "\${COV_FAIL_FLAG}" ]]; then
+    echo "TRACKS | ERROR | Failed coverage jobs:"
+    sed 's/^/TRACKS | ERROR |   /' "\${COV_FAIL_FLAG}"
     tracktx_error "generate_coverage_tracks" "One or more coverage generation jobs failed" "Check tracks.log for per-job error messages"
   fi
 
-  echo "TRACKS | COVERAGE | All 4 coverage jobs complete"
+  # NOTE: All four track sets (main/allMap × 3'/5') are produced by the single
+  # parallel block above, using the PE mate-filtered BAMs (Read2-only) in PE
+  # mode and the full BAMs in SE mode. The previous sequential re-runs here
+  # regenerated allMap-3', main-5' and allMap-5' from the *unfiltered* BAMs,
+  # overwriting the correct Read2-only outputs in PE mode (contaminating tracks
+  # with the wrong mate's end position). They were removed so the mate-filtered
+  # outputs survive for paired-end data.
+
+  echo "TRACKS | 3P | 3' end coverage complete"
+  echo "TRACKS | 5P | 5' end coverage complete"
 
   ###########################################################################
   # 8) CREATE DOCUMENTATION
@@ -541,9 +693,9 @@ process generate_coverage_tracks {
   echo "TRACKS | README | Creating documentation..."
   echo "────────────────────────────────────────────────────────────────────────"
 
-  cat > ${SAMPLE_ID}.README_tracks.txt <<'DOCEOF'
+  cat > \${SAMPLE_ID}.README_tracks.txt <<'DOCEOF'
 ================================================================================
-COVERAGE TRACKS — !{sample_id}
+COVERAGE TRACKS — ${sample_id}
 ================================================================================
 
 OVERVIEW
@@ -555,7 +707,7 @@ OVERVIEW
     • 5' end coverage: Always generated (PE and SE)
   
   BAM Sources:
-    • Main BAM: Primary alignments !{umiEnabled == 'true' ? 'with UMI deduplication' : '(duplicates retained)'}
+    • Main BAM: Primary alignments ${params.umi?.enabled ? 'with UMI deduplication' : '(duplicates retained)'}
     • AllMap BAM: All mapped reads (primary + secondary alignments)
 
 CRITICAL IMPLEMENTATION DETAIL
@@ -576,29 +728,29 @@ FILES
 ────────────────────────────────────────────────────────────────────────────
 
 3' End Coverage (Always Generated):
-  3p/!{sample_id}.3p.pos.bedgraph    — Positive strand (main BAM)
-  3p/!{sample_id}.3p.neg.bedgraph    — Negative strand (main BAM, mirrored)
-  3p/!{sample_id}.3p.pos.bw          — BigWig format (positive)
-  3p/!{sample_id}.3p.neg.bw          — BigWig format (negative)
+  3p/${sample_id}.3p.pos.bedgraph    — Positive strand (main BAM)
+  3p/${sample_id}.3p.neg.bedgraph    — Negative strand (main BAM, mirrored)
+  3p/${sample_id}.3p.pos.bw          — BigWig format (positive)
+  3p/${sample_id}.3p.neg.bw          — BigWig format (negative)
   
-  3p/!{sample_id}.allMap.3p.pos.bedgraph — AllMap BAM positive strand
-  3p/!{sample_id}.allMap.3p.neg.bedgraph — AllMap BAM negative strand (mirrored)
-  3p/!{sample_id}.allMap.3p.pos.bw       — BigWig format
-  3p/!{sample_id}.allMap.3p.neg.bw       — BigWig format
+  3p/${sample_id}.allMap.3p.pos.bedgraph — AllMap BAM positive strand
+  3p/${sample_id}.allMap.3p.neg.bedgraph — AllMap BAM negative strand (mirrored)
+  3p/${sample_id}.allMap.3p.pos.bw       — BigWig format
+  3p/${sample_id}.allMap.3p.neg.bw       — BigWig format
 
 5' End Coverage:
-  5p/!{sample_id}.5p.pos.bedgraph        — Main BAM positive strand
-  5p/!{sample_id}.5p.neg.bedgraph        — Main BAM negative strand (mirrored)
-  5p/!{sample_id}.5p.pos.bw              — BigWig format
-  5p/!{sample_id}.5p.neg.bw              — BigWig format
+  5p/${sample_id}.5p.pos.bedgraph        — Main BAM positive strand
+  5p/${sample_id}.5p.neg.bedgraph        — Main BAM negative strand (mirrored)
+  5p/${sample_id}.5p.pos.bw              — BigWig format
+  5p/${sample_id}.5p.neg.bw              — BigWig format
   
-  5p/!{sample_id}.allMap.5p.pos.bedgraph — AllMap BAM positive strand
-  5p/!{sample_id}.allMap.5p.neg.bedgraph — AllMap BAM negative strand (mirrored)
-  5p/!{sample_id}.allMap.5p.pos.bw       — BigWig format
-  5p/!{sample_id}.allMap.5p.neg.bw       — BigWig format
+  5p/${sample_id}.allMap.5p.pos.bedgraph — AllMap BAM positive strand
+  5p/${sample_id}.allMap.5p.neg.bedgraph — AllMap BAM negative strand (mirrored)
+  5p/${sample_id}.allMap.5p.pos.bw       — BigWig format
+  5p/${sample_id}.allMap.5p.neg.bw       — BigWig format
 
 Statistics:
-  !{sample_id}.dedup_stats.txt       — UMI deduplication statistics
+  ${sample_id}.dedup_stats.txt       — UMI deduplication statistics
   tracks.log                         — Complete processing log
 
 PROCESSING DETAILS
@@ -627,9 +779,9 @@ Key Settings:
   • Chromosome sizes from BAM header (more reliable than FASTA)
 
 UMI Deduplication:
-  Status: !{umiEnabled == 'true' ? 'Enabled' : 'Disabled'}
-  !{umiEnabled == 'true' ? 'Length: ' + umiLength + ' bp' : ''}
-  !{umiEnabled == 'true' ? 'Duplicates removed before track generation' : 'Duplicates retained in coverage'}
+  Status: ${params.umi?.enabled ? 'Enabled' : 'Disabled'}
+  ${params.umi?.enabled ? 'Length: ' + params.umi.length + ' bp' : ''}
+  ${params.umi?.enabled ? 'Duplicates removed before track generation' : 'Duplicates retained in coverage'}
 
 USAGE
 ────────────────────────────────────────────────────────────────────────────
@@ -657,13 +809,14 @@ Main vs AllMap BAM Tracks:
     • Includes secondary alignments (multimappers)
     • Higher background signal
     • Use for multimapper-aware analyses
-    • Used by divergent transcription detection
+    • NOTE: divergent transcription detection uses the MAIN (primary) 3' tracks,
+      not allMap (see main.nf STEP 10 wiring)
 
 DOWNSTREAM USAGE
 ────────────────────────────────────────────────────────────────────────────
   These raw tracks will be:
   1. Normalized to CPM and siCPM (next module)
-  2. Used for divergent transcription detection (allMap 3' tracks)
+  2. Used for divergent transcription detection (main 3' tracks)
   3. Used for functional region calling (main 3' tracks)
   4. Used for Pol-II metrics calculation (normalized versions)
 
@@ -707,17 +860,17 @@ TECHNICAL NOTES
 
 PARAMETERS USED
 ────────────────────────────────────────────────────────────────────────────
-  UMI deduplication:    !{umiEnabled == 'true' ? 'Enabled' : 'Disabled'}
-  UMI length:           !{umiLength ?: 'N/A'} bp
-  Library type:         !{is_paired == "true" ? "Paired-end" : "Single-end"}
-  CPU threads:          !{task.cpus}
+  UMI deduplication:    ${params.umi?.enabled ? 'Enabled' : 'Disabled'}
+  UMI length:           ${params.umi?.length ?: 'N/A'} bp
+  Library type:         ${is_paired == "true" ? "Paired-end" : "Single-end"}
+  CPU threads:          ${task.cpus}
 
 GENERATED
 ────────────────────────────────────────────────────────────────────────────
   Pipeline: TrackTx PRO-seq
   Module:   06_generate_coverage_tracks
-  Date:     $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Sample:   !{sample_id}
+  Date:     \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+  Sample:   ${sample_id}
 
 ================================================================================
 DOCEOF
@@ -733,48 +886,48 @@ DOCEOF
   echo "────────────────────────────────────────────────────────────────────────"
 
   # Count output files
-  BG_COUNT=$(find 3p 5p -name "*.bedgraph" -type f 2>/dev/null | wc -l | tr -d ' ')
-  BW_COUNT=$(find 3p 5p -name "*.bw" -type f 2>/dev/null | wc -l | tr -d ' ')
+  BG_COUNT=\$(find 3p 5p -name "*.bedgraph" -type f 2>/dev/null | wc -l | tr -d ' ')
+  BW_COUNT=\$(find 3p 5p -name "*.bw" -type f 2>/dev/null | wc -l | tr -d ' ')
 
   # Expected file counts (8 for 3p + 8 for 5p, both PE and SE)
   EXPECTED_BG=16
   EXPECTED_BW=16
 
-  echo "TRACKS | VALIDATE | bedGraph files: ${BG_COUNT}/${EXPECTED_BG}"
-  echo "TRACKS | VALIDATE | BigWig files: ${BW_COUNT}/${EXPECTED_BW}"
+  echo "TRACKS | VALIDATE | bedGraph files: \${BG_COUNT}/\${EXPECTED_BG}"
+  echo "TRACKS | VALIDATE | BigWig files: \${BW_COUNT}/\${EXPECTED_BW}"
 
   # Check critical 3' files (must be non-empty)
-  for file in \
-    "3p/${SAMPLE_ID}.3p.pos.bedgraph" \
-    "3p/${SAMPLE_ID}.3p.neg.bedgraph" \
-    "3p/${SAMPLE_ID}.3p.pos.bw" \
-    "3p/${SAMPLE_ID}.3p.neg.bw" \
-    "3p/${SAMPLE_ID}.allMap.3p.pos.bedgraph" \
-    "3p/${SAMPLE_ID}.allMap.3p.neg.bedgraph" \
-    "3p/${SAMPLE_ID}.allMap.3p.pos.bw" \
-    "3p/${SAMPLE_ID}.allMap.3p.neg.bw"; do
+  for file in \\
+    "3p/\${SAMPLE_ID}.3p.pos.bedgraph" \\
+    "3p/\${SAMPLE_ID}.3p.neg.bedgraph" \\
+    "3p/\${SAMPLE_ID}.3p.pos.bw" \\
+    "3p/\${SAMPLE_ID}.3p.neg.bw" \\
+    "3p/\${SAMPLE_ID}.allMap.3p.pos.bedgraph" \\
+    "3p/\${SAMPLE_ID}.allMap.3p.neg.bedgraph" \\
+    "3p/\${SAMPLE_ID}.allMap.3p.pos.bw" \\
+    "3p/\${SAMPLE_ID}.allMap.3p.neg.bw"; do
     
-    if [[ ! -s "${file}" ]]; then
-      tracktx_error "generate_coverage_tracks" "Missing or empty critical file: ${file}" "Check tracks.log in work dir"
+    if [[ ! -s "\${file}" ]]; then
+      tracktx_error "generate_coverage_tracks" "Missing or empty critical file: \${file}" "Check tracks.log in work dir"
     else
-      FILE_SIZE=$(stat -c%s "${file}" 2>/dev/null || stat -f%z "${file}" 2>/dev/null || echo "unknown")
-      echo "TRACKS | VALIDATE | ${file}: ${FILE_SIZE} bytes"
+      FILE_SIZE=\$(stat -c%s "\${file}" 2>/dev/null || stat -f%z "\${file}" 2>/dev/null || echo "unknown")
+      echo "TRACKS | VALIDATE | \${file}: \${FILE_SIZE} bytes"
     fi
   done
 
   # Check that 5' files exist
-  for file in \
-    "5p/${SAMPLE_ID}.5p.pos.bedgraph" \
-    "5p/${SAMPLE_ID}.5p.neg.bedgraph" \
-    "5p/${SAMPLE_ID}.5p.pos.bw" \
-    "5p/${SAMPLE_ID}.5p.neg.bw" \
-    "5p/${SAMPLE_ID}.allMap.5p.pos.bedgraph" \
-    "5p/${SAMPLE_ID}.allMap.5p.neg.bedgraph" \
-    "5p/${SAMPLE_ID}.allMap.5p.pos.bw" \
-    "5p/${SAMPLE_ID}.allMap.5p.neg.bw"; do
+  for file in \\
+    "5p/\${SAMPLE_ID}.5p.pos.bedgraph" \\
+    "5p/\${SAMPLE_ID}.5p.neg.bedgraph" \\
+    "5p/\${SAMPLE_ID}.5p.pos.bw" \\
+    "5p/\${SAMPLE_ID}.5p.neg.bw" \\
+    "5p/\${SAMPLE_ID}.allMap.5p.pos.bedgraph" \\
+    "5p/\${SAMPLE_ID}.allMap.5p.neg.bedgraph" \\
+    "5p/\${SAMPLE_ID}.allMap.5p.pos.bw" \\
+    "5p/\${SAMPLE_ID}.allMap.5p.neg.bw"; do
     
-    if [[ ! -f "${file}" ]]; then
-      tracktx_error "generate_coverage_tracks" "Missing file: ${file}" "Check tracks.log in work dir"
+    if [[ ! -f "\${file}" ]]; then
+      tracktx_error "generate_coverage_tracks" "Missing file: \${file}" "Check tracks.log in work dir"
     fi
   done
 
@@ -788,17 +941,17 @@ DOCEOF
   echo "────────────────────────────────────────────────────────────────────────"
   echo "TRACKS | SUMMARY | Processing Complete"
   echo "────────────────────────────────────────────────────────────────────────"
-  echo "TRACKS | SUMMARY | Sample: ${SAMPLE_ID}"
-  echo "TRACKS | SUMMARY | Library type: $([ "${IS_PE}" == "true" ] && echo "Paired-end" || echo "Single-end") (3' + 5')"
-  echo "TRACKS | SUMMARY | UMI dedup: ${UMI_ENABLED}"
-  echo "TRACKS | SUMMARY | bedGraph files: ${BG_COUNT}"
-  echo "TRACKS | SUMMARY | BigWig files: ${BW_COUNT}"
-  echo "TRACKS | SUMMARY | Total output size: $(du -sh . 2>/dev/null | cut -f1 || echo "unknown")"
+  echo "TRACKS | SUMMARY | Sample: \${SAMPLE_ID}"
+  echo "TRACKS | SUMMARY | Library type: \$([ "\${IS_PE}" == "true" ] && echo "Paired-end" || echo "Single-end") (3' + 5')"
+  echo "TRACKS | SUMMARY | UMI dedup: \${UMI_ENABLED}"
+  echo "TRACKS | SUMMARY | bedGraph files: \${BG_COUNT}"
+  echo "TRACKS | SUMMARY | BigWig files: \${BW_COUNT}"
+  echo "TRACKS | SUMMARY | Total output size: \$(du -sh . 2>/dev/null | cut -f1 || echo "unknown")"
   echo "────────────────────────────────────────────────────────────────────────"
 
-  TIMESTAMP_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP_END=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "TRACKS | COMPLETE | sample=${SAMPLE_ID} | ts=${TIMESTAMP_END}"
+  echo "TRACKS | COMPLETE | sample=\${SAMPLE_ID} | ts=\${TIMESTAMP_END}"
   echo "════════════════════════════════════════════════════════════════════════"
-  '''
+  """
 }

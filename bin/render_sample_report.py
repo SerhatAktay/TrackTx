@@ -38,6 +38,12 @@ ap.add_argument("--out-tsv", required=True)
 ap.add_argument("--out-json", required=True)
 ap.add_argument("--out-plots-html", required=True)
 ap.add_argument("--plots", type=int, default=0)
+# Coverage floor for the SUMMARY median pausing index: only genes with
+# gene_body_count >= this are used for the headline median, so it isn't dominated
+# by 1-read genes on shallow/subsetted data (length-normalized PI ≈ body_len/tss_width
+# when counts are ~1). The per-gene pausing_index.tsv is unaffected. Falls back to
+# all valid genes if too few clear the floor. 0 = disabled.
+ap.add_argument("--pi-min-body-count", type=int, default=10)
 
 # Optional track links (strings; may be empty; can be URLs or paths)
 ap.add_argument("--pos3-cpm-bw", default=None)
@@ -280,24 +286,6 @@ def main():
 
     # ── summary stats ─────────────────────────────────────────────────────────
     divergent_regions = int(len(bed_div)) if not bed_div.empty else 0
-
-    # Divergent TX signal intensity and transcript length
-    # Non-standard BED column order: ID | chrom | start | end | signal | flag
-    # After read_bed6 assigns standard labels: "end"=start_pos, "name"=end_pos, "score"=signal
-    div_median_signal = None
-    div_mean_signal   = None
-    div_median_length = None
-    if not bed_div.empty:
-        scores = pd.to_numeric(bed_div["score"], errors="coerce").dropna()
-        if len(scores) > 0:
-            div_median_signal = round(float(np.median(scores)), 1)
-            div_mean_signal   = round(float(np.mean(scores)), 1)
-        end_pos   = pd.to_numeric(bed_div["name"], errors="coerce")
-        start_pos = pd.to_numeric(bed_div["end"],  errors="coerce")
-        lengths   = (end_pos - start_pos).dropna()
-        valid_len = lengths[lengths > 0]
-        if len(valid_len) > 0:
-            div_median_length = int(np.median(valid_len))
     # Exclude non-localized regions from total count
     if not region_counts_df.empty:
         mask = ~region_counts_df["region"].str.contains(unloc_pattern, case=False, na=False, regex=True)
@@ -308,6 +296,7 @@ def main():
         reads_total_func = 0.0
 
     median_pausing = float("nan")
+    n_pausing_covered = 0
     if not pausing.empty:
         low = [c.lower() for c in pausing.columns]
         pi_col = None
@@ -315,11 +304,28 @@ def main():
             if cand in low:
                 pi_col = pausing.columns[low.index(cand)]
                 break
+        bc_col = None
+        for cand in ("gene_body_count","body_count"):
+            if cand in low:
+                bc_col = pausing.columns[low.index(cand)]
+                break
         if pi_col is not None:
-            # Use only genes with valid PI (exclude nan/inf; gene_body_count>0 typically)
-            valid_pi = pd.to_numeric(pausing[pi_col], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-            if len(valid_pi) > 0:
-                median_pausing = float(np.median(valid_pi))
+            pi_num = pd.to_numeric(pausing[pi_col], errors="coerce").replace([np.inf, -np.inf], np.nan)
+            valid = pi_num.notna()
+            # Coverage floor: prefer genes with enough body reads so the headline
+            # median isn't inflated by 1-read genes (length-normalized PI tends to
+            # body_len/tss_width when counts are ~1). Fall back to all valid genes
+            # if too few clear the floor (shallow / subsetted data).
+            sel = valid
+            if bc_col is not None and args.pi_min_body_count > 0:
+                bc = pd.to_numeric(pausing[bc_col], errors="coerce").fillna(0)
+                covered = valid & (bc >= args.pi_min_body_count)
+                if int(covered.sum()) >= 20:
+                    sel = covered
+            vals = pi_num[sel].dropna()
+            n_pausing_covered = int(len(vals))
+            if len(vals) > 0:
+                median_pausing = float(np.median(vals))
 
     median_density = float("nan")
     density_source = None
@@ -361,15 +367,35 @@ def main():
     umi_output_reads = qc.get("umi_output_reads") if isinstance(qc, dict) else None
     umi_dedup_percent = qc.get("umi_deduplication_percent") if isinstance(qc, dict) else None
 
-    # Strand bias (from qc_pol.json — already computed by module 13)
-    strand_plus_reads    = qc.get("strand_plus_reads")    if isinstance(qc, dict) else None
-    strand_minus_reads   = qc.get("strand_minus_reads")   if isinstance(qc, dict) else None
-    strand_plus_fraction = qc.get("strand_plus_fraction") if isinstance(qc, dict) else None
-    if strand_plus_fraction is not None:
+    # Multimapping / uniqueness fields (module 13). uniqueness_method is "NH==1"
+    # when bowtie2 -k is active, otherwise "MAPQ≥<thr>". Older runs without these
+    # keys fall back gracefully.
+    uniqueness_method = qc.get("uniqueness_method") if isinstance(qc, dict) else None
+    multimap_k = qc.get("multimap_k") if isinstance(qc, dict) else None
+    mapped_reads = qc.get("mapped_reads") if isinstance(qc, dict) else None
+    # Prefer the stable 'unique_reads' key; fall back to legacy mapq_ge_*_reads.
+    unique_reads = qc.get("unique_reads") if isinstance(qc, dict) else None
+    if unique_reads is None and isinstance(qc, dict):
+        for k, v in qc.items():
+            if k.startswith("mapq_ge_") and k.endswith("_reads") and "nodup" not in k:
+                unique_reads = v
+                break
+    def _to_int(x):
         try:
-            strand_plus_fraction = round(float(strand_plus_fraction), 4)
+            v = int(x)
+            return v if v >= 0 else None
         except (ValueError, TypeError):
-            strand_plus_fraction = None
+            return None
+    mapped_reads = _to_int(mapped_reads)
+    unique_reads = _to_int(unique_reads)
+    multimapper_percent = None
+    if mapped_reads and mapped_reads > 0 and unique_reads is not None:
+        multimapper_percent = round(100.0 * (1.0 - float(unique_reads) / float(mapped_reads)), 2)
+    # Human-readable uniqueness label for the KPI / meta line
+    if uniqueness_method:
+        uniq_label = uniqueness_method
+    else:
+        uniq_label = "MAPQ"
 
     def safe_int(x): 
         try: 
@@ -416,12 +442,11 @@ def main():
         sample=SID, condition=COND, timepoint=TP, replicate=REP,
         metrics=dict(
             divergent_regions=int(divergent_regions),
-            divergent_median_signal=div_median_signal,
-            divergent_mean_signal=div_mean_signal,
-            divergent_median_length_bp=div_median_length,
             total_functional_regions=int(total_regions),
             reads_total_functional=float(reads_total_func),
             median_pausing_index=None if np.isnan(median_pausing) else float(median_pausing),
+            pausing_genes_used=int(n_pausing_covered),
+            pausing_min_body_count=int(args.pi_min_body_count),
             median_functional_cpm=None if np.isnan(median_density) else float(median_density),
             unlocalized_fraction=unlocalized_fraction,
             cpm_factor=None if (cpm_factor is None or np.isnan(cpm_factor)) else float(cpm_factor),
@@ -431,6 +456,12 @@ def main():
         ),
         qc=dict(
             total_reads_raw=input_reads,
+            # Uniquely-mapped reads (NH==1 when bowtie2 -k multimapping is active,
+            # else MAPQ>=threshold). NOT PCR-deduplicated unless UMI dedup is on
+            # (see umi_deduplication_enabled). 'dedup_reads_mapq_ge' is retained
+            # for back-compat; 'unique_reads_nh1' is the preferred, correctly
+            # named field.
+            unique_reads_nh1=dedup_reads,
             dedup_reads_mapq_ge=dedup_reads,
             duplicate_percent=duplicate_percent,
             umi_deduplication_enabled=umi_enabled,
@@ -438,9 +469,11 @@ def main():
             umi_output_reads=umi_output_reads,
             umi_deduplication_percent=umi_dedup_percent,
             mean_coverage_depth=qc.get("mean_coverage_depth") if isinstance(qc, dict) else None,
-            strand_plus_reads=strand_plus_reads,
-            strand_minus_reads=strand_minus_reads,
-            strand_plus_fraction=strand_plus_fraction,
+            mapped_reads=mapped_reads,
+            unique_reads=unique_reads,
+            multimapper_percent=multimapper_percent,
+            uniqueness_method=uniqueness_method,
+            multimap_k=multimap_k,
         ),
         regions=regions_list,
         tracks=dict(
@@ -469,9 +502,6 @@ def main():
         ("qc_total_reads_raw", row["qc"]["total_reads_raw"]),
         ("qc_dedup_reads_mapq_ge", row["qc"]["dedup_reads_mapq_ge"]),
         ("qc_duplicate_percent", row["qc"]["duplicate_percent"]),
-        ("qc_strand_plus_fraction", row["qc"]["strand_plus_fraction"]),
-        ("divergent_median_signal", row["metrics"]["divergent_median_signal"]),
-        ("divergent_median_length_bp", row["metrics"]["divergent_median_length_bp"]),
     ]
     pd.DataFrame(pairs, columns=["Metric","Value"]).to_csv(args.out_tsv, sep="\t", index=False)
 
@@ -748,13 +778,16 @@ def main():
         <h1>{SID}</h1>
         <div>{status_strip()}</div>
         <div class="muted">Condition: <b>{COND}</b> • Timepoint: <b>{TP}</b> • Replicate: <b>{REP}</b></div>
+        <div class="muted">Uniqueness: <b>{uniqueness_method or "MAPQ (legacy)"}</b>{f" • bowtie2 -k {multimap_k}" if multimap_k and int(multimap_k) > 1 else ""}</div>
       </div>
 
       <h2>At-a-glance</h2>
       <div class="grid">
         {kpi("Total input reads", row["qc"]["total_reads_raw"], "qc_pol.json")}
-        {kpi("De-dup reads (MAPQ≥)", row["qc"]["dedup_reads_mapq_ge"],
+        {kpi(f"Unique reads ({uniq_label})", row["qc"]["dedup_reads_mapq_ge"],
              ("Low coverage expected for subset data. " if (row["qc"].get("mean_coverage_depth") or 1) < 0.1 else "") + "qc_pol.json")}
+        {kpi("Multimapper %", "n/a" if multimapper_percent is None else f"{multimapper_percent}%",
+             ("High values flag repetitive genomes / low-complexity libraries. " if (multimapper_percent or 0) > 50 else "") + "1 − unique / mapped")}
         {kpi("UMI Dedup %" if row["qc"].get("umi_deduplication_enabled", False) else "Duplicate %", 
              row["qc"].get("umi_deduplication_percent") if row["qc"].get("umi_deduplication_enabled", False) else row["qc"].get("duplicate_percent"))}
         {kpi("# divergent loci", row["metrics"]["divergent_regions"])}
@@ -766,16 +799,6 @@ def main():
         {kpi("Median density", (None if np.isnan(median_density) else round(median_density,3)), ("source: "+str(row['metrics'].get('density_source') or 'n/a') + (" — "+str(row['metrics'].get('density_reason')) if (np.isnan(median_density) and row['metrics'].get('density_reason')) else "")))}
         {kpi("CPM factor", row["metrics"]["cpm_factor"])}
         {kpi("siCPM factor", row["metrics"]["sicpm_factor"])}
-        {kpi("Strand balance (+ strand)",
-             None if strand_plus_fraction is None else f"{strand_plus_fraction:.1%}",
-             ("✓ balanced (45–55%)" if strand_plus_fraction is not None and 0.45 <= strand_plus_fraction <= 0.55
-              else ("⚠ outside expected range" if strand_plus_fraction is not None else "")))}
-        {kpi("Divergent TX median signal",
-             div_median_signal,
-             "median signal score per locus" if div_median_signal is not None else "n/a")}
-        {kpi("Divergent TX median length",
-             (f"{div_median_length:,} bp" if div_median_length is not None else None),
-             "median genomic span of divergent loci" if div_median_length is not None else "n/a")}
       </div>
 
       <h2>Functional regions — composition</h2>
@@ -837,7 +860,12 @@ def main():
         </ul>
       </div>
 
-      {("<h2>Track links</h2><div class='card'><ul>" +
+      {("<h2>Track links</h2>"
+         "<p class='muted' style='margin:-8px 0 12px 0;font-size:0.85em;'>"
+         "<b>main</b> tracks use the best alignment per read — use these for quantitative analysis and as your default browser track. "
+         "<b>allMap</b> tracks include every reported alignment (when <span class='mono'>align.multimap_k &gt; 1</span>) so signal stays visible across repeat copies; "
+         "treat them as a multimapper-aware view, not for quantification.</p>"
+         "<div class='card'><ul>" +
          "".join(f"<li><span class='mono'>{k}</span>: {v}</li>" for k,v in track_links) +
          "</ul></div>") if track_links else ""}
 

@@ -118,6 +118,8 @@ detect_hpc() {
 
 # Check if path is on network storage (NFS, SMB, etc.)
 # Uses timeout to avoid hanging on stale/slow NFS mounts
+# NOTE: Linux-only — `df -T` (filesystem type) is not available on macOS, so
+# network mounts on a Mac are intentionally treated as local here.
 is_network_storage() {
     local path="${1:-.}"
 
@@ -148,35 +150,12 @@ is_network_storage() {
 # CONTAINER DETECTION
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Check if Docker daemon is running (silent check).
-# IMPORTANT: docker info can hang indefinitely if the daemon is in a bad state
-# (crashed but socket still present, zombie process, etc.).  A stuck docker info
-# call cannot be interrupted with Ctrl-C and can require a full computer restart
-# to clear.  Always wrap with a short timeout.
+# Check if Docker daemon is running (silent check)
 docker_daemon_running() {
     if ! has_command docker; then
         return 1
     fi
-    if has_command timeout; then
-        timeout 5s docker info >/dev/null 2>&1
-    elif has_command gtimeout; then
-        gtimeout 5s docker info >/dev/null 2>&1
-    else
-        # macOS without GNU coreutils: background + manual kill
-        docker info >/dev/null 2>&1 &
-        local pid=$!
-        local i=0
-        while kill -0 "$pid" 2>/dev/null && [[ $i -lt 5 ]]; do
-            sleep 1; i=$((i + 1))
-        done
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null
-            wait "$pid" 2>/dev/null
-            return 1
-        fi
-        wait "$pid" 2>/dev/null
-        return $?
-    fi
+    docker info >/dev/null 2>&1
 }
 
 # Check if Docker can actually run containers (catches file-sharing, permission issues)
@@ -214,14 +193,7 @@ docker_can_run_containers() {
 detect_container_memory_gb() {
     local mem_bytes=""
     if docker_daemon_running; then
-        # Use the same timeout wrapper — docker info can hang here too
-        if has_command timeout; then
-            mem_bytes=$(timeout 5s docker info --format '{{.MemTotal}}' 2>/dev/null)
-        elif has_command gtimeout; then
-            mem_bytes=$(gtimeout 5s docker info --format '{{.MemTotal}}' 2>/dev/null)
-        else
-            mem_bytes=$(docker info --format '{{.MemTotal}}' 2>/dev/null)
-        fi
+        mem_bytes=$(docker info --format '{{.MemTotal}}' 2>/dev/null)
     elif has_command podman && podman info >/dev/null 2>&1; then
         mem_bytes=$(podman info --format '{{.Host.MemTotal}}' 2>/dev/null)
     fi
@@ -637,15 +609,19 @@ check_disk_space() {
     # Use timeout to avoid hang on external/slow drives (df can block indefinitely)
     local df_tmp
     df_tmp=$(mktemp 2>/dev/null || echo "/tmp/tracktx_df_$$")
-    local df_args="."
-    [[ "$OSTYPE" != "darwin"* ]] && df_args="-BG ."
+    # Use -Pk: POSIX single-line output in 1024-byte blocks. Both flags are
+    # supported by BSD df (macOS) AND GNU coreutils df (which a conda/brew env
+    # can put on PATH). Avoid -g: GNU df rejects it, which under `set -e -o
+    # pipefail` silently aborts the whole script. Append `|| true` so a df
+    # failure falls through to the 0-fallback instead of killing the run.
+    local df_args="-Pk ."
 
     if has_command timeout; then
-        df_out=$(timeout 5s df $df_args 2>/dev/null | tail -1)
+        df_out=$(timeout 5s df $df_args 2>/dev/null | tail -1) || true
     elif has_command gtimeout; then
-        df_out=$(gtimeout 5s df $df_args 2>/dev/null | tail -1)
+        df_out=$(gtimeout 5s df $df_args 2>/dev/null | tail -1) || true
     else
-        # macOS: no timeout; run in background and kill if slow
+        # No timeout available: run in background and kill if slow
         df $df_args 2>/dev/null > "$df_tmp" &
         local pid=$!
         local i=0
@@ -659,25 +635,19 @@ check_disk_space() {
             df_out=""
         else
             wait "$pid" 2>/dev/null
-            df_out=$(tail -1 "$df_tmp" 2>/dev/null)
+            df_out=$(tail -1 "$df_tmp" 2>/dev/null) || true
         fi
         rm -f "$df_tmp" 2>/dev/null
     fi
 
-    local avail_gb
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        local avail_blocks
-        avail_blocks=$(echo "$df_out" | awk '{print $4}')
-        avail_gb=$((avail_blocks / 2097152))  # 512-byte blocks to GB
-    else
-        avail_gb=$(echo "$df_out" | awk '{print $4}' | sed 's/G//')
+    # POSIX -k output: column 4 = available space in 1024-byte blocks → GB
+    local avail_kb
+    avail_kb=$(echo "$df_out" | awk '{print $4}')
+    avail_kb=${avail_kb:-0}
+    if [[ ! "$avail_kb" =~ ^[0-9]+$ ]]; then
+        avail_kb=0
     fi
-
-    # Fallback if df failed or timed out
-    avail_gb=${avail_gb:-0}
-    if [[ ! "$avail_gb" =~ ^[0-9]+$ ]]; then
-        avail_gb=0
-    fi
+    local avail_gb=$(( avail_kb / 1048576 ))
 
     if [[ $avail_gb -lt $required_gb ]]; then
         warning "Low disk space: ${avail_gb} GB available (recommend ${required_gb}+ GB for ${n_samples} sample(s))"
@@ -1146,7 +1116,12 @@ main() {
     # Image version is read from nextflow.config to avoid hardcoding here.
     # ═══════════════════════════════════════════════════════════════════════
     local NF_VERSION
-    NF_VERSION=$(grep "version" nextflow.config 2>/dev/null | head -1 | grep -oE "[0-9][0-9.]*" || echo "3.0")
+    # Anchor to the manifest `version = '...'` line (^\s*version=), so we don't
+    # accidentally match `nextflowVersion = '>=26.04.0'` and pull the wrong tag.
+    # The image tag must match a published tag of ghcr.io/serhataktay/tracktx —
+    # keep manifest.version in nextflow.config in sync with the pushed image tag,
+    # or the fallback "1.3.0" below will be pulled.
+    NF_VERSION=$(grep -E "^\s*version\s*=" nextflow.config 2>/dev/null | head -1 | grep -oE "[0-9][0-9.]*" || echo "1.3.0")
     local TRACKTX_IMAGE="ghcr.io/serhataktay/tracktx:${NF_VERSION}"
 
     if [[ "${TRACKTX_SKIP_PULL:-0}" -eq 0 ]]; then
@@ -1155,7 +1130,11 @@ main() {
             echo -e "  Image:   ${BOLD}${TRACKTX_IMAGE}${NC}"
             echo ""
             info "Pulling image (may take a few minutes on first run)..."
-            if docker pull "$TRACKTX_IMAGE" 2>&1 | grep -v "scout\|What's next\|View a summary\|^ghcr.io"; then
+            # Key success off docker's own exit code (PIPESTATUS[0]), NOT the
+            # trailing grep — when every output line matches the filter, grep
+            # exits non-zero and would otherwise report a false "Pull failed".
+            docker pull "$TRACKTX_IMAGE" 2>&1 | grep -v "scout\|What's next\|View a summary\|^ghcr.io" || true
+            if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
                 success "Image ready"
             else
                 warning "Pull failed — using cached image (pipeline will still run if cached)"
@@ -1175,6 +1154,28 @@ main() {
             separator
             echo ""
         fi
+    fi
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # EXTERNAL DRIVE MODE SETUP
+    # exFAT/USB/NFS lack file locking. Nextflow cache, temp, and work dir all need it.
+    # Redirect ALL lock-using dirs to local. Results stay on project dir (external).
+    # NOTE: must run BEFORE resume detection so the auto-resume work-dir check
+    # (which honors $NXF_WORK below) looks in the right place.
+    # ═══════════════════════════════════════════════════════════════════════
+
+    if [[ $EXTERNAL_DRIVE_MODE -eq 1 ]]; then
+        local TRACKTX_CACHE="${HOME}/tmp/tracktx_cache"
+        local proj_name
+        proj_name=$(basename "$(pwd)" 2>/dev/null | sed 's/[^a-zA-Z0-9_.-]/_/g')
+        proj_name=${proj_name:-default}
+        local TRACKTX_WORK="${HOME}/tmp/tracktx_work/${proj_name}"
+        mkdir -p "$TRACKTX_CACHE" "$TRACKTX_WORK"
+        export NXF_CACHE_DIR="$TRACKTX_CACHE"
+        export NXF_TEMP="${TRACKTX_CACHE}/.nxf_temp"
+        mkdir -p "$NXF_TEMP"
+        export NXF_WORK="$TRACKTX_WORK"
+        success "External drive mode: cache, temp, work on local (~10–50 GB); results on project dir"
     fi
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -1211,7 +1212,7 @@ main() {
         local has_prior_run=0
         if [[ -f "$trace_path" ]] && grep -q "COMPLETED" "$trace_path" 2>/dev/null; then
             has_prior_run=1
-        elif [[ -d .nextflow ]] && find work -name ".exitcode" -exec grep -lx "0" {} \; 2>/dev/null | grep -q .; then
+        elif [[ -d .nextflow ]] && find "${NXF_WORK:-work}" -name ".exitcode" -exec grep -lx "0" {} \; 2>/dev/null | grep -q .; then
             has_prior_run=1
         fi
 
@@ -1230,26 +1231,6 @@ main() {
     fi
 
     # ═══════════════════════════════════════════════════════════════════════
-    # EXTERNAL DRIVE MODE SETUP
-    # exFAT/USB/NFS lack file locking. Nextflow cache, temp, and work dir all need it.
-    # Redirect ALL lock-using dirs to local. Results stay on project dir (external).
-    # ═══════════════════════════════════════════════════════════════════════
-
-    if [[ $EXTERNAL_DRIVE_MODE -eq 1 ]]; then
-        local TRACKTX_CACHE="${HOME}/tmp/tracktx_cache"
-        local proj_name
-        proj_name=$(basename "$(pwd)" 2>/dev/null | sed 's/[^a-zA-Z0-9_.-]/_/g')
-        proj_name=${proj_name:-default}
-        local TRACKTX_WORK="${HOME}/tmp/tracktx_work/${proj_name}"
-        mkdir -p "$TRACKTX_CACHE" "$TRACKTX_WORK"
-        export NXF_CACHE_DIR="$TRACKTX_CACHE"
-        export NXF_TEMP="${TRACKTX_CACHE}/.nxf_temp"
-        mkdir -p "$NXF_TEMP"
-        export NXF_WORK="$TRACKTX_WORK"
-        success "External drive mode: cache, temp, work on local (~10–50 GB); results on project dir"
-    fi
-
-    # ═══════════════════════════════════════════════════════════════════════
     # BUILD COMMAND
     # ═══════════════════════════════════════════════════════════════════════
 
@@ -1258,7 +1239,6 @@ main() {
 
     local CMD=(
         nextflow run main.nf
-        -entry TrackTx
         -profile "$PROFILE"
         --samplesheet "$SAMPLESHEET"
     )
@@ -1342,8 +1322,10 @@ main() {
     info "Started at: $(date '+%Y-%m-%d %H:%M:%S')"
     echo ""
 
-    "${CMD[@]}"
-    local exit_code=$?
+    # Capture Nextflow's exit code without `set -e` aborting the script first,
+    # so the summary/error message below actually runs on failure.
+    local exit_code=0
+    "${CMD[@]}" || exit_code=$?
 
     echo ""
     if [[ $exit_code -eq 0 ]]; then

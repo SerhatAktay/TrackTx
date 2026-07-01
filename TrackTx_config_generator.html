@@ -1,154 +1,224 @@
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <title>TrackTx — Configuration Generator</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
-
-  <!-- Bulma for clean, aligned UI -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
   <!-- JSZip for creating the ZIP with YAML+CSV -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" crossorigin="anonymous"></script>
-
   <style>
-    /* Improved spacing and readability */
-    .small-input{max-width:260px}
-    .mono{font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}
-    .is-dim{opacity:.85}
-    .mb-2{margin-bottom:.5rem}.mb-3{margin-bottom:.75rem}.mb-4{margin-bottom:1rem}.mb-5{margin-bottom:1.5rem}
-    .mt-2{margin-top:.5rem}.mt-3{margin-top:.75rem}.mt-4{margin-top:1rem}.mt-5{margin-top:1.5rem}.mt-6{margin-top:2rem}
-    .rep-box{border:1px dashed #ddd; padding:1.25rem; border-radius:6px; margin-bottom:1rem; background:#fafafa}
-    pre.preview{white-space:pre-wrap; background:#0f1221; color:#e6edf3; padding:1.5rem; border-radius:8px; max-height:500px; overflow:auto}
-    .step{display:inline-block; width:1.8rem; height:1.8rem; line-height:1.8rem; border-radius:50%; text-align:center; background:#485fc7; color:#fff; font-weight:700; margin-right:.5rem}
-    .box h2 .step{position:relative; top:-2px}
-    .section .container{max-width:1200px}
-    
-    /* Even more spacious boxes */
-    .box {
-      padding: 2.5rem;
-      margin-bottom: 2rem;
-    }
-    
-    /* Better field spacing */
-    .field:not(:last-child) {
-      margin-bottom: 1.5rem;
-    }
-    
-    /* Section headers with more space */
-    .section-header {
-      font-weight: 700;
-      font-size: 1.15rem;
-      margin-bottom: 1.25rem;
-      margin-top: 1.75rem;
-      padding-bottom: 0.65rem;
-      border-bottom: 2px solid #dbdbdb;
-    }
-    
-    .section-header:first-child {
-      margin-top: 0;
-    }
-    
-    /* Help text styling */
-    .help {
-      font-size: 0.875rem;
-      line-height: 1.5;
-      margin-top: 0.4rem;
-    }
-    
-    .help-box {
-      background: #f5f5f5;
-      border-left: 3px solid #3273dc;
-      padding: 1rem 1.25rem;
-      margin-top: 0.65rem;
-      margin-bottom: 0.65rem;
-      font-size: 0.875rem;
-      line-height: 1.6;
-    }
-    
-    /* Better sample boxes */
-    .sample-box {
-      border: 2px solid #e8e8e8;
-      border-radius: 8px;
-      padding: 1.75rem;
-      margin-bottom: 1.25rem;
-      background: #fafafa;
-    }
-    
-    .sample-box .columns {
-      margin-bottom: 0.75rem;
-    }
-    
-    /* Input group spacing */
-    .input-group {
-      margin-bottom: 2rem;
-    }
-    
-    /* Better checkbox styling */
-    .checkbox {
-      margin-right: 1.25rem;
-      font-size: 0.95rem;
-    }
-    
-    .radio {
-      font-size: 0.95rem;
-      margin-right: 1rem;
-    }
-    
-    /* Column spacing */
-    .columns {
-      margin-bottom: 1rem;
-    }
-    
-    /* Space section: savings badges */
-    .space-badge {
-      display: inline-block;
-      font-size: 0.8rem;
-      font-weight: 600;
-      padding: 0.2rem 0.5rem;
-      border-radius: 4px;
-      background: #e8f4f8;
-      color: #0a6b8a;
-      margin-left: 0.5rem;
-    }
-    .space-row {
-      padding: 1rem 1.25rem;
-      border: 1px solid #eee;
-      border-radius: 8px;
-      margin-bottom: 0.75rem;
-      background: #fafafa;
-    }
-    .space-row label { margin: 0; display: block; }
-    .space-row .help { margin-top: 0.35rem; margin-bottom: 0; }
+:root {
+  --bg:#ffffff; --fg:#1a1d23; --muted:#6b7280; --faint:#9aa1ab;
+  --card:#ffffff; --panel:#f7f8fa; --line:#e6e8ec; --line-strong:#d4d8de;
+  --accent:#2f6df6; --accent-soft:#eaf0fe;
+  --ok:#1f9d57; --warn:#d98a00; --fail:#dc3a3a;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --radius:10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#0e1116; --fg:#e6e8ec; --muted:#9aa1ab; --faint:#6b7280;
+    --card:#161a21; --panel:#12161c; --line:#262c35; --line-strong:#333b46;
+    --accent:#5b8cff; --accent-soft:#1a2230;
+    --ok:#37c172; --warn:#e0a032; --fail:#ef5e5e;
+  }
+}
+* { box-sizing:border-box; }
+html { scroll-behavior:smooth; scroll-padding-top:64px; }
+body { background:var(--bg); color:var(--fg); font-family:var(--font); margin:0;
+       line-height:1.55; font-size:15px; -webkit-font-smoothing:antialiased; }
+.section { padding:0; }
+.container { max-width:1080px; margin:0 auto; padding:0 1.5rem 4rem; }
+a { color:var(--accent); text-decoration:none; }
+code, .mono { font-family:var(--mono); font-size:0.88em; }
+code { background:var(--panel); border:1px solid var(--line); border-radius:5px; padding:0.05rem 0.35rem; }
+strong { color:var(--fg); }
+
+/* ---- sticky section nav (cohort toolbar) -------------------------------- */
+.tt-nav { position:sticky; top:0; z-index:50; background:var(--bg);
+          border-bottom:1px solid var(--line); }
+.tt-nav .inner { max-width:1080px; margin:0 auto; padding:0.55rem 1.5rem;
+                 display:flex; align-items:center; gap:0.75rem; overflow-x:auto; }
+.tt-nav .brand { font-weight:700; font-size:0.9rem; white-space:nowrap; }
+.tt-nav .brand .tag { color:var(--accent); }
+.tt-nav .links { display:flex; gap:0.15rem; }
+.tt-nav a { padding:0.3rem 0.6rem; border-radius:7px; color:var(--muted);
+            font-weight:600; font-size:0.78rem; white-space:nowrap; }
+.tt-nav a:hover { background:var(--panel); color:var(--fg); }
+
+/* ---- page header -------------------------------------------------------- */
+.page-header { padding:2.4rem 0 0.5rem; }
+.eyebrow { text-transform:uppercase; font-size:0.7rem; font-weight:700;
+           letter-spacing:0.12em; color:var(--accent); }
+.page-header h1 { font-size:1.9rem; font-weight:750; margin:0.35rem 0 0.4rem;
+                  letter-spacing:-0.01em; }
+.page-header p.lead { color:var(--muted); font-size:0.95rem; margin:0; max-width:60ch; }
+
+/* ---- callout (replaces Bulma message) ----------------------------------- */
+.callout { background:var(--accent-soft); border:1px solid var(--line);
+           border-left:3px solid var(--accent); border-radius:var(--radius);
+           padding:1rem 1.2rem; margin:1.5rem 0; font-size:0.9rem; }
+.callout strong { color:var(--fg); }
+.callout ol { margin:0.5rem 0 0; padding-left:1.2rem; }
+.callout li { margin:0.2rem 0; }
+
+/* ---- cards (Bulma .box) ------------------------------------------------- */
+.box { background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+       padding:1.75rem; margin-bottom:1.5rem; }
+.box > .subtitle.is-4 { display:flex; align-items:center; font-size:1.15rem;
+       font-weight:700; margin:0 0 0.35rem; }
+.title.is-3 { font-size:1.6rem; font-weight:750; }
+.subtitle.is-6 { font-size:0.95rem; font-weight:700; color:var(--muted);
+       margin:0 0 0.4rem; }
+
+/* step number badge */
+.step { display:inline-flex; align-items:center; justify-content:center;
+        width:1.7rem; height:1.7rem; line-height:1; border-radius:50%;
+        background:var(--accent); color:#fff; font-weight:700; font-size:0.85rem;
+        margin-right:0.6rem; flex:none; }
+
+/* section sub-headers inside cards */
+.section-header { font-weight:700; font-size:0.95rem; color:var(--fg);
+       margin:1.6rem 0 0.9rem; padding-bottom:0.5rem; border-bottom:1px solid var(--line); }
+.section-header:first-child { margin-top:0.4rem; }
+
+/* ---- layout: columns ---------------------------------------------------- */
+.columns { display:flex; flex-wrap:wrap; gap:1.25rem; margin-bottom:0.5rem; }
+.column { flex:1 1 0; min-width:200px; padding:0; }
+.column.is-3,.column.is-one-quarter { flex:0 0 calc(25% - 1rem); }
+.column.is-2 { flex:0 0 calc(16.66% - 1rem); }
+.column.is-4,.column.is-one-third { flex:0 0 calc(33.33% - 1rem); }
+.column.is-half { flex:0 0 calc(50% - 0.75rem); }
+@media (max-width:760px){ .column,.column.is-3,.column.is-2,.column.is-4,
+  .column.is-one-third,.column.is-one-quarter,.column.is-half{ flex:1 1 100%; } }
+
+/* ---- fields / inputs ---------------------------------------------------- */
+.field:not(:last-child){ margin-bottom:1.1rem; }
+.label { display:block; font-weight:650; font-size:0.85rem; margin-bottom:0.35rem; }
+.input, .select select, textarea { width:100%; font-family:var(--font);
+       font-size:0.9rem; color:var(--fg); background:var(--card);
+       border:1px solid var(--line-strong); border-radius:7px; padding:0.5rem 0.7rem; }
+.input:focus, .select select:focus { outline:none; border-color:var(--accent);
+       box-shadow:0 0 0 3px var(--accent-soft); }
+.input.mono { font-family:var(--mono); }
+.small-input{ max-width:260px; }
+.select { position:relative; display:inline-block; width:100%; }
+.select select { appearance:none; -webkit-appearance:none; padding-right:2rem; cursor:pointer; }
+.select::after { content:"▾"; position:absolute; right:0.7rem; top:50%;
+       transform:translateY(-50%); color:var(--faint); pointer-events:none; font-size:0.8rem; }
+.help { font-size:0.8rem; line-height:1.5; color:var(--muted); margin-top:0.35rem; }
+.is-dim{ opacity:0.85; }
+
+/* checkboxes / radios */
+.checkbox,.radio{ display:inline-flex; align-items:flex-start; gap:0.45rem;
+       font-size:0.9rem; margin-right:1rem; cursor:pointer; }
+.checkbox input,.radio input{ accent-color:var(--accent); margin-top:0.15rem; }
+
+/* help-box (informational panel) */
+.help-box{ background:var(--panel); border:1px solid var(--line);
+       border-left:3px solid var(--accent); border-radius:8px;
+       padding:0.85rem 1.05rem; margin:0.6rem 0; font-size:0.84rem;
+       line-height:1.55; color:var(--fg); }
+.help-box ul,.help-box ol{ margin:0.4rem 0 0; padding-left:1.2rem; }
+
+/* sample + replicate + space rows */
+.sample-box{ border:1px solid var(--line); border-radius:var(--radius);
+       padding:1.4rem; margin-bottom:1.1rem; background:var(--panel); }
+.rep-box{ border:1px dashed var(--line-strong); padding:1rem 1.1rem;
+       border-radius:8px; margin-bottom:0.8rem; background:var(--card); }
+.space-row{ padding:0.9rem 1.1rem; border:1px solid var(--line);
+       border-radius:8px; margin-bottom:0.7rem; background:var(--card); }
+.space-row label{ margin:0; display:block; }
+.space-row .help{ margin-top:0.3rem; margin-bottom:0; }
+.space-badge{ display:inline-block; font-size:0.72rem; font-weight:700;
+       padding:0.12rem 0.5rem; border-radius:5px; background:var(--accent-soft);
+       color:var(--accent); margin-left:0.5rem; }
+
+/* ---- buttons ------------------------------------------------------------ */
+.buttons{ display:flex; flex-wrap:wrap; gap:0.6rem; margin:0.5rem 0; }
+.button{ font-family:var(--font); font-size:0.85rem; font-weight:600; cursor:pointer;
+       border:1px solid var(--line-strong); background:var(--card); color:var(--fg);
+       border-radius:7px; padding:0.5rem 0.9rem; transition:background 0.1s,border-color 0.1s; }
+.button:hover{ background:var(--panel); }
+.button.is-small{ font-size:0.76rem; padding:0.3rem 0.6rem; }
+.button.is-large{ font-size:0.95rem; padding:0.7rem 1.2rem; }
+.button.is-primary,.button.is-link{ background:var(--accent); color:#fff; border-color:var(--accent); }
+.button.is-primary:hover,.button.is-link:hover{ filter:brightness(1.06); background:var(--accent); }
+.button.is-info{ background:var(--card); color:var(--accent); border-color:var(--accent); }
+.button.is-info:hover{ background:var(--accent-soft); }
+.button.is-light{ background:var(--panel); }
+.button.is-danger{ background:var(--fail); color:#fff; border-color:var(--fail); }
+.button.is-danger.is-light{ background:rgba(220,58,58,0.12); color:var(--fail);
+       border-color:transparent; }
+.button.is-link.is-light{ background:var(--accent-soft); color:var(--accent); border-color:transparent; }
+.button.is-white{ background:transparent; border-color:transparent; color:var(--muted); }
+.button.is-white:hover{ background:var(--panel); color:var(--fg); }
+
+/* preview block */
+pre.preview{ white-space:pre-wrap; background:var(--panel); color:var(--fg);
+       border:1px solid var(--line); padding:1.1rem; border-radius:8px;
+       max-height:500px; overflow:auto; font-family:var(--mono); font-size:0.8rem; }
+
+/* ---- helpers (Bulma spacing/util we still rely on) ---------------------- */
+.is-pulled-right{ float:right; }
+.mt-2{margin-top:.5rem}.mt-3{margin-top:.75rem}.mt-4{margin-top:1rem}.mt-5{margin-top:1.5rem}.mt-6{margin-top:2rem}
+.mb-2{margin-bottom:.5rem}.mb-3{margin-bottom:.75rem}.mb-4{margin-bottom:1rem}.mb-5{margin-bottom:1.5rem}
+.ml-4{margin-left:1.25rem}.ml-5{margin-left:1.5rem}
+optgroup{ color:var(--fg); }
+
+/* ---- consolidated advanced section (collapsible sub-cards) -------------- */
+.adv-details{ border:1px solid var(--line); border-radius:var(--radius); background:var(--panel); padding:0.85rem 1.1rem; margin-bottom:0.75rem; }
+.adv-details:last-child{ margin-bottom:0; }
+.adv-details > summary{ cursor:pointer; display:flex; align-items:center; gap:0.5rem; font-weight:680; font-size:0.92rem; color:var(--fg); list-style:none; }
+.adv-details > summary:hover{ color:var(--accent); }
+.adv-details > summary::-webkit-details-marker{ display:none; }
+.adv-details > summary::before{ content:"\25B8"; color:var(--accent); transition:transform 0.12s; }
+.adv-details[open] > summary::before{ transform:rotate(90deg); }
+.adv-body{ border-top:1px solid var(--line); padding-top:1rem; margin-top:0.7rem; }
+.adv-body .section-header:first-child{ margin-top:0.2rem; }
   </style>
 </head>
 <body>
+  <nav class="tt-nav">
+    <div class="inner">
+      <span class="brand">TrackTx <span class="tag">config</span></span>
+      <span class="links">
+        <a href="#step1">Project</a>
+        <a href="#step2">Sequencing</a>
+        <a href="#step3">Genomes</a>
+        <a href="#step4">Samples</a>
+        <a href="#step5">Processing</a>
+        <a href="#step6">Analysis</a>
+        <a href="#step7">Output</a>
+        <a href="#step8">Advanced</a>
+        <a href="#step9">Build</a>
+      </span>
+    </div>
+  </nav>
 <section class="section">
   <div class="container">
 
-    <!-- TITLE -->
-    <h1 class="title is-3">TrackTx Configuration Generator</h1>
-    <p class="subtitle is-6">
-      Build <span class="mono">params.yaml</span> and <span class="mono">samplesheet.csv</span> for the TrackTx nascent RNA pipeline (PRO-seq &amp; GRO-seq).
-      This tool walks you through all options with clear explanations.
-    </p>
+    <div class="page-header">
+      <div class="eyebrow">PRO-seq / GRO-seq nascent RNA</div>
+      <h1>TrackTx Configuration Generator</h1>
+      <p class="lead">Build <span class="mono">params.yaml</span> and <span class="mono">samplesheet.csv</span> for the TrackTx pipeline. Every option below is explained inline — fill it out, then download the ZIP.</p>
+    </div>
 
-    <!-- INTRO -->
-    <article class="message is-info">
-      <div class="message-body">
-        <strong>📦 What you'll get:</strong> A ZIP file with <span class="mono">params.yaml</span> (pipeline settings) and <span class="mono">samplesheet.csv</span> (your samples).<br>
-        <strong>🚀 How to run:</strong>
-        <ol class="mt-2 ml-4">
-          <li>Fill out the sections below → Click <strong>Download ZIP</strong></li>
-          <li>Unzip and place <span class="mono">params.yaml</span> and <span class="mono">samplesheet.csv</span> in the <strong>same folder as the pipeline</strong> (the tracktx directory where <code class="mono">main.nf</code> lives)</li>
-          <li>Run: <code class="mono">./run_pipeline.sh</code> (recommended) or <code class="mono">nextflow run main.nf -entry TrackTx -profile docker -params-file params.yaml</code></li>
-        </ol>
-        <strong>✨ Statistical divergent transcription detection:</strong> Uses Gaussian Mixture Models and FDR control. No manual threshold tuning needed.
-      </div>
-    </article>
+    <div class="callout">
+      <strong>What you'll get:</strong> a ZIP with <span class="mono">params.yaml</span> (pipeline settings) and <span class="mono">samplesheet.csv</span> (your samples).
+      <ol>
+        <li>Fill out the sections below, then click <strong>Download ZIP</strong></li>
+        <li>Place both files in the pipeline folder (where <code>main.nf</code> lives)</li>
+        <li>Run <code>./run_pipeline.sh</code>, or <code>nextflow run main.nf -entry TrackTx -profile docker -params-file params.yaml</code></li>
+      </ol>
+      Divergent transcription is detected statistically (Gaussian mixture models + FDR) — no manual threshold tuning needed.
+    </div>
 
     <!-- ================================================================ -->
     <!-- STEP 1: PROJECT INFO -->
     <!-- ================================================================ -->
-    <div class="box">
+    <div class="box" id="step1">
       <h2 class="subtitle is-4"><span class="step">1</span> Project Information</h2>
       <p class="mb-4">Basic information about your experiment. These values appear in reports and filenames.</p>
       
@@ -168,60 +238,12 @@
           </div>
         </div>
       </div>
-
-      <div class="columns">
-        <div class="column">
-          <div class="field">
-            <label class="label">Samplesheet Filename</label>
-            <input class="input" id="samplesheet_name" value="samplesheet.csv">
-            <p class="help">Name of the CSV file that will list your samples (included in the ZIP).</p>
-          </div>
-        </div>
-        <div class="column">
-          <div class="field">
-            <label class="label">Control Condition Label</label>
-            <input class="input" id="control_label" value="Control" placeholder="Control">
-            <p class="help">The condition name used as baseline for spike-in normalization. Should match your sample conditions.</p>
-          </div>
-        </div>
-      </div>
-
-      <div class="columns">
-        <div class="column">
-          <div class="field">
-            <label class="label">Genome Cache Directory</label>
-            <input class="input" id="genome_cache" value="./.cache/genomes">
-            <p class="help">Pipeline caches reference genomes here for faster re-runs. First run downloads; subsequent runs reuse.</p>
-          </div>
-        </div>
-        <div class="column">
-          <div class="field">
-            <label class="label">Assets Directory</label>
-            <input class="input" id="assets_dir" value="./assets">
-            <p class="help">Directory for pipeline temporary files and placeholder files.</p>
-          </div>
-        </div>
-      </div>
-      
-      <div class="field">
-        <label class="checkbox">
-          <input type="checkbox" id="preprocess_reads_lenient_cache">
-          Use lenient cache for preprocess step (NFS/network storage)
-        </label>
-        <p class="help">Set true when running from NFS, SMB, or cloud-synced storage to avoid cache invalidation from inconsistent timestamps.</p>
-      </div>
-      <div class="field">
-        <label class="checkbox">
-          <input type="checkbox" id="yaml_comments" checked>
-          Add helpful comments to the YAML file
-        </label>
-      </div>
     </div>
 
     <!-- ================================================================ -->
     <!-- STEP 2: SEQUENCING SETUP -->
     <!-- ================================================================ -->
-    <div class="box">
+    <div class="box" id="step2">
       <h2 class="subtitle is-4"><span class="step">2</span> Sequencing Setup</h2>
       <p class="mb-4">Tell us about your sequencing data format and source.</p>
       
@@ -234,14 +256,31 @@
                 <input type="radio" name="read_type" value="SE" checked>
                 <strong>Single-End</strong> (R1 only)
               </label>
-              <p class="help is-dim ml-5">One FASTQ file per sample. Most PRO-seq and GRO-seq libraries are single-end.</p>
+              <p class="help is-dim ml-5">One FASTQ file per sample. Most PRO-seq is single-end.</p>
             </div>
             <div class="control mt-2">
               <label class="radio">
                 <input type="radio" name="read_type" value="PE">
                 <strong>Paired-End</strong> (R1 + R2)
               </label>
-              <p class="help is-dim ml-5">Two FASTQ files per sample. Less common for nascent RNA protocols.</p>
+              <p class="help is-dim ml-5">Two FASTQ files per sample. Less common for PRO-seq.</p>
+            </div>
+          </div>
+          <div class="field mt-4">
+            <label class="label">Library Type</label>
+            <div class="control">
+              <label class="radio">
+                <input type="radio" name="library_type" value="proseq" checked>
+                <strong>PRO-seq</strong>
+              </label>
+              <p class="help is-dim ml-5">R1 reverse-complemented; 3' end marks the RNA Pol II active site (single-nucleotide resolution).</p>
+            </div>
+            <div class="control mt-2">
+              <label class="radio">
+                <input type="radio" name="library_type" value="groseq">
+                <strong>GRO-seq</strong>
+              </label>
+              <p class="help is-dim ml-5">R1 kept as-is; 5' end used as the nascent-RNA signal. Experimental — validate strand/signal on real data.</p>
             </div>
           </div>
         </div>
@@ -267,25 +306,6 @@
         </div>
       </div>
       
-      <!-- Library Type -->
-      <div class="field mt-4">
-        <label class="label">Library / Protocol Type</label>
-        <div class="control">
-          <label class="radio">
-            <input type="radio" name="library_type" value="proseq" checked>
-            <strong>PRO-seq</strong> (or PRO-cap, ChRO-seq, ligation-based)
-          </label>
-          <p class="help is-dim ml-5">R1 reads capture the <em>3′ end</em> of nascent RNA. R1 is reverse-complemented before alignment. Standard for most run-on experiments.</p>
-        </div>
-        <div class="control mt-2">
-          <label class="radio">
-            <input type="radio" name="library_type" value="groseq">
-            <strong>GRO-seq</strong> (circularization-based library prep)
-          </label>
-          <p class="help is-dim ml-5">R1 reads already represent the nascent RNA strand (5′ end). No reverse-complement is applied. Strandedness is opposite to PRO-seq.</p>
-        </div>
-      </div>
-
       <!-- Local file options -->
       <div id="localOptions" style="display:none" class="mt-4">
         <div class="section-header">Local FASTQ Files</div>
@@ -295,53 +315,13 @@
       </div>
       
       <!-- SRA Options -->
-      <div id="sraOptions" style="display:none" class="mt-4">
-        <div class="section-header">SRA Download Options</div>
-        <div class="columns">
-          <div class="column">
-            <div class="field">
-              <label class="checkbox">
-                <input type="checkbox" id="fastq_gzip">
-                Compress downloaded FASTQs with gzip
-              </label>
-              <p class="help">Saves disk space but increases download time. Useful for large datasets.</p>
-            </div>
-          </div>
-          <div class="column">
-            <div class="field">
-              <label class="label">Temporary Directory (optional)</label>
-              <input class="input" id="sra_tmp" placeholder="Leave blank to use work directory">
-              <p class="help">Where fasterq-dump stores temporary files. Leave blank for default.</p>
-            </div>
-          </div>
-          <div class="column">
-            <div class="field">
-              <label class="label">Max Prefetch Size</label>
-              <input class="input small-input" id="sra_max_size" value="200G">
-              <p class="help">Maximum size to prefetch from SRA (e.g., 200G, 500G).</p>
-            </div>
-          </div>
-          <div class="column">
-            <div class="field">
-              <label class="label">Download Source</label>
-              <div class="select">
-                <select id="sra_download_source">
-                  <option value="auto" selected>Auto (NCBI, fallback to ENA)</option>
-                  <option value="ena">ENA only (European Nucleotide Archive)</option>
-                  <option value="ncbi">NCBI only</option>
-                </select>
-              </div>
-              <p class="help">Use ENA if NCBI SRA is unreachable (firewall, network issues).</p>
-            </div>
-          </div>
-        </div>
-      </div>
+      
     </div>
 
     <!-- ================================================================ -->
     <!-- STEP 3: REFERENCE GENOMES -->
     <!-- ================================================================ -->
-    <div class="box">
+    <div class="box" id="step3">
       <h2 class="subtitle is-4"><span class="step">3</span> Reference Genomes & Annotation</h2>
       <p class="mb-4">Select your reference genome and optional spike-in control.</p>
       
@@ -389,9 +369,9 @@
                 <optgroup label="Xenopus">
                   <option value="xenTro10">X. tropicalis (xenTro10)</option>
                 </optgroup>
-                <optgroup label="Other / Custom">
-                  <option value="TAIR10">Arabidopsis thaliana (TAIR10) — provide FASTA + annotation</option>
-                  <option value="other">Custom genome — provide FASTA + annotation</option>
+                <optgroup label="Other">
+                  <option value="TAIR10">Arabidopsis (TAIR10)</option>
+                  <option value="other">Custom genome (provide FASTA + GTF)</option>
                 </optgroup>
               </select>
             </div>
@@ -399,29 +379,7 @@
           </div>
 
           <!-- Annotation options (for non-custom genomes) -->
-          <div id="annotationOptionsBlock" class="mt-4">
-            <div class="section-header">Annotation Source & Options</div>
-            <div class="help-box mb-3">
-              <strong>Affects divergent read assignment:</strong> Gene annotations define TSS/TES and promoter regions.
-              If divergent reads are not assigned to genes, try a different annotation source.
-            </div>
-            <div class="field">
-              <label class="label">Annotation Source</label>
-              <div class="select" style="max-width: 320px;">
-                <select id="annotation_source">
-                  <option value="refseq" selected>RefSeq (UCSC) — default, matches UCSC genomes</option>
-                  <option value="ensembl">Ensembl — more comprehensive</option>
-                  <option value="gencode">GENCODE — preferred for human/mouse</option>
-                </select>
-              </div>
-              <p class="help">RefSeq: UCSC annotations. Ensembl/GENCODE: better TSS for some genes. Chromosome naming is auto-configured.</p>
-            </div>
-            <div class="field mt-3">
-              <label class="label">Exclude Biotypes</label>
-              <input class="input" id="annotation_exclude_biotypes" placeholder="rRNA,tRNA (leave empty for all)" style="max-width: 320px;">
-              <p class="help">Exclude genes by biotype (e.g. rRNA). Comma-separated. Leave empty for all.</p>
-            </div>
-          </div>
+          
           
           <div id="refGenomeUpload" style="display:none" class="mt-3">
             <div class="field">
@@ -468,28 +426,26 @@
         </div>
       </div>
       
-      <!-- GTF/GFF for custom genome -->
+      <!-- GTF for custom genome -->
       <div id="gtfBlock" style="display:none" class="mt-4">
-        <div class="section-header">Gene Annotation (GTF / GFF3) for Custom Genome</div>
+        <div class="section-header">Gene Annotation (GTF) for Custom Genome</div>
         <div class="help-box">
-          <strong>Required for custom genomes:</strong> Provide either a local annotation file path OR a download URL.
-          The pipeline uses this to identify genes, TSS, and TES positions.
-          Supported formats: <code>.gtf</code>, <code>.gff</code>, <code>.gff3</code> (plain or <code>.gz</code>).
-          If both path and URL are provided, the local file takes priority.
+          <strong>Required for custom genomes:</strong> Provide either a local GTF file path OR a download URL. 
+          The pipeline uses this to identify genes, TSS, and TES positions. Gzipped GTF files are supported.
         </div>
         <div class="columns mt-3">
           <div class="column">
             <div class="field">
-              <label class="label">Annotation File Path (preferred)</label>
-              <input class="input" type="text" id="gtf_path" placeholder="/path/to/annotations.gtf  or  .gff3  or  .gz">
-              <p class="help">Local path to your GTF or GFF3 annotation file. Gzipped OK.</p>
+              <label class="label">GTF File Path (preferred)</label>
+              <input class="input" type="text" id="gtf_path" placeholder="/path/to/annotations.gtf or .gtf.gz">
+              <p class="help">Local path to your GTF annotation file.</p>
             </div>
           </div>
           <div class="column">
             <div class="field">
-              <label class="label">Annotation URL (alternative)</label>
-              <input class="input" type="text" id="gtf_url" placeholder="https://server.com/annotations.gtf.gz  or  .gff3.gz">
-              <p class="help">URL to download the annotation from (Ensembl Plants, Phytozome, etc.).</p>
+              <label class="label">GTF URL (alternative)</label>
+              <input class="input" type="text" id="gtf_url" placeholder="https://server.com/annotations.gtf.gz">
+              <p class="help">URL to download GTF from. If both path and URL provided, path takes priority.</p>
             </div>
           </div>
         </div>
@@ -499,7 +455,7 @@
     <!-- ================================================================ -->
     <!-- STEP 4: SAMPLES -->
     <!-- ================================================================ -->
-    <div class="box">
+    <div class="box" id="step4">
       <h2 class="subtitle is-4"><span class="step">4</span> Sample Information</h2>
       <p class="mb-4">Add your samples and replicates. Each replicate becomes one row in the samplesheet CSV.</p>
       
@@ -531,7 +487,7 @@
     <!-- ================================================================ -->
     <!-- STEP 5: READ PROCESSING -->
     <!-- ================================================================ -->
-    <div class="box">
+    <div class="box" id="step5">
       <h2 class="subtitle is-4"><span class="step">5</span> Read Processing & Quality Control</h2>
       <p class="mb-4">Configure how raw sequencing reads are cleaned and prepared for alignment.</p>
       
@@ -700,65 +656,12 @@
       </div>
       
       <!-- Bowtie2 options -->
-      <div class="section-header mt-5">Alignment Settings</div>
-      <div class="field">
-        <label class="label">Bowtie2 Extra Options (advanced)</label>
-        <input class="input" id="bowtie2_extra" placeholder="--very-sensitive">
-        <p class="help">Additional command-line flags for Bowtie2 aligner. Default settings are optimized for PRO-seq. Leave blank unless you have specific requirements.</p>
-      </div>
-    </div>
-
-    <!-- ================================================================ -->
-    <!-- STEP 5b: REPLICATE MERGING -->
-    <!-- ================================================================ -->
-    <div class="box">
-      <h2 class="subtitle is-4"><span class="step">5b</span> Replicate Merging <span class="tag is-light ml-2">Optional</span></h2>
-      <p class="mb-4">Optionally merge biological replicates into a single BAM file before track generation. A concordance check (genome-wide Pearson or Spearman correlation) is run first — replicates are only merged if they are sufficiently correlated. This reduces file count and produces cleaner tracks, but eliminates replicate-level information from tracks (counts and normalization retain per-replicate data).</p>
-
-      <div class="help-box mb-3">
-        <strong>When to use:</strong> When you have 2+ replicates per condition and want consensus tracks for visualization. Concordant replicates (r ≥ threshold) are merged; discordant ones are kept separate with a warning.
-      </div>
-
-      <div class="field">
-        <label class="checkbox">
-          <input type="checkbox" id="repMerge" onchange="toggleRepMergeFields()">
-          <strong>Merge concordant replicates after alignment</strong>
-        </label>
-        <p class="help">When enabled, replicates grouped by condition + timepoint undergo a correlation check before BAM merging.</p>
-      </div>
-
-      <div id="repMergeFields" style="display:none" class="mt-4">
-        <div class="columns">
-          <div class="column is-one-third">
-            <div class="field">
-              <label class="label">Concordance Method</label>
-              <div class="select">
-                <select id="repConcordanceMethod">
-                  <option value="pearson" selected>Pearson (linear)</option>
-                  <option value="spearman">Spearman (rank-based)</option>
-                </select>
-              </div>
-              <p class="help">Pearson is standard for PRO-seq coverage; Spearman is more robust to outliers.</p>
-            </div>
-          </div>
-          <div class="column is-one-third">
-            <div class="field">
-              <label class="label">Minimum Correlation</label>
-              <input class="input small-input" id="repConcordanceMin" type="number" step="0.01" min="0.5" max="1.0" value="0.9">
-              <p class="help">Replicates below this threshold are NOT merged and a warning is emitted. Typical: 0.85–0.95.</p>
-            </div>
-          </div>
-        </div>
-        <div class="help-box">
-          <strong>Note:</strong> Requires <code>deepTools</code> (multiBamSummary + plotCorrelation) and <code>samtools merge</code>, both included in the TrackTx conda environment. Merged BAMs replace per-replicate BAMs for all downstream track steps; counts and normalization remain per-replicate.
-        </div>
-      </div>
     </div>
 
     <!-- ================================================================ -->
     <!-- STEP 6: ANALYSIS PARAMETERS -->
     <!-- ================================================================ -->
-    <div class="box">
+    <div class="box" id="step6">
       <h2 class="subtitle is-4"><span class="step">6</span> Analysis Parameters</h2>
       <p class="mb-4">Configure computational analysis settings. Default values are optimized for PRO-seq.</p>
       
@@ -829,8 +732,201 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- ================================================================ -->
+    <!-- STEP 7: OUTPUT PREFERENCES -->
+    <!-- ================================================================ -->
+    <div class="box" id="step7">
+      <h2 class="subtitle is-4"><span class="step">7</span> Output Preferences</h2>
+      <p class="mb-4">Control which outputs are generated and in which formats. Defaults are set for most users; <strong>power users</strong> can uncheck options to save disk space and speed up runs.</p>
       
-      <div class="section-header mt-4">Geometry & Calibration (advanced)</div>
+      <div class="section-header">Track Normalization</div>
+      <div class="help-box mb-3">
+        <strong>CPM:</strong> Counts Per Million - normalizes for library size differences.<br>
+        <strong>siCPM:</strong> Spike-in CPM - quantitative normalization using spike-in controls. Requires spike-in genome and proper controls.
+      </div>
+      
+      <div class="columns">
+        <div class="column">
+          <label class="checkbox">
+            <input type="checkbox" id="outputCPM" checked>
+            <strong>Generate CPM-normalized tracks</strong>
+          </label>
+          <p class="help">Recommended. Normalizes for sequencing depth across samples.</p>
+        </div>
+        <div class="column">
+          <label class="checkbox">
+            <input type="checkbox" id="outputSiCPM" checked>
+            <strong>Generate siCPM (spike-in normalized)</strong>
+          </label>
+          <p class="help">Only works if you selected a spike-in genome and have proper controls.</p>
+        </div>
+      </div>
+      <p class="help is-dim">Raw tracks, allMap, 5′: see <strong>Storage / Space</strong> section below.</p>
+      
+      <div class="section-header mt-4">Track Formats</div>
+      <div class="help-box mb-3">
+        <strong>BigWig (.bw):</strong> Compressed binary format, fast loading in genome browsers (recommended).<br>
+        <strong>BedGraph (.bedgraph):</strong> Text format, larger files but human-readable. Toggle in <strong>Space</strong> section below.
+      </div>
+      
+      <div class="columns">
+        <div class="column">
+          <label class="checkbox">
+            <input type="checkbox" id="trackBigWig" checked>
+            <strong>BigWig format</strong> (recommended)
+          </label>
+          <p class="help">Compressed, fast loading in UCSC/IGV genome browsers.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================================================================ -->
+    <!-- STEP 8: ADVANCED SETTINGS -->
+    <!-- ================================================================ -->
+    <div class="box" id="step8">
+      <h2 class="subtitle is-4"><span class="step">8</span> Advanced Settings</h2>
+      <p class="mb-4">Power-user options, grouped below. Sensible, species-aware defaults are already applied — most users can skip every panel here.</p>
+      <details class="adv-details">
+        <summary>Inputs &amp; paths</summary>
+        <div class="adv-body mt-4">
+          <div class="section-header">Project paths &amp; file options</div>
+<div class="columns">
+        <div class="column">
+          <div class="field">
+            <label class="label">Samplesheet Filename</label>
+            <input class="input" id="samplesheet_name" value="samplesheet.csv">
+            <p class="help">Name of the CSV file that will list your samples (included in the ZIP).</p>
+          </div>
+        </div>
+        <div class="column">
+          <div class="field">
+            <label class="label">Control Condition Label</label>
+            <input class="input" id="control_label" value="Control" placeholder="Control">
+            <p class="help">The condition name used as baseline for spike-in normalization. Should match your sample conditions.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="columns">
+        <div class="column">
+          <div class="field">
+            <label class="label">Genome Cache Directory</label>
+            <input class="input" id="genome_cache" value="./.cache/genomes">
+            <p class="help">Pipeline caches reference genomes here for faster re-runs. First run downloads; subsequent runs reuse.</p>
+          </div>
+        </div>
+        <div class="column">
+          <div class="field">
+            <label class="label">Assets Directory</label>
+            <input class="input" id="assets_dir" value="./assets">
+            <p class="help">Directory for pipeline temporary files and placeholder files.</p>
+          </div>
+        </div>
+      </div>
+      
+      <div class="field">
+        <label class="checkbox">
+          <input type="checkbox" id="preprocess_reads_lenient_cache">
+          Use lenient cache for preprocess step (NFS/network storage)
+        </label>
+        <p class="help">Set true when running from NFS, SMB, or cloud-synced storage to avoid cache invalidation from inconsistent timestamps.</p>
+      </div>
+      <div class="field">
+        <label class="checkbox">
+          <input type="checkbox" id="yaml_comments" checked>
+          Add helpful comments to the YAML file
+        </label>
+      </div>
+
+<div id="sraOptions" style="display:none" class="mt-4">
+        <div class="section-header">SRA Download Options</div>
+        <div class="columns">
+          <div class="column">
+            <div class="field">
+              <label class="checkbox">
+                <input type="checkbox" id="fastq_gzip">
+                Compress downloaded FASTQs with gzip
+              </label>
+              <p class="help">Saves disk space but increases download time. Useful for large datasets.</p>
+            </div>
+          </div>
+          <div class="column">
+            <div class="field">
+              <label class="label">Temporary Directory (optional)</label>
+              <input class="input" id="sra_tmp" placeholder="Leave blank to use work directory">
+              <p class="help">Where fasterq-dump stores temporary files. Leave blank for default.</p>
+            </div>
+          </div>
+          <div class="column">
+            <div class="field">
+              <label class="label">Max Prefetch Size</label>
+              <input class="input small-input" id="sra_max_size" value="200G">
+              <p class="help">Maximum size to prefetch from SRA (e.g., 200G, 500G).</p>
+            </div>
+          </div>
+          <div class="column">
+            <div class="field">
+              <label class="label">Download Source</label>
+              <div class="select">
+                <select id="sra_download_source">
+                  <option value="auto" selected>Auto (NCBI, fallback to ENA)</option>
+                  <option value="ena">ENA only (European Nucleotide Archive)</option>
+                  <option value="ncbi">NCBI only</option>
+                </select>
+              </div>
+              <p class="help">Use ENA if NCBI SRA is unreachable (firewall, network issues).</p>
+            </div>
+          </div>
+        </div>
+      </div>
+<div id="annotationOptionsBlock" class="mt-4">
+            <div class="section-header">Annotation Source & Options</div>
+            <div class="help-box mb-3">
+              <strong>Affects divergent read assignment:</strong> Gene annotations define TSS/TES and promoter regions.
+              If divergent reads are not assigned to genes, try a different annotation source.
+            </div>
+            <div class="field">
+              <label class="label">Annotation Source</label>
+              <div class="select" style="max-width: 320px;">
+                <select id="annotation_source">
+                  <option value="refseq" selected>RefSeq (UCSC) — default, matches UCSC genomes</option>
+                  <option value="ensembl">Ensembl — more comprehensive</option>
+                  <option value="gencode">GENCODE — preferred for human/mouse</option>
+                </select>
+              </div>
+              <p class="help">RefSeq: UCSC annotations. Ensembl/GENCODE: better TSS for some genes. Chromosome naming is auto-configured.</p>
+            </div>
+            <div class="field mt-3">
+              <label class="label">Exclude Biotypes</label>
+              <input class="input" id="annotation_exclude_biotypes" placeholder="rRNA,tRNA (leave empty for all)" style="max-width: 320px;">
+              <p class="help">Exclude genes by biotype (e.g. rRNA). Comma-separated. Leave empty for all.</p>
+            </div>
+          </div>
+        </div>
+      </details>
+      <details class="adv-details">
+        <summary>Alignment</summary>
+        <div class="adv-body mt-4">
+<div class="section-header mt-5">Alignment Settings</div>
+      <div class="field">
+        <label class="label">Multimapping reports per read (bowtie2 -k)</label>
+        <input class="input small-input" id="multimap_k" type="number" min="1" max="50" value="4">
+        <p class="help">How many alignments bowtie2 reports per read (<code>-k N</code>). With N &gt; 1, <strong>allMap</strong> tracks keep every reported locus (signal stays visible across repeats) while <strong>main</strong> tracks/quantification use the single best alignment; uniqueness is then defined by the NH tag (NH==1). Set to <strong>1</strong> for legacy single-best behaviour (allMap = main, uniqueness via MAPQ). Default 4.</p>
+      </div>
+      <div class="field">
+        <label class="label">Bowtie2 Extra Options (advanced)</label>
+        <input class="input" id="bowtie2_extra" placeholder="--very-sensitive">
+        <p class="help">Additional command-line flags for Bowtie2 aligner. Default settings are optimized for PRO-seq. Leave blank unless you have specific requirements.</p>
+      </div>
+
+        </div>
+      </details>
+      <details class="adv-details">
+        <summary>Divergent transcription — geometry &amp; calibration</summary>
+        <div class="adv-body mt-4">
+<div class="section-header mt-4">Geometry & Calibration (advanced)</div>
       <p class="help mb-3">These settings control how far peaks can pair, how bins are merged, and how automatic thresholds are calibrated. Species presets provide sensible defaults; adjust only if you have specific needs.</p>
       <div class="columns mt-2">
         <div class="column">
@@ -911,7 +1007,13 @@
       </div>
       
       <!-- Functional Regions -->
-      <div class="section-header mt-5"><strong>Functional Region Definitions</strong></div>
+
+        </div>
+      </details>
+      <details class="adv-details">
+        <summary>Functional regions &amp; pausing index</summary>
+        <div class="adv-body mt-4">
+<div class="section-header mt-5"><strong>Functional Region Definitions</strong></div>
       <div class="help-box mb-3">
         <strong>What are functional regions?</strong> Genomic features used for Pol-II metrics calculation:
         promoters (TSS ± window), gene bodies, termination windows, etc. These values define the boundaries 
@@ -982,56 +1084,64 @@
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- ================================================================ -->
-    <!-- STEP 7: OUTPUT PREFERENCES -->
-    <!-- ================================================================ -->
-    <div class="box">
-      <h2 class="subtitle is-4"><span class="step">7</span> Output Preferences</h2>
-      <p class="mb-4">Control which outputs are generated and in which formats. Defaults are set for most users; <strong>power users</strong> can uncheck options to save disk space and speed up runs.</p>
-      
-      <div class="section-header">Track Normalization</div>
+      <!-- Pausing index (Pol-II metrics) -->
+      <div class="section-header mt-5"><strong>Pausing Index (Pol-II Metrics)</strong></div>
       <div class="help-box mb-3">
-        <strong>CPM:</strong> Counts Per Million - normalizes for library size differences.<br>
-        <strong>siCPM:</strong> Spike-in CPM - quantitative normalization using spike-in controls. Requires spike-in genome and proper controls.
+        Geometry for the RNA Pol-II pausing index (TSS read density ÷ gene-body density).
+        The gene body starts at <em>max(offset min, offset fraction × gene length)</em> after the TSS.
+        The validity guard flags genes whose body window is too short to give a stable density —
+        these report <code>NaN</code> instead of an inflated index.
       </div>
-      
+
       <div class="columns">
         <div class="column">
-          <label class="checkbox">
-            <input type="checkbox" id="outputCPM" checked>
-            <strong>Generate CPM-normalized tracks</strong>
-          </label>
-          <p class="help">Recommended. Normalizes for sequencing depth across samples.</p>
+          <div class="field">
+            <label class="label">TSS Window (±bp)</label>
+            <input class="input small-input" id="pol_tss_win" type="number" value="50">
+            <p class="help">Promoter-proximal window for TSS read counting. Common: 50-100 bp.</p>
+          </div>
         </div>
         <div class="column">
-          <label class="checkbox">
-            <input type="checkbox" id="outputSiCPM" checked>
-            <strong>Generate siCPM (spike-in normalized)</strong>
-          </label>
-          <p class="help">Only works if you selected a spike-in genome and have proper controls.</p>
+          <div class="field">
+            <label class="label">Body Offset Min (bp)</label>
+            <input class="input small-input" id="pol_body_offset_min" type="number" value="2000">
+            <p class="help">Minimum distance after TSS where the gene body starts.</p>
+          </div>
         </div>
-      </div>
-      <p class="help is-dim">Raw tracks, allMap, 5′: see <strong>Storage / Space</strong> section below.</p>
-      
-      <div class="section-header mt-4">Track Formats</div>
-      <div class="help-box mb-3">
-        <strong>BigWig (.bw):</strong> Compressed binary format, fast loading in genome browsers (recommended).<br>
-        <strong>BedGraph (.bedgraph):</strong> Text format, larger files but human-readable. Toggle in <strong>Space</strong> section below.
-      </div>
-      
-      <div class="columns">
         <div class="column">
-          <label class="checkbox">
-            <input type="checkbox" id="trackBigWig" checked>
-            <strong>BigWig format</strong> (recommended)
-          </label>
-          <p class="help">Compressed, fast loading in UCSC/IGV genome browsers.</p>
+          <div class="field">
+            <label class="label">Body Offset Fraction</label>
+            <input class="input small-input" id="pol_body_offset_frac" type="number" step="0.01" value="0.10">
+            <p class="help">Body start as a fraction of gene length (used when larger than offset min).</p>
+          </div>
         </div>
       </div>
-      
-      <div class="section-header mt-4">Advanced Output Options</div>
+
+      <div class="columns mt-3">
+        <div class="column">
+          <div class="field">
+            <label class="label">Min Body Fraction</label>
+            <input class="input small-input" id="pol_min_body_frac" type="number" step="0.01" value="0.10">
+            <p class="help">Body window must be ≥ this fraction of gene length, else the gene is flagged truncated (NaN PI). Scales with gene length.</p>
+          </div>
+        </div>
+        <div class="column">
+          <div class="field">
+            <label class="label">Min Body Length Floor (bp)</label>
+            <input class="input small-input" id="pol_min_body_len" type="number" value="0">
+            <p class="help">Optional absolute body-length floor on top of the fraction. 0 = off.</p>
+          </div>
+        </div>
+        <div class="column"></div>
+      </div>
+
+        </div>
+      </details>
+      <details class="adv-details">
+        <summary>Output &amp; storage</summary>
+        <div class="adv-body mt-4">
+<div class="section-header mt-4">Advanced Output Options</div>
       <div class="columns">
         <div class="column">
           <label class="checkbox">
@@ -1064,56 +1174,9 @@
         </div>
       </div>
 
-      <div class="section-header mt-4">Gene-End Normalization <span class="tag is-light ml-2">Optional</span></div>
-      <div class="help-box mb-3">
-        An additional normalization method that corrects for sample-to-sample differences in transcriptional elongation efficiency — without requiring a spike-in. Outputs are written into a separate <code>gene_end/</code> subfolder alongside <code>cpm/</code> and <code>sicpm/</code>.
-        <br><br>
-        <strong>tes_window</strong> (recommended): Computes signal in a window just upstream of each TES. Polymerases at the gene end have elongated through the full gene body, so this signal is a proxy for elongation efficiency.
-        <br>
-        <strong>gene_body</strong>: Normalizes by the median signal density across expressed gene bodies (TSS+500 to TES−500). Robust to pausing differences but requires well-annotated genes with reasonable read depth.
-      </div>
 
-      <div class="columns">
-        <div class="column is-one-third">
-          <div class="field">
-            <label class="label">Gene-End Normalization Method</label>
-            <div class="select">
-              <select id="geneEndMethod" onchange="toggleGeneEndFields()">
-                <option value="none" selected>None (disabled)</option>
-                <option value="tes_window">TES window (recommended)</option>
-                <option value="gene_body">Gene body median</option>
-              </select>
-            </div>
-            <p class="help">Adds a third normalization method alongside CPM and siCPM.</p>
-          </div>
-        </div>
-        <div id="geneEndFields" style="display:none" class="column">
-          <div class="columns">
-            <div class="column">
-              <div class="field">
-                <label class="label">Window Size (bp) <span id="geneEndWindowLabel">upstream of TES</span></label>
-                <input class="input small-input" id="geneEndWindow" type="number" min="50" value="500">
-                <p class="help" id="geneEndWindowHelp">Size of the TES-proximal window used to sample per-sample signal. Default: 500 bp.</p>
-              </div>
-            </div>
-            <div class="column">
-              <div class="field">
-                <label class="label">Min Gene Body Reads</label>
-                <input class="input small-input" id="geneEndMinReads" type="number" min="1" value="10">
-                <p class="help">Genes with fewer reads in the reference region are excluded from the scaling calculation.</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ================================================================ -->
-    <!-- STEP 8: STORAGE / SPACE -->
-    <!-- ================================================================ -->
-    <div class="box">
-      <h2 class="subtitle is-4"><span class="step">8</span> Storage / Space</h2>
-      <p class="mb-4">Control which outputs are published to save disk space. Uncheck options below to reduce footprint. Defaults keep everything for reproducibility and downstream use.</p>
+      
+      
       
       <div class="help-box mb-4">
         <strong>How it works:</strong> Checked = publish (default). Unchecked = skip publishing to results. The pipeline still runs; only the copy to the results folder is skipped. Files remain in the work directory until you run <code class="mono">nextflow clean -f</code>.
@@ -1123,18 +1186,10 @@
       
       <div class="space-row">
         <label class="checkbox">
-          <input type="checkbox" id="publishSraFastq" checked>
-          <strong>Raw SRA FASTQs</strong> <span class="space-badge">~100 GB+ per dataset</span>
-        </label>
-        <p class="help">Save downloaded FASTQs to <code class="mono">00_sra_cache/</code> in results. <em>Only applies when sample source is SRA.</em> Uncheck to keep them in a hidden cache instead — trimmed FASTQs (if saved) will still prevent re-downloads on re-run.</p>
-      </div>
-
-      <div class="space-row">
-        <label class="checkbox">
           <input type="checkbox" id="publishTrimmedFastq" checked>
           <strong>Trimmed FASTQ</strong> <span class="space-badge">~900 MB per sample</span>
         </label>
-        <p class="help">Publish <code class="mono">01_trimmed_fastq/</code> — cleaned reads after cutadapt/UMI. Uncheck to skip. <em>Note: unchecking also disables the SRA re-run shortcut (trimmed FASTQs won't exist to check).</em></p>
+        <p class="help">Publish <code class="mono">01_trimmed_fastq/</code> — cleaned reads after cutadapt/UMI. Uncheck to skip.</p>
       </div>
       
       <div class="space-row">
@@ -1191,12 +1246,15 @@
       <p class="mt-4 is-dim" style="font-size: 0.9rem;">
         <strong>Tip:</strong> Unchecking all publish options saves ~2.2 GB for a typical single-sample run. Use <code class="mono">genome_cache</code> on shared storage to avoid duplicating references across projects.
       </p>
+    
+        </div>
+      </details>
     </div>
 
     <!-- ================================================================ -->
     <!-- STEP 9: BUILD & DOWNLOAD -->
     <!-- ================================================================ -->
-    <div class="box">
+    <div class="box" id="step9">
       <h2 class="subtitle is-4"><span class="step">9</span> Build & Download</h2>
       <p class="mb-4">Generate your configuration files and download them as a ZIP package.</p>
       
@@ -1240,6 +1298,7 @@ nextflow run main.nf -entry TrackTx -profile docker -params-file params.yaml -wi
     </div>
 
   </div>
+  </div>
 </section>
 
 <script>
@@ -1249,6 +1308,7 @@ const $$ = sel => Array.from(document.querySelectorAll(sel));
 const mono = s => s == null ? 'null' : `"${String(s).replace(/"/g,'\\"')}"`;
 const isPE = () => document.querySelector('input[name="read_type"]:checked').value === 'PE';
 const source = () => document.querySelector('input[name="sample_source"]:checked').value;
+const libType = () => (document.querySelector('input[name="library_type"]:checked') || {value:'proseq'}).value;
 
 /* ====================== UI Toggles ====================== */
 function toggleBlock(id, show){
@@ -1257,15 +1317,12 @@ function toggleBlock(id, show){
   el.style.display = (show === undefined) ? (el.style.display==='none'?'block':'none') : (show?'block':'none');
 }
 
-// Genomes that require a custom FASTA + annotation file (not built-in to the pipeline)
-const CUSTOM_GENOME_VALUES = new Set(['other', 'TAIR10']);
-
 function toggleOtherGenomeUpload(kind){
   if(kind==='ref'){
-    const isCustom = CUSTOM_GENOME_VALUES.has($('#ref_genome').value);
-    toggleBlock('refGenomeUpload', isCustom);
-    toggleBlock('gtfBlock', isCustom);
-    toggleBlock('annotationOptionsBlock', !isCustom);
+    const show = ($('#ref_genome').value === 'other');
+    toggleBlock('refGenomeUpload', show);
+    toggleBlock('gtfBlock', show);
+    toggleBlock('annotationOptionsBlock', !show);
   } else if(kind==='spike'){
     toggleBlock('spikeGenomeUpload', $('#spike_genome').value === 'other');
   }
@@ -1275,24 +1332,6 @@ function toggleAdapterFields(){
   const use = $('#enableAdapters').checked;
   toggleBlock('adapterFields', use);
   if(use) setAdapterPreset();
-}
-
-function toggleRepMergeFields(){
-  const use = $('#repMerge').checked;
-  toggleBlock('repMergeFields', use);
-}
-
-function toggleGeneEndFields(){
-  const method = $('#geneEndMethod').value;
-  const show = (method !== 'none');
-  toggleBlock('geneEndFields', show);
-  if (show) {
-    const isTes = (method === 'tes_window');
-    $('#geneEndWindowLabel').textContent = isTes ? 'upstream of TES' : 'gene body margin (each end)';
-    $('#geneEndWindowHelp').textContent  = isTes
-      ? 'Size of the TES-proximal window used to sample per-sample signal. Default: 500 bp.'
-      : 'Bases excluded from each end of gene bodies (TSS+N to TES−N). Default: 500 bp.';
-  }
 }
 
 function setAdapterPreset(){
@@ -1413,6 +1452,7 @@ function loadExampleSamples(){
   container.innerHTML = '';
   // Set SRA as source so example uses SRR IDs
   $$('input[name="sample_source"]').forEach(r => { r.checked = (r.value === 'srr'); });
+  $$('input[name="library_type"]').forEach(r => { r.checked = (r.value === 'proseq'); });
   rebuildAllReplicateUIs();
   // Add two example samples: Control and Treatment
   addSampleUI();
@@ -1487,16 +1527,13 @@ function buildYAML(){
   const controlLabel = $('#control_label').value || 'Control';
   const assetsDir   = $('#assets_dir').value || './assets';
 
-  const refGenome      = $('#ref_genome').value;
-  const spikeGenome    = $('#spike_genome').value;
-  const isCustomGenome = CUSTOM_GENOME_VALUES.has(refGenome);
-  const genomeFasta    = isCustomGenome ? ($('#ref_genome_path').value.trim() || null) : null;
-  const spikeFasta     = (spikeGenome==='other') ? ($('#spikein_genome_path').value.trim() || null) : null;
+  const refGenome   = $('#ref_genome').value;
+  const spikeGenome = $('#spike_genome').value;
+  const genomeFasta = (refGenome==='other') ? ($('#ref_genome_path').value.trim() || null) : null;
+  const spikeFasta  = (spikeGenome==='other') ? ($('#spikein_genome_path').value.trim() || null) : null;
 
-  const gtfPath = isCustomGenome ? ($('#gtf_path').value.trim() || '') : '';
-  const gtfUrl  = isCustomGenome ? ($('#gtf_url').value.trim()  || '') : '';
-
-  const libraryType = document.querySelector('input[name="library_type"]:checked')?.value || 'proseq';
+  const gtfPath = (refGenome==='other') ? ($('#gtf_path').value.trim() || '') : '';
+  const gtfUrl  = (refGenome==='other') ? ($('#gtf_url').value.trim()  || '') : '';
 
   const fastqGzip = $('#fastq_gzip').checked;
   const sraTmp = $('#sra_tmp').value.trim() || null;
@@ -1512,6 +1549,7 @@ function buildYAML(){
 
   const cutadaptExtra = $('#cutadapt_extra').value || '';
   const bowtie2Extra  = $('#bowtie2_extra').value || '';
+  const multimapK     = Math.max(1, parseInt($('#multimap_k')?.value || '4', 10) || 4);
 
   const qcEnabled = !!$('#qc_enabled')?.checked;
   const qcRaw     = !!$('#qc_raw')?.checked;
@@ -1555,6 +1593,15 @@ function buildYAML(){
     qc:              !!$('#fgr_qc').checked
   };
 
+  // Pausing index (Pol-II metrics) geometry
+  const pol = {
+    tss_win:          parseInt($('#pol_tss_win').value||'50',10),
+    body_offset_min:  parseInt($('#pol_body_offset_min').value||'2000',10),
+    body_offset_frac: parseFloat($('#pol_body_offset_frac').value||'0.10'),
+    min_body_frac:    parseFloat($('#pol_min_body_frac').value||'0.10'),
+    min_body_len:     parseInt($('#pol_min_body_len').value||'0',10)
+  };
+
   // Output switches
   const out = {
     cpm:     $('#outputCPM').checked,
@@ -1564,18 +1611,11 @@ function buildYAML(){
     bedgraph:$('#trackBedGraph').checked
   };
 
-  const normEmitBW       = $('#normEmitBW').checked;
-  const normEmitSiCPM    = $('#normEmitSiCPM').checked;
-  const normEmitAllMap   = $('#normEmitAllMap').checked;
-  const normForce5p      = $('#normForce5p').checked;
-  const forceSortBg      = $('#forceSortBg').checked;
-  const geneEndMethod    = $('#geneEndMethod').value || 'none';
-  const geneEndWindow    = parseInt($('#geneEndWindow')?.value || '500', 10) || 500;
-  const geneEndMinReads  = parseInt($('#geneEndMinReads')?.value || '10', 10) || 10;
-
-  const repMerge             = $('#repMerge').checked;
-  const repConcordanceMethod = $('#repConcordanceMethod')?.value || 'pearson';
-  const repConcordanceMin    = parseFloat($('#repConcordanceMin')?.value || '0.9') || 0.9;
+  const normEmitBW     = $('#normEmitBW').checked;
+  const normEmitSiCPM  = $('#normEmitSiCPM').checked;
+  const normEmitAllMap = $('#normEmitAllMap').checked;
+  const normForce5p    = $('#normForce5p').checked;
+  const forceSortBg    = $('#forceSortBg').checked;
 
   // Build YAML
   let y = '';
@@ -1592,7 +1632,7 @@ function buildYAML(){
   y += `samplesheet: ${mono(samplesheet)}\n`;
   y += `sample_source: ${mono(sampleSource)}\n`;
   y += `paired_end: ${pairedEnd}\n`;
-  y += `library_type: ${libraryType}${libraryType==='groseq' ? '  # GRO-seq: R1 aligned as-is (no reverse-complement)' : '  # PRO-seq: R1 reverse-complemented before alignment'}\n`;
+  y += `library_type: ${mono(libType())}\n`;
   y += `output_dir: ${mono(outputDir)}\n`;
   y += `control_label: ${mono(controlLabel)}\n\n`;
 
@@ -1615,8 +1655,8 @@ function buildYAML(){
   y += `force_rebuild: false\n`;
   y += `preprocess_reads_lenient_cache: ${preprocessLenientCache}  # Set true for NFS/network storage\n\n`;
 
-  if(isCustomGenome){
-    y += `# Custom genome annotation (GTF, GFF, or GFF3 — plain or .gz)\n`;
+  if(refGenome==='other'){
+    y += `# Custom genome annotation\n`;
     y += `gtf_path: ${mono(gtfPath)}\n`;
     y += `gtf_url: ${mono(gtfUrl)}\n\n`;
   } else {
@@ -1658,6 +1698,10 @@ function buildYAML(){
   y += `  length: ${bcLen}\n`;
   y += `  location: ${bcLoc}\n\n`;
 
+  y += `# Alignment / multimapping\n`;
+  y += `align:\n`;
+  y += `  multimap_k: ${multimapK}   # bowtie2 -k N; >1 = allMap keeps all hits, NH-based uniqueness; 1 = single-best\n\n`;
+
   y += `# Output formats\n`;
   y += `output:\n`;
   y += `  cpm: ${out.cpm}\n`;
@@ -1667,32 +1711,16 @@ function buildYAML(){
   y += `  bedgraph: ${out.bedgraph}\n\n`;
 
   y += `# Storage\n`;
-  y += `publish_sra_fastq: ${$('#publishSraFastq').checked}   # false hides raw SRA FASTQs from results/ (~100 GB+ per dataset)\n`;
   y += `publish_trimmed_fastq: ${$('#publishTrimmedFastq').checked}   # false saves ~900 MB/sample\n`;
   y += `publish_references_gtf: ${$('#publishReferencesGtf').checked}   # false saves ~790 MB (genes/tss/tes kept)\n`;
   y += `publish_alignments: ${$('#publishAlignments').checked}   # false saves ~270 MB/sample\n\n`;
-
-  y += `# Replicate merging\n`;
-  y += `replicates:\n`;
-  y += `  merge: ${repMerge}\n`;
-  if(repMerge){
-    y += `  concordance_method: ${repConcordanceMethod}\n`;
-    y += `  concordance_min: ${repConcordanceMin}\n`;
-  }
-  y += `\n`;
 
   y += `# Normalization options\n`;
   y += `norm:\n`;
   y += `  emit_bw: ${normEmitBW}\n`;
   y += `  emit_sicpm: ${normEmitSiCPM}\n`;
   y += `  emit_allmap: ${normEmitAllMap}\n`;
-  y += `  emit_5p: ${!$('#emit5pTracks').checked ? 'false' : (normForce5p ? 'true' : 'null')}   # false = skip 5' tracks\n`;
-  y += `  gene_end_method: ${geneEndMethod}   # none | tes_window | gene_body\n`;
-  if(geneEndMethod !== 'none'){
-    y += `  gene_end_window: ${geneEndWindow}   # bp upstream of TES (tes_window) or each end of gene body\n`;
-    y += `  gene_end_min_reads: ${geneEndMinReads}   # min reads to include gene in scaling\n`;
-  }
-  y += `\n`;
+  y += `  emit_5p: ${!$('#emit5pTracks').checked ? 'false' : (normForce5p ? 'true' : 'null')}   # false = skip 5' tracks\n\n`;
 
   y += `force_sort_bedgraph: ${forceSortBg}\n\n`;
 
@@ -1716,6 +1744,27 @@ function buildYAML(){
   y += `  divergent_bin_gap: ${div.bin_gap}        # Bin merge gap (bp)\n`;
   y += `  divergent_balance: ${div.balance}        # Balance ratio (0 = max sensitivity)\n`;
   y += `  divergent_qc: ${div.qc}\n\n`;
+
+  y += `# Polymerase metrics (pausing-index geometry)\n`;
+  y += `pol:\n`;
+  y += `  tss_win: ${pol.tss_win}              # TSS window ±bp\n`;
+  y += `  body_offset_min: ${pol.body_offset_min}      # Min body start offset after TSS (bp)\n`;
+  y += `  body_offset_frac: ${pol.body_offset_frac}    # Body start as fraction of gene length\n`;
+  y += `  min_body_frac: ${pol.min_body_frac}       # Body must be >= this fraction of gene length (else NaN PI)\n`;
+  y += `  min_body_len: ${pol.min_body_len}           # Optional absolute body-length floor (bp); 0 = off\n`;
+  // Differential pausing contrasts (module 12). Auto-built from the sample
+  // table: each timepoint vs its condition's baseline (0-like or earliest).
+  const contrasts = buildContrasts();
+  y += `  # Differential pausing contrasts: [conditionA, timepointA, conditionB, timepointB]\n`;
+  y += `  # Auto-generated below as each timepoint vs the condition's baseline. Edit freely\n`;
+  y += `  # (e.g. add cross-condition comparisons at matched timepoints).\n`;
+  if(contrasts.length){
+    y += `  contrasts:\n`;
+    contrasts.forEach(c => y += `    - ${c}\n`);
+    y += `\n`;
+  } else {
+    y += `  contrasts: []   # e.g. - ["treat", "1h", "treat", "0h"]  (needs >1 timepoint per condition)\n\n`;
+  }
 
   y += `# Functional region geometry\n`;
   y += `functional_regions:\n`;
@@ -1749,12 +1798,55 @@ function buildCSV(){
   return csv;
 }
 
+/* ============ Differential pausing contrasts (auto from samples) ========== */
+function naturalTpKey(tp){
+  // Order timepoints by real elapsed time, unit-aware, so the earliest-baseline
+  // fallback is correct even with mixed units (e.g. 5min < 30min < 2h).
+  const m = String(tp).match(/^(\d+(?:\.\d+)?)\s*([a-zA-Z]*)/);
+  if(!m) return Number.POSITIVE_INFINITY;
+  const n = parseFloat(m[1]);
+  const u = (m[2] || '').toLowerCase();
+  const mult = u.startsWith('d') ? 86400
+             : u.startsWith('h') ? 3600
+             : (u === 'm' || u.startsWith('min')) ? 60
+             : u.startsWith('s') ? 1
+             : 1;  // unknown/no unit → numeric order
+  return n * mult;
+}
+function collectConditionTimepoints(){
+  // condition -> ordered list of distinct timepoints seen in the sample table
+  const map = new Map();
+  $$('#samplesContainer .sample-box').forEach(box=>{
+    const cond = (box.querySelector('.sample-treatment')?.value||'').trim();
+    const tp   = (box.querySelector('.sample-timepoint')?.value||'').trim();
+    if(!cond || !tp) return;
+    if(!map.has(cond)) map.set(cond, []);
+    if(!map.get(cond).includes(tp)) map.get(cond).push(tp);
+  });
+  return map;
+}
+function buildContrasts(){
+  // Each non-baseline timepoint vs the condition's baseline (0-like, else earliest).
+  const map = collectConditionTimepoints();
+  const out = [];
+  map.forEach((tps, cond)=>{
+    if(tps.length < 2) return;                       // no timecourse → nothing to contrast
+    let baseline = tps.find(t => /^0(\D|$)/.test(t)); // explicit 0 / 0h / 0min
+    if(!baseline) baseline = [...tps].sort((a,b)=>naturalTpKey(a)-naturalTpKey(b))[0];
+    tps.forEach(tp=>{
+      if(tp === baseline) return;
+      out.push(`["${cond}", "${tp}", "${cond}", "${baseline}"]`);
+    });
+  });
+  return out;
+}
+
 /* ====================== Actions ====================== */
 function fillPreview(){
   const y = buildYAML();
   let warn = '';
-  if(CUSTOM_GENOME_VALUES.has($('#ref_genome').value) && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
-    warn += "\n# WARNING: This genome requires a custom annotation file. Set gtf_path or gtf_url.\n";
+  if($('#ref_genome').value==='other' && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
+    warn += "\n# WARNING: Custom genome requires gtf_path or gtf_url.\n";
   }
   const analysisWarnings = collectAnalysisWarnings();
   if(analysisWarnings.length){
@@ -1777,8 +1869,13 @@ async function downloadZip(){
   });
   if(!hasData && !confirm('No sample data (SRR IDs or file paths) entered. Download anyway?')) return;
 
-  if(CUSTOM_GENOME_VALUES.has($('#ref_genome').value) && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
-    alert('⚠️ This genome requires an annotation file (GTF/GFF3). Provide gtf_path or gtf_url before running the pipeline.');
+  if(typeof JSZip === 'undefined'){
+    alert('The ZIP library (JSZip) failed to load — usually no internet connection.\nUse "Copy YAML to Clipboard" instead, or reconnect and reload the page.');
+    return;
+  }
+
+  if($('#ref_genome').value === 'other' && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
+    alert('⚠️ Custom genome requires a GTF file. Provide gtf_path or gtf_url before running the pipeline.');
   }
 
   const analysisWarnings = collectAnalysisWarnings();
@@ -1815,14 +1912,19 @@ async function saveZipToLocation(){
   });
   if(!hasData && !confirm('No sample data (SRR IDs or file paths) entered. Save anyway?')) return;
 
-  if(CUSTOM_GENOME_VALUES.has($('#ref_genome').value) && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
-    alert('⚠️ This genome requires an annotation file (GTF/GFF3). Provide gtf_path or gtf_url before running the pipeline.');
+  if($('#ref_genome').value === 'other' && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
+    alert('⚠️ Custom genome requires a GTF file. Provide gtf_path or gtf_url before running the pipeline.');
   }
 
   const analysisWarnings2 = collectAnalysisWarnings();
   if(analysisWarnings2.length){
     const msg2 = 'Some analysis parameters are outside typical ranges:\n- ' + analysisWarnings2.join('\n- ') + '\n\nContinue and save ZIP anyway?';
     if(!confirm(msg2)) return;
+  }
+
+  if(typeof JSZip === 'undefined'){
+    alert('The ZIP library (JSZip) failed to load — usually no internet connection.\nUse "Copy YAML to Clipboard" instead, or reconnect and reload the page.');
+    return;
   }
 
   if(!('showSaveFilePicker' in window)){
@@ -1885,6 +1987,7 @@ const DIV_PRESETS = {
 const SPECIES_PROFILES = {
   mammal: {
     label: 'Human / mouse / rat / rhesus',
+    pol: { tss_win: 50, body_offset_min: 2000, body_offset_frac: 0.10, min_body_frac: 0.10, min_body_len: 0 },
     divergent: {
       nt_window: 1000,
       bin_gap: 100,
@@ -1906,6 +2009,7 @@ const SPECIES_PROFILES = {
   },
   fly: {
     label: 'Drosophila (dm6)',
+    pol: { tss_win: 50, body_offset_min: 1500, body_offset_frac: 0.10, min_body_frac: 0.10, min_body_len: 0 },
     divergent: {
       nt_window: 800,
       bin_gap: 100,
@@ -1927,6 +2031,7 @@ const SPECIES_PROFILES = {
   },
   yeast: {
     label: 'Yeast / compact genomes (sacCer3)',
+    pol: { tss_win: 50, body_offset_min: 1000, body_offset_frac: 0.10, min_body_frac: 0.10, min_body_len: 0 },
     divergent: {
       nt_window: 500,
       bin_gap: 80,
@@ -1948,6 +2053,7 @@ const SPECIES_PROFILES = {
   },
   other: {
     label: 'Generic defaults',
+    pol: { tss_win: 50, body_offset_min: 2000, body_offset_frac: 0.10, min_body_frac: 0.10, min_body_len: 0 },
     divergent: {
       nt_window: 1000,
       bin_gap: 100,
@@ -2007,6 +2113,15 @@ function applySpeciesProfileToUI(){
   if(document.getElementById('tw_length'))       document.getElementById('tw_length').value = profile.functional.tw_length;
   if(document.getElementById('tss_active_pm'))   document.getElementById('tss_active_pm').value = profile.functional.tss_active_pm;
   if(document.getElementById('merge_gap'))       document.getElementById('merge_gap').value = profile.functional.merge_gap;
+
+  // Apply pausing-index (Pol-II) geometry defaults as suggestions
+  if(profile.pol){
+    if(document.getElementById('pol_tss_win'))          document.getElementById('pol_tss_win').value = profile.pol.tss_win;
+    if(document.getElementById('pol_body_offset_min'))  document.getElementById('pol_body_offset_min').value = profile.pol.body_offset_min;
+    if(document.getElementById('pol_body_offset_frac')) document.getElementById('pol_body_offset_frac').value = profile.pol.body_offset_frac;
+    if(document.getElementById('pol_min_body_frac'))    document.getElementById('pol_min_body_frac').value = profile.pol.min_body_frac;
+    if(document.getElementById('pol_min_body_len'))     document.getElementById('pol_min_body_len').value = profile.pol.min_body_len;
+  }
 
   // Apply divergent defaults as suggestions (before any preset overlay)
   if(document.getElementById('div_win'))        document.getElementById('div_win').value = profile.divergent.nt_window;

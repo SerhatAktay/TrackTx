@@ -24,7 +24,7 @@ if [[ "${1:-}" == "--docker" ]]; then
   shift
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-  DOCKER_IMAGE="ghcr.io/serhataktay/tracktx:3.0"
+  DOCKER_IMAGE="ghcr.io/serhataktay/tracktx:1.3.0"
   echo "Running inside Docker (${DOCKER_IMAGE})..."
   exec docker run --rm --entrypoint "" -v "${PROJECT_DIR}:/data" -w /data "${DOCKER_IMAGE}" \
     bash --norc --noprofile "/data/scripts/download_and_subset_test_data.sh" "$@"

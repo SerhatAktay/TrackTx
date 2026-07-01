@@ -8,9 +8,9 @@
 # - Multiple interactive views
 # stdlib-only core, Python 3.8+, macOS/Linux
 
-import argparse, curses, glob, io, json, os, re, signal, subprocess, sys, time
+import argparse, curses, io, json, os, re, signal, subprocess, sys, time
 from dataclasses import dataclass, field
-from typing import Dict, Optional, List, Set, Tuple
+from typing import Dict, Optional, List, Tuple
 from collections import deque, defaultdict
 from datetime import datetime
 
@@ -74,23 +74,8 @@ RE_HANDLER = re.compile(
     r"TaskHandler\[id:\s*\d+;\s*name:\s*(?P<name>[^;(]+)(?:\s*\((?P<tag>[^)]+)\))?;\s*status:\s*(?P<status>[^;]+);\s*.*?workDir:\s*(?P<workdir>[^\]]+)\]", re.I
 )
 RE_EXEC = re.compile(r"(?:^|\s)executor\s*>\s*(?P<exec>[^\s]+)", re.I)
-RE_RUN = re.compile(
-    r"(?:"
-    r"(?:Workflow\s+run\s+name|Run\s+name)\s*:\s*"   # "Run name: xxx" (NF 25.x stdout/log)
-    r"|(?:^|\s)runName\s*[:=]\s*"                    # "runName: xxx" (older NF log)
-    r"|Launching\s+`[^`]+`\s+\["                     # "Launching `main.nf` [run_name]" (NF 25.x)
-    r")(?P<name>[A-Za-z0-9_-]+)"
-)
-RE_SES = re.compile(
-    r"(?:"
-    r"Session\s+UUID\s*[:=]+\s*"         # "Session UUID: uuid" (NF 25.x DEBUG log)
-    r"|Session\s+ID\s*[:=]+\s*"          # "Session ID: uuid" (NF stdout)
-    r"|(?:^|\s)sessionId\s*[:=]+\s*"     # "sessionId: uuid" (older NF)
-    r"|Session\s+id\s*[:=]+\s*"          # "Session id: uuid"
-    r"|Workflow\s+session\s*[:=]\s*"     # "Workflow session: uuid"
-    r"|(?:^|\s)session:\s*"              # "session: uuid"
-    r")(?P<sid>[A-Za-z0-9-]+)"
-)
+RE_RUN = re.compile(r"(?:Workflow run name:|(?:^|\s)runName\s*[:=]\s*)(?P<name>[A-Za-z0-9_.:-]+)")
+RE_SES = re.compile(r"(?:^|\s)(?:session:|sessionId[ :=]+|Session id[ :=]+)(?P<sid>[A-Za-z0-9-]+)")
 RE_WORK = re.compile(r"(?:^|\s)(?:Work-dir|Working (?:dir|directory))\s*:\s*(?P<dir>\S+)")
 RE_WORK_HANDLER = re.compile(r"\bworkDir:\s*(?P<dir>[^\]]+)\]")
 RE_TASKDIR = re.compile(r".*/work/[0-9a-f]{2}/[0-9a-f]+$")
@@ -128,8 +113,8 @@ class TaskMetrics:
             self.rss_hist.append(max(0.0, float(self.rss_mb)))
     
     def cpu_sparkline(self) -> str:
-        """Generate CPU usage sparkline (fixed 0-100% scale)"""
-        return sparkline_pct(list(self.cpu_hist))
+        """Generate CPU usage sparkline"""
+        return sparkline(list(self.cpu_hist))
     
     def rss_sparkline(self) -> str:
         """Generate memory usage sparkline"""
@@ -262,7 +247,6 @@ class World:
     alerts: deque = field(default_factory=lambda: deque(maxlen=50))
     recent_errors: deque = field(default_factory=lambda: deque(maxlen=6))
     start_ts: float = field(default_factory=time.time)
-    pipeline_start_ts: Optional[float] = None   # parsed from first log line timestamp
     
     # Log/trace tailing state
     last_log_pos: int = 0
@@ -291,12 +275,6 @@ class World:
     cum_cached: int = 0
     cum_failed: int = 0
     cum_killed: int = 0
-
-    # Per-process CPU allocation learned from completed trace rows.
-    # Key: process short name (e.g. "align_reads_to_genome"), value: cpus float.
-    # Used to back-fill running tasks of the same type before their trace row
-    # is written (NF 25.x local executor never writes NXF_TASK_CPUS to disk).
-    process_cpus: Dict[str, float] = field(default_factory=dict)
     # Operating mode: full (log+trace), log_only, trace_only, fs_only
     mode: str = "fs_only"
     
@@ -309,40 +287,20 @@ class World:
 # ═══════════════════════════════════════════════════════════════
 
 def sparkline(values: List[float], width: int = SPARKLINE_WIDTH) -> str:
-    """Generate ASCII sparkline from values (relative scale — max value = full bar)."""
+    """Generate ASCII sparkline from values"""
     if not values:
         return ""
+    
+    # Normalize to 0-7 range for block characters
     max_val = max(values) if max(values) > 0 else 1.0
     normalized = [min(7, int((v / max_val) * 7)) for v in values]
+    
+    # Pad or truncate to width
     if len(normalized) < width:
         normalized = ([0] * (width - len(normalized))) + normalized
     else:
         normalized = normalized[-width:]
-    return "".join([SPARKLINE_BLOCKS[v] for v in normalized])
-
-def sparkline_pct(values: List[float], width: int = SPARKLINE_WIDTH) -> str:
-    """Generate ASCII sparkline fixed to a 0–100% scale.
-
-    Unlike sparkline(), the tallest block always represents 100%, so a bar at
-    half-height genuinely means ~50% CPU — making different tasks comparable.
-    Uses SPARKLINE_BLOCKS (starting with ▁) so even idle tasks show a thin
-    bar rather than invisible spaces.
-    """
-    if not values:
-        return ""
-    # Scale 0-100% to levels 0-7.  Use ceiling so even 1% shows ▁ rather than
-    # being rounded away to a space.
-    def _level(v: float) -> int:
-        v = min(100.0, max(0.0, v))
-        if v == 0.0:
-            return 0
-        return min(7, max(0, int((v / 100.0) * 8) - 1 + 1))  # 1..100 → 0..7
-
-    normalized = [_level(v) for v in values]
-    if len(normalized) < width:
-        normalized = ([0] * (width - len(normalized))) + normalized
-    else:
-        normalized = normalized[-width:]
+    
     return "".join([SPARKLINE_BLOCKS[v] for v in normalized])
 
 def colorize_cpu_pct(pct: float) -> Tuple[str, str]:
@@ -412,21 +370,42 @@ def looks_like_hash(s: str) -> bool:
 # ═══════════════════════════════════════════════════════════════
 
 def predict_completion_eta(world: World) -> Optional[float]:
-    """Estimate seconds until pipeline completion based on process stats"""
+    """Estimate seconds until pipeline completion.
+
+    Combines (a) the remaining time on the currently-running tasks with
+    (b) a rough estimate for queued tasks, spread across the available
+    parallelism. Previously this only returned the single longest running
+    task's remaining time and ignored the queue entirely, badly
+    under-estimating ETA whenever work was still waiting to start.
+    """
     running = [t for t in world.tasks.values() if t.state == "RUNNING"]
-    if not running:
+    queued = [t for t in world.tasks.values()
+              if t.state not in ("RUNNING", "COMPLETED", "FAILED", "CACHED", "KILLED")]
+    if not running and not queued:
         return 0.0
-    
-    # Use process averages to estimate remaining time
-    max_remaining = 0.0
+
+    def _avg(name: str) -> Optional[float]:
+        stats = world.proc_stats.get(name)
+        return stats.avg_duration if stats else None
+
+    # (a) Remaining time on running tasks
+    running_remaining = 0.0
     for task in running:
-        stats = world.proc_stats.get(task.name)
-        if stats and stats.avg_duration:
-            runtime = task.runtime() or 0
-            remaining = max(0, stats.avg_duration - runtime)
-            max_remaining = max(max_remaining, remaining)
-    
-    return max_remaining if max_remaining > 0 else None
+        avg = _avg(task.name)
+        if avg:
+            running_remaining = max(running_remaining, max(0.0, avg - (task.runtime() or 0)))
+
+    # (b) Queued work, divided by how many tasks can run at once
+    parallelism = max(1, len(running) or get_ncpu() // 2 or 1)
+    queued_work = 0.0
+    for task in queued:
+        avg = _avg(task.name)
+        if avg:
+            queued_work += avg
+    queued_eta = queued_work / parallelism if queued_work else 0.0
+
+    eta = running_remaining + queued_eta
+    return eta if eta > 0 else None
 
 def identify_slow_tasks(world: World) -> List[Task]:
     """Find tasks running >1.5x their process average"""
@@ -521,21 +500,37 @@ def guess_work_root(log_path: str, cli: str) -> str:
             return c
     return abspath(os.environ.get("NXF_WORK") or "work")
 
+_NCPU_CACHE: Optional[int] = None
+
+def get_ncpu() -> int:
+    """Return CPU count (cached — it never changes during a run)"""
+    global _NCPU_CACHE
+    if _NCPU_CACHE is not None:
+        return _NCPU_CACHE
+    n = 0
+    try:
+        if sys.platform.startswith("darwin"):
+            n = int(subprocess.check_output(["sysctl", "-n", "hw.ncpu"], text=True))
+        else:
+            n = int(subprocess.check_output(["bash", "-lc", "nproc 2>/dev/null || getconf _NPROCESSORS_ONLN"], text=True))
+    except Exception:
+        n = os.cpu_count() or 0
+    _NCPU_CACHE = n
+    return n
+
 def sys_metrics() -> Tuple[int, int, str]:
     """Get system CPU%, memory%, and load average"""
     cpu = 0
     mem = 0
     load = "0.00"
-    
+
     try:
+        ncpu = max(1, get_ncpu())
         if sys.platform.startswith("darwin"):
-            ncpu = int(subprocess.check_output(["sysctl", "-n", "hw.ncpu"], text=True))
             vals = [float(x) for x in subprocess.check_output(["ps", "-A", "-o", "%cpu="], text=True).split() if x.strip()]
-            cpu = int(round(min(100.0, max(0.0, sum(vals) / max(1, ncpu)))))
         else:
-            ncpu = int(subprocess.check_output(["bash", "-lc", "nproc 2>/dev/null || getconf _NPROCESSORS_ONLN"], text=True))
             vals = [float(x) for x in subprocess.check_output(["bash", "-lc", "ps -A -o %cpu= || true"], text=True).split() if x.strip()]
-            cpu = int(round(min(100.0, max(0.0, sum(vals) / max(1, ncpu)))))
+        cpu = int(round(min(100.0, max(0.0, sum(vals) / ncpu))))
     except Exception:
         pass
     
@@ -732,11 +727,6 @@ def apply_trace_row(world: World, row: Dict[str, str], now: float):
     cpus = _parse_float(cpus_val) if cpus_val is not None else None
     if cpus is not None:
         t.metrics.cpus = cpus
-        # Cache per process name so running tasks of the same type can be back-filled
-        if name:
-            short = name.split(":")[-1]   # strip workflow prefix (e.g. "TrackTx:")
-            world.process_cpus[short] = cpus
-            world.process_cpus[name]  = cpus  # also store full name
     
     rss = _parse_float(row.get("rss"))
     if rss is not None:
@@ -851,15 +841,6 @@ def update_meta(world: World, line: str):
     m = RE_SES.search(line)
     if m:
         world.meta.session = m.group("sid")
-    # Fallback: NF session IDs are always UUIDs.  If a session-related log line
-    # carries a UUID that the structured regex missed, grab it directly.
-    elif (world.meta.session in ("", "?") and "session" in line.lower()):
-        m_uuid = re.search(
-            r'\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b',
-            line, re.I
-        )
-        if m_uuid:
-            world.meta.session = m_uuid.group(1)
     
     # Only match global Work-dir declaration (not TaskHandler workDir)
     m = RE_WORK.search(line)
@@ -879,18 +860,14 @@ def update_meta(world: World, line: str):
     m = RE_CONTAINER.search(line)
     if m:
         world.meta.container_image = m.group("container")
+    low = line.lower()
     if not world.meta.container_engine:
-        low = line.lower()
-        # Only match on lines that definitively declare the engine — not any mention of the word.
-        # "No docker container", "checking for docker", etc. must not trigger.
-        if re.search(r"container\s*engine\s*[:=]\s*docker|executor\s*>\s*docker|docker\s*executor", low):
+        if "docker" in low:
             world.meta.container_engine = "docker"
-        elif re.search(r"container\s*engine\s*[:=]\s*singularity|singularity\s*executor|executor\s*>\s*singularity", low):
+        elif "singularity" in low:
             world.meta.container_engine = "singularity"
-        elif re.search(r"container\s*engine\s*[:=]\s*podman|podman\s*executor|executor\s*>\s*podman", low):
+        elif "podman" in low:
             world.meta.container_engine = "podman"
-        elif re.search(r"activating\s+conda|conda\s*env(?:ironment)?\s*[:=]|executor\s*>\s*conda|conda.server", low):
-            world.meta.container_engine = "conda"
 
 def parse_line(world: World, line: str, now: float):
     """Parse log line for task events"""
@@ -929,45 +906,8 @@ def parse_line(world: World, line: str, now: float):
         token = "Completed" if ("succeed" in tail or "completed" in tail) else tail
         _apply(world, (m.group("name") or "").strip(), (m.group("tag") or "").strip(), (m.group("id") or "").strip(), token, now)
 
-_LOG_TS_RE = re.compile(
-    r'^(?P<mon>[A-Za-z]{3})-(?P<day>\d{2})\s+(?P<h>\d{2}):(?P<m>\d{2}):(?P<s>\d{2})'
-)
-
-def _parse_log_start_ts(log_path: str) -> Optional[float]:
-    """Read the first line of a Nextflow log and parse its timestamp.
-    NF log format: 'Nov-25 14:23:45.123 [main] ...'
-    Returns a UTC epoch float, or None if parsing fails.
-    """
-    try:
-        with open(log_path, 'r', errors='ignore') as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                m = _LOG_TS_RE.match(line)
-                if m:
-                    import calendar
-                    mon = m.group("mon")
-                    day = int(m.group("day"))
-                    h   = int(m.group("h"))
-                    mn  = int(m.group("m"))
-                    s   = int(m.group("s"))
-                    import datetime
-                    year = datetime.datetime.now().year
-                    try:
-                        month = list(calendar.month_abbr).index(mon.capitalize())
-                    except ValueError:
-                        return None
-                    dt = datetime.datetime(year, month, day, h, mn, s)
-                    return dt.timestamp()
-    except Exception:
-        pass
-    return None
-
 def bootstrap(world: World, log_path: str):
     """Bootstrap world state from full log"""
-    if world.pipeline_start_ts is None:
-        world.pipeline_start_ts = _parse_log_start_ts(log_path)
     for ln in read_all_lines(log_path):
         update_meta(world, ln)
         parse_line(world, ln, time.time())
@@ -1033,262 +973,35 @@ def label_from_dir(d: str) -> Tuple[str, str]:
     
     return name or os.path.basename(d), tag or ""
 
-# Paths that appear literally in Nextflow-generated .command.run (scratch staging)
-_SCRATCH_LITERAL_RE = re.compile(
-    r"(/(?:private)?/tmp/nxf[a-zA-Z0-9._+\-]+"
-    r"|/(?:private)?var/folders/[a-z0-9]+/[A-Za-z0-9]+/T/nxf[a-zA-Z0-9._+\-]+)"
-)
-
-
-def _nf_task_dir_looks_active(path: str) -> bool:
-    """True if *path* looks like a live Nextflow task directory (work or scratch)."""
-    if not os.path.isdir(path):
-        return False
-    for fn in (".command.sh", ".command.run", ".command.pid"):
-        if os.path.isfile(os.path.join(path, fn)):
-            return True
-    return False
-
-
-def scratch_dir_from_taskdir(d: str) -> Optional[str]:
-    """Resolve Nextflow scratch directory for task work dir *d* (NFS path).
-
-    When ``process.scratch=true``, the shell cwd is a temp dir; module logs and
-    ``.command.pid`` are often there.  Parse the staged ``.command.run`` in *d*,
-    then optionally match ``/tmp/nxf*`` dirs by work-hash fingerprint.
-    """
-    runp = os.path.join(d, ".command.run")
-    if not os.path.isfile(runp):
-        return None
-    try:
-        with open(runp, "r", errors="ignore") as fh:
-            head = fh.read(65536)
-    except OSError:
-        return None
-
-    candidates: List[str] = []
-
-    for m in re.finditer(
-        r'^\s*cd\s+(?:"(/[^"]+)"|\'(/[^\']+)\'|(/[^\s;|&()]+))',
-        head,
-        re.MULTILINE,
-    ):
-        p = m.group(1) or m.group(2) or m.group(3)
-        if p and p.startswith("/"):
-            candidates.append(p)
-
-    for m in _SCRATCH_LITERAL_RE.finditer(head):
-        candidates.append(m.group(1))
-
-    seen: Set[str] = set()
-    for raw in candidates:
-        try:
-            rp = os.path.realpath(raw)
-        except OSError:
-            continue
-        if rp in seen:
-            continue
-        seen.add(rp)
-        if _nf_task_dir_looks_active(rp):
-            return rp
-
-    return _scratch_glob_fallback(d, head)
-
-
-def _scratch_glob_fallback(d: str, _run_head: str) -> Optional[str]:
-    """Last resort: find a recent ``nxf*`` scratch dir whose .command.run references this task."""
-    thash = os.path.basename(os.path.normpath(d))
-    work_norm = os.path.normpath(d)
-    if len(thash) < 8 or not re.fullmatch(r"[0-9a-f]+", thash, re.I):
-        return None
-
-    dirs: List[str] = []
-    for pat in (
-        "/tmp/nxf*",
-        "/private/tmp/nxf*",
-        "/var/folders/*/*/T/nxf*",
-        "/private/var/folders/*/*/T/nxf*",
-    ):
-        for p in glob.glob(pat):
-            if os.path.isdir(p):
-                dirs.append(p)
-    dirs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-    for path in dirs[:48]:
-        scr_run = os.path.join(path, ".command.run")
-        if not os.path.isfile(scr_run):
-            continue
-        try:
-            with open(scr_run, "r", errors="ignore") as fh:
-                chunk = fh.read(16384)
-        except OSError:
-            continue
-        if thash in chunk or work_norm in chunk:
-            if _nf_task_dir_looks_active(path):
-                return os.path.realpath(path)
-    return None
-
-
-def task_probe_dirs(d: str) -> List[str]:
-    """NFS work dir plus scratch (if any), de-duplicated and existing only."""
-    out: List[str] = []
-    seen: Set[str] = set()
-    scratch = scratch_dir_from_taskdir(d)
-    for p in (d, scratch or ""):
-        if not p:
-            continue
-        try:
-            rp = os.path.realpath(p)
-        except OSError:
-            continue
-        if rp in seen or not os.path.isdir(rp):
-            continue
-        seen.add(rp)
-        out.append(rp)
-    return out
-
-
 def pid_from_dir(d: str) -> Optional[int]:
-    """Read PID of the task running in work dir d.
-
-    With scratch=false: .command.pid lives in d itself.
-    With scratch=true:  Nextflow runs the task from a /tmp/nxf-* temp dir and
-    writes .command.pid there.  We find the matching process via /proc by
-    looking for a bash wrapper running .command.run whose cwd or script body
-    references the NFS work dir hash.
-    """
-    # Fast path: .command.pid in the NFS work dir (scratch=false)
+    """Read PID from .command.pid"""
     for cand in (".command.pid", ".nxf.pid"):
         p = os.path.join(d, cand)
         try:
-            # Use regex instead of isdigit() — more robust against null bytes,
-            # trailing newlines, or files with two PIDs appended (>> instead of >).
-            raw = open(p, "rb").read(64)
-            m = re.search(rb'(\d+)', raw)
-            if m:
-                pid_val = int(m.group(1))
-                if pid_val > 0:
-                    return pid_val
+            txt = open(p).read().strip()
+            if txt.isdigit():
+                return int(txt)
         except Exception:
             pass
-
-    # Scratch dir (process.scratch=true): PID file often lives next to the live script
-    scratch = scratch_dir_from_taskdir(d)
-    if scratch:
-        for cand in (".command.pid", ".nxf.pid"):
-            p = os.path.join(scratch, cand)
-            try:
-                raw = open(p, "rb").read(64)
-                m = re.search(rb'(\d+)', raw)
-                if m:
-                    pid_val = int(m.group(1))
-                    if pid_val > 0:
-                        return pid_val
-            except Exception:
-                pass
-
-    # Slow path (Linux only): scan /proc for bash processes running .command.run
-    # whose scratch cwd or script body references our work dir.
-    if not os.path.isdir("/proc"):
-        return None
-
-    thash      = os.path.basename(d)          # long hex hash, e.g. "c1a2b3d4..."
-    work_norm  = os.path.normpath(d)
-    # Only bother if the hash looks like a real NF hash (>=8 hex chars)
-    if len(thash) < 8 or not re.fullmatch(r"[0-9a-f]+", thash, re.I):
-        return None
-
-    try:
-        for entry in os.scandir("/proc"):
-            if not entry.name.isdigit():
-                continue
-            pid = int(entry.name)
-            try:
-                with open(f"/proc/{pid}/cmdline", "rb") as f:
-                    cmdline = f.read(512).decode("utf-8", "replace").replace("\x00", " ")
-                if ".command.run" not in cmdline:
-                    continue
-
-                # Read cwd symlink — this is the scratch temp dir
-                try:
-                    cwd = os.readlink(f"/proc/{pid}/cwd")
-                except OSError:
-                    continue
-
-                # Case 1: cwd IS the NFS work dir (scratch=false, PID file missing)
-                if os.path.normpath(cwd) == work_norm:
-                    for pf in (".command.pid", ".nxf.pid"):
-                        try:
-                            txt = open(os.path.join(cwd, pf)).read().strip()
-                            if txt.isdigit(): return int(txt)
-                        except Exception:
-                            pass
-                    return pid
-
-                # Case 2: cwd is a scratch temp dir — check its .command.run for
-                # a reference to our work dir hash (NF writes copy-back paths)
-                run_file = os.path.join(cwd, ".command.run")
-                try:
-                    with open(run_file, "r", errors="ignore") as f:
-                        head = f.read(4096)
-                    if thash in head or work_norm in head:
-                        # Found the scratch dir for our task — get PID from there
-                        for pf in (".command.pid", ".nxf.pid"):
-                            try:
-                                txt = open(os.path.join(cwd, pf)).read().strip()
-                                if txt.isdigit(): return int(txt)
-                            except Exception:
-                                pass
-                        return pid   # fall back to wrapper PID itself
-                except Exception:
-                    pass
-            except Exception:
-                continue
-    except Exception:
-        pass
     return None
 
 def cpus_from_dir(d: str) -> Optional[float]:
-    """Read allocated CPUs from task work dir files.
-
-    NF 25.x local executor no longer writes NXF_TASK_CPUS as a static variable.
-    The beforeScript in nextflow.config renders task.cpus into .command.sh as
-    thread-count env vars (OMP_NUM_THREADS, BOWTIE2_THREADS, etc.), so we look
-    for those.  Fallback patterns cover older NF versions.
-    """
-    # Primary: NF 25.x renders task.cpus into .command.sh via beforeScript
-    # e.g.  export OMP_NUM_THREADS=4   export BOWTIE2_THREADS=4
-    _thread_re = re.compile(
-        r"^export\s+(?:"
-        r"OMP_NUM_THREADS|OPENBLAS_NUM_THREADS|MKL_NUM_THREADS"
-        r"|BOWTIE2_THREADS|SAMTOOLS_THREADS|BEDTOOLS_THREADS"
-        r"|STAR_THREADS|HISAT2_THREADS|MINIMAP2_THREADS"
-        r"|PIGZ_THREADS|KALLISTO_THREADS|SALMON_THREADS"
-        r")\s*=\s*[\"']?(?P<val>\d+)[\"']?",
-        re.I
-    )
-    # Legacy: NXF_TASK_CPUS, nxf_cpus, etc. (older NF versions)
-    _cpu_re = re.compile(
-        r"^(?:export\s+)?(?:"
-        r"NXF_CPUS|NXF_TASK_CPUS|NXF_TASK_PROCESS_CPUS"
-        r"|nxf_cpus|nxf_task_cpus|nxf_num_cpus|task\.cpus"
-        r")\s*=\s*[\"']?(?P<val>\d+(?:\.\d+)?)[\"']?",
-        re.I
-    )
-    # Scan .command.sh first (beforeScript output), then fallbacks
-    for fname in (".command.sh", ".command.env", ".command.run"):
-        fpath = os.path.join(d, fname)
-        try:
-            with open(fpath, "r", encoding="utf-8", errors="ignore") as fh:
-                for ln in fh:
-                    stripped = ln.strip()
-                    m = _thread_re.match(stripped) or _cpu_re.match(stripped)
-                    if m:
-                        try:
-                            return float(m.group("val"))
-                        except (ValueError, TypeError):
-                            pass
-        except Exception:
-            pass
+    """Read allocated CPUs from .command.env"""
+    try:
+        env = os.path.join(d, ".command.env")
+        val = ""
+        with open(env, "r", encoding="utf-8", errors="ignore") as fh:
+            for ln in fh:
+                if ln.startswith("NXF_CPUS=") or ln.startswith("task.cpus="):
+                    val = ln.split("=", 1)[1].strip().strip('"')
+                    break
+        if val:
+            try:
+                return float(val)
+            except Exception:
+                pass
+    except Exception:
+        pass
     return None
 
 def ps_for_pid(pid: int) -> Tuple[Optional[float], Optional[float]]:
@@ -1331,198 +1044,20 @@ def _ps_snapshot() -> List[Tuple[int, int, float, float, str]]:
         pass
     return out
 
-# ── macOS CWD→PIDs via libproc.dylib (proc_listallpids + proc_pidinfo) ────────
-#
-# Nextflow spawns tasks with a relative `bash .command.run` so the work-dir
-# path never appears in the process cmdline.  On macOS (no /proc) the only
-# reliable way to find task processes is by their current working directory.
-#
-# We call the same kernel APIs that lsof uses internally, but directly via
-# ctypes — no subprocess, no timeout risk.
-#
-# Layout of struct proc_vnodepathinfo (flavor 9 / PROC_PIDVNODEPATHINFO):
-#   pvi_cdir : vnode_info_path  (1176 bytes)
-#     vip_vi : vnode_info       (152 bytes)  ← vinfo_stat(136) + type(4) + pad(4) + fsid(8)
-#     vip_path: char[1024]      ← CWD string starts at offset 152
-#   pvi_rdir : vnode_info_path  (1176 bytes)
-# Total struct size = 2352 bytes.
-
-_PROC_PIDVNODEPATHINFO    = 9
-_PROC_VNODEPATHINFO_SIZE  = 2352
-_CWD_PATH_OFFSET          = 152   # offsetof(proc_vnodepathinfo, pvi_cdir.vip_path)
-_MAXPATHLEN               = 1024
-
-_libproc_handle = None
-
-def _get_libproc():
-    """Lazy-load libproc.dylib and configure argtypes/restype once."""
-    global _libproc_handle
-    if _libproc_handle is None:
-        import ctypes, ctypes.util
-        name = ctypes.util.find_library("proc") or "libproc.dylib"
-        lib  = ctypes.cdll.LoadLibrary(name)
-        lib.proc_listallpids.restype  = ctypes.c_int
-        lib.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
-        lib.proc_pidinfo.restype      = ctypes.c_int
-        lib.proc_pidinfo.argtypes     = [
-            ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
-            ctypes.c_void_p, ctypes.c_int,
-        ]
-        _libproc_handle = lib
-    return _libproc_handle
-
-
-_macos_cwd_cache: dict = {"ts": 0.0, "data": {}}
-
-def _macos_pids_for_workdir(d: str) -> List[int]:
-    """Return PIDs of every process whose CWD is work-dir *d* (macOS only).
-
-    Uses proc_listallpids + proc_pidinfo(PROC_PIDVNODEPATHINFO) from
-    libproc.dylib directly (the same mechanism lsof uses under the hood).
-    Falls back to lsof if the ctypes path fails for any reason.
-
-    Result is cached for 3 s to avoid hammering the kernel on every 0.4 s UI
-    refresh tick.
-    """
-    global _macos_cwd_cache
-    now = time.time()
-    d_real = os.path.realpath(d)
-    # BUG FIX: was os.path.normpath(d) — but the mapping is keyed by realpath,
-    # so normpath would miss entries whenever d contains symlinks.
-    if now - _macos_cwd_cache["ts"] < 3.0:
-        return _macos_cwd_cache["data"].get(d_real, [])
-
-    mapping: Dict[str, List[int]] = {}
-
-    # ── Primary path: direct libproc.dylib calls ──────────────────────────
-    libproc_ok = False
-    try:
-        import ctypes
-        lib = _get_libproc()
-
-        # First call with NULL buffer returns the count of live PIDs.
-        n = lib.proc_listallpids(None, 0)
-        if n > 0:
-            pid_buf = (ctypes.c_int * (n + 32))()   # +32 headroom for new PIDs
-            n2 = lib.proc_listallpids(pid_buf, ctypes.sizeof(pid_buf))
-            info_buf = ctypes.create_string_buffer(_PROC_VNODEPATHINFO_SIZE)
-            for i in range(min(n2, len(pid_buf))):
-                pid = pid_buf[i]
-                if pid <= 0:
-                    continue
-                ret = lib.proc_pidinfo(
-                    pid, _PROC_PIDVNODEPATHINFO, 0,
-                    info_buf, _PROC_VNODEPATHINFO_SIZE,
-                )
-                if ret < _PROC_VNODEPATHINFO_SIZE:
-                    continue
-                # CWD string is a null-terminated C string at offset 152.
-                raw      = info_buf.raw[_CWD_PATH_OFFSET:_CWD_PATH_OFFSET + _MAXPATHLEN]
-                null_pos = raw.find(b"\x00")
-                path     = raw[:null_pos if null_pos >= 0 else _MAXPATHLEN].decode(
-                    "utf-8", errors="replace"
-                )
-                if path.startswith("/"):
-                    # Use realpath so /Users/... and /private/Users/... (APFS symlink)
-                    # resolve to the same canonical key.
-                    mapping.setdefault(os.path.realpath(path), []).append(pid)
-        libproc_ok = True
-    except Exception:
-        pass
-
-    # BUG FIX: previously returned inside the try block, which meant the lsof
-    # fallback was *only* reached when libproc raised an exception.  Now we
-    # check whether libproc actually found our directory and, if not, try a
-    # fast targeted lsof before falling back to the slow full-scan.
-    if libproc_ok:
-        found = mapping.get(d_real, [])
-        if found:
-            _macos_cwd_cache["ts"]   = now
-            _macos_cwd_cache["data"] = mapping
-            return found
-        # libproc ran successfully but reported no process with CWD == d.
-        # This can happen when macOS resolves the path differently (e.g. APFS
-        # firmlinks, network mounts) or when SIP silently drops certain entries.
-        # Try a lightweight targeted lsof for just this one directory.
-        try:
-            txt = subprocess.check_output(
-                ["lsof", "-Fp", "-a", "-d", "cwd", "--", d_real],
-                text=True, stderr=subprocess.DEVNULL, timeout=3,
-            )
-            pids = [int(ln[1:]) for ln in txt.splitlines()
-                    if ln.startswith("p") and ln[1:].strip().isdigit()]
-            if pids:
-                mapping[d_real] = pids
-                _macos_cwd_cache["ts"]   = now
-                _macos_cwd_cache["data"] = mapping
-                return pids
-        except Exception:
-            pass
-        # Neither libproc nor targeted lsof found anything — cache the (empty)
-        # mapping so we don't hammer the kernel on every tick.
-        _macos_cwd_cache["ts"]   = now
-        _macos_cwd_cache["data"] = mapping
-        return []
-
-    # ── Fallback: full lsof subprocess (libproc failed entirely) ──────────
-    try:
-        txt = subprocess.check_output(
-            ["lsof", "-F", "pn", "-a", "-d", "cwd", "-n", "-P", "-w"],
-            text=True, stderr=subprocess.DEVNULL, timeout=10,
-        )
-        cur: Optional[int] = None
-        for ln in txt.splitlines():
-            if ln.startswith("p"):
-                try:
-                    cur = int(ln[1:])
-                except ValueError:
-                    cur = None
-            elif ln.startswith("n") and cur is not None:
-                cwd = ln[1:]
-                if cwd:
-                    mapping.setdefault(os.path.realpath(cwd), []).append(cur)
-                cur = None
-    except Exception:
-        pass
-
-    _macos_cwd_cache["ts"]   = now
-    _macos_cwd_cache["data"] = mapping
-    return mapping.get(d_real, [])
-
-
-def _tree_cpu_rss(root_pid: int, snap: Optional[List] = None) -> Tuple[float, float]:
-    """Sum CPU% and max RSS (MB) across root_pid and all its descendants.
-
-    The PID stored in .command.pid is the bash wrapper that runs .command.run.
-    The actual compute (bowtie2, samtools, python, …) runs as a child of that
-    wrapper, so we must walk the tree to get meaningful CPU/RSS numbers.
-    """
-    if snap is None:
-        snap = _ps_snapshot()
-    by_ppid: Dict[int, List] = {}
-    for p, pp, c, r, _ in snap:
-        by_ppid.setdefault(pp, []).append((p, c, r))
-
-    total_cpu = 0.0
-    max_rss   = 0.0
-    queue: List[int] = [root_pid]
-    seen:  Set[int]  = set()
-    while queue:
-        pid = queue.pop(0)
-        if pid in seen:
-            continue
-        seen.add(pid)
-        for p, pp, c, r, _ in snap:
-            if p == pid:
-                total_cpu += c
-                max_rss    = max(max_rss, r)
-                break
-        queue.extend(cp for cp, _, _ in by_ppid.get(pid, []))
-
-    return total_cpu, max_rss
+# Docker is slow to query; cache the workdir→container map and stats briefly so
+# we don't spawn `docker ps`/`inspect`/`stats` for every task on every refresh.
+_DOCKER_MAP_CACHE: Tuple[float, Dict[str, str]] = (0.0, {})
+_DOCKER_STATS_CACHE: Tuple[float, Dict[str, Tuple[Optional[float], Optional[float]]]] = (0.0, {})
+_DOCKER_CACHE_TTL = 4.0  # seconds
 
 def docker_containers_map() -> Dict[str, str]:
-    """Map work directories to Docker container IDs"""
+    """Map work directories to Docker container IDs (cached for a few seconds)"""
+    global _DOCKER_MAP_CACHE
+    now = time.time()
+    ts, cached = _DOCKER_MAP_CACHE
+    if now - ts < _DOCKER_CACHE_TTL:
+        return cached
+
     mapping = {}
     try:
         out = subprocess.check_output(
@@ -1531,22 +1066,74 @@ def docker_containers_map() -> Dict[str, str]:
         )
         container_ids = [cid.strip() for cid in out.strip().splitlines() if cid.strip()]
 
-        for container_id in container_ids:
+        # One `docker inspect` for ALL containers instead of one per container.
+        if container_ids:
             try:
                 cmd_out = subprocess.check_output(
-                    ["docker", "inspect", container_id, "--format", "{{.Path}} {{join .Args \" \"}}"],
+                    ["docker", "inspect", "--format",
+                     "{{.Id}}\t{{.Path}} {{join .Args \" \"}}"] + container_ids,
                     text=True, stderr=subprocess.DEVNULL
                 )
-                # Match work dir: .../work/xx/hash (with optional trailing / or .command.run)
-                match = re.search(r'(/[^\s]+/work/[0-9a-f]{2}/[0-9a-f]+)', cmd_out)
-                if match:
-                    workdir = os.path.normpath(match.group(1).rstrip("/"))
-                    mapping[workdir] = container_id
+                for ln in cmd_out.splitlines():
+                    if "\t" not in ln:
+                        continue
+                    cid, rest = ln.split("\t", 1)
+                    match = re.search(r'(/[^\s]+/work/[0-9a-f]{2}/[0-9a-f]+)', rest)
+                    if match:
+                        workdir = os.path.normpath(match.group(1).rstrip("/"))
+                        mapping[workdir] = cid.strip()[:12]
             except Exception:
-                continue
+                pass
     except Exception:
         pass
+    _DOCKER_MAP_CACHE = (now, mapping)
     return mapping
+
+def docker_stats_all() -> Dict[str, Tuple[Optional[float], Optional[float]]]:
+    """Single `docker stats --no-stream` for all running containers (cached).
+
+    Returns {short_id: (cpu_pct, rss_mb)}. One subprocess instead of one
+    blocking ~1s call per container per refresh.
+    """
+    global _DOCKER_STATS_CACHE
+    now = time.time()
+    ts, cached = _DOCKER_STATS_CACHE
+    if now - ts < _DOCKER_CACHE_TTL:
+        return cached
+
+    stats: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
+    try:
+        out = subprocess.check_output(
+            ["docker", "stats", "--no-stream", "--format",
+             "{{.ID}}\t{{.CPUPerc}}\t{{.MemUsage}}"],
+            text=True, stderr=subprocess.DEVNULL, timeout=5
+        )
+        for ln in out.strip().splitlines():
+            parts = ln.split("\t")
+            if len(parts) < 3:
+                continue
+            cid = parts[0].strip()[:12]
+            cpu_str = parts[1].strip().rstrip('%')
+            try:
+                cpu = float(cpu_str) if cpu_str else None
+            except ValueError:
+                cpu = None
+            mem_str = parts[2].split('/')[0].strip()
+            rss_mb: Optional[float] = None
+            try:
+                if 'GiB' in mem_str or 'GB' in mem_str:
+                    rss_mb = float(mem_str.replace('GiB', '').replace('GB', '').strip()) * 1024
+                elif 'MiB' in mem_str or 'MB' in mem_str:
+                    rss_mb = float(mem_str.replace('MiB', '').replace('MB', '').strip())
+                elif 'KiB' in mem_str or 'KB' in mem_str:
+                    rss_mb = float(mem_str.replace('KiB', '').replace('KB', '').strip()) / 1024
+            except ValueError:
+                rss_mb = None
+            stats[cid] = (cpu, rss_mb)
+    except Exception:
+        pass
+    _DOCKER_STATS_CACHE = (now, stats)
+    return stats
 
 def docker_stats_for_container(container_id: str) -> Tuple[Optional[float], Optional[float]]:
     """Get %cpu, rss_mb for Docker container"""
@@ -1607,27 +1194,12 @@ def running_dirs(work_roots: List[str]) -> List[str]:
 # ═══════════════════════════════════════════════════════════════
 
 WRAP_DROP = [
-    # bash xtrace (+ …) with optional leading whitespace / Rich prefix
-    re.compile(r"^\s*\+{1,}"),
-    re.compile(r"^set -"), re.compile(r"^trap "),
+    re.compile(r"^\+{1,}"), re.compile(r"^set -"), re.compile(r"^trap "),
     re.compile(r"^ulimit "), re.compile(r"^exec > "), re.compile(r"^nxf_"),
     re.compile(r"^NXF_"), re.compile(r"^CAPSULE:"), re.compile(r"^Picked up _JAVA_OPTIONS"),
     re.compile(r"^Warning: .*illegal reflective access"), re.compile(r"^INFO +\(.*Nextflow.*\)"),
     re.compile(r"read -t \d+ -r DONE"),
     re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*"),  # VAR=value or VAR=$(...) - skip variable assignments
-    re.compile(r"\b__mamba_hashr\b"),
-    # Docker / Nextflow local wrapper (common on macOS docker profile)
-    re.compile(r"\b/usr/bin/tini\b"),
-    re.compile(r"\bnxf_trace\b"),
-    re.compile(r"\.command\.run\b"),
-    re.compile(r"^\s*exec\s+"),  # shell: exec tini, exec bash (xtrace often adds + prefix; cover both)
-    re.compile(r"^\s*\+\+\s*$"),  # lone ++ depth markers
-    re.compile(r"^\s*type\s+-t\s+"),
-    re.compile(r"^\s*hash\s+-r\s*$"),
-    # conda/mamba hook chatter in .command.err
-    re.compile(r"^\s*\+\s*conda\s+"),
-    re.compile(r"^\s*\+\s*mamba\s+"),
-    re.compile(r"shell\.bash hook"),
 ]
 
 def keep_line(s: str) -> bool:
@@ -1639,21 +1211,6 @@ def keep_line(s: str) -> bool:
     if s.lstrip().startswith("echo "):
         return False
     return bool(s.strip())
-
-
-def is_wrapper_or_trace_line(s: str) -> bool:
-    """True if *s* looks like Nextflow/docker/bash trace (for payload picking)."""
-    if not keep_line(s):
-        return True
-    t = (s or "").strip()
-    if not t:
-        return True
-    if t in ("<waiting for module logs>", "<no output yet>"):
-        return True
-    # Bracket tests from xtraced conda/shell setup: ++++ '[' x = y ']'
-    if re.match(r"^\+*\s*\[", t):
-        return True
-    return False
 
 def slurp_tail(path: str, n: int, scrub=True) -> List[str]:
     """Tail last n lines from file"""
@@ -1701,58 +1258,21 @@ def payload_from(workdir: str) -> str:
             pass
     return "<no payload detected>"
 
-def best_log_for_tail(d: str, probe_dirs: Optional[List[str]] = None) -> Optional[str]:
-    """Find best log file to tail.
-
-    Selection priority:
-      1. Non-empty files are always preferred over empty ones.
-      2. Among non-empty (or all-empty), sort by mtime descending.
-      3. Within same mtime, prefer .command.err > .command.out > .command.log
-         because bioinformatics tools typically write progress/warnings to stderr.
-      4. Prefer the NFS work dir over a parsed scratch dir on ties — scratch
-         may be mis-identified or hold noisy wrapper output while the work dir
-         streams the same task via the bind mount.
-
-    Probes both the NFS work dir and Nextflow scratch (when *probe_dirs* lists both).
-    """
-    probes = probe_dirs if probe_dirs is not None else task_probe_dirs(d)
-    # Preference order: err before out before log (used as tiebreak)
-    pref = {".command.err": 0, ".command.out": 1, ".command.log": 2}
-    cand = []
-    for pi, probe in enumerate(probes):
-        for fn in (".command.err", ".command.out", ".command.log"):
-            p = os.path.join(probe, fn)
-            try:
-                st = os.stat(p)
-                cand.append((p, st.st_size, st.st_mtime, pref[fn], pi))
-            except OSError:
-                pass
+def best_log_for_tail(d: str) -> Optional[str]:
+    """Find best log file to tail"""
+    cand = [os.path.join(d, ".command.out"), os.path.join(d, ".command.err"), os.path.join(d, ".command.log")]
+    cand = [p for p in cand if os.path.exists(p)]
     if not cand:
         return None
-    # Sort: non-empty first; newest mtime; lower probe index (work dir first); stderr pref
-    cand.sort(key=lambda x: (0 if x[1] > 0 else 1, -x[2], x[4], x[3]))
-    return cand[0][0]
+    cand.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return cand[0]
 
-def _score_log_choice(path: str, size: int, mtime: float, probe_idx: int) -> Tuple[int, int, float, int]:
-    """Higher tuple sorts later; we want the best file last when using max()."""
-    # Prefer non-empty, then larger files (live module output), then newer, then work dir (low idx)
-    nonempty = 1 if size > 0 else 0
-    return (nonempty, size, mtime, -probe_idx)
-
-
-def newest_user_log(d: str, probe_dirs: Optional[List[str]] = None) -> Optional[str]:
-    """Find best user-generated log file (work dir and Nextflow scratch).
-
-    Picks by **content signal**, not mtime alone: a large ``preprocess_reads.log``
-    on the work dir wins over an empty or tiny copy on a mis-guessed scratch path,
-    which previously pushed nfmon toward noisy ``.command.*`` streams.
-    """
+def newest_user_log(d: str) -> Optional[str]:
+    """Find newest user-generated log file"""
     try:
-        probes = probe_dirs if probe_dirs is not None else task_probe_dirs(d)
         # Prefer known TrackTx module logs when present
         tracktx_candidates = [
             "preprocess_reads.log",
-            "umi_extract.log",
             "align_reads.log",
             "tracks.log",
             "quantify_reads_per_gene.log",
@@ -1764,58 +1284,34 @@ def newest_user_log(d: str, probe_dirs: Optional[List[str]] = None) -> Optional[
             "normalize_coverage_tracks.log",
             "combine.log",
         ]
-        best: Optional[str] = None
-        best_key: Optional[Tuple[int, int, float, int]] = None
-        for pi, probe in enumerate(probes):
-            for nm in tracktx_candidates:
-                p = os.path.join(probe, nm)
-                if not os.path.isfile(p):
-                    continue
+        best = None
+        mt = -1.0
+        for nm in tracktx_candidates:
+            p = os.path.join(d, nm)
+            if os.path.isfile(p):
                 try:
-                    st = os.stat(p)
+                    m = os.path.getmtime(p)
                 except OSError:
                     continue
-                key = _score_log_choice(p, st.st_size, st.st_mtime, pi)
-                if best_key is None or key > best_key:
-                    best, best_key = p, key
-            try:
-                for gpath in glob.glob(os.path.join(probe, "*.report.log")):
-                    if not os.path.isfile(gpath):
-                        continue
-                    try:
-                        st = os.stat(gpath)
-                    except OSError:
-                        continue
-                    key = _score_log_choice(gpath, st.st_size, st.st_mtime, pi)
-                    if best_key is None or key > best_key:
-                        best, best_key = gpath, key
-            except OSError:
-                pass
+                if m > mt:
+                    best, mt = p, m
         if best:
             return best
 
-        # Generic heuristic: best-scoring non-wrapper log-like file across probe dirs
-        newest: Optional[str] = None
-        best_key = None
-        for pi, probe in enumerate(probes):
-            try:
-                nms = os.listdir(probe)
-            except OSError:
+        # Generic heuristic: newest non-wrapper log-like file
+        newest = None
+        mt = -1.0
+        for nm in os.listdir(d):
+            if nm.startswith(".command.") or nm == ".exitcode":
                 continue
-            for nm in nms:
-                if nm.startswith(".command.") or nm == ".exitcode":
+            if any(s in nm.lower() for s in ("stdout", "stderr", ".log", ".err", ".out")):
+                p = os.path.join(d, nm)
+                try:
+                    m = os.path.getmtime(p)
+                except OSError:
                     continue
-                if any(s in nm.lower() for s in ("stdout", "stderr", ".log", ".err", ".out")):
-                    p = os.path.join(probe, nm)
-                    if not os.path.isfile(p):
-                        continue
-                    try:
-                        st = os.stat(p)
-                    except OSError:
-                        continue
-                    key = _score_log_choice(p, st.st_size, st.st_mtime, pi)
-                    if best_key is None or key > best_key:
-                        newest, best_key = p, key
+                if m > mt:
+                    newest, mt = p, m
         return newest
     except Exception:
         return None
@@ -1885,42 +1381,18 @@ def extract_timestamp_from_log(lines: List[str]) -> Optional[str]:
 
 def insight(d: str, tail_n: int) -> Tuple[str, List[str], List[Tuple[str, str]]]:
     """Bundle introspection: payload, log tail, outputs"""
-    probes = task_probe_dirs(d)
-    user = newest_user_log(d, probe_dirs=probes)
-    # Prefer wrapper logs from the work dir first (bind-mounted with Docker); only
-    # then scratch — wrong scratch guess should not drown out the real stream.
-    src = user
-    if not src and probes:
-        src = best_log_for_tail(d, probe_dirs=[probes[0]])
-    if not src:
-        src = best_log_for_tail(d, probe_dirs=probes)
+    user = newest_user_log(d)
+    src = user or best_log_for_tail(d)
     # Always try to tail something so the log pane isn't empty
     tl = slurp_tail(src, tail_n, scrub=True) if src else ["<no output yet>"]
     # If strict filtering removed everything:
     #  - For TrackTx module logs, fall back to a raw tail so we keep all PREP/ALIGN/TRACKS lines.
-    #  - For Nextflow wrapper logs ('.command.*'), try every other .command.* file before giving up,
-    #    since tools write to different streams (stderr, stdout) at different points. If none have
-    #    content after scrubbing, try a raw tail of .command.err as last resort (shows bash trace).
+    #  - For Nextflow wrapper logs ('.command.*'), avoid dumping bash noise and instead show a
+    #    clear placeholder so the UI isn't misleadingly empty.
     if src and not tl:
         base = os.path.basename(src)
         if base.startswith(".command."):
-            # Try remaining .command.* files in preference order (work + scratch)
-            for alt_fn in (".command.err", ".command.out", ".command.log"):
-                for probe in probes:
-                    alt = os.path.join(probe, alt_fn)
-                    if alt == src:
-                        continue
-                    alt_lines = slurp_tail(alt, tail_n, scrub=True)
-                    if alt_lines:
-                        tl = alt_lines
-                        src = alt
-                        break
-                if tl:
-                    break
-            # Never raw-tail .command.* : scrub=False only shows docker/tini/bash xtrace noise
-            # (especially on macOS docker).  Prefer placeholder until module logs exist.
-            if not tl:
-                tl = ["<waiting for module logs>"]
+            tl = ["<waiting for module logs>"]
         else:
             tl = slurp_tail(src, tail_n, scrub=False)
     # Prefer actual timestamp or stage line from module logs over script commands
@@ -1943,8 +1415,6 @@ def insight(d: str, tail_n: int) -> Tuple[str, List[str], List[Tuple[str, str]]]
                 if s.startswith("#"):
                     continue
                 if s.startswith("sed "):
-                    continue
-                if is_wrapper_or_trace_line(s):
                     continue
                 meaningful = s
                 break
@@ -2005,11 +1475,12 @@ def classify(world: World):
     active_dirs = running_dirs(roots)
     seen_ids = set()
     
-    # Get Docker container mapping only when Docker is actually in use.
-    # Calling `docker ps` on every classify() cycle is expensive and noisy for
-    # conda/local runs where Docker is not involved.
-    docker_map = docker_containers_map() if world.meta.container_engine == "docker" else {}
-    
+    # Get Docker container mapping + stats (if using Docker executor).
+    # Both are cached and batched so this is at most two subprocesses per refresh,
+    # not one-per-container.
+    docker_map = docker_containers_map()
+    docker_stats = docker_stats_all() if docker_map else {}
+
     for d in active_dirs:
         tid = "/".join(d.rstrip("/").split("/")[-2:])
         seen_ids.add(tid)
@@ -2029,7 +1500,7 @@ def classify(world: World):
                     if key != tid:
                         try:
                             del world.tasks[key]
-                        except:
+                        except Exception:
                             pass
                     break
         
@@ -2041,28 +1512,13 @@ def classify(world: World):
         
         t.workdir = d
         t.state = "RUNNING"
-
-        # Fix first_ts: use .command.run mtime as the task's true start time.
-        # Tasks that were already running when nfmon.py started get first_ts=now
-        # from the log parser (_ensure()), which resets the age counter on each
-        # restart.  .command.run is written once by Nextflow before the task
-        # runs and never modified, so its mtime is a reliable start-time proxy.
-        # On macOS st_birthtime gives the actual creation time; Linux falls back
-        # to mtime which is equally reliable here.
-        try:
-            cr = os.stat(os.path.join(d, ".command.run"))
-            cr_ts = getattr(cr, "st_birthtime", cr.st_mtime)
-            if cr_ts < t.first_ts:
-                t.first_ts = cr_ts
-        except Exception:
-            pass
-
+        
         # Try Docker stats first (for Docker executor)
         got_metrics = False
         d_norm = os.path.normpath(d.rstrip("/"))
         container_id = docker_map.get(d_norm) or docker_map.get(d)
         if container_id:
-            cpu, rss = docker_stats_for_container(container_id)
+            cpu, rss = docker_stats.get(container_id, (None, None))
             if cpu is not None:
                 t.metrics.cpu_pct = cpu
                 got_metrics = True
@@ -2074,137 +1530,47 @@ def classify(world: World):
         if not got_metrics:
             pid = pid_from_dir(d)
             t.pid = pid
-
-            # One snapshot for tree-walk, CWD union (macOS), and Linux cmdline fallback.
+            
+            if pid:
+                cpu, rss = ps_for_pid(pid)
+                if cpu is not None:
+                    t.metrics.cpu_pct = cpu
+                if rss is not None:
+                    t.metrics.rss_mb = rss
+        
+        # Fallback: try to match process by command line if PID missing
+        if t.state == "RUNNING" and (t.pid is None or t.metrics.cpu_pct is None):
             snap = _ps_snapshot()
-            scratch = scratch_dir_from_taskdir(d)
-
-            if sys.platform.startswith("darwin"):
-                # Sum CPU/RSS for every process whose CWD is the NFS work dir *or*
-                # the Nextflow scratch dir (scratch=true puts the real cwd in /tmp).
-                task_pids: List[int] = []
-                seen_tp: Set[int] = set()
-                for dr in (d, scratch or ""):
-                    if not dr or not os.path.isdir(dr):
-                        continue
-                    for p in _macos_pids_for_workdir(os.path.normpath(dr)):
-                        if p not in seen_tp:
-                            seen_tp.add(p)
-                            task_pids.append(p)
-
-                if task_pids:
-                    snap_lu = {p: (c, r) for p, pp, c, r, cmd in snap}
-                    cpu2 = sum(snap_lu.get(p, (0.0, 0.0))[0] for p in task_pids)
-                    rss2 = sum(snap_lu.get(p, (0.0, 0.0))[1] for p in task_pids)
-                    if t.pid is None:
-                        t.pid = task_pids[0]
-                    t.metrics.cpu_pct = cpu2
-                    t.metrics.rss_mb = rss2
-                elif pid:
-                    cpu, rss = _tree_cpu_rss(pid, snap)
-                    t.metrics.cpu_pct = cpu
-                    t.metrics.rss_mb = rss
-
-                # Tertiary macOS fallbacks — used when BOTH CWD scan and .command.pid fail.
-                # Root causes:
-                #  (a) Tools like prefetch/fasterq-dump chdir() to their download cache
-                #      immediately, so no process has CWD == work dir → CWD scan = [].
-                #  (b) Nextflow's .command.run shebang is #!/bin/bash, which on macOS is
-                #      bash 3.2 (GPL boundary). Bash 3.2 has no $BASHPID → .command.pid
-                #      is written as empty/0 → pid_from_dir returns None.
-                #  (c) Nextflow 25.x captures task stdout/stderr via Java pipes, NOT via
-                #      `exec 1>.command.out`, so lsof on .command.out finds nothing useful.
-                #
-                # Strategy A: search the ps snapshot for the task TAG in process cmdlines.
-                #   Works for tools that receive the sample/accession as a CLI argument,
-                #   e.g. `prefetch SRR5364306` where tag="SRR5364306".
-                # Strategy B: search the ps snapshot for the work-dir hash in cmdlines
-                #   (same as the Linux fallback — some NF versions pass absolute paths).
-                # Strategy C: lsof +D to find any process with an open fd in the workdir
-                #   (catches bash still reading .command.run, or tools writing temp files).
-                if t.metrics.rss_mb is None or t.metrics.rss_mb == 0.0:
-                    _fb_matched: List[Tuple[int, float, float]] = []
-
-                    # Strategy A — task tag in cmdline
-                    _tag = (t.tag or "").strip()
-                    if not _fb_matched and len(_tag) >= 4:
-                        for _ep, _epp, _ec, _er, _ecmd in snap:
-                            if _tag in _ecmd:
-                                _fb_matched.append((_ep, _ec, _er))
-
-                    # Strategy B — work-dir hash in cmdline
-                    if not _fb_matched:
-                        _thash = os.path.basename(d)
-                        _wdir  = os.path.normpath(d)
-                        for _ep, _epp, _ec, _er, _ecmd in snap:
-                            if (_thash and _thash in _ecmd) or (_wdir and _wdir in _ecmd):
-                                _fb_matched.append((_ep, _ec, _er))
-
-                    # Strategy C — lsof +D (any open fd inside workdir)
-                    if not _fb_matched:
-                        try:
-                            _lo = subprocess.check_output(
-                                ["lsof", "-Fp", "+D", d],
-                                text=True, stderr=subprocess.DEVNULL, timeout=5,
-                            )
-                            _opids = list(dict.fromkeys(
-                                int(ln[1:]) for ln in _lo.splitlines()
-                                if ln.startswith("p") and ln[1:].strip().isdigit()
-                            ))
-                            if _opids:
-                                _slu = {p: (c, r) for p, pp, c, r, cmd in snap}
-                                for _op in _opids:
-                                    _oc, _or = _slu.get(_op, (0.0, 0.0))
-                                    _fb_matched.append((_op, _oc, _or))
-                        except Exception:
-                            pass
-
-                    if _fb_matched:
-                        _cpu2 = sum(c for _, c, _ in _fb_matched)
-                        _rss2 = sum(r for _, _, r in _fb_matched)
-                        if _rss2 > 0:
-                            t.metrics.cpu_pct = _cpu2
-                            t.metrics.rss_mb  = _rss2
-                            if t.pid is None:
-                                t.pid = _fb_matched[0][0]
-            else:
-                if pid:
-                    cpu, rss = _tree_cpu_rss(pid, snap)
-                    t.metrics.cpu_pct = cpu
-                    t.metrics.rss_mb = rss
-
-                task_pids: List[int] = []
-                if t.pid is None:
-                    thash = os.path.basename(d)
-                    wdir = os.path.normpath(d)
-                    for ep, _epp, _ec, _er, ecmd in snap:
-                        if (thash and thash in ecmd) or (wdir and wdir in ecmd):
-                            task_pids = [ep]
-                            break
-
-                if task_pids:
-                    snap_lu = {p: (c, r) for p, pp, c, r, cmd in snap}
-                    cpu2 = sum(snap_lu.get(p, (0.0, 0.0))[0] for p in task_pids)
-                    rss2 = sum(snap_lu.get(p, (0.0, 0.0))[1] for p in task_pids)
-                    if t.pid is None:
-                        t.pid = task_pids[0]
-                    if rss2 > (t.metrics.rss_mb or 0):
-                        t.metrics.cpu_pct = cpu2
-                        t.metrics.rss_mb = rss2
-
-        # Learn allocated CPUs if still unknown.
-        # Priority: (1) task file scan, (2) per-process cache from completed trace rows
+            # build children index by ppid
+            children = {}
+            for pid, ppid, pcpu, rss_mb, cmd in snap:
+                if ppid not in children: children[ppid] = []
+                children[ppid].append((pid, pcpu, rss_mb, cmd))
+            
+            thash = (t.id or '').split('/')[-1]
+            for pid, ppid, pcpu, rss_mb, cmd in snap:
+                hit = False
+                if thash and thash in cmd: hit = True
+                elif t.workdir and t.workdir in cmd: hit = True
+                
+                if hit:
+                    # if wrapper, try to find hottest child
+                    if any(k in cmd for k in ("/bash", "bash", "/sh", "sh", "nextflow", "java")) and pid in children:
+                        kids = children[pid]
+                        kids.sort(key=lambda x: x[1], reverse=True)
+                        if kids:
+                            pid, pcpu, rss_mb, cmd = kids[0]
+                    
+                    t.pid = pid
+                    if t.metrics.cpu_pct is None: t.metrics.cpu_pct = pcpu
+                    if t.metrics.rss_mb is None: t.metrics.rss_mb = rss_mb
+                    break
+        
+        # Learn cpus from env if missing
         if t.metrics.cpus is None:
             cc = cpus_from_dir(d)
             if cc is not None:
                 t.metrics.cpus = cc
-            else:
-                # NF 25.x local executor does not write NXF_TASK_CPUS to any file.
-                # Fall back to the per-process cache populated from completed trace rows.
-                short = (t.name or "").split(":")[-1]
-                cached = world.process_cpus.get(t.name) or world.process_cpus.get(short)
-                if cached is not None:
-                    t.metrics.cpus = cached
         
         # Update metrics history
         t.metrics.update()
@@ -2269,25 +1635,29 @@ def classify(world: World):
         if not (t.name or t.tag):
             ensure_task_label_from_fs(world, t)
     
-    # Update process stats
+    # Update process stats. Tally per-name counts in a single pass (was O(N^2):
+    # a nested scan of all tasks for every task) and set total = sum of states so
+    # it stays consistent with the displayed breakdown.
+    counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for t in world.tasks.values():
         if not t.name:
             continue
-        if t.name not in world.proc_stats:
-            world.proc_stats[t.name] = ProcessStats(name=t.name)
-        
-        ps = world.proc_stats[t.name]
-        ps.total = max(ps.total, 1)  # Ensure at least 1
-        
-        if t.state == "RUNNING":
-            ps.running = len([x for x in world.tasks.values() if x.name == t.name and x.state == "RUNNING"])
-        elif t.state == "COMPLETED":
-            ps.completed = len([x for x in world.tasks.values() if x.name == t.name and x.state == "COMPLETED"])
-            ps.update(t)
-        elif t.state == "FAILED":
-            ps.failed = len([x for x in world.tasks.values() if x.name == t.name and x.state == "FAILED"])
-        elif t.state == "CACHED":
-            ps.cached = len([x for x in world.tasks.values() if x.name == t.name and x.state == "CACHED"])
+        counts[t.name][t.state or ""] += 1
+
+    for name, c in counts.items():
+        if name not in world.proc_stats:
+            world.proc_stats[name] = ProcessStats(name=name)
+        ps = world.proc_stats[name]
+        ps.running = c.get("RUNNING", 0)
+        ps.completed = c.get("COMPLETED", 0)
+        ps.failed = c.get("FAILED", 0)
+        ps.cached = c.get("CACHED", 0)
+        ps.total = ps.running + ps.completed + ps.failed + ps.cached + c.get("KILLED", 0)
+
+    # Record durations for completed tasks (for avg/median/p95)
+    for t in world.tasks.values():
+        if t.name and t.state == "COMPLETED":
+            world.proc_stats[t.name].update(t)
     
     # Mark slow tasks
     for t in run:
@@ -2311,12 +1681,9 @@ def classify(world: World):
     world.cum_failed = max(world.cum_failed, fail)
     world.cum_killed = max(world.cum_killed, killed)
     
-    # Progress: use cumulative counters so pruned tasks still count.
-    # cum_done/cum_cached are monotonically non-decreasing; cum_seen tracks
-    # every distinct task hash seen in the log.
-    completed_like = world.cum_done + world.cum_cached
-    snapshot_total = len(run) + len(queued) + done + fail + cache + killed
-    total = max(world.cum_seen, snapshot_total)
+    # Snapshot totals for intuitive progress %
+    total = len(run) + len(queued) + done + fail + cache + killed
+    completed_like = done + cache
     progress_pct = int((completed_like * 100 / max(1, total))) if total else 0
     
     return run, queued, dict(
@@ -2545,13 +1912,7 @@ class TUI:
         # Compute cores in use
         cores_in_use = sum([max(0.0, t.metrics.cpus or 0) for t in run])
         if self.w.ncpu <= 0:
-            try:
-                if sys.platform.startswith("darwin"):
-                    self.w.ncpu = int(subprocess.check_output(["sysctl", "-n", "hw.ncpu"], text=True))
-                else:
-                    self.w.ncpu = int(subprocess.check_output(["bash", "-lc", "nproc 2>/dev/null || getconf _NPROCESSORS_ONLN"], text=True))
-            except Exception:
-                pass
+            self.w.ncpu = get_ncpu()
         
         # Progress: snapshot-based (completed+cached vs all known tasks)
         pct = C.get("progress_pct", 0)
@@ -2571,7 +1932,7 @@ class TUI:
         # Progress bar
         barw = max(10, maxx - 12)
         fill = int(barw * pct / 100)
-        self._add(2, 0, ("━" * fill) + ("─" * (barw - fill)) + f"  {pct:3d}%")
+        self._add(2, 0, "[" + ("█" * fill) + ("·" * (barw - fill)) + f"] {pct:3d}%")
         # Layout: header 3 rows, rest for list + details
         header_h = 4
         avail_h = max(0, maxy - header_h)
@@ -2720,7 +2081,7 @@ def oneshot(w: World):
     bw = 80
     fill = int(bw * pct / 100)
     print("┌─ Pipeline ─┐")
-    print(("━" * fill) + ("─" * (bw - fill)) + f"  {pct:3d}%")
+    print("[" + ("█" * fill) + ("·" * (bw - fill)) + f"] {pct:3d}%")
     print(f"  total:{total}  run:{C['running']}  done:{C['done']}  fail:{C['failed']}  cache:{C['cached']}")
     
     # ETA
@@ -2820,10 +2181,9 @@ def main():
     if a.resolve_hash:
         key = a.resolve_hash.strip()
         wanted = key.split("/")[-1]
-        
-        if os.path.isfile(log):
-            bootstrap(w, log)
-        
+
+        # Note: the log was already bootstrapped above during startup; don't
+        # re-parse it here (that double-counted every task).
         for row in tail_trace(w):
             apply_trace_row(w, row, time.time())
         
@@ -2920,11 +2280,10 @@ def main():
             from rich.live import Live
             from rich.table import Table
             from rich.panel import Panel
+            from rich.progress import Progress, BarColumn, TextColumn
             from rich.layout import Layout
             from rich.align import Align
             from rich.text import Text
-            from rich.rule import Rule
-            import rich.box
             import hashlib
 
             def _task_label(t: Task) -> str:
@@ -2967,43 +2326,15 @@ def main():
                 h = int(hashlib.md5(name.encode("utf-8")).hexdigest(), 16)
                 return palette[h % len(palette)]
 
-            def _vstack(*items):
-                """Stack renderables without Panel borders.
-                First item (typically a Rule) spans full width; subsequent items
-                get a 1-line top gap and 2-char left/right gutters."""
-                outer = Table(show_header=False, show_edge=False,
-                              box=None, padding=0, expand=True)
-                outer.add_column(ratio=1)
-                inner = Table(show_header=False, show_edge=False,
-                              box=None, padding=(0, 2), expand=True)
-                inner.add_column(ratio=1)
-                for i, item in enumerate(items):
-                    if i == 0:
-                        outer.add_row(item)       # Rule: full width, no padding
-                    else:
-                        inner.add_row(Text(""))   # 1-line breathing gap
-                        inner.add_row(item)       # content with 2-char side gutters
-                outer.add_row(inner)
-                return outer
-
-            def mini_bar(pct: float, width: int = 6,
-                         full_style: str = "green", empty_style: str = "dim") -> Text:
-                """Return a Rich Text mini fill bar e.g. ▓▓▓▓░░"""
-                filled = min(width, max(0, int(round(pct / 100.0 * width))))
-                t = Text()
-                t.append("▓" * filled,          style=full_style)
-                t.append("░" * (width - filled), style=empty_style)
-                return t
-
             # remember focused task across renders and support j/k to switch
             focused = {"id": None, "idx": 0}
             stop_keys = {"stop": False}
             filter_state = {"proc": None}
             def _key_thread():
+                import sys, termios, tty, select
+                fd = sys.stdin.fileno()
+                old = termios.tcgetattr(fd)
                 try:
-                    import sys, termios, tty, select
-                    fd = sys.stdin.fileno()
-                    old = termios.tcgetattr(fd)
                     tty.setcbreak(fd)
                     while not stop_keys["stop"]:
                         r,_,_ = select.select([sys.stdin], [], [], 0.05)
@@ -3042,14 +2373,16 @@ def main():
                                 except ValueError:
                                     idx = 0
                                 filter_state['sort'] = order[(idx+1) % len(order)]
-                            if ch == 'h':
-                                new_val = not filter_state.get('show_help', False)
-                                filter_state['show_help'] = new_val
-                                if new_val:
-                                    filter_state['help_opened_at'] = time.time()
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
                 except Exception:
                     pass
+                finally:
+                    # Always restore the terminal, even if the Live loop exits
+                    # while we're blocked in select() — otherwise the user's
+                    # shell is left in cbreak/no-echo mode after quitting.
+                    try:
+                        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                    except Exception:
+                        pass
 
             def render():
                 import shutil
@@ -3057,93 +2390,54 @@ def main():
                     term_height = shutil.get_terminal_size().lines
                 except Exception:
                     term_height = 40
-                run,que,C=classify(w)   # single call — reused throughout render()
+                run,que,C=classify(w)
 
-                # Auto-close help after 60 s of being open
-                if filter_state.get('show_help') and \
-                        time.time() - filter_state.get('help_opened_at', 0) > 60:
-                    filter_state['show_help'] = False
-
-                # ── Header (borderless) ─────────────────────────────────────
-                show_help = filter_state.get('show_help', False)
-                sort_str  = filter_state.get('sort', 'default')
+                # header with run/session and system stats
+                hdr = Text()
+                # hide placeholders for run/session when unknown
                 rn = (w.meta.run_name or "?")
                 ss = (w.meta.session or "?")
-                ss_short = ss[:8] if (ss != "?" and len(ss) > 8) else ss
+                hdr.append(f"Run: {rn if rn!='?' else 'n/a'} ")
+                hdr.append(f"Session: {ss if ss!='?' else 'n/a'} ")
                 container = getattr(w.meta, "container_engine", "") or "none"
-
-                hdr = Text()
-                # Line 1: branded title + identity + uptime
-                hdr.append(" ◈ nf-monitor ", style="bold white on dark_cyan")
-                hdr.append("  run:", style="dim")
-                hdr.append(f" {rn if rn!='?' else 'n/a'}", style="bold cyan")
-                hdr.append("  sess:", style="dim")
-                hdr.append(f" {ss_short if ss!='?' else 'n/a'}", style="")
-                hdr.append(f"  {w.meta.executor}  {container}", style="dim")
-                _pipe_ts = w.pipeline_start_ts or w.start_ts
-                _elapsed = sec2hms(int(time.time() - _pipe_ts))
-                _ts_label = "run" if w.pipeline_start_ts else "up"
-                hdr.append(f"  ⏱ {_ts_label} {_elapsed}\n", style="dim")
-
-                # Line 2: system resources
+                hdr.append(f"Exec: {w.meta.executor}  Container: {container}\n")
+                mode = getattr(w, "mode", "")
+                if mode:
+                    hdr.append(f"Mode: {mode}\n")
+                # compute cores-in-use and ETA similar to curses UI
+                # (classify() already called once above — do not call it again,
+                #  it walks the work dir + queries Docker and is expensive)
                 cores_in_use = sum([max(0.0, t.metrics.cpus) for t in run if t.metrics.cpus is not None])
+                # determine total cores
                 if w.ncpu <= 0:
-                    try:
-                        if sys.platform.startswith("darwin"):
-                            w.ncpu=int(subprocess.check_output(["sysctl","-n","hw.ncpu"],text=True))
-                        else:
-                            w.ncpu=int(subprocess.check_output(["bash","-lc","nproc 2>/dev/null || getconf _NPROCESSORS_ONLN"],text=True))
-                    except Exception:
-                        w.ncpu = 0
-                if cores_in_use <= 0 and w.ncpu > 0:
-                    approx = sum(max(0.0, t.metrics.cpu_pct/100.0) for t in run if t.metrics.cpu_pct is not None)
+                    w.ncpu = get_ncpu()
+                # fallback cores-in-use using sum of cpu_pct when cpus missing
+                if cores_in_use <= 0 and w.ncpu>0:
+                    approx = 0.0
+                    for t in run:
+                        if t.metrics.cpu_pct is not None:
+                            approx += max(0.0, t.metrics.cpu_pct/100.0)
                     cores_in_use = min(float(w.ncpu), approx)
-                cores_txt = f"  cores {int(round(cores_in_use))}/{w.ncpu}" if w.ncpu > 0 else ""
-                hdr.append(f"sys  cpu {w.cpu_pct}%  mem {w.mem_pct}%  load {w.load_1}{cores_txt}\n\n", style="dim")
+                cores_txt = f" CORES {int(round(cores_in_use))}/{w.ncpu}" if w.ncpu>0 else ""
+                hdr.append(f"CPU {w.cpu_pct}% MEM {w.mem_pct}% LOAD1 {w.load_1}{cores_txt}")
+                if filter_state["proc"]:
+                    hdr.append(f"\nFilter: {filter_state['proc']}", style="yellow")
+                sort_indicator = f" • Sort: {filter_state.get('sort', 'default')}" if filter_state.get('sort') != 'default' else ""
+                hdr.append(f"\n[dim]j/k nav  f filter  s sort  a all-logs  q quit{sort_indicator}" + (" [yellow]ALL LOGS[/yellow]" if getattr(a, 'all_logs', False) else "") + "[/dim]")
+                header_panel = Panel(hdr, title="nf-monitor", border_style="cyan", padding=(0, 1))
 
-                # Line 3: progress bar + task badges (blank line above provided by \n\n)
+                # pipeline progress bar (snapshot-based)
                 pct = C.get("progress_pct", 0)
-                try:
-                    term_w = shutil.get_terminal_size().columns
-                except Exception:
-                    term_w = 80
-                bar_w = max(4, term_w - 27)
-                fill = int(bar_w * pct / 100)
-                hdr.append("━" * fill,           style="green")
-                hdr.append("━" * (bar_w - fill), style="dim")
-                hdr.append(f"  {pct}%  ", style="bold")
-                n_run  = C.get("running", 0);  n_done = C.get("done", 0) + C.get("cached", 0)
-                n_fail = C.get("failed",  0);  n_que  = C.get("queued", 0)
-                if n_run:  hdr.append(f"▶{n_run} ",  style="bold cyan")
-                if n_done: hdr.append(f"✓{n_done} ", style="green")
-                if n_fail: hdr.append(f"✗{n_fail} ", style="bold red")
-                if n_que:  hdr.append(f"⏳{n_que}",  style="dim")
-                hdr.append("\n")  # trailing blank line before the Rule separator
+                prog=Progress(TextColumn("[bold]Pipeline"), BarColumn(), TextColumn(f" {pct}%"), expand=True)
+                prog.add_task("pipe", total=100, completed=pct)
 
-                # _vstack puts Rule first (full-width) then hdr with side gutters
-                # but header is special: hdr comes BEFORE the Rule, so we build it manually
-                _hdr_outer = Table(show_header=False, show_edge=False,
-                                   box=None, padding=0, expand=True)
-                _hdr_outer.add_column(ratio=1)
-                _hdr_inner = Table(show_header=False, show_edge=False,
-                                   box=None, padding=(0, 2), expand=True)
-                _hdr_inner.add_column(ratio=1)
-                _hdr_inner.add_row(hdr)
-                _hdr_outer.add_row(_hdr_inner)
-                _hdr_outer.add_row(Rule(style="cyan"))
-                header_grp = _hdr_outer
+                # remove per-process summary; show placeholder
+                proc_tbl = Table(title="", expand=True, show_edge=False)
 
                 # running table
                 rt_title = "Running (all logs)" if getattr(a, 'all_logs', False) else "Running (j/k to focus)"
-                rt = Table(title=None, expand=True, padding=(0, 1), show_edge=False,
-                           box=rich.box.SIMPLE, header_style="bold dim", show_lines=False)
-                rt.add_column("",       width=1,                   no_wrap=True)  # focus/load dot
-                rt.add_column("Module", max_width=30,              no_wrap=True)  # capped
-                rt.add_column("Sample", max_width=22,              no_wrap=True)  # capped — was ratio=1 (ballooned on wide terminals)
-                rt.add_column("CPU",    justify="left",  width=14, no_wrap=True)  # "▓▓▓▓░░ 45%/8c" max ~14 chars
-                rt.add_column("MEM",    justify="left",  width=10, no_wrap=True)  # "▓▓░░ 2.1G" max ~10 chars
-                rt.add_column("Age",    justify="right", width=7,  no_wrap=True)
-                rt.add_column("▲",      width=10)                                 # CPU sparkline
+                rt = Table(title=rt_title, expand=True, padding=(0, 0), show_edge=True)
+                rt.add_column("Module", ratio=2); rt.add_column("Sample", ratio=2); rt.add_column("id"); rt.add_column("PID"); rt.add_column("CPU"); rt.add_column("CPUS"); rt.add_column("RSS"); rt.add_column("Age"); rt.add_column("Stage", ratio=2); rt.add_column("CPU hist")
                 # ensure labels from FS if missing
                 for t in run:
                     ensure_task_label_from_fs(w, t)
@@ -3161,217 +2455,76 @@ def main():
                     # Ensure we have proper labels from filesystem
                     ensure_task_label_from_fs(w, t)
                     
-                    # CPU — mini bar + number
-                    cpu_pct = t.metrics.cpu_pct
-                    cpus_n  = t.metrics.cpus
-                    cpu_style = ("green" if (cpu_pct or 0) < 50 else ("yellow" if (cpu_pct or 0) < 80 else "red")) if cpu_pct is not None else "dim"
-                    if cpu_pct is not None:
-                        cpu_col = mini_bar(cpu_pct, 6, cpu_style)
-                        suffix = f" {cpu_pct:.0f}%"
-                        if cpus_n is not None: suffix += f"/{int(cpus_n)}c"
-                        cpu_col.append(suffix, style=cpu_style)
-                    elif cpus_n is not None:
-                        cpu_col = Text(f"░░░░░░ ──/{int(cpus_n)}c", style="dim")
-                    else:
-                        cpu_col = Text("░░░░░░  ──", style="dim")
-
-                    # MEM — mini bar + number (scale: 32 GB = 100%)
-                    _rss = t.metrics.rss_mb
-                    rss_style = ("green" if (_rss or 0) < 2048 else ("yellow" if (_rss or 0) < 8192 else "red")) if _rss is not None else "dim"
-                    if _rss is not None:
-                        rss_pct = min(100.0, _rss / 32768.0 * 100)
-                        mem_col = mini_bar(rss_pct, 4, rss_style)
-                        if _rss >= 1024:
-                            mem_col.append(f" {_rss/1024:.1f}G", style=rss_style)
-                        else:
-                            mem_col.append(f" {_rss:.0f}M", style=rss_style)
-                    else:
-                        mem_col = Text("░░░░ ──", style="dim")
-
-                    # Module name: strip workflow prefix ("TrackTx:align_reads_to_genome" → "align_reads_to_genome")
+                    cpu=(f"{t.metrics.cpu_pct:.0f}%" if t.metrics.cpu_pct is not None else "--")
+                    # colorize CPU and RSS
+                    cpu_style = ("green" if (t.metrics.cpu_pct or 0) < 50 else ("yellow" if (t.metrics.cpu_pct or 0) < 80 else "red")) if t.metrics.cpu_pct is not None else "dim"
+                    cpus = (f"{t.metrics.cpus:.1f}" if t.metrics.cpus is not None else "?")
+                    rss=(f"{t.metrics.rss_mb:.0f}MB" if t.metrics.rss_mb is not None else "--")
+                    rss_style = ("green" if (t.metrics.rss_mb or 0) < 2048 else ("yellow" if (t.metrics.rss_mb or 0) < 8192 else "red")) if t.metrics.rss_mb is not None else "dim"
+                    
+                    # split into module (process name) and sample/tag
+                    # If name still looks like hash, try to extract from workdir one more time
                     if not t.name or looks_like_hash(t.name):
                         if t.workdir:
                             name_temp, tag_temp = label_from_dir(t.workdir)
                             if name_temp and not looks_like_hash(name_temp):
-                                t.name = name_temp; t.tag = tag_temp
+                                t.name = name_temp
+                                t.tag = tag_temp
+                    
                     module_name = t.name if (t.name and not looks_like_hash(t.name)) else f"task_{short_hash(t.id or '?')}"
-                    if ':' in module_name:
-                        module_name = module_name.split(':', 1)[-1]   # drop "TrackTx:" prefix
-                    sample_tag = (t.tag or "─")
-                    is_focused = (not getattr(a, 'all_logs', False)) and idx == focused["idx"]
-                    if is_focused:
-                        dot = Text("►", style="bold cyan")
-                    elif cpu_pct is not None:
-                        if cpu_pct > 80:   dot = Text("●", style="bold red")
-                        elif cpu_pct > 50: dot = Text("●", style="yellow")
-                        elif cpu_pct > 10: dot = Text("●", style="green")
-                        else:              dot = Text("●", style="dim")
-                    else:
-                        dot = Text("·", style="dim")
+                    sample_tag  = (t.tag or "-")
                     lab = Text(module_name, style=_name_style(module_name))
-                    if is_focused:
-                        lab.stylize("bold underline")
-
-                    hist  = list(t.metrics.cpu_hist)
+                    if (not getattr(a, 'all_logs', False)) and idx == focused["idx"]:
+                        lab.stylize("bold yellow")
+                    stage = (t.stage or "")
+                    # sparkline from cpu_hist
+                    hist = list(t.metrics.cpu_hist)
                     spark = ""
                     if hist:
                         try:
-                            if cpus_n is not None and cpus_n > 0:
-                                # Scale to allocated CPUs: cpus_n×100% = full bar.
-                                # This lets the sparkline show real utilisation:
-                                # e.g. 322% on 5 cores → 64% bar, 118% on 5 cores → 24% bar.
-                                max_pct = cpus_n * 100.0
-                                scaled  = [min(100.0, v / max_pct * 100.0) for v in hist[-20:]]
-                                spark   = sparkline_pct(scaled)
-                            else:
-                                # No allocation info — show relative trend within this task.
-                                spark = sparkline(hist[-20:])
+                            # map to 0-7 levels using unicode blocks
+                            blocks = " ▂▃▄▅▆▇█"
+                            mx = max(1.0, max(hist))
+                            spark = "".join([blocks[min(7, int((v/mx)*7))] for v in hist[-20:]])
                         except Exception:
                             spark = ""
-                    rt.add_row(dot, lab, sample_tag, cpu_col, mem_col,
-                               sec2hms(int(time.time()-t.first_ts)), Text(spark, style="cyan"))
-
-                # Wrap running table in a borderless group with a Rule title.
-                # _vstack adds: 1-line gap + 2-char side gutters after the Rule.
-                # Extra Text("") row adds a blank line below the table before the next section.
-                _rt_title = f"▶ Running [{len(run_filtered)}]" if run_filtered else "▶ Running  (none)"
-                if not getattr(a, 'all_logs', False): _rt_title += "  j/k navigate"
-                rt_group = _vstack(Rule(title=_rt_title, style="cyan", align="left"), rt, Text(""))
+                    rt.add_row(lab, sample_tag, short_hash(t.id or ""), str(t.pid or '-'), Text(cpu, style=cpu_style), cpus, Text(rss, style=rss_style), sec2hms(int(time.time()-t.first_ts)), stage, Text(spark, style="cyan"))
 
                 # live log tail panel(s) - dynamically sized based on available space
-                log_panel = _vstack(Rule(title="Log", style="blue", align="left"),
-                                    Text("No running tasks", style="yellow"))
+                # Calculate how much space we have (will be computed below alongside layout)
+                log_panel = Panel(Text("No running tasks", style="yellow"), title="Log", border_style="blue", padding=(0, 1))
 
-                # help — comprehensive reference panel
-                _secs_open = int(time.time() - filter_state.get('help_opened_at', time.time()))
-                _secs_left = max(0, 60 - _secs_open)
+                # queued table
+                # remove queued table
+                qt = Table(title="", expand=True)
+
+                # errors panel
+                err_txt = Text("✓ none", style="green") if not w.recent_errors else Text("\n".join(list(w.recent_errors)[-3:]), style="red")
+                err_panel = Panel(err_txt, title="Errors", border_style="red", padding=(0, 1))
+
+                # help - extensive for novices
                 help_txt = Text()
+                help_txt.append("NAVIGATION\n", style="bold cyan")
+                help_txt.append("  j  or  Down  ", style="yellow")
+                help_txt.append("Move down to next running task\n", style="dim")
+                help_txt.append("  k  or  Up    ", style="yellow")
+                help_txt.append("Move up to previous task\n", style="dim")
+                help_txt.append("FILTER & SORT\n", style="bold cyan")
+                help_txt.append("  f  ", style="yellow")
+                help_txt.append("Filter by process: show only one module at a time (cycle through)\n", style="dim")
+                help_txt.append("  s  ", style="yellow")
+                help_txt.append("Sort: default → by CPU% → by memory → by age\n", style="dim")
+                help_txt.append("VIEW\n", style="bold cyan")
+                help_txt.append("  a  ", style="yellow")
+                help_txt.append("Toggle all-logs: show every task's log, or just the focused one\n", style="dim")
+                help_txt.append("QUIT\n", style="bold cyan")
+                help_txt.append("  q  or  Esc  ", style="yellow")
+                help_txt.append("Exit the monitor\n", style="dim")
+                help_txt.append("Columns: Module=process name, Sample=task tag, CPU%=usage, RSS=memory (MB)", style="dim")
+                help_panel = Panel(help_txt, title="Help", border_style="bright_black", padding=(0, 1))
 
-                help_txt.append("KEYBOARD SHORTCUTS\n", style="bold cyan")
-                help_txt.append("  j / ↓      ", style="bold yellow")
-                help_txt.append("Move focus down to next running task\n")
-                help_txt.append("  k / ↑      ", style="bold yellow")
-                help_txt.append("Move focus up to previous running task\n")
-                help_txt.append("  f          ", style="bold yellow")
-                help_txt.append("Cycle process filter: All → each module type in turn → All\n")
-                help_txt.append("  s          ", style="bold yellow")
-                help_txt.append("Cycle sort order: default → by CPU% → by memory (RSS) → by age\n")
-                help_txt.append("  a          ", style="bold yellow")
-                help_txt.append("Toggle all-logs: focused task only ↔ all running tasks stacked\n")
-                help_txt.append("  h          ", style="bold yellow")
-                help_txt.append("Toggle this help panel (auto-closes after 60 s)\n")
-                help_txt.append("  q / Esc    ", style="bold yellow")
-                help_txt.append("Quit nf-monitor\n")
-                help_txt.append("\n")
-
-                help_txt.append("COLUMN REFERENCE\n", style="bold cyan")
-                help_txt.append("  ●/►   ", style="bold yellow")
-                help_txt.append("Focus & load indicator — see legend below\n")
-                help_txt.append("  Module", style="bold yellow")
-                help_txt.append("  Nextflow process name (workflow prefix stripped)\n")
-                help_txt.append("  Sample", style="bold yellow")
-                help_txt.append("  Task tag — usually the sample ID or input file name\n")
-                help_txt.append("  CPU   ", style="bold yellow")
-                help_txt.append("  ▓▓▓░░░ bar (6-wide) + actual%/allocated cores\n")
-                help_txt.append("         ", style="bold yellow")
-                help_txt.append("  bar is proportional to CPU%; ── means no data yet\n", style="dim")
-                help_txt.append("  MEM   ", style="bold yellow")
-                help_txt.append("  ▓▓░░ bar (4-wide, 32 GB=full) + current RSS\n")
-                help_txt.append("         ", style="bold yellow")
-                help_txt.append("  shows G (gigabytes) or M (megabytes)\n", style="dim")
-                help_txt.append("  Age   ", style="bold yellow")
-                help_txt.append("  Wall-clock time since the task was submitted\n")
-                help_txt.append("  ▲     ", style="bold yellow")
-                help_txt.append("  CPU% sparkline — last 20 samples, ▁=low █=high\n")
-                help_txt.append("\n")
-
-                help_txt.append("INDICATOR LEGEND\n", style="bold cyan")
-                help_txt.append("  ► ", style="bold cyan")
-                help_txt.append("cyan      focused row (log panel tracks this task)\n")
-                help_txt.append("  ● ", style="green")
-                help_txt.append("green     CPU 10–50%   moderate load\n")
-                help_txt.append("  ● ", style="yellow")
-                help_txt.append("yellow    CPU 50–80%   high load\n")
-                help_txt.append("  ● ", style="bold red")
-                help_txt.append("red       CPU > 80%    saturated / bottleneck\n")
-                help_txt.append("  · ", style="dim")
-                help_txt.append("dim       CPU unknown or task idle\n")
-                help_txt.append("\n")
-
-                help_txt.append("PROGRESS BAR BADGES\n", style="bold cyan")
-                help_txt.append("  ▶N  ", style="bold cyan")
-                help_txt.append("N tasks currently running\n")
-                help_txt.append("  ✓N  ", style="green")
-                help_txt.append("N tasks completed successfully (includes cached)\n")
-                help_txt.append("  ✗N  ", style="bold red")
-                help_txt.append("N tasks failed or errored\n")
-                help_txt.append("  ⏳N ", style="dim")
-                help_txt.append("N tasks queued (submitted but not yet started)\n")
-                help_txt.append("\n")
-
-                help_txt.append("LOG PANEL\n", style="bold cyan")
-                help_txt.append("The log panel shows live tail of the focused task's ")
-                help_txt.append(".command.log", style="bold")
-                help_txt.append(" file.\n")
-                help_txt.append("Summary line at top: process name, sample tag, elapsed, CPU, RSS.\n")
-                help_txt.append("A ▶ line shows the most recent meaningful output (insight).\n")
-                help_txt.append("Press ")
-                help_txt.append("a", style="bold yellow")
-                help_txt.append(" to switch to all-logs mode — stacks every running task.\n")
-                help_txt.append("\n")
-
-                help_txt.append("HOW CPU & MEMORY ARE MEASURED\n", style="bold cyan")
-                help_txt.append("CPU and RSS are summed across the ")
-                help_txt.append("full process subtree", style="bold")
-                help_txt.append(" (the bash wrapper\n")
-                help_txt.append("+ all child processes it spawned). This gives accurate numbers\n")
-                help_txt.append("even for tools like STAR or BWA that fork many threads.\n")
-                help_txt.append("CPU allocation (/Nc) is read from ")
-                help_txt.append("OMP_NUM_THREADS", style="bold")
-                help_txt.append(" in .command.sh\n")
-                help_txt.append("(written by Nextflow's beforeScript) or from completed trace rows.\n")
-                help_txt.append("\n")
-
-                help_txt.append("TIPS\n", style="bold cyan")
-                help_txt.append("  • ", style="dim")
-                help_txt.append("Use --refresh 1.0 to reduce overhead on large cluster runs\n", style="dim")
-                help_txt.append("  • ", style="dim")
-                help_txt.append("Use --filter 'align' to pre-filter tasks by regex from startup\n", style="dim")
-                help_txt.append("  • ", style="dim")
-                help_txt.append(
-                    "On scratch=true, per-task CPU/mem uses /proc on Linux; on macOS, "
-                    "libproc CWD matching on the work dir plus the scratch path parsed "
-                    "from .command.run\n",
-                    style="dim",
-                )
-                help_txt.append("  • ", style="dim")
-                help_txt.append("--retain-sec 0 clears completed tasks immediately from the list\n", style="dim")
-                help_txt.append("  • ", style="dim")
-                help_txt.append("Run with --oneshot to print a summary snapshot and exit\n", style="dim")
-
-                _help_rule_title = f"Help  ·  h to close  ·  auto-closes in {_secs_left}s"
-                help_panel = _vstack(Rule(title=_help_rule_title, style="bright_black"), help_txt)
-
-                # ── Footer bar: key hints + active state + error status ────────
-                foot = Text()
-                for key, desc in [("j/k","nav"), ("f","filter"), ("s","sort"),
-                                   ("a","all-logs"), ("h","help"), ("q","quit")]:
-                    foot.append(f" {key} ", style="bold yellow")
-                    foot.append(f"{desc}  ", style="dim")
-                if filter_state["proc"]: foot.append(f"│ proc:{filter_state['proc']}  ", style="yellow")
-                if sort_str != 'default': foot.append(f"│ sort:{sort_str}  ", style="yellow")
-                if getattr(a, 'all_logs', False): foot.append("│ ALL-LOGS  ", style="yellow")
-                if show_help: foot.append("│ HELP  ", style="bright_black")
-                foot.append("  │  ", style="dim")
-                if w.recent_errors:
-                    last_err = list(w.recent_errors)[-1].strip()
-                    foot.append(f"✗ {last_err[:90]}", style="bold red")
-                else:
-                    foot.append("✓ no errors", style="green")
-                footer_grp = _vstack(Rule(style="bright_black"), foot)
-
-                # Estimate log lines from terminal (header=6, footer=3, log Rule+gap=2)
-                available_log_lines = max(5, term_height - 11)
+                # Estimate log lines from terminal
+                available_log_lines = max(5, int((term_height - 8) * 0.55))
                 
                 if run_filtered:
                     if getattr(a, 'all_logs', False):
@@ -3412,9 +2565,7 @@ def main():
                                 text.append("outputs: "+", ".join([f"{n} ({sz})" for n,sz in outs[:2]]))
                             if i < processes_to_show - 1:
                                 text.append("\n", style="dim")
-                        log_panel = _vstack(
-                            Rule(title=f"Log ({processes_to_show}/{num_processes})  ·  a to toggle", style="blue", align="left"),
-                            text)
+                        log_panel = Panel(text, title=f"Log ({processes_to_show}/{num_processes})", border_style="blue", padding=(0, 1))
                     else:
                         # single focused log - use ALL available lines
                         if focused["idx"] >= len(run_filtered):
@@ -3423,62 +2574,34 @@ def main():
                         focused["id"] = ft.id
                         
                         # Use all available lines for single process
-                        # Account for: summary header(2) + payload(1) + outputs(1) = 4 overhead lines
-                        single_log_lines = max(5, available_log_lines - 4)
-
+                        # Account for: title(1) + payload(1) + outputs(1) = 3 lines
+                        single_log_lines = max(5, available_log_lines - 3)
+                        
                         payload, tail, outs = insight(ft.workdir, single_log_lines)
                         text = Text()
-                        # Task summary mini-header inside log panel
-                        elapsed_s = sec2hms(int(time.time() - ft.first_ts))
-                        _cpu_s = ""
-                        if ft.metrics.cpu_pct is not None and ft.metrics.cpus is not None:
-                            _cpu_s = f"{ft.metrics.cpu_pct:.0f}%/{int(ft.metrics.cpus)}c"
-                        elif ft.metrics.cpu_pct is not None:
-                            _cpu_s = f"{ft.metrics.cpu_pct:.0f}%"
-                        _rss_s = f"{ft.metrics.rss_mb:.0f} MB" if ft.metrics.rss_mb is not None else ""
-                        _meta = "  ".join(x for x in [elapsed_s, _cpu_s, _rss_s] if x)
-                        _mn = (ft.name or "?").split(":", 1)[-1]
-                        text.append(f"● {_mn}", style="bold cyan")
-                        if ft.tag: text.append(f"  ({ft.tag})", style="")
-                        if _meta: text.append(f"  {_meta}", style="dim")
-                        text.append("\n")
-                        text.append("─" * 60 + "\n", style="dim")
+                        text.append(f"{_task_label(ft)} (id:{short_hash(ft.id or '')})\n", style="bold")
                         if payload:
                             text.append(f"▶ {payload}\n", style="cyan")
                         for ln in tail[:single_log_lines]:
                             text.append(ln+"\n")
                         if outs:
                             text.append("outputs: "+", ".join([f"{n} ({sz})" for n,sz in outs]))
-                        log_panel = _vstack(
-                            Rule(title=f"Log — {_mn}  ({focused['idx']+1}/{len(run_filtered)})", style="blue", align="left"),
-                            text)
+                        log_panel = Panel(text, title=f"Log ({focused['idx']+1}/{len(run_filtered)})", border_style="blue", padding=(0, 1))
                 
                 layout = Layout()
                 layout.split_column(
-                    Layout(header_grp, size=6),
-                    Layout(name="body"),
-                    Layout(footer_grp, size=3),
+                    Layout(header_panel, size=5),
+                    Layout(Panel(prog, padding=(0, 0)), size=3),
+                    Layout(name="body")
                 )
                 layout["body"].split_row(Layout(name="right", ratio=1))
-                # Dynamic height for running table: only as tall as it needs to be.
-                # SIMPLE box: 1 header line + 1 separator line + N data rows.
-                # Plus 1 for the Rule title above = N + 3 total.
-                _body_h = term_height - 6 - 2  # header_grp(6) + footer_grp(2)
-                _rt_rows = len(run_filtered[:max_rows])
-                # _vstack layout: Rule(1) + gap(1) + table header+sep(2) + rows(N) + trailing blank(1) = N+5
-                _rt_height = max(5, min(_rt_rows + 5, _body_h - 8))  # always leave ≥8 for log
-                # Stacked: running tasks (top, dynamic) | log (middle) | optional help (bottom)
-                if show_help:
-                    layout["right"].split_column(
-                        Layout(rt_group,   size=_rt_height),
-                        Layout(log_panel,  ratio=2, minimum_size=5),
-                        Layout(help_panel, ratio=1, minimum_size=10),
-                    )
-                else:
-                    layout["right"].split_column(
-                        Layout(rt_group,  size=_rt_height),
-                        Layout(log_panel, ratio=1, minimum_size=5),
-                    )
+                # Ratio-based: table 2, log 5, errors 1, help gets enough for full text
+                layout["right"].split_column(
+                    Layout(rt, ratio=2, minimum_size=4),
+                    Layout(log_panel, ratio=5, minimum_size=5),
+                    Layout(err_panel, ratio=1, minimum_size=2),
+                    Layout(help_panel, ratio=1, minimum_size=14)
+                )
                 return layout
 
             import threading
@@ -3491,9 +2614,6 @@ def main():
                     if now>=next_tick:
                         for ln in tail_lines(w, log):
                             update_meta(w, ln); parse_line(w, ln, time.time())
-                            # Lazily parse pipeline start time from the log if not yet set
-                            if w.pipeline_start_ts is None and os.path.isfile(log):
-                                w.pipeline_start_ts = _parse_log_start_ts(log)
                             if any(k in ln for k in ("ERROR","FAILED","Exception","Caused by:")) and "collect-file" not in ln:
                                 w.recent_errors.append(ln.strip())
                         for row in tail_trace(w):

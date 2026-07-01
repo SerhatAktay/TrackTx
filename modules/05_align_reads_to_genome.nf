@@ -32,22 +32,21 @@
 //
 // ============================================================================
 
-nextflow.enable.dsl = 2
 
 process align_reads_to_genome {
 
   // ── Process Configuration ────────────────────────────────────────────────
   tag        { sample_id }
   label      'conda'
-  cache      'deep'  // Used as fallback when storeDir outputs are absent
+  cache      'lenient'  // name+size hashing: stable across USB copies, cheap on -resume
 
-  // storeDir persists BAMs and alignment artefacts to the results folder.
-  // If all declared outputs already exist at this path, alignment is skipped
-  // entirely — even after the work/ directory has been deleted between runs.
-  // NOTE: storeDir caches by file existence, not input checksums. If trimmed
-  // FASTQs change for a sample, manually delete the storeDir folder to force
-  // realignment: rm -rf <output_dir>/02_alignments/<sample_id>
-  storeDir "${params.output_dir}/02_alignments/${sample_id}"
+  publishDir { "${params.output_dir}/02_alignments/${sample_id}" },
+             mode: params.publish_mode,
+             overwrite: true,
+             saveAs: { filename ->
+               if (params.publish_alignments == false) return null  // Skip entire folder to save ~270 MB/sample
+               return filename instanceof Path ? filename.getFileName().toString() : filename.toString()
+             }
 
   // ── Inputs ───────────────────────────────────────────────────────────────
   input:
@@ -61,6 +60,8 @@ process align_reads_to_genome {
     path  spike_bt2
     
     val(is_paired_end)  // Pass as input to avoid params hash pollution
+    val(do_revcomp)     // true = reverse-complement R1 (PRO-seq); false = leave as-is (GRO-seq)
+    val(multimap_k)     // bowtie2 -k N (report up to N alignments); <=1 = single-best/legacy
 
   // ── Outputs ──────────────────────────────────────────────────────────────
   output:
@@ -74,14 +75,18 @@ process align_reads_to_genome {
     path "*.flagstat",                  emit: flagstats
     path "*.idxstats",                  emit: idxstats
     path "aligner_summary.tsv",         emit: align_summary
+    // Same file, tagged with identity so the genuine bowtie2 alignment rate can
+    // be collected into a single run-level table (see STEP 6c in main.nf).
+    tuple val(sample_id), path("aligner_summary.tsv"),
+          val(condition), val(timepoint), val(replicate), emit: align_summary_tagged
     path "insert_size.tsv", optional: true, emit: insert_size
 
     path "README_alignment.txt"
     path "align_reads.log",             emit: log
 
   // ── Main Script ──────────────────────────────────────────────────────────
-  shell:
-  '''
+  script:
+  """
   #!/usr/bin/env bash
   set -Eeuo pipefail
   # Ensure ERR trap propagates into functions/subshells (Bash)
@@ -93,33 +98,23 @@ process align_reads_to_genome {
   exec > >(tee -a align_reads.log)
   exec 2> >(tee -a align_reads.log >&2)
 
-  tracktx_error() {
-    local module="\$1" problem="\$2" fix="\$3" code="\${4:-1}"
-    echo "" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "TRACKTX ERROR" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    echo "Module:  \${module}" >&2
-    echo "Problem: \${problem}" >&2
-    echo "Fix:     \${fix}" >&2
-    echo "═══════════════════════════════════════════════════════════════════════" >&2
-    exit "\$code"
-  }
+  # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
+  source tracktx_error_fragment.sh
   # Print the precise failing command + location (much more actionable than exit status 1)
   tracktx_on_err() {
     local rc="\$?"
     local line="\${BASH_LINENO[0]:-\${LINENO}}"
     local cmd="\${BASH_COMMAND:-unknown}"
-    tracktx_error "align_reads_to_genome" \
-      "Command failed (exit=\${rc}) at line \${line}" \
-      "See align_reads.log (work dir). Failing command: \${cmd}" \
+    tracktx_error "align_reads_to_genome" \\
+      "Command failed (exit=\${rc}) at line \${line}" \\
+      "See align_reads.log (work dir). Failing command: \${cmd}" \\
       "\${rc}"
   }
   trap 'tracktx_on_err' ERR
 
-  TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "ALIGN | START | sample=!{sample_id} | ts=${TIMESTAMP}"
+  echo "ALIGN | START | sample=${sample_id} | ts=\${TIMESTAMP}"
   echo "════════════════════════════════════════════════════════════════════════"
 
   ###########################################################################
@@ -128,41 +123,37 @@ process align_reads_to_genome {
 
   echo "ALIGN | CONFIG | Initializing parameters..."
 
-  SAMPLE_ID="!{sample_id}"
-  GENOME_ID="!{genome_id}"
-  SPIKE_ID="!{spike_id}"
-  LIBRARY_TYPE='!{params.library_type ?: "proseq"}'
+  SAMPLE_ID="${sample_id}"
+  GENOME_ID="${genome_id}"
+  SPIKE_ID="${spike_id}"
+  
+  R1="${read1}"
+  R2="${read2}"
 
-  R1="!{read1}"
-  R2="!{read2}"
-
-  THREADS=!{task.cpus}
-  # Threading strategy: reserve 2 threads for samtools sort, give the rest to
-  # Bowtie2.  Bowtie2 is the dominant step and scales well with many threads;
-  # samtools sort benefits significantly from 2 threads and was previously a
-  # single-threaded bottleneck on the alignment→BAM pipeline.
-  BT2_THREADS=$(( THREADS > 2 ? THREADS - 2 : THREADS ))
-  SAM_THREADS=$(( THREADS > 2 ? 2 : 1 ))
+  THREADS=${task.cpus}
+  # Threading strategy: use all threads for Bowtie2, minimal for samtools sorting
+  BT2_THREADS="\${THREADS}"
+  SAM_THREADS=1
 
   # Determine if paired-end from input val and R2 presence
-  PAIRED_PARAM='!{is_paired_end ? "true" : "false"}'
+  PAIRED_PARAM='${is_paired_end ? "true" : "false"}'
   IS_PE="false"
-  if [[ "${PAIRED_PARAM}" == "true" && -s "${R2}" ]]; then
+  if [[ "\${PAIRED_PARAM}" == "true" && -s "\${R2}" ]]; then
     IS_PE="true"
   fi
 
-  echo "ALIGN | CONFIG | Sample ID: ${SAMPLE_ID}"
-  echo "ALIGN | CONFIG | Genome: ${GENOME_ID}"
-  echo "ALIGN | CONFIG | Spike-in: ${SPIKE_ID}"
-  echo "ALIGN | CONFIG | Library type: ${LIBRARY_TYPE} ($([ "${IS_PE}" == "true" ] && echo "Paired-end" || echo "Single-end"))"
-  echo "ALIGN | CONFIG | Threads: ${THREADS} (Bowtie2: ${BT2_THREADS}, samtools: ${SAM_THREADS})"
-  echo "ALIGN | CONFIG | R1: ${R1}"
-  if [[ "${IS_PE}" == "true" ]]; then
-    echo "ALIGN | CONFIG | R2: ${R2}"
+  echo "ALIGN | CONFIG | Sample ID: \${SAMPLE_ID}"
+  echo "ALIGN | CONFIG | Genome: \${GENOME_ID}"
+  echo "ALIGN | CONFIG | Spike-in: \${SPIKE_ID}"
+  echo "ALIGN | CONFIG | Library type: \$([ "\${IS_PE}" == "true" ] && echo "Paired-end" || echo "Single-end")"
+  echo "ALIGN | CONFIG | Threads: \${THREADS} (Bowtie2: \${BT2_THREADS}, samtools: \${SAM_THREADS})"
+  echo "ALIGN | CONFIG | R1: \${R1}"
+  if [[ "\${IS_PE}" == "true" ]]; then
+    echo "ALIGN | CONFIG | R2: \${R2}"
   fi
 
   # Validate paired-end configuration
-  if [[ "${PAIRED_PARAM}" == "true" && "${IS_PE}" != "true" ]]; then
+  if [[ "\${PAIRED_PARAM}" == "true" && "\${IS_PE}" != "true" ]]; then
     tracktx_error "align_reads_to_genome" "params.paired_end=true but R2 missing or empty" "Add file2 column to samplesheet or set paired_end=false"
   fi
 
@@ -173,39 +164,39 @@ process align_reads_to_genome {
   echo "ALIGN | VALIDATE | Checking system resources and inputs..."
 
   # Check disk space
-  AVAIL_GB=$(df -BG . 2>/dev/null | tail -1 | awk '{print $4}' | tr -d 'G' || echo "0")
-  echo "ALIGN | VALIDATE | Available disk space: ${AVAIL_GB} GB"
-  if [[ "$AVAIL_GB" -lt 10 ]]; then
-    echo "ALIGN | WARNING | Low disk space: ${AVAIL_GB}GB available"
+  AVAIL_GB=\$(df -BG . 2>/dev/null | tail -1 | awk '{print \$4}' | tr -d 'G' || echo "0")
+  echo "ALIGN | VALIDATE | Available disk space: \${AVAIL_GB} GB"
+  if [[ "\$AVAIL_GB" -lt 10 ]]; then
+    echo "ALIGN | WARNING | Low disk space: \${AVAIL_GB}GB available"
     echo "ALIGN | WARNING | Alignment may fail with large datasets"
   fi
 
   # Check input files
   VALIDATION_OK=1
 
-  for file in "${R1}"; do
-    if [[ ! -s "${file}" ]]; then
-      tracktx_error "align_reads_to_genome" "Read file missing or empty: ${file}" "Check samplesheet file1 paths"
+  for file in "\${R1}"; do
+    if [[ ! -s "\${file}" ]]; then
+      tracktx_error "align_reads_to_genome" "Read file missing or empty: \${file}" "Check samplesheet file1 paths"
     fi
       # NOTE: GNU stat reports symlink length unless -L is used; try dereference first
-      FILE_SIZE=$(stat -Lc%s "${file}" 2>/dev/null || stat -c%s "${file}" 2>/dev/null || stat -f%z "${file}" 2>/dev/null || echo "unknown")
-    echo "ALIGN | VALIDATE | R1 size: ${FILE_SIZE} bytes"
+      FILE_SIZE=\$(stat -Lc%s "\${file}" 2>/dev/null || stat -c%s "\${file}" 2>/dev/null || stat -f%z "\${file}" 2>/dev/null || echo "unknown")
+    echo "ALIGN | VALIDATE | R1 size: \${FILE_SIZE} bytes"
   done
 
-  if [[ "${IS_PE}" == "true" && ! -s "${R2}" ]]; then
-    tracktx_error "align_reads_to_genome" "R2 file missing or empty: ${R2}" "Check samplesheet file2 paths for paired-end samples"
+  if [[ "\${IS_PE}" == "true" && ! -s "\${R2}" ]]; then
+    tracktx_error "align_reads_to_genome" "R2 file missing or empty: \${R2}" "Check samplesheet file2 paths for paired-end samples"
   fi
-  if [[ "${IS_PE}" == "true" ]]; then
-    FILE_SIZE=$(stat -Lc%s "${R2}" 2>/dev/null || stat -c%s "${R2}" 2>/dev/null || stat -f%z "${R2}" 2>/dev/null || echo "unknown")
-    echo "ALIGN | VALIDATE | R2 size: ${FILE_SIZE} bytes"
+  if [[ "\${IS_PE}" == "true" ]]; then
+    FILE_SIZE=\$(stat -Lc%s "\${R2}" 2>/dev/null || stat -c%s "\${R2}" 2>/dev/null || stat -f%z "\${R2}" 2>/dev/null || echo "unknown")
+    echo "ALIGN | VALIDATE | R2 size: \${FILE_SIZE} bytes"
   fi
 
   # Validate required tools
   for TOOL in bowtie2 samtools gzip; do
-    if ! command -v ${TOOL} >/dev/null 2>&1; then
-      tracktx_error "align_reads_to_genome" "Required tool not found: ${TOOL}" "Install ${TOOL} or use -profile docker"
+    if ! command -v \${TOOL} >/dev/null 2>&1; then
+      tracktx_error "align_reads_to_genome" "Required tool not found: \${TOOL}" "Install \${TOOL} or use -profile docker"
     fi
-    echo "ALIGN | VALIDATE | ${TOOL}: $(command -v ${TOOL})"
+    echo "ALIGN | VALIDATE | \${TOOL}: \$(command -v \${TOOL})"
   done
 
   echo "ALIGN | VALIDATE | All checks passed"
@@ -225,15 +216,56 @@ process align_reads_to_genome {
 
   # Decompress input files (handles .gz and uncompressed)
   decompress() {
-    [[ "$1" == *.gz ]] && gzip -cd -- "$1" || cat -- "$1"
+    [[ "\$1" == *.gz ]] && gzip -cd -- "\$1" || cat -- "\$1"
   }
 
-  # Reverse-complement FASTQ stream (PRO-seq convention for R1)
-  rc_stream() {
-    if command -v seqkit >/dev/null 2>&1; then
-      seqkit seq --quiet -t dna -r -p -j "${THREADS}"
+  # Reverse-complement FASTQ stream for R1.
+  #   PRO-seq: R1 is sequenced from the 3' end antisense → flip onto nascent strand.
+  #   GRO-seq: R1 already represents the nascent strand → pass through unchanged.
+  DO_REVCOMP="${do_revcomp}"
+
+  # ── Multimapping (-k) configuration ──────────────────────────────────────
+  # multimap_k > 1 → bowtie2 reports up to N alignments per read. The full set
+  # becomes the allMap BAM (multimappers spread across every repeat copy); the
+  # primary-only subset (-F 260) becomes the main BAM. Because -k makes bowtie2
+  # set MAPQ=255, we add deterministic NH:i tags (add_nh_tags.awk) so that
+  # downstream "unique read" filtering can use NH==1 instead of MAPQ.
+  MULTIMAP_K=${multimap_k ?: 0}
+  BT2_K_FLAG=""
+  if [[ "\${MULTIMAP_K}" -gt 1 ]]; then
+    BT2_K_FLAG="-k \${MULTIMAP_K}"
+    echo "ALIGN | CONFIG | Multimapping mode: bowtie2 -k \${MULTIMAP_K} (allMap keeps all hits; NH tags added; main = primary only)"
+  else
+    echo "ALIGN | CONFIG | Single-best mode (legacy): allMap == main; uniqueness via MAPQ downstream"
+  fi
+
+  # Resolve the NH tagger (Nextflow puts \$projectDir/bin on PATH).
+  NH_AWK="\$(command -v add_nh_tags.awk || echo add_nh_tags.awk)"
+
+  # Finalize a bowtie2 SAM/BAM stream (stdin) into coordinate-sorted
+  # \${SAMPLE_ID}_allMap.bam, inserting NH:i tags when -k is active. NH counting
+  # needs records grouped by read name, so we collate first (fast, O(n)).
+  finalize_allmap() {
+    if [[ "\${MULTIMAP_K}" -gt 1 ]]; then
+      samtools collate -@ "\${SAM_THREADS}" -O -u - \\
+        | samtools view -h - \\
+        | awk -f "\${NH_AWK}" \\
+        | samtools view -@ "\${SAM_THREADS}" -b - \\
+        | samtools sort -@ "\${SAM_THREADS}" -o "\${SAMPLE_ID}_allMap.bam"
     else
-      ${PYTHON_CMD} - "$@" <<'PYEND'
+      samtools sort -@ "\${SAM_THREADS}" -o "\${SAMPLE_ID}_allMap.bam"
+    fi
+  }
+
+  rc_stream() {
+    if [[ "\${DO_REVCOMP}" != "true" ]]; then
+      cat   # GRO-seq / override: no reverse-complement
+      return 0
+    fi
+    if command -v seqkit >/dev/null 2>&1; then
+      seqkit seq --quiet -t dna -r -p -j "\${THREADS}"
+    else
+      \${PYTHON_CMD} - "\$@" <<'PYEND'
 import sys
 comp = str.maketrans('ACGTNacgtn', 'TGCANtgcan')
 it = iter(sys.stdin)
@@ -259,57 +291,57 @@ PYEND
   mkdir -p bt2_index
 
   # Stage genome index
-  GENOME_INDEX_LIST='!{(genome_bt2 instanceof List) ? genome_bt2.collect{it.toString()}.join(' ') : genome_bt2.toString()}'
-  if [[ -n "${GENOME_INDEX_LIST}" ]]; then
+  GENOME_INDEX_LIST='${(genome_bt2 instanceof List) ? genome_bt2.collect{ f -> f.toString() }.join(' ') : genome_bt2.toString()}'
+  if [[ -n "\${GENOME_INDEX_LIST}" ]]; then
     # shellcheck disable=SC2086
-    cp -f ${GENOME_INDEX_LIST} bt2_index/
+    cp -f \${GENOME_INDEX_LIST} bt2_index/
     echo "ALIGN | INDEX | Genome index files staged"
   fi
-  GENOME_IDX="bt2_index/${GENOME_ID}"
+  GENOME_IDX="bt2_index/\${GENOME_ID}"
 
   # Stage spike-in index (if provided)
-  SPIKE_INDEX_LIST='!{(spike_bt2 instanceof List) ? spike_bt2.collect{it.toString()}.join(' ') : spike_bt2.toString()}'
+  SPIKE_INDEX_LIST='${(spike_bt2 instanceof List) ? spike_bt2.collect{ f -> f.toString() }.join(' ') : spike_bt2.toString()}'
   SPIKE_IDX=""
-  if [[ -n "${SPIKE_ID}" && "${SPIKE_ID}" != "none" && -n "${SPIKE_INDEX_LIST}" ]]; then
+  if [[ -n "\${SPIKE_ID}" && "\${SPIKE_ID}" != "none" && -n "\${SPIKE_INDEX_LIST}" ]]; then
     # Verify all spike-in index files exist before copying (helps diagnose staging/disk-space issues)
     MISSING=""
-    for f in ${SPIKE_INDEX_LIST}; do
-      [[ -s "${f}" ]] || MISSING="${MISSING}${MISSING:+ }${f}"
+    for f in \${SPIKE_INDEX_LIST}; do
+      [[ -s "\${f}" ]] || MISSING="\${MISSING}\${MISSING:+ }\${f}"
     done
-    if [[ -n "${MISSING}" ]]; then
-      tracktx_error "align_reads_to_genome" "Spike-in index files missing or empty (staging may have failed)" \
-        "Files: ${MISSING}. If you see 'No space left on device', free disk space on system drive or set NXF_TEMP to a directory with space (e.g. NXF_TEMP=\$(pwd)/.nxf_temp nextflow run ...)"
+    if [[ -n "\${MISSING}" ]]; then
+      tracktx_error "align_reads_to_genome" "Spike-in index files missing or empty (staging may have failed)" \\
+        "Files: \${MISSING}. If you see 'No space left on device', free disk space on system drive or set NXF_TEMP to a directory with space (e.g. NXF_TEMP=\\\$(pwd)/.nxf_temp nextflow run ...)"
     fi
     # shellcheck disable=SC2086
-    if ! cp -f ${SPIKE_INDEX_LIST} bt2_index/; then
-      tracktx_error "align_reads_to_genome" "Failed to copy spike-in index files to bt2_index/" \
-        "Check disk space. Set NXF_TEMP to a directory with space if system temp is full. SPIKE_INDEX_LIST: ${SPIKE_INDEX_LIST}"
+    if ! cp -f \${SPIKE_INDEX_LIST} bt2_index/; then
+      tracktx_error "align_reads_to_genome" "Failed to copy spike-in index files to bt2_index/" \\
+        "Check disk space. Set NXF_TEMP to a directory with space if system temp is full. SPIKE_INDEX_LIST: \${SPIKE_INDEX_LIST}"
     fi
-    SPIKE_IDX="bt2_index/${SPIKE_ID}"
+    SPIKE_IDX="bt2_index/\${SPIKE_ID}"
     echo "ALIGN | INDEX | Spike-in index files staged"
   else
     echo "ALIGN | INDEX | No spike-in index provided"
   fi
 
   # Verify spike-in index completeness (when used)
-  if [[ -n "${SPIKE_IDX}" ]]; then
+  if [[ -n "\${SPIKE_IDX}" ]]; then
     SPIKE_INDEX_COMPLETE=0
     for ext in bt2 bt2l; do
       ALL_PRESENT=1
       for shard in 1 2 3 4 rev.1 rev.2; do
-        if [[ ! -s "${SPIKE_IDX}.${shard}.${ext}" ]]; then
+        if [[ ! -s "\${SPIKE_IDX}.\${shard}.\${ext}" ]]; then
           ALL_PRESENT=0
           break
         fi
       done
-      if [[ ${ALL_PRESENT} -eq 1 ]]; then
+      if [[ \${ALL_PRESENT} -eq 1 ]]; then
         SPIKE_INDEX_COMPLETE=1
-        echo "ALIGN | INDEX | Spike-in index verified (${ext})"
+        echo "ALIGN | INDEX | Spike-in index verified (\${ext})"
         break
       fi
     done
-    if [[ ${SPIKE_INDEX_COMPLETE} -eq 0 ]]; then
-      tracktx_error "align_reads_to_genome" "Incomplete spike-in index: ${SPIKE_IDX}" "Expected .1.bt2 .2.bt2 .3.bt2 .4.bt2 .rev.1.bt2 .rev.2.bt2"
+    if [[ \${SPIKE_INDEX_COMPLETE} -eq 0 ]]; then
+      tracktx_error "align_reads_to_genome" "Incomplete spike-in index: \${SPIKE_IDX}" "Expected .1.bt2 .2.bt2 .3.bt2 .4.bt2 .rev.1.bt2 .rev.2.bt2"
     fi
   fi
 
@@ -319,20 +351,20 @@ PYEND
   for ext in bt2 bt2l; do
     ALL_PRESENT=1
     for shard in 1 2 3 4 rev.1 rev.2; do
-      if [[ ! -s "${GENOME_IDX}.${shard}.${ext}" ]]; then
+      if [[ ! -s "\${GENOME_IDX}.\${shard}.\${ext}" ]]; then
         ALL_PRESENT=0
         break
       fi
     done
-    if [[ ${ALL_PRESENT} -eq 1 ]]; then
+    if [[ \${ALL_PRESENT} -eq 1 ]]; then
       INDEX_COMPLETE=1
-      echo "ALIGN | INDEX | Found complete ${ext} index family"
+      echo "ALIGN | INDEX | Found complete \${ext} index family"
       break
     fi
   done
 
-  if [[ ${INDEX_COMPLETE} -eq 0 ]]; then
-    tracktx_error "align_reads_to_genome" "No complete Bowtie2 index for: ${GENOME_IDX}" "Expected .1.bt2 .2.bt2 .3.bt2 .4.bt2 .rev.1.bt2 .rev.2.bt2"
+  if [[ \${INDEX_COMPLETE} -eq 0 ]]; then
+    tracktx_error "align_reads_to_genome" "No complete Bowtie2 index for: \${GENOME_IDX}" "Expected .1.bt2 .2.bt2 .3.bt2 .4.bt2 .rev.1.bt2 .rev.2.bt2"
   fi
 
   ###########################################################################
@@ -340,67 +372,48 @@ PYEND
   ###########################################################################
 
   echo "────────────────────────────────────────────────────────────────────────"
-  echo "ALIGN | PRIMARY | Starting genome alignment (${GENOME_ID})..."
+  echo "ALIGN | PRIMARY | Starting genome alignment (\${GENOME_ID})..."
   echo "────────────────────────────────────────────────────────────────────────"
 
-  if [[ "${IS_PE}" == "true" ]]; then
-    if [[ "${LIBRARY_TYPE}" == "groseq" ]]; then
-      echo "ALIGN | PRIMARY | Mode: Paired-end GRO-seq (--fr, R1+R2 as-is)"
-      bowtie2 -p "${BT2_THREADS}" \
-              --end-to-end \
-              --fr \
-              --no-unal \
-              -x "${GENOME_IDX}" \
-              -1 <(decompress "${R1}") \
-              -2 <(decompress "${R2}") \
-              --un-conc unaligned_R%.fastq \
-              2> >(tee bowtie2_primary.log >&2) \
-      | samtools sort -@ "${SAM_THREADS}" -o "${SAMPLE_ID}_allMap.bam"
-    else
-      echo "ALIGN | PRIMARY | Mode: Paired-end PRO-seq (--ff, -1 R2, -2 RC(R1))"
-      bowtie2 -p "${BT2_THREADS}" \
-              --end-to-end \
-              --ff \
-              --no-unal \
-              -x "${GENOME_IDX}" \
-              -1 <(decompress "${R2}") \
-              -2 <(decompress "${R1}" | rc_stream) \
-              --un-conc unaligned_R%.fastq \
-              2> >(tee bowtie2_primary.log >&2) \
-      | samtools sort -@ "${SAM_THREADS}" -o "${SAMPLE_ID}_allMap.bam"
-    fi
+  if [[ "\${IS_PE}" == "true" ]]; then
+    echo "ALIGN | PRIMARY | Mode: Paired-end with PRO-seq orientation (--ff)"
+    echo "ALIGN | PRIMARY | -1: original R2, -2: RC(R1)"
+    
+    # shellcheck disable=SC2086
+    bowtie2 -p "\${BT2_THREADS}" \\
+            --end-to-end \\
+            --ff \\
+            --no-unal \\
+            \${BT2_K_FLAG} \\
+            -x "\${GENOME_IDX}" \\
+            -1 <(decompress "\${R2}") \\
+            -2 <(decompress "\${R1}" | rc_stream) \\
+            --un-conc unaligned_R%.fastq \\
+            2> >(tee bowtie2_primary.log >&2) \\
+    | finalize_allmap
 
     # Combine unaligned reads for spike-in
     cat unaligned_R1.fastq unaligned_R2.fastq > unaligned.fastq
 
   else
-    if [[ "${LIBRARY_TYPE}" == "groseq" ]]; then
-      echo "ALIGN | PRIMARY | Mode: Single-end GRO-seq (R1 as-is, no RC)"
-      bowtie2 -p "${BT2_THREADS}" \
-              --end-to-end \
-              --no-unal \
-              -x "${GENOME_IDX}" \
-              -U <(decompress "${R1}") \
-              --un unaligned.fastq \
-              2> >(tee bowtie2_primary.log >&2) \
-      | samtools sort -@ "${SAM_THREADS}" -o "${SAMPLE_ID}_allMap.bam"
-    else
-      echo "ALIGN | PRIMARY | Mode: Single-end PRO-seq (RC(R1))"
-      bowtie2 -p "${BT2_THREADS}" \
-              --end-to-end \
-              --no-unal \
-              -x "${GENOME_IDX}" \
-              -U <(decompress "${R1}" | rc_stream) \
-              --un unaligned.fastq \
-              2> >(tee bowtie2_primary.log >&2) \
-      | samtools sort -@ "${SAM_THREADS}" -o "${SAMPLE_ID}_allMap.bam"
-    fi
+    echo "ALIGN | PRIMARY | Mode: Single-end with RC(R1)"
+
+    # shellcheck disable=SC2086
+    bowtie2 -p "\${BT2_THREADS}" \\
+            --end-to-end \\
+            --no-unal \\
+            \${BT2_K_FLAG} \\
+            -x "\${GENOME_IDX}" \\
+            -U <(decompress "\${R1}" | rc_stream) \\
+            --un unaligned.fastq \\
+            2> >(tee bowtie2_primary.log >&2) \\
+    | finalize_allmap
   fi
 
   # Verify allMap BAM
-  samtools quickcheck -v "${SAMPLE_ID}_allMap.bam"
-  ALLMAP_SIZE=$(stat -c%s "${SAMPLE_ID}_allMap.bam" 2>/dev/null || stat -f%z "${SAMPLE_ID}_allMap.bam" 2>/dev/null || echo "unknown")
-  echo "ALIGN | PRIMARY | allMap BAM created: ${ALLMAP_SIZE} bytes"
+  samtools quickcheck -v "\${SAMPLE_ID}_allMap.bam"
+  ALLMAP_SIZE=\$(stat -c%s "\${SAMPLE_ID}_allMap.bam" 2>/dev/null || stat -f%z "\${SAMPLE_ID}_allMap.bam" 2>/dev/null || echo "unknown")
+  echo "ALIGN | PRIMARY | allMap BAM created: \${ALLMAP_SIZE} bytes"
 
   ###########################################################################
   # 6) EXTRACT PRIMARY ALIGNMENTS
@@ -410,21 +423,21 @@ PYEND
   echo "ALIGN | FILTER | Filtering: -F 260 (unmapped=4, secondary=256)"
 
   # Extract primary mapped reads (exclude unmapped=4 and secondary=256)
-  samtools view -@ "${THREADS}" -h -b -F 260 "${SAMPLE_ID}_allMap.bam" \
-  | samtools sort -@ "${SAM_THREADS}" -o "${SAMPLE_ID}.bam"
+  samtools view -@ "\${THREADS}" -h -b -F 260 "\${SAMPLE_ID}_allMap.bam" \\
+  | samtools sort -@ "\${SAM_THREADS}" -o "\${SAMPLE_ID}.bam"
 
   # Verify and index primary BAM
-  samtools quickcheck -v "${SAMPLE_ID}.bam"
-  samtools index -@ "${THREADS}" "${SAMPLE_ID}.bam"
+  samtools quickcheck -v "\${SAMPLE_ID}.bam"
+  samtools index -@ "\${THREADS}" "\${SAMPLE_ID}.bam"
   
-  PRIMARY_SIZE=$(stat -c%s "${SAMPLE_ID}.bam" 2>/dev/null || stat -f%z "${SAMPLE_ID}.bam" 2>/dev/null || echo "unknown")
-  echo "ALIGN | FILTER | Primary BAM created: ${PRIMARY_SIZE} bytes"
+  PRIMARY_SIZE=\$(stat -c%s "\${SAMPLE_ID}.bam" 2>/dev/null || stat -f%z "\${SAMPLE_ID}.bam" 2>/dev/null || echo "unknown")
+  echo "ALIGN | FILTER | Primary BAM created: \${PRIMARY_SIZE} bytes"
   echo "ALIGN | FILTER | BAM indexed successfully"
 
   # Generate QC metrics
   echo "ALIGN | QC | Generating flagstat and idxstats..."
-  samtools flagstat -@ "${THREADS}" "${SAMPLE_ID}.bam" > "${SAMPLE_ID}.flagstat"
-  samtools idxstats "${SAMPLE_ID}.bam" > "${SAMPLE_ID}.idxstats"
+  samtools flagstat -@ "\${THREADS}" "\${SAMPLE_ID}.bam" > "\${SAMPLE_ID}.flagstat"
+  samtools idxstats "\${SAMPLE_ID}.bam" > "\${SAMPLE_ID}.idxstats"
 
   ###########################################################################
   # 7) SPIKE-IN ALIGNMENT
@@ -434,45 +447,45 @@ PYEND
   echo "ALIGN | SPIKEIN | Processing spike-in alignment..."
   echo "────────────────────────────────────────────────────────────────────────"
 
-  if [[ -n "${SPIKE_IDX}" && -s unaligned.fastq ]]; then
-    UNALIGNED_COUNT=$(wc -l < unaligned.fastq | awk '{print $1/4}')
-    echo "ALIGN | SPIKEIN | Aligning ${UNALIGNED_COUNT} unaligned reads to ${SPIKE_ID}"
+  if [[ -n "\${SPIKE_IDX}" && -s unaligned.fastq ]]; then
+    UNALIGNED_COUNT=\$(wc -l < unaligned.fastq | awk '{print \$1/4}')
+    echo "ALIGN | SPIKEIN | Aligning \${UNALIGNED_COUNT} unaligned reads to \${SPIKE_ID}"
     echo "ALIGN | SPIKEIN | Mode: Single-end (all spike-in alignments as SE)"
     
     # Use -m 4G for samtools sort to avoid OOM with large unaligned sets (e.g. >20M reads)
-    if ! bowtie2 -p "${BT2_THREADS}" \
-            --end-to-end \
-            --no-unal \
-            -x "${SPIKE_IDX}" \
-            -U unaligned.fastq \
-            2> >(tee bowtie2_spikein.log >&2) \
-    | samtools sort -@ "${SAM_THREADS}" -m 4G -o "${SAMPLE_ID}_spikein.bam"; then
+    if ! bowtie2 -p "\${BT2_THREADS}" \\
+            --end-to-end \\
+            --no-unal \\
+            -x "\${SPIKE_IDX}" \\
+            -U unaligned.fastq \\
+            2> >(tee bowtie2_spikein.log >&2) \\
+    | samtools sort -@ "\${SAM_THREADS}" -m 4G -o "\${SAMPLE_ID}_spikein.bam"; then
       tracktx_error "align_reads_to_genome" "Spike-in alignment failed" "Check bowtie2_spikein.log in work dir"
     fi
     
-    SPIKEIN_SIZE=$(stat -c%s "${SAMPLE_ID}_spikein.bam" 2>/dev/null || stat -f%z "${SAMPLE_ID}_spikein.bam" 2>/dev/null || echo "unknown")
-    echo "ALIGN | SPIKEIN | Spike-in BAM created: ${SPIKEIN_SIZE} bytes"
+    SPIKEIN_SIZE=\$(stat -c%s "\${SAMPLE_ID}_spikein.bam" 2>/dev/null || stat -f%z "\${SAMPLE_ID}_spikein.bam" 2>/dev/null || echo "unknown")
+    echo "ALIGN | SPIKEIN | Spike-in BAM created: \${SPIKEIN_SIZE} bytes"
     
   else
-    if [[ -z "${SPIKE_IDX}" ]]; then
+    if [[ -z "\${SPIKE_IDX}" ]]; then
       echo "ALIGN | SPIKEIN | No spike-in index provided - creating empty BAM"
     else
       echo "ALIGN | SPIKEIN | No unaligned reads - creating empty BAM"
     fi
     
     # Create empty but valid BAM with proper header
-    samtools view -@ "${THREADS}" -H "${SAMPLE_ID}.bam" \
-    | samtools view -@ "${THREADS}" -b - > "${SAMPLE_ID}_spikein.bam"
+    samtools view -@ "\${THREADS}" -H "\${SAMPLE_ID}.bam" \\
+    | samtools view -@ "\${THREADS}" -b - > "\${SAMPLE_ID}_spikein.bam"
     : > bowtie2_spikein.log
   fi
 
   # Verify and index spike-in BAM
-  samtools quickcheck -v "${SAMPLE_ID}_spikein.bam"
-  samtools index -@ "${THREADS}" "${SAMPLE_ID}_spikein.bam"
+  samtools quickcheck -v "\${SAMPLE_ID}_spikein.bam"
+  samtools index -@ "\${THREADS}" "\${SAMPLE_ID}_spikein.bam"
   
   echo "ALIGN | SPIKEIN | Generating spike-in QC metrics..."
-  samtools flagstat -@ "${THREADS}" "${SAMPLE_ID}_spikein.bam" > "${SAMPLE_ID}_spikein.flagstat"
-  samtools idxstats "${SAMPLE_ID}_spikein.bam" > "${SAMPLE_ID}_spikein.idxstats"
+  samtools flagstat -@ "\${THREADS}" "\${SAMPLE_ID}_spikein.bam" > "\${SAMPLE_ID}_spikein.flagstat"
+  samtools idxstats "\${SAMPLE_ID}_spikein.bam" > "\${SAMPLE_ID}_spikein.idxstats"
 
   ###########################################################################
   # 8) GENERATE ALIGNMENT SUMMARY
@@ -483,68 +496,108 @@ PYEND
   echo "────────────────────────────────────────────────────────────────────────"
 
   {
-    echo -e "metric\tvalue"
+    echo -e "metric\\tvalue"
     
     # Primary genome alignment metrics
-    tot=$(awk '/in total/ {print $1}' "${SAMPLE_ID}.flagstat")
-    map=$(awk '/ mapped \\(/ {print $1}' "${SAMPLE_ID}.flagstat")
-    mpr=$(awk -F'[()% ]+' '/ mapped \\(/ {print $(NF-1)}' "${SAMPLE_ID}.flagstat")
-    sec=$(awk '/secondary/ {print $1}' "${SAMPLE_ID}.flagstat")
-    dup=$(awk '/duplicates/ {print $1}' "${SAMPLE_ID}.flagstat")
+    tot=\$(awk '/in total/ {print \$1}' "\${SAMPLE_ID}.flagstat")
+    map=\$(awk '/ mapped \\(/ {print \$1; exit}' "\${SAMPLE_ID}.flagstat")
+    mpr=\$(awk -F'[(%]' '/ mapped \\(/ {print \$2; exit}' "\${SAMPLE_ID}.flagstat")
+    sec=\$(awk '/secondary/ {print \$1}' "\${SAMPLE_ID}.flagstat")
+    dup=\$(awk '/duplicates/ {print \$1}' "\${SAMPLE_ID}.flagstat")
     
     # Ensure numeric values
-    [[ -n "$tot" ]] || tot=0
-    [[ -n "$map" ]] || map=0
-    [[ -n "$mpr" ]] || mpr=0
-    [[ -n "$sec" ]] || sec=0
-    [[ -n "$dup" ]] || dup=0
+    [[ -n "\$tot" ]] || tot=0
+    [[ -n "\$map" ]] || map=0
+    [[ -n "\$mpr" ]] || mpr=0
+    [[ -n "\$sec" ]] || sec=0
+    [[ -n "\$dup" ]] || dup=0
     
-    echo -e "genome_total_reads\t${tot}"
-    echo -e "genome_mapped_reads\t${map}"
-    echo -e "genome_map_rate_pct\t${mpr}"
-    echo -e "genome_secondary_reads\t${sec}"
-    echo -e "genome_duplicate_reads\t${dup}"
+    echo -e "genome_total_reads\\t\${tot}"
+    echo -e "genome_mapped_reads\\t\${map}"
+    echo -e "genome_map_rate_pct\\t\${mpr}"
+    echo -e "genome_secondary_reads\\t\${sec}"
+    echo -e "genome_duplicate_reads\\t\${dup}"
+
+    # TRUE overall alignment rate. NOTE: genome_map_rate_pct above is computed
+    # from the already-filtered/mapped BAM, so it is ~100% and NOT the real
+    # alignment rate. The genuine figure (reads aligning to the genome out of all
+    # input reads) is only in bowtie2's own stderr log. Capture it here so it is
+    # reportable without digging through logs.
+    ovr=\$(awk -F'%' '/overall alignment rate/ {gsub(/[^0-9.]/,"",\$1); print \$1; exit}' bowtie2_primary.log 2>/dev/null)
+    aln0=\$(awk '/aligned 0 times/ {print \$1; exit}' bowtie2_primary.log 2>/dev/null)
+    aln1=\$(awk '/aligned exactly 1 time/ {print \$1; exit}' bowtie2_primary.log 2>/dev/null)
+    alnM=\$(awk '/aligned >1 times/ {print \$1; exit}' bowtie2_primary.log 2>/dev/null)
+    [[ -n "\$ovr"  ]] || ovr=NA
+    [[ -n "\$aln0" ]] || aln0=NA
+    [[ -n "\$aln1" ]] || aln1=NA
+    [[ -n "\$alnM" ]] || alnM=NA
+    echo -e "genome_overall_aln_rate_pct\\t\${ovr}"
+    echo -e "genome_unaligned_reads\\t\${aln0}"
+    echo -e "genome_unique_aln_reads\\t\${aln1}"
+    echo -e "genome_multi_aln_reads\\t\${alnM}"
     
     # Spike-in alignment metrics
-    stot=$(awk '/in total/ {print $1}' "${SAMPLE_ID}_spikein.flagstat")
-    smap=$(awk '/ mapped \\(/ {print $1}' "${SAMPLE_ID}_spikein.flagstat")
-    smpr=$(awk -F'[()% ]+' '/ mapped \\(/ {print $(NF-1)}' "${SAMPLE_ID}_spikein.flagstat")
+    stot=\$(awk '/in total/ {print \$1}' "\${SAMPLE_ID}_spikein.flagstat")
+    smap=\$(awk '/ mapped \\(/ {print \$1; exit}' "\${SAMPLE_ID}_spikein.flagstat")
+    smpr=\$(awk -F'[(%]' '/ mapped \\(/ {print \$2; exit}' "\${SAMPLE_ID}_spikein.flagstat")
     
-    [[ -n "$stot" ]] || stot=0
-    [[ -n "$smap" ]] || smap=0
-    [[ -n "$smpr" ]] || smpr=0
+    [[ -n "\$stot" ]] || stot=0
+    [[ -n "\$smap" ]] || smap=0
+    [[ -n "\$smpr" ]] || smpr=0
     
-    echo -e "spike_total_reads\t${stot}"
-    echo -e "spike_mapped_reads\t${smap}"
-    echo -e "spike_map_rate_pct\t${smpr}"
+    echo -e "spike_total_reads\\t\${stot}"
+    echo -e "spike_mapped_reads\\t\${smap}"
+    echo -e "spike_map_rate_pct\\t\${smpr}"
     
     # Paired-end specific metrics (concordance)
-    if [[ "${IS_PE}" == "true" && -s bowtie2_primary.log ]]; then
-      conc0=$(awk '/aligned concordantly 0 times/ {print $1}' bowtie2_primary.log)
-      conc1=$(awk '/aligned concordantly exactly 1 time/ {print $1}' bowtie2_primary.log)
-      concM=$(awk '/aligned concordantly >1 times/ {print $1}' bowtie2_primary.log)
-      dis=$(awk '/aligned discordantly 1 time/ {print $1}' bowtie2_primary.log)
+    if [[ "\${IS_PE}" == "true" && -s bowtie2_primary.log ]]; then
+      conc0=\$(awk '/aligned concordantly 0 times/ {print \$1}' bowtie2_primary.log)
+      conc1=\$(awk '/aligned concordantly exactly 1 time/ {print \$1}' bowtie2_primary.log)
+      concM=\$(awk '/aligned concordantly >1 times/ {print \$1}' bowtie2_primary.log)
+      dis=\$(awk '/aligned discordantly 1 time/ {print \$1}' bowtie2_primary.log)
       
-      [[ -n "$conc0" ]] || conc0=0
-      [[ -n "$conc1" ]] || conc1=0
-      [[ -n "$concM" ]] || concM=0
-      [[ -n "$dis" ]] || dis=0
+      [[ -n "\$conc0" ]] || conc0=0
+      [[ -n "\$conc1" ]] || conc1=0
+      [[ -n "\$concM" ]] || concM=0
+      [[ -n "\$dis" ]] || dis=0
       
-      echo -e "pe_concordant_0\t${conc0}"
-      echo -e "pe_concordant_1\t${conc1}"
-      echo -e "pe_concordant_gt1\t${concM}"
-      echo -e "pe_discordant_1\t${dis}"
+      echo -e "pe_concordant_0\\t\${conc0}"
+      echo -e "pe_concordant_1\\t\${conc1}"
+      echo -e "pe_concordant_gt1\\t\${concM}"
+      echo -e "pe_discordant_1\\t\${dis}"
     fi
     
   } > aligner_summary.tsv
 
   echo "ALIGN | SUMMARY | Alignment summary created"
 
+  ###########################################################################
+  # 8b) MAPPING-RATE QC GATE (enforced here, where the TRUE rate is known)
+  #
+  # bowtie2 reports the genuine overall alignment rate to stderr; we parsed it
+  # into aligner_summary.tsv as genome_overall_aln_rate_pct. Enforce the
+  # fail_map_rate_below threshold per replicate, BEFORE merge/tracks, so a bad
+  # library fails fast. (Module 13 cannot do this: it only ever sees the
+  # primary-filtered BAM, where the rate is tautologically ~100%.)
+  ###########################################################################
+  FAIL_MAP_RATE="${params.qc?.fail_map_rate_below ?: ''}"
+  if [[ -n "\${FAIL_MAP_RATE}" && "\${FAIL_MAP_RATE}" =~ ^[0-9]+\\.?[0-9]*\$ ]]; then
+    TRUE_RATE=\$(awk -F'\\t' '\$1=="genome_overall_aln_rate_pct"{print \$2; exit}' aligner_summary.tsv)
+    if [[ -n "\${TRUE_RATE}" && "\${TRUE_RATE}" != "NA" && "\${TRUE_RATE}" =~ ^[0-9]+\\.?[0-9]*\$ ]]; then
+      if awk -v r="\${TRUE_RATE}" -v t="\${FAIL_MAP_RATE}" 'BEGIN{exit (r+0 < t+0)?0:1}'; then
+        tracktx_error "align_reads_to_genome" "Overall alignment rate \${TRUE_RATE}% below threshold \${FAIL_MAP_RATE}% for \${SAMPLE_ID}" "Check library/adapter/genome, or set params.qc.fail_map_rate_below = null to disable" 2
+      fi
+      echo "ALIGN | QC | Overall alignment rate \${TRUE_RATE}% ≥ threshold \${FAIL_MAP_RATE}% — pass"
+    else
+      echo "ALIGN | QC | WARN | Could not read genome_overall_aln_rate_pct; skipping map-rate gate for \${SAMPLE_ID}"
+    fi
+  fi
+
   # Extract insert size distribution for paired-end
-  if [[ "${IS_PE}" == "true" ]]; then
+  if [[ "\${IS_PE}" == "true" ]]; then
     echo "ALIGN | SUMMARY | Extracting insert size distribution..."
-    samtools stats "${SAMPLE_ID}.bam" \
-    | awk -F'\\t' '$1=="IS"{print $2"\\t"$3}' \
+    samtools stats "\${SAMPLE_ID}.bam" \\
+    | awk -F'\\\\t' '\$1=="IS"{print \$2"\\\\t"\$3}' \\
     > insert_size.tsv || true
   fi
 
@@ -561,28 +614,28 @@ ALIGNMENT ARTIFACTS — PRO-seq Pipeline
 
 SAMPLE INFORMATION
 ────────────────────────────────────────────────────────────────────────────
-  Sample ID:     !{sample_id}
-  Genome:        !{genome_id}
-  Spike-in:      !{spike_id}
-  Library type:  !{is_paired_end ? "Paired-end" : "Single-end"}
+  Sample ID:     ${sample_id}
+  Genome:        ${genome_id}
+  Spike-in:      ${spike_id}
+  Library type:  ${is_paired_end ? "Paired-end" : "Single-end"}
 
 OUTPUT FILES
 ────────────────────────────────────────────────────────────────────────────
 
 Primary Alignments:
-  !{sample_id}_allMap.bam          — All mapped reads (primary + secondary)
-  !{sample_id}.bam                 — Primary alignments only (-F 260)
-  !{sample_id}.bam.bai             — BAM index
+  ${sample_id}_allMap.bam          — All mapped reads (primary + secondary)
+  ${sample_id}.bam                 — Primary alignments only (-F 260)
+  ${sample_id}.bam.bai             — BAM index
 
 Spike-in Alignments:
-  !{sample_id}_spikein.bam         — Spike-in alignments (SE mode)
-  !{sample_id}_spikein.bam.bai     — BAM index
+  ${sample_id}_spikein.bam         — Spike-in alignments (SE mode)
+  ${sample_id}_spikein.bam.bai     — BAM index
 
 Quality Control:
-  !{sample_id}.flagstat            — Primary BAM statistics
-  !{sample_id}.idxstats            — Per-chromosome alignment counts
-  !{sample_id}_spikein.flagstat    — Spike-in BAM statistics
-  !{sample_id}_spikein.idxstats    — Spike-in per-chromosome counts
+  ${sample_id}.flagstat            — Primary BAM statistics
+  ${sample_id}.idxstats            — Per-chromosome alignment counts
+  ${sample_id}_spikein.flagstat    — Spike-in BAM statistics
+  ${sample_id}_spikein.idxstats    — Spike-in per-chromosome counts
 
 Alignment Logs:
   bowtie2_primary.log              — Bowtie2 primary alignment log
@@ -599,22 +652,18 @@ Documentation:
 PROCESSING DETAILS
 ────────────────────────────────────────────────────────────────────────────
 
-Library Type: !{params.library_type ?: "proseq"}
-
-PRO-seq mode (library_type=proseq):
+PRO-seq Convention:
   • R1 is reverse-complemented before alignment
   • This captures the 3' end of nascent RNA at polymerase position
-  • Paired-end uses --ff orientation (-1 original_R2, -2 RC(R1))
-
-GRO-seq mode (library_type=groseq):
-  • R1 is aligned as-is (no reverse-complement)
-  • Reads already represent the nascent RNA strand (5' end, circularization prep)
-  • Paired-end uses --fr orientation (standard R1+R2)
+  • R2 (if PE) is aligned as-is
 
 Paired-End Alignment:
+  • Uses --ff orientation flag (both mates on forward strand)
+  • Effective mate configuration: -1 original_R2, -2 RC(R1)
   • Unaligned read pairs combined for spike-in alignment
 
 Single-End Alignment:
+  • Aligns RC(R1) to genome
   • Unaligned reads saved for spike-in alignment
 
 Spike-in Alignment:
@@ -694,17 +743,17 @@ File Naming:
 
 PARAMETERS USED
 ────────────────────────────────────────────────────────────────────────────
-  Genome index:       !{genome_id}
-  Spike-in index:     !{spike_id}
-  Paired-end mode:    !{is_paired_end}
-  CPU threads:        !{task.cpus}
+  Genome index:       ${genome_id}
+  Spike-in index:     ${spike_id}
+  Paired-end mode:    ${is_paired_end}
+  CPU threads:        ${task.cpus}
 
 GENERATED
 ────────────────────────────────────────────────────────────────────────────
   Pipeline: TrackTx PRO-seq
   Module:   05_align_reads_to_genome
-  Date:     $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Sample:   !{sample_id}
+  Date:     \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+  Sample:   ${sample_id}
 
 ================================================================================
 DOCEOF
@@ -720,21 +769,21 @@ DOCEOF
   echo "────────────────────────────────────────────────────────────────────────"
 
   # Check critical output files
-  for file in \
-    "${SAMPLE_ID}_allMap.bam" \
-    "${SAMPLE_ID}.bam" \
-    "${SAMPLE_ID}.bam.bai" \
-    "${SAMPLE_ID}_spikein.bam" \
-    "${SAMPLE_ID}_spikein.bam.bai" \
-    "${SAMPLE_ID}.flagstat" \
-    "${SAMPLE_ID}.idxstats" \
+  for file in \\
+    "\${SAMPLE_ID}_allMap.bam" \\
+    "\${SAMPLE_ID}.bam" \\
+    "\${SAMPLE_ID}.bam.bai" \\
+    "\${SAMPLE_ID}_spikein.bam" \\
+    "\${SAMPLE_ID}_spikein.bam.bai" \\
+    "\${SAMPLE_ID}.flagstat" \\
+    "\${SAMPLE_ID}.idxstats" \\
     "aligner_summary.tsv"; do
     
-    if [[ ! -s "${file}" ]]; then
-      tracktx_error "align_reads_to_genome" "Missing or empty output file: ${file}" "Check align_reads.log in work dir"
+    if [[ ! -s "\${file}" ]]; then
+      tracktx_error "align_reads_to_genome" "Missing or empty output file: \${file}" "Check align_reads.log in work dir"
     else
-      SIZE=$(stat -c%s "${file}" 2>/dev/null || stat -f%z "${file}" 2>/dev/null || echo "unknown")
-      echo "ALIGN | VALIDATE | ${file}: ${SIZE} bytes"
+      SIZE=\$(stat -c%s "\${file}" 2>/dev/null || stat -f%z "\${file}" 2>/dev/null || echo "unknown")
+      echo "ALIGN | VALIDATE | \${file}: \${SIZE} bytes"
     fi
   done
 
@@ -746,7 +795,7 @@ DOCEOF
   echo "────────────────────────────────────────────────────────────────────────"
   
   if command -v column >/dev/null 2>&1; then
-    column -t -s $'\\t' aligner_summary.tsv | sed 's/^/ALIGN | SUMMARY | /'
+    column -t -s \$'\\\\t' aligner_summary.tsv | sed 's/^/ALIGN | SUMMARY | /'
   else
     sed 's/^/ALIGN | SUMMARY | /' aligner_summary.tsv
   fi
@@ -754,14 +803,14 @@ DOCEOF
   echo "────────────────────────────────────────────────────────────────────────"
   echo "ALIGN | SUMMARY | Output Files"
   echo "────────────────────────────────────────────────────────────────────────"
-  echo "ALIGN | SUMMARY | Total size: $(du -sh . 2>/dev/null | cut -f1 || echo "unknown")"
-  echo "ALIGN | SUMMARY | BAM files: $(find . -name "*.bam" -type f | wc -l | tr -d ' ')"
-  echo "ALIGN | SUMMARY | Index files: $(find . -name "*.bai" -type f | wc -l | tr -d ' ')"
+  echo "ALIGN | SUMMARY | Total size: \$(du -sh . 2>/dev/null | cut -f1 || echo "unknown")"
+  echo "ALIGN | SUMMARY | BAM files: \$(find . -name "*.bam" -type f | wc -l | tr -d ' ')"
+  echo "ALIGN | SUMMARY | Index files: \$(find . -name "*.bai" -type f | wc -l | tr -d ' ')"
   echo "────────────────────────────────────────────────────────────────────────"
 
-  TIMESTAMP_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  TIMESTAMP_END=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"
-  echo "ALIGN | COMPLETE | sample=${SAMPLE_ID} | ts=${TIMESTAMP_END}"
+  echo "ALIGN | COMPLETE | sample=\${SAMPLE_ID} | ts=\${TIMESTAMP_END}"
   echo "════════════════════════════════════════════════════════════════════════"
-  '''
+  """
 }

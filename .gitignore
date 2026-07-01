@@ -20,6 +20,13 @@ assets/*.bedgraph
 assets/*.fastq
 assets/*.png
 
+# Runtime-generated sentinel files (created by main.nf each run).
+# Must NOT be tracked — otherwise a local run blocks `git pull` with
+# "untracked working tree files would be overwritten by merge".
+assets/NO_GTF
+assets/EMPTY_SPIKE.fa
+assets/EMPTY_SPIKE_INDEX.fa
+
 # Conda and environments
 .conda/
 .env/
@@ -28,10 +35,15 @@ venv/
 # Python
 __pycache__/
 *.py[cod]
+bin/combine_reports_old.py
 
 # Local configs and sample sheets (generated per run)
 params.yaml
 samplesheet.csv
+
+# Documentation (optional / local)
+CHANGELOG.md
+HOW.md
 
 # OS / editor noise
 .DS_Store
@@ -44,4 +56,3 @@ samplesheet.csv
 *.log
 log/
 logs/
-.cache
