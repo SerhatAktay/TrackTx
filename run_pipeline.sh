@@ -1120,8 +1120,8 @@ main() {
     # accidentally match `nextflowVersion = '>=26.04.0'` and pull the wrong tag.
     # The image tag must match a published tag of ghcr.io/serhataktay/tracktx —
     # keep manifest.version in nextflow.config in sync with the pushed image tag,
-    # or the fallback "3.0" below will be pulled.
-    NF_VERSION=$(grep -E "^\s*version\s*=" nextflow.config 2>/dev/null | head -1 | grep -oE "[0-9][0-9.]*" || echo "3.0")
+    # or the fallback "1.3.0" below will be pulled.
+    NF_VERSION=$(grep -E "^\s*version\s*=" nextflow.config 2>/dev/null | head -1 | grep -oE "[0-9][0-9.]*" || echo "1.3.0")
     local TRACKTX_IMAGE="ghcr.io/serhataktay/tracktx:${NF_VERSION}"
 
     if [[ "${TRACKTX_SKIP_PULL:-0}" -eq 0 ]]; then

@@ -697,7 +697,18 @@ def create_heatmap(
     
     # Remove infinite values and NAs
     pivot = pivot.replace([np.inf, -np.inf], np.nan).dropna()
-    
+
+    # Sort columns numerically when the group labels are numeric-like (e.g.
+    # timepoint "0","10","160","20","40","60"), which otherwise sort as text
+    # and scramble the chronological order in the plot (0,10,160,20,40,60).
+    # Falls back to a plain string sort for genuinely categorical labels
+    # (e.g. condition names) that aren't all numeric.
+    try:
+        sorted_cols = sorted(pivot.columns, key=lambda x: float(x))
+    except (TypeError, ValueError):
+        sorted_cols = sorted(pivot.columns, key=lambda x: str(x))
+    pivot = pivot[sorted_cols]
+
     if pivot.empty:
         log_warning(f"Empty pivot table for {value_col} by {group_col}")
         return

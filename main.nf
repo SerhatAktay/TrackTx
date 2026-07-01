@@ -544,7 +544,7 @@ Paths are relative to: ${projectDir}"""
       // dimensionally consistent in PE — do NOT "halve" it for paired-end.
       def gmap = (m['genome_mapped_reads'] ?: '').isInteger() ? (m['genome_mapped_reads'] as long) : 0L
       def smap = (m['spike_mapped_reads'] ?: '').isInteger() ? (m['spike_mapped_reads'] as long) : 0L
-      def spikeFrac = (gmap > 0) ? String.format('%.3f', (smap / (gmap as double)) * 100.0) : 'NA'
+      def spikeFrac = (gmap > 0) ? String.format(Locale.US, '%.3f', (smap / (gmap as double)) * 100.0) : 'NA'
       "${sid}\t${c}\t${t}\t${r}\t${m['genome_total_reads'] ?: 'NA'}\t${m['genome_mapped_reads'] ?: 'NA'}\t${m['genome_overall_aln_rate_pct'] ?: 'NA'}\t${m['spike_mapped_reads'] ?: 'NA'}\t${spikeFrac}"
     }
     .toSortedList()

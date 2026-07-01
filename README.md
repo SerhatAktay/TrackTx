@@ -354,7 +354,7 @@ cd tracktx
 
 The script auto-detects Docker and runs the pipeline. First run will download the container image (~2–5 min).
 
-**Updating after git pull:** When you `git pull` and run again, `run_pipeline.sh` automatically pulls the Docker image (tag `tracktx:3.0` by default) so pipeline and container stay in sync. To skip the pull (e.g. offline): `TRACKTX_SKIP_PULL=1 ./run_pipeline.sh`
+**Updating after git pull:** When you `git pull` and run again, `run_pipeline.sh` automatically pulls the Docker image (tag `tracktx:1.3.0` by default) so pipeline and container stay in sync. To skip the pull (e.g. offline): `TRACKTX_SKIP_PULL=1 ./run_pipeline.sh`
 
 ---
 
@@ -752,7 +752,7 @@ Java file-lock conflict. Common causes and fixes:
 
 **Finished tasks re-run from sample 1 (even with -resume):**
 - Nextflow’s cache depends on input file path, size, and timestamp. NFS/network storage can give inconsistent timestamps → add `preprocess_reads_lenient_cache: true` to params.yaml or run with `--preprocess_reads_lenient_cache`.
-- Docker `:latest` changes when the image is updated → use a fixed tag (e.g. `tracktx:3.0`) for stable caching.
+- Docker `:latest` changes when the image is updated → use a fixed tag (e.g. `tracktx:1.3.0`) for stable caching.
 - Debug: `nextflow run ... -resume -dump-hashes 2>&1 | grep "cache hash"` and compare between runs.
 
 **preprocess_and_quality_filter_reads re-runs after stop/restart:**
