@@ -237,6 +237,21 @@ process download_sra_samples {
               echo "SRR | ENA | HTTPS failed, trying FTP..."
               curl -sfL "ftp://\${URL}" -o "\${FNAME}"
             fi
+            # Normalize to \${SRR}_R1/_R2 immediately. ENA's filename is based on the
+            # RESOLVED run accession (e.g. SRR8713364), which differs from \${SRR}
+            # whenever the samplesheet gives an experiment/sample-level id (SRX/GSM).
+            # Without this, the pattern match below (which only looks for
+            # "\${SRR}_1.fastq" etc.) silently finds nothing and the step falsely
+            # reports "Download failed from both NCBI and ENA" even though ENA succeeded.
+            case "\${FNAME}" in
+              *_1.fastq.gz) mv -f "\${FNAME}" "\${SRR}_R1.fastq.gz" ;;
+              *_1.fastq)    mv -f "\${FNAME}" "\${SRR}_R1.fastq" ;;
+              *_2.fastq.gz) mv -f "\${FNAME}" "\${SRR}_R2.fastq.gz" ;;
+              *_2.fastq)    mv -f "\${FNAME}" "\${SRR}_R2.fastq" ;;
+              *.fastq.gz)   mv -f "\${FNAME}" "\${SRR}_R1.fastq.gz" ;;
+              *.fastq)      mv -f "\${FNAME}" "\${SRR}_R1.fastq" ;;
+              *) echo "SRR | ENA | WARNING: unrecognized extension for \${FNAME}, leaving as-is" ;;
+            esac
           done
           NCBI_OK=1
         else
