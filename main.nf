@@ -251,26 +251,46 @@ Paths are relative to: ${projectDir}"""
   def samples_ch = channel
     .fromPath(samplesheetFile)
     .splitCsv(header: true)
-    .map { row ->
-      if (!row.sample || !row.file1) {
-        error "STEP 2 | ERROR | Samplesheet row missing 'sample' or 'file1': ${row}"
+    .toList()
+    .flatMap { rows ->
+      // Two-pass: some samplesheets put the SAME sample+replicate on multiple
+      // rows to mean "one library split across lanes" (see e.g.
+      // drosophila_S2_duarte2016.csv), expecting TrackTx to combine them.
+      // "${sample}_r${replicate}" alone collapses those rows to one sample_id,
+      // which made align_reads_to_genome emit two different BAMs under the
+      // exact same filename -> Nextflow input file name collision in
+      // check_and_merge_replicates. Give lane-duplicate rows a unique
+      // "_lN" suffix so each gets its own file; check_and_merge_replicates
+      // (grouped by condition+timepoint) then merges them like any other
+      // multi-replicate group. Samplesheets with no duplicates are unaffected
+      // (sample_id stays exactly "${sample}_r${replicate}").
+      Closure<String> baseIdOf = { row -> "${row.sample}_r${row.replicate ?: 1}".toString() }
+      def counts = [:].withDefault { 0 }
+      rows.each { row -> counts[baseIdOf.call(row)] += 1 }
+      def seen = [:].withDefault { 0 }
+      rows.collect { row ->
+        if (!row.sample || !row.file1) {
+          error "STEP 2 | ERROR | Samplesheet row missing 'sample' or 'file1': ${row}"
+        }
+        if (params.sample_source != 'srr' && params.paired_end && !row.file2) {
+          error "STEP 2 | ERROR | Paired-end mode requires 'file2' for sample ${row.sample}"
+        }
+        def baseId = baseIdOf.call(row)
+        seen[baseId] += 1
+        def sample_id = counts[baseId] > 1 ? "${baseId}_l${seen[baseId]}" : baseId
+        def reads = (params.sample_source == 'srr')
+          ? [row.file1.trim(), row.file2?.trim()]
+          : (params.paired_end
+              ? [resolveLocalPath(row.file1), resolveLocalPath(row.file2)]
+              : [resolveLocalPath(row.file1)])
+        tuple(
+          sample_id,
+          reads,
+          (row.treatment ?: row.condition ?: row.sample) ?: '',
+          row.timepoint ?: '',
+          row.replicate ?: 1
+        )
       }
-      if (params.sample_source != 'srr' && params.paired_end && !row.file2) {
-        error "STEP 2 | ERROR | Paired-end mode requires 'file2' for sample ${row.sample}"
-      }
-      def sample_id = "${row.sample}_r${row.replicate ?: 1}"
-      def reads = (params.sample_source == 'srr')
-        ? [row.file1.trim(), row.file2?.trim()]
-        : (params.paired_end
-            ? [resolveLocalPath(row.file1), resolveLocalPath(row.file2)]
-            : [resolveLocalPath(row.file1)])
-      tuple(
-        sample_id,
-        reads,
-        (row.treatment ?: row.condition ?: row.sample) ?: '',
-        row.timepoint ?: '',
-        row.replicate ?: 1
-      )
     }
     .tap { samples_for_count }
 
