@@ -148,6 +148,11 @@ process download_genome_annotations {
       mm39|GRCm39) echo "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/635/GCF_000001635.27_GRCm39" ;;
       mm10|GRCm38) echo "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/635/GCF_000001635.26_GRCm38.p6" ;;
       hs1)         echo "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/009/914/755/GCF_009914755.1_T2T-CHM13v2.0" ;;
+      # TAIR10 (Arabidopsis thaliana) is not hosted on UCSC at all, so this is
+      # the primary source, not just a fallback. NCBI's own assembly report
+      # has "na" for UCSC-style-name here (see _fetch_ncbi_refseq below), so
+      # renaming falls back to the bare Sequence-Name (1,2,3,4,5,MT,Pltd).
+      TAIR10)      echo "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/735/GCF_000001735.4_TAIR10.1" ;;
       *) return 1 ;;
     esac
   }
@@ -176,20 +181,24 @@ process download_genome_annotations {
       rm -rf "\${tmpdir}"; return 1
     fi
 
-    # Build RefSeq-Accn (col 7) -> UCSC-style-name (col 10) map, skipping
-    # comment lines and entries with no UCSC name ('na').
+    # Build RefSeq-Accn (col 7) -> target-name map, skipping comment lines and
+    # entries with no RefSeq accession. Prefer UCSC-style-name (col 10) when
+    # available; some assemblies (e.g. TAIR10/Arabidopsis) have no UCSC
+    # representation at all, so col 10 is "na" for every row — fall back to
+    # the bare Sequence-Name (col 1) in that case, e.g. "1", "MT", "Pltd".
     # NCBI assembly_report.txt ships with CRLF line endings, so the last field
-    # ($10, the UCSC name) retains a trailing \\r → "chr6\\r". Strip it first,
-    # otherwise every renamed seqid gets a stray CR and fails to match the BAM.
-    awk -F'\\t' '{sub(/\\r\$/,"")} !/^#/ && \$7!="na" && \$10!="na" {print \$7"\\t"\$10}' \\
+    # retains a trailing \\r → "chr6\\r". Strip it first, otherwise every
+    # renamed seqid gets a stray CR and fails to match the BAM.
+    awk -F'\\t' '{sub(/\\r\$/,"")} !/^#/ && \$7!="na" {name=(\$10!="na"?\$10:\$1); print \$7"\\t"name}' \\
       "\${tmpdir}/report.txt" > "\${tmpdir}/chrmap.tsv"
 
     local mapped
     mapped=\$(wc -l < "\${tmpdir}/chrmap.tsv" | tr -d ' ')
-    echo "GTF | FETCH | Renaming sequence IDs to UCSC convention (\${mapped} contigs mapped)" >&2
+    echo "GTF | FETCH | Renaming sequence IDs to genome-index convention (\${mapped} contigs mapped)" >&2
 
-    # Rename column 1 of the GTF using the map; lines whose seqid has no UCSC
-    # equivalent are dropped (they would not match the UCSC genome index).
+    # Rename column 1 of the GTF using the map; lines whose seqid has no
+    # target-name equivalent are dropped (they would not match the genome
+    # index used for alignment).
     awk -F'\\t' 'BEGIN{OFS="\\t"}
       NR==FNR { m[\$1]=\$2; next }
       /^#/    { print; next }

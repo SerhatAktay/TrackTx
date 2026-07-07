@@ -148,6 +148,68 @@ process download_genome_and_build_alignment_index {
   # 3) HELPER FUNCTIONS
   ###########################################################################
 
+  # NCBI RefSeq direct-download base URL per assembly, for genomes that are
+  # not hosted on UCSC at all (e.g. TAIR10/Arabidopsis). Mirrors the mapping
+  # in modules/01_download_genome_annotations.nf so the FASTA and GTF for a
+  # given assembly always come from the same NCBI release.
+  _ncbi_genome_base() {
+    case "\${GENOME_ID}" in
+      TAIR10) echo "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/001/735/GCF_000001735.4_TAIR10.1" ;;
+      *) return 1 ;;
+    esac
+  }
+
+  # Download the genome FASTA straight from NCBI and rename sequence IDs so
+  # they match what modules/01_download_genome_annotations.nf writes into the
+  # GTF for the same assembly: UCSC-style-name when the assembly has one, else
+  # the bare Sequence-Name (e.g. "1", "MT", "Pltd" for TAIR10). Without this
+  # rename the GTF and the Bowtie2 index would disagree on chromosome names
+  # and every downstream BAM/GTF join would silently drop all reads.
+  _fetch_ncbi_fasta() {
+    local out="\$1" base acc fasta_url rep_url tmpdir
+    base="\$(_ncbi_genome_base)" || { echo "INDEX | FASTA | No NCBI mapping for \${GENOME_ID}" >&2; return 1; }
+    acc="\$(basename "\${base}")"
+    fasta_url="\${base}/\${acc}_genomic.fna.gz"
+    rep_url="\${base}/\${acc}_assembly_report.txt"
+    tmpdir="\$(mktemp -d "\${CACHE_DIR}/.ncbi_\${GENOME_ID}.XXXXXX")"
+
+    echo "INDEX | FASTA | NCBI assembly report: \${rep_url}" >&2
+    if ! curl -fsSL --retry 3 --retry-delay 4 "\${rep_url}" > "\${tmpdir}/report.txt"; then
+      echo "INDEX | FASTA | Failed to fetch NCBI assembly report" >&2
+      rm -rf "\${tmpdir}"; return 1
+    fi
+
+    echo "INDEX | FASTA | NCBI genome FASTA: \${fasta_url}" >&2
+    if ! curl -fsSL --retry 3 --retry-delay 4 "\${fasta_url}" | gunzip -c > "\${tmpdir}/raw.fa"; then
+      echo "INDEX | FASTA | Failed to fetch NCBI genome FASTA" >&2
+      rm -rf "\${tmpdir}"; return 1
+    fi
+
+    # Build RefSeq-Accn (col 7) -> target-name map, same fallback rule as
+    # module 01: prefer UCSC-style-name (col 10), else bare Sequence-Name
+    # (col 1). Strip the CRLF trailing \\r from NCBI's report first.
+    awk -F'\\t' '{sub(/\\r\$/,"")} !/^#/ && \$7!="na" {name=(\$10!="na"?\$10:\$1); print \$7"\\t"name}' \\
+      "\${tmpdir}/report.txt" > "\${tmpdir}/chrmap.tsv"
+
+    local mapped
+    mapped=\$(wc -l < "\${tmpdir}/chrmap.tsv" | tr -d ' ')
+    echo "INDEX | FASTA | Renaming sequence IDs (\${mapped} contigs mapped)" >&2
+
+    # Rename the FASTA header's first token (the accession) using the map;
+    # sequences with no mapped name are dropped.
+    awk -F'\\t' 'NR==FNR { m[\$1]=\$2; next }
+      /^>/ {
+        acc=substr(\$0,2); sub(/[ \\t].*\$/,"",acc)
+        if (acc in m) { print ">"m[acc]; keep=1 } else { keep=0 }
+        next
+      }
+      keep { print }' \\
+      "\${tmpdir}/chrmap.tsv" "\${tmpdir}/raw.fa" > "\${out}"
+
+    rm -rf "\${tmpdir}"
+    [[ -s "\${out}" ]]
+  }
+
   # Check if complete Bowtie2 index family exists
   # Args: prefix, extension (bt2 or bt2l)
   # Returns: 0 if complete, 1 if incomplete
@@ -335,37 +397,59 @@ process download_genome_and_build_alignment_index {
           cp -f "${fasta_in}" "\${TEMP_DIR}/\${GENOME_ID}.fa"
         fi
       else
-        # Download from UCSC
+        # Download from UCSC (primary + chromFa fallback), then NCBI RefSeq
+        # as a final fallback for assemblies UCSC doesn't host at all.
+        FASTA_FETCHED=0
+
         echo "INDEX | FASTA | Downloading from UCSC..."
         echo "INDEX | FASTA | Primary URL: \${URL_PRIMARY}"
-        
+
         set +e
         curl -fLsS --retry 5 --retry-delay 3 "\${URL_PRIMARY}" | \\
           gunzip -c > "\${TEMP_DIR}/\${GENOME_ID}.fa"
         DOWNLOAD_RC=\$?
         set -e
 
-        if [[ \${DOWNLOAD_RC} -ne 0 || ! -s "\${TEMP_DIR}/\${GENOME_ID}.fa" ]]; then
+        if [[ \${DOWNLOAD_RC} -eq 0 && -s "\${TEMP_DIR}/\${GENOME_ID}.fa" ]]; then
+          echo "INDEX | FASTA | Primary download successful"
+          FASTA_FETCHED=1
+        else
           echo "INDEX | FASTA | Primary download failed, trying fallback..."
           echo "INDEX | FASTA | Fallback URL: \${URL_FALLBACK}"
-          
-          curl -fLsS --retry 5 --retry-delay 3 -o "\${TEMP_DIR}/chromFa.tar.gz" "\${URL_FALLBACK}"
-          
-          mkdir -p "\${TEMP_DIR}/chroms"
-          tar -xzf "\${TEMP_DIR}/chromFa.tar.gz" -C "\${TEMP_DIR}/chroms"
-          
-          echo "INDEX | FASTA | Concatenating chromosome FASTAs..."
-          cat \${TEMP_DIR}/chroms/*.fa > "\${TEMP_DIR}/\${GENOME_ID}.fa"
-          
-          echo "INDEX | FASTA | Fallback download successful"
-        else
-          echo "INDEX | FASTA | Primary download successful"
+
+          set +e
+          curl -fLsS --retry 5 --retry-delay 3 -o "\${TEMP_DIR}/chromFa.tar.gz" "\${URL_FALLBACK}" \\
+            && mkdir -p "\${TEMP_DIR}/chroms" \\
+            && tar -xzf "\${TEMP_DIR}/chromFa.tar.gz" -C "\${TEMP_DIR}/chroms" 2>/dev/null
+          FALLBACK_RC=\$?
+          set -e
+
+          if [[ \${FALLBACK_RC} -eq 0 ]]; then
+            echo "INDEX | FASTA | Concatenating chromosome FASTAs..."
+            cat \${TEMP_DIR}/chroms/*.fa > "\${TEMP_DIR}/\${GENOME_ID}.fa"
+            if [[ -s "\${TEMP_DIR}/\${GENOME_ID}.fa" ]]; then
+              echo "INDEX | FASTA | Fallback download successful"
+              FASTA_FETCHED=1
+            fi
+          fi
+        fi
+
+        if [[ \${FASTA_FETCHED} -eq 0 ]]; then
+          echo "INDEX | FASTA | UCSC unavailable for \${GENOME_ID}, trying NCBI RefSeq..."
+          if _fetch_ncbi_fasta "\${TEMP_DIR}/\${GENOME_ID}.fa"; then
+            echo "INDEX | FASTA | NCBI RefSeq download successful"
+            FASTA_FETCHED=1
+          else
+            tracktx_error "download_genome_and_build_alignment_index" \\
+              "Could not obtain FASTA from UCSC or NCBI RefSeq for genome: \${GENOME_ID}" \\
+              "Check network, UCSC/NCBI availability, or supply a custom FASTA via --genome_fasta"
+          fi
         fi
       fi
 
       # Validate FASTA
       if [[ ! -s "\${TEMP_DIR}/\${GENOME_ID}.fa" ]]; then
-        tracktx_error "download_genome_and_build_alignment_index" "FASTA file is empty" "Check UCSC download or custom FASTA"
+        tracktx_error "download_genome_and_build_alignment_index" "FASTA file is empty" "Check UCSC/NCBI download or custom FASTA"
       fi
 
       if ! grep -q '^>' "\${TEMP_DIR}/\${GENOME_ID}.fa"; then
