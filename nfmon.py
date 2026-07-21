@@ -27,6 +27,35 @@ except ImportError:
 SPARKLINE_BLOCKS = "▁▂▃▄▅▆▇█"
 SPARKLINE_WIDTH = 20
 
+# Sampling intervals (seconds) used to downsample CPU/RSS history so that
+# the fixed-width sparkline buffer scales with a task's actual runtime
+# instead of always showing only the last few seconds of samples.
+_HIST_BUCKETS = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400]
+
+def _bucket_interval(runtime_s: float, width: int = SPARKLINE_WIDTH) -> float:
+    """Pick a sampling interval so the history buffer spans ~the task's runtime so far.
+
+    Without this, history is sampled once per UI refresh (as fast as every
+    0.2-0.4s), so a 20-sample sparkline only ever covers a few seconds —
+    useless for tasks that run for hours.
+    """
+    if runtime_s <= 0:
+        return _HIST_BUCKETS[0]
+    target = runtime_s / max(1, width - 1)
+    for b in _HIST_BUCKETS:
+        if b >= target:
+            return b
+    return _HIST_BUCKETS[-1]
+
+def human_interval(seconds: float) -> str:
+    """Compact human-readable duration, e.g. 5s, 30s, 2m, 1h"""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    return f"{seconds // 3600}h"
+
 # ═══════════════════════════════════════════════════════════════
 # ─── CLI Arguments ──────────────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════
@@ -104,13 +133,28 @@ class TaskMetrics:
     cpus: Optional[float] = None  # allocated CPUs
     cpu_hist: deque = field(default_factory=lambda: deque(maxlen=SPARKLINE_WIDTH))
     rss_hist: deque = field(default_factory=lambda: deque(maxlen=SPARKLINE_WIDTH))
-    
-    def update(self):
-        """Add current values to history"""
-        if self.cpu_pct is not None:
-            self.cpu_hist.append(max(0.0, float(self.cpu_pct)))
-        if self.rss_mb is not None:
-            self.rss_hist.append(max(0.0, float(self.rss_mb)))
+    last_sample_ts: float = 0.0
+    sample_interval: float = _HIST_BUCKETS[0]
+
+    def update(self, runtime_s: float = 0.0):
+        """Add current values to history, downsampled so the fixed-width
+        buffer spans roughly the task's runtime so far (see _bucket_interval).
+        Between samples, the most recent bucket is updated with the peak
+        value seen so short spikes between samples aren't lost."""
+        now = time.time()
+        self.sample_interval = _bucket_interval(runtime_s)
+        due = (not self.cpu_hist and not self.rss_hist) or (now - self.last_sample_ts) >= self.sample_interval
+        if due:
+            if self.cpu_pct is not None:
+                self.cpu_hist.append(max(0.0, float(self.cpu_pct)))
+            if self.rss_mb is not None:
+                self.rss_hist.append(max(0.0, float(self.rss_mb)))
+            self.last_sample_ts = now
+        else:
+            if self.cpu_pct is not None and self.cpu_hist:
+                self.cpu_hist[-1] = max(self.cpu_hist[-1], max(0.0, float(self.cpu_pct)))
+            if self.rss_mb is not None and self.rss_hist:
+                self.rss_hist[-1] = max(self.rss_hist[-1], max(0.0, float(self.rss_mb)))
     
     def cpu_sparkline(self) -> str:
         """Generate CPU usage sparkline"""
@@ -762,7 +806,7 @@ def apply_trace_row(world: World, row: Dict[str, str], now: float):
             pass
 
     # Update metrics history
-    t.metrics.update()
+    t.metrics.update(max(0.0, now - t.first_ts))
 
 # ═══════════════════════════════════════════════════════════════
 # ─── Parser & State Machine ─────────────────────────────────────
@@ -1573,8 +1617,8 @@ def classify(world: World):
                 t.metrics.cpus = cc
         
         # Update metrics history
-        t.metrics.update()
-        
+        t.metrics.update(max(0.0, time.time() - t.first_ts))
+
         # Parse stage from latest logs
         payload, tl, _ = insight(d, world.tail_n)
         st = detect_stage_from_tail(tl)
@@ -2437,7 +2481,19 @@ def main():
                 # running table
                 rt_title = "Running (all logs)" if getattr(a, 'all_logs', False) else "Running (j/k to focus)"
                 rt = Table(title=rt_title, expand=True, padding=(0, 0), show_edge=True)
-                rt.add_column("Module", ratio=2); rt.add_column("Sample", ratio=2); rt.add_column("id"); rt.add_column("PID"); rt.add_column("CPU"); rt.add_column("CPUS"); rt.add_column("RSS"); rt.add_column("Age"); rt.add_column("Stage", ratio=2); rt.add_column("CPU hist")
+                rt.add_column("Module", ratio=2, no_wrap=True, overflow="ellipsis")
+                rt.add_column("Sample", ratio=1, no_wrap=True, overflow="ellipsis")
+                rt.add_column("id", no_wrap=True)
+                rt.add_column("PID", no_wrap=True)
+                rt.add_column("CPU", no_wrap=True)
+                rt.add_column("CPUS", no_wrap=True)
+                rt.add_column("RSS", no_wrap=True)
+                rt.add_column("Age", no_wrap=True)
+                # Fixed max width + no_wrap so a long stage string can never push
+                # this row onto multiple terminal lines (that was silently eating
+                # vertical space and hiding other running tasks from the table).
+                rt.add_column("Stage", ratio=2, max_width=36, no_wrap=True, overflow="ellipsis")
+                rt.add_column("CPU hist", no_wrap=True, min_width=14)
                 # ensure labels from FS if missing
                 for t in run:
                     ensure_task_label_from_fs(w, t)
@@ -2477,18 +2533,25 @@ def main():
                     if (not getattr(a, 'all_logs', False)) and idx == focused["idx"]:
                         lab.stylize("bold yellow")
                     stage = (t.stage or "")
-                    # sparkline from cpu_hist
+                    # sparkline from cpu_hist — each sample is downsampled (see
+                    # TaskMetrics.update / _bucket_interval) so the 20-slot buffer
+                    # scales with the task's actual runtime instead of showing just
+                    # the last few seconds. Suffix shows the total window covered
+                    # (e.g. "6m", "2h") so the timescale is never ambiguous.
                     hist = list(t.metrics.cpu_hist)
-                    spark = ""
+                    spark_cell = Text("", style="cyan")
                     if hist:
                         try:
                             # map to 0-7 levels using unicode blocks
                             blocks = " ▂▃▄▅▆▇█"
                             mx = max(1.0, max(hist))
                             spark = "".join([blocks[min(7, int((v/mx)*7))] for v in hist[-20:]])
+                            span = t.metrics.sample_interval * len(hist)
+                            spark_cell = Text(spark, style="cyan")
+                            spark_cell.append(f" {human_interval(span)}", style="dim")
                         except Exception:
-                            spark = ""
-                    rt.add_row(lab, sample_tag, short_hash(t.id or ""), str(t.pid or '-'), Text(cpu, style=cpu_style), cpus, Text(rss, style=rss_style), sec2hms(int(time.time()-t.first_ts)), stage, Text(spark, style="cyan"))
+                            pass
+                    rt.add_row(lab, sample_tag, short_hash(t.id or ""), str(t.pid or '-'), Text(cpu, style=cpu_style), cpus, Text(rss, style=rss_style), sec2hms(int(time.time()-t.first_ts)), stage, spark_cell)
 
                 # live log tail panel(s) - dynamically sized based on available space
                 # Calculate how much space we have (will be computed below alongside layout)
