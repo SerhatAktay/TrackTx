@@ -109,6 +109,11 @@ RE_WORK = re.compile(r"(?:^|\s)(?:Work-dir|Working (?:dir|directory))\s*:\s*(?P<
 RE_WORK_HANDLER = re.compile(r"\bworkDir:\s*(?P<dir>[^\]]+)\]")
 RE_TASKDIR = re.compile(r".*/work/[0-9a-f]{2}/[0-9a-f]+$")
 RE_CONTAINER = re.compile(r"(?:^|\s)container\s*>\s*'?(?P<container>[^'\s]+)'?", re.I)
+# Matches the effective core limit passed to the container runtime, e.g.
+# `docker run ... --cpus=3 ...` / `--cpus 3`. This is where TrackTx's
+# allocated-CPU count actually lives for Docker-executed tasks — .command.env
+# is never populated by the docker executor.
+RE_RUN_CPUS = re.compile(r"--cpus[= ]([0-9]+(?:\.[0-9]+)?)")
 
 def norm_state(tok: str) -> str:
     """Normalize state token to standard format"""
@@ -1030,20 +1035,34 @@ def pid_from_dir(d: str) -> Optional[int]:
     return None
 
 def cpus_from_dir(d: str) -> Optional[float]:
-    """Read allocated CPUs from .command.env"""
+    """Read allocated CPUs for a task.
+
+    Tries two sources, in order:
+      1. .command.env (NXF_CPUS= / task.cpus=) — some executors write this.
+      2. .command.run — the container-runtime invocation embeds the actual
+         `--cpus=N` limit. Docker-executed tasks (TrackTx's default) never
+         populate .command.env, so this is the real source of truth there.
+    """
     try:
         env = os.path.join(d, ".command.env")
-        val = ""
-        with open(env, "r", encoding="utf-8", errors="ignore") as fh:
-            for ln in fh:
-                if ln.startswith("NXF_CPUS=") or ln.startswith("task.cpus="):
-                    val = ln.split("=", 1)[1].strip().strip('"')
-                    break
-        if val:
-            try:
-                return float(val)
-            except Exception:
-                pass
+        if os.path.isfile(env):
+            with open(env, "r", encoding="utf-8", errors="ignore") as fh:
+                for ln in fh:
+                    if ln.startswith("NXF_CPUS=") or ln.startswith("task.cpus="):
+                        val = ln.split("=", 1)[1].strip().strip('"')
+                        if val:
+                            return float(val)
+    except Exception:
+        pass
+
+    try:
+        run = os.path.join(d, ".command.run")
+        if os.path.isfile(run):
+            with open(run, "r", encoding="utf-8", errors="ignore") as fh:
+                txt = fh.read()
+            m = RE_RUN_CPUS.search(txt)
+            if m:
+                return float(m.group(1))
     except Exception:
         pass
     return None
@@ -2481,18 +2500,14 @@ def main():
                 # running table
                 rt_title = "Running (all logs)" if getattr(a, 'all_logs', False) else "Running (j/k to focus)"
                 rt = Table(title=rt_title, expand=True, padding=(0, 0), show_edge=True)
+                # id/PID are internal Nextflow bookkeeping (not meaningful to a user
+                # watching a run); Stage was dropped in the earlier width fix pass.
                 rt.add_column("Module", ratio=2, no_wrap=True, overflow="ellipsis")
-                rt.add_column("Sample", ratio=1, no_wrap=True, overflow="ellipsis")
-                rt.add_column("id", no_wrap=True)
-                rt.add_column("PID", no_wrap=True)
+                rt.add_column("Sample", ratio=2, no_wrap=True, overflow="ellipsis")
                 rt.add_column("CPU", no_wrap=True)
                 rt.add_column("CPUS", no_wrap=True)
                 rt.add_column("RSS", no_wrap=True)
                 rt.add_column("Age", no_wrap=True)
-                # Fixed max width + no_wrap so a long stage string can never push
-                # this row onto multiple terminal lines (that was silently eating
-                # vertical space and hiding other running tasks from the table).
-                rt.add_column("Stage", ratio=2, max_width=36, no_wrap=True, overflow="ellipsis")
                 rt.add_column("CPU hist", no_wrap=True, min_width=14)
                 # ensure labels from FS if missing
                 for t in run:
@@ -2514,7 +2529,7 @@ def main():
                     cpu=(f"{t.metrics.cpu_pct:.0f}%" if t.metrics.cpu_pct is not None else "--")
                     # colorize CPU and RSS
                     cpu_style = ("green" if (t.metrics.cpu_pct or 0) < 50 else ("yellow" if (t.metrics.cpu_pct or 0) < 80 else "red")) if t.metrics.cpu_pct is not None else "dim"
-                    cpus = (f"{t.metrics.cpus:.1f}" if t.metrics.cpus is not None else "?")
+                    cpus = (f"{t.metrics.cpus:.0f}" if t.metrics.cpus is not None else "?")
                     rss=(f"{t.metrics.rss_mb:.0f}MB" if t.metrics.rss_mb is not None else "--")
                     rss_style = ("green" if (t.metrics.rss_mb or 0) < 2048 else ("yellow" if (t.metrics.rss_mb or 0) < 8192 else "red")) if t.metrics.rss_mb is not None else "dim"
                     
@@ -2532,7 +2547,6 @@ def main():
                     lab = Text(module_name, style=_name_style(module_name))
                     if (not getattr(a, 'all_logs', False)) and idx == focused["idx"]:
                         lab.stylize("bold yellow")
-                    stage = (t.stage or "")
                     # sparkline from cpu_hist — each sample is downsampled (see
                     # TaskMetrics.update / _bucket_interval) so the 20-slot buffer
                     # scales with the task's actual runtime instead of showing just
@@ -2551,7 +2565,7 @@ def main():
                             spark_cell.append(f" {human_interval(span)}", style="dim")
                         except Exception:
                             pass
-                    rt.add_row(lab, sample_tag, short_hash(t.id or ""), str(t.pid or '-'), Text(cpu, style=cpu_style), cpus, Text(rss, style=rss_style), sec2hms(int(time.time()-t.first_ts)), stage, spark_cell)
+                    rt.add_row(lab, sample_tag, Text(cpu, style=cpu_style), cpus, Text(rss, style=rss_style), sec2hms(int(time.time()-t.first_ts)), spark_cell)
 
                 # live log tail panel(s) - dynamically sized based on available space
                 # Calculate how much space we have (will be computed below alongside layout)
