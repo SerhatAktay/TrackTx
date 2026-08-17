@@ -19,8 +19,21 @@
 //   siCPM = (count / sample_spike) × (control_spike / control_reads) × 1,000,000
 //
 // siCPM Control Selection:
-//   1. Primary: condition matches params.control_label AND replicate == 1
-//   2. Fallback: First sample with spike_reads > 0
+//   Condition matches params.control_label (case-insensitive), lowest
+//   replicate number preferred (so a merged rep-0 track wins over stray
+//   per-replicate rows). params.control_label MUST be set explicitly per
+//   dataset to the real baseline condition name (default "CTRL" is a
+//   placeholder that will not match descriptive condition names like
+//   "no_heat_shock" or "no_treatment").
+//   If no row matches, siCPM is DISABLED (factor = 0) with a loud warning —
+//   there is deliberately no "guess a control from row order" fallback.
+//   An earlier version of this pipeline silently fell back to "first sample
+//   with spike_reads > 0" when the label didn't match, which produced a
+//   real but wrong siCPM factor (using an arbitrary, often treated-not-
+//   baseline sample as the reference) without any indication anything was
+//   wrong — see git history / project notes for the incident that surfaced
+//   this. Failing safe to "disabled and visibly zero" is far preferable to
+//   a plausible-looking but incorrect number.
 //
 // Inputs:
 //   tuple(sample_id, pos3_bg, neg3_bg, pos5_bg, neg5_bg,
@@ -54,7 +67,10 @@
 //   params.norm.emit_allmap   : Include allMap tracks (default: true)
 //   params.norm.emit_5p       : Force 5' track generation (default: auto)
 //   params.force_sort_bedgraph: Sort before BigWig (default: false)
-//   params.control_label      : Control condition name (default: "CTRL")
+//   params.control_label      : Control condition name — MUST match a real
+//                                condition in your samplesheet (e.g.
+//                                "no_heat_shock"); default "CTRL" is a
+//                                placeholder, not a real fallback
 //   params.norm.timeout_bw    : BigWig timeout seconds (default: 900)
 //
 // ============================================================================
@@ -330,12 +346,20 @@ else:
 # Find control sample for siCPM.
 #
 # Match on condition == control_label and pick the LOWEST replicate number.
-# IMPORTANT: merged replicates are emitted with replicate = 0 (not 1), so the
-# previous `rep in ('1','r1','R1')` test never matched a merged control and the
-# code silently fell back to "first sample with spike", i.e. an arbitrary
-# (often wrong) reference. Treating replicate as a number and taking the minimum
-# selects rep 1 when present and the merged rep-0 track when replicates are
-# pooled. Only consider rows that actually have spike reads.
+# Merged replicates are emitted with replicate = 0 (not 1), so treating
+# replicate as a number and taking the minimum selects rep 1 when present
+# and the merged rep-0 track when replicates are pooled. Only consider rows
+# that actually have spike reads.
+#
+# IMPORTANT: there is intentionally NO fallback to "first sample with
+# spike_reads > 0" when control_label doesn't match anything. An earlier
+# version of this script did that silently, which — for any dataset using
+# descriptive condition names instead of the literal default "CTRL" (i.e.
+# every real dataset, unless control_label is set) — picked an arbitrary
+# sample (often the treated condition, not the baseline) as the siCPM
+# reference and produced a real-looking but wrong number with no warning.
+# If control_label doesn't match, siCPM is disabled (factor = 0) below and
+# the caller prints a loud, actionable warning instead of guessing.
 control_row = None
 
 def _rep_num(r):
@@ -353,30 +377,29 @@ control_candidates = [
 if control_candidates:
     control_row = sorted(control_candidates, key=_rep_num)[0]
 
-# Fallback: first sample with spike_reads > 0
-if control_row is None:
-    for row in rows:
-        if int(row.get('spike_reads', 0) or 0) > 0:
-            control_row = row
-            break
-
 # Compute siCPM factor
 if control_row and sample_spike > 0:
     control_main = int(control_row.get('main_reads', 0))
     control_spike = int(control_row.get('spike_reads', 0))
-    
+
     if control_spike > 0 and control_main > 0:
         fac_sicpm = (control_spike / float(sample_spike)) * (1_000_000.0 / control_main)
+        status = "ok"
     else:
         fac_sicpm = 0.0
+        status = "control_has_no_spike"
+elif sample_spike <= 0:
+    fac_sicpm = 0.0
+    status = "sample_has_no_spike"
 else:
     fac_sicpm = 0.0
+    status = "no_control_label_match"
 
-print(f"{fac_cpm:.10f}\\t{fac_sicpm:.10f}")
+print(f"{fac_cpm:.10f}\\t{fac_sicpm:.10f}\\t{status}")
 PYSCRIPT
 
   # Read computed factors
-  read -r FAC_CPM FAC_SICPM < factors.tmp
+  read -r FAC_CPM FAC_SICPM CONTROL_STATUS < factors.tmp
 
   echo "NORMALIZE | FACTORS | CPM factor: \${FAC_CPM}"
   echo "NORMALIZE | FACTORS | siCPM factor: \${FAC_SICPM}"
@@ -394,7 +417,21 @@ PYSCRIPT
     SICPM_AVAILABLE=1
   else
     echo "NORMALIZE | FACTORS | WARNING: siCPM disabled (factor = 0)"
-    echo "NORMALIZE | FACTORS | Possible causes: no spike-in reads, no control sample"
+    case "\${CONTROL_STATUS}" in
+      no_control_label_match)
+        echo "NORMALIZE | FACTORS | Cause: no sample has condition == [\${CONTROL_LABEL}] (params.control_label) with spike_reads > 0."
+        echo "NORMALIZE | FACTORS | Fix: set control_label in your params file to the EXACT baseline condition name used in your samplesheet (e.g. control_label: no_heat_shock). There is no automatic fallback — this is intentional (see module header)."
+        ;;
+      sample_has_no_spike)
+        echo "NORMALIZE | FACTORS | Cause: this sample (\${SAMPLE_ID}) itself has 0 spike-in reads."
+        ;;
+      control_has_no_spike)
+        echo "NORMALIZE | FACTORS | Cause: the matched control sample has 0 spike-in or main reads."
+        ;;
+      *)
+        echo "NORMALIZE | FACTORS | Possible causes: no spike-in reads, no control sample"
+        ;;
+    esac
     SICPM_AVAILABLE=0
   fi
 
@@ -715,8 +752,13 @@ siCPM (Spike-in Normalized CPM):
 
 CONTROL SELECTION (for siCPM)
 ────────────────────────────────────────────────────────────────────────────
-  Priority 1: Condition = "\${CONTROL_LABEL}" AND Replicate = 1
-  Priority 2: First sample with spike_reads > 0 (fallback)
+  Condition = "\${CONTROL_LABEL}" (params.control_label), lowest replicate
+  number preferred (a merged rep-0 track wins over stray per-replicate rows).
+
+  control_label MUST be set explicitly, per dataset, to your real baseline
+  condition name — there is no fallback to "first sample with spike reads"
+  if it doesn't match. A non-matching label disables siCPM (factor = 0)
+  rather than silently normalizing against the wrong sample.
 
 SAMPLE INFORMATION
 ────────────────────────────────────────────────────────────────────────────
@@ -818,7 +860,10 @@ Expected Behavior:
 
 Troubleshooting:
   • Empty outputs: Check input bedGraphs exist and non-empty
-  • Zero siCPM factor: No spike-in reads or no control sample
+  • Zero siCPM factor: control_label doesn't match any condition in your
+    samplesheet (most common — set it explicitly per dataset), or no
+    spike-in reads on this sample/its control. Check the log line
+    "NORMALIZE | FACTORS | Cause: ..." above for which one.
   • BigWig conversion failure: Try --force_sort_bedgraph
 
 PARAMETERS USED

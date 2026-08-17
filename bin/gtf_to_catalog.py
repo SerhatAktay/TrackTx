@@ -18,6 +18,10 @@
 # ║   • Falls back across common keys: gene_id, gene_name, biotype           ║
 # ║   • Consolidates per-gene extents using gene features when present;     ║
 # ║     otherwise uses min/max across transcripts/exons.                      ║
+# ║   • Coordinates are pooled ONLY within a single contig. A gene_id that   ║
+# ║     appears on more than one contig (e.g. a primary chromosome plus an   ║
+# ║     alt-haplotype/patch/random duplicate) is resolved to ONE locus via   ║
+# ║     _select_primary_locus() — never merged into one nonsensical window.  ║
 # ║   • Deterministic iteration/sorting at write stage.                       ║
 # ║   • BED rows are BED6, 0-based start, 1-based end, with strand.           ║
 # ║   • Aborts (non-zero exit) if any output gene has an empty/whitespace     ║
@@ -163,31 +167,100 @@ def normalize_chrom(chrom: str, mode: str | None) -> str:
 
 # ── Core conversion ─────────────────────────────────────────────────────────
 class Hints:
-    """Best-known per-gene fields gathered from any row (gene or otherwise)."""
-    __slots__ = ("strand", "chrom", "name", "bio")
+    """Best-known per-gene fields gathered from any row (gene or otherwise),
+    used only as a last-resort fallback for genes with no explicit 'gene'
+    feature row at all. Deliberately does NOT track chromosome — chrom is
+    always resolved per-contig (see build_catalog/_select_primary_locus) so
+    it can never be used to silently merge two different locations."""
+    __slots__ = ("strand", "name", "bio")
 
     def __init__(self) -> None:
         self.strand: Dict[str, str] = {}
-        self.chrom: Dict[str, str] = {}
         self.name: Dict[str, str] = {}
         self.bio: Dict[str, str] = {}
 
 
+def _is_alt_contig(chrom: str) -> bool:
+    """True for non-primary-assembly sequences: alt haplotypes, patches, and
+    unplaced/unlocalized scaffolds.
+
+    Every genome build this pipeline uses (UCSC-style hs1/mm10/dm6/canFam6/
+    TAIR10, and GENCODE hg19/hg38) names primary chromosomes as a bare token
+    with no underscore (chr1, chr17, chrX, chrM, 2L, Chr1, ...) and marks
+    every alt/patch/random/unplaced sequence with an underscore-joined
+    suffix (chr17_GL456022_random, chr1_KI270706v1_alt, chrUn_GL456239,
+    ...). That's the same convention UCSC/GENCODE use to separate primary
+    from non-primary sequences, so this generalizes across organisms
+    without hardcoding any specific contig name.
+
+    Not exhaustive for every possible annotation source (a bare Ensembl
+    scaffold accession like "KI270706.1" has no underscore and would slip
+    through undetected) — but that only affects the tie-break order in
+    _select_primary_locus, which always makes *some* deterministic choice
+    and logs it; it can never again silently pool coordinates the way the
+    bug this replaces did.
+    """
+    return "_" in chrom
+
+
+def _select_primary_locus(gid: str, loci: Dict[str, dict], kind: str) -> Tuple[str, dict]:
+    """
+    Pick ONE chromosome for a gene_id that has rows on more than one contig.
+
+    Background: a gene_id occasionally appears on both a primary chromosome
+    and an alt-haplotype/patch/random duplicate of the same region. The bug
+    this replaces: the previous version of this script pooled start/end
+    coordinates with a plain min()/max() across every row sharing a gene_id,
+    regardless of which contig each row was on. When a gene has real loci on
+    two different contigs, that produces one nonsensical window spanning
+    both locations (real case found: mm10 Hspa1a/Hspa1b landed on a THIRD,
+    unrelated alt contig with a ~30 Mb span, purely from pooled coordinates
+    — see analysis/scripts/patch_mm10_hspa1.py for the diagnosis this fix
+    replaces).
+
+    Rule: prefer a primary (non-alt, see _is_alt_contig) contig if any
+    candidate is one. If more than one candidate remains (all primary, or
+    all alt/patch — no primary copy at all), fall back to the locus with the
+    larger transcript-supported span, then chrom name, for a deterministic
+    pick. Always logs which contig was chosen and which were dropped — this
+    can never again fail silently the way the pooling bug did.
+    """
+    if len(loci) == 1:
+        chrom, loc = next(iter(loci.items()))
+        return chrom, loc
+
+    primary = {c: v for c, v in loci.items() if not _is_alt_contig(c)}
+    pool = primary if primary else loci
+    chosen = max(pool, key=lambda c: (pool[c]["end"] - pool[c]["start"], c))
+    dropped = sorted(c for c in loci if c != chosen)
+    sys.stderr.write(
+        f"[gtf_to_catalog] WARNING: {kind} {gid!r} has rows on multiple contigs "
+        f"{sorted(loci.keys())} -- using {chosen!r}, ignoring {dropped} "
+        f"(likely an alt-haplotype/patch/scaffold duplicate; coordinates are "
+        f"NOT pooled across contigs)\n"
+    )
+    return chosen, loci[chosen]
+
+
 def build_catalog(gtf_path: str) -> Tuple[
-    Dict[str, Dict[str, object]],
-    Dict[str, int], Dict[str, int],
+    Dict[str, Dict[str, Dict[str, object]]],
+    Dict[str, Dict[str, int]], Dict[str, Dict[str, int]],
     Hints,
 ]:
     """
     Single streaming pass. Returns:
-      genes  : gene_id -> {chr, strand, start, end, gene_name, biotype}
-      tx_min : gene_id -> min coord across transcript/exon-like rows
-      tx_max : gene_id -> max coord across transcript/exon-like rows
-      hints  : Hints() with chrom/strand/name/bio fallbacks per gene_id
+      genes  : gene_id -> chrom -> {strand, start, end, gene_name, biotype}
+               (kept PER CHROMOSOME — a gene_id's rows are only ever pooled
+               with other rows on the SAME contig; see _select_primary_locus
+               for how one locus is chosen when a gene_id spans more than one)
+      tx_min : gene_id -> chrom -> min coord across transcript/exon-like rows
+      tx_max : gene_id -> chrom -> max coord across transcript/exon-like rows
+      hints  : Hints() with strand/name/biotype fallbacks per gene_id, used
+               only when a gene has no explicit 'gene' feature row at all
     """
-    genes: Dict[str, Dict[str, object]] = {}
-    tx_min: Dict[str, int] = defaultdict(lambda: 10**18)
-    tx_max: Dict[str, int] = defaultdict(lambda: -1)
+    genes: Dict[str, Dict[str, Dict[str, object]]] = defaultdict(dict)
+    tx_min: Dict[str, Dict[str, int]] = defaultdict(dict)
+    tx_max: Dict[str, Dict[str, int]] = defaultdict(dict)
     hints = Hints()
 
     with open_text(gtf_path) as fh:
@@ -207,11 +280,12 @@ def build_catalog(gtf_path: str) -> Tuple[
             gname = pick(GNAME_KEYS, attrs, default=gid)
             gtype = pick(GTYPE_KEYS, attrs, default="")
 
-            # Track hints from every row (chrom intentionally first-wins via setdefault)
+            # Track hints from every row. Chromosome is intentionally NOT
+            # tracked here (see Hints docstring) — it is always resolved
+            # per-contig below, so two different loci for the same gene_id
+            # can never be silently blended into one.
             if strand in {"+", "-"}:
                 hints.strand[gid] = strand
-            if chrom:
-                hints.chrom.setdefault(gid, chrom)
             if gname and gname != gid:
                 hints.name.setdefault(gid, gname)
             if gtype:
@@ -219,52 +293,58 @@ def build_catalog(gtf_path: str) -> Tuple[
 
             feat_l = feat.lower()
             if feat_l == "gene":
-                g = genes.setdefault(gid, {
-                    "chr": chrom,
-                    "strand": strand if strand in {"+", "-"} else hints.strand.get(gid, "+"),
-                    "start": s,
-                    "end": e,
-                    "gene_name": gname or gid,
-                    "biotype": gtype or ""
-                })
-                # Expand if multiple 'gene' rows appear
-                if chrom and not g["chr"]:
-                    g["chr"] = chrom
-                g["start"] = min(int(g["start"]), s)
-                g["end"]   = max(int(g["end"]),   e)
-                if (not g.get("gene_name")) or g["gene_name"] == gid:
-                    g["gene_name"] = gname or gid
-                if (not g.get("biotype")) and gtype:
-                    g["biotype"] = gtype
+                loc = genes[gid].get(chrom)
+                if loc is None:
+                    genes[gid][chrom] = {
+                        "strand": strand if strand in {"+", "-"} else hints.strand.get(gid, "+"),
+                        "start": s,
+                        "end": e,
+                        "gene_name": gname or gid,
+                        "biotype": gtype or "",
+                    }
+                else:
+                    # Multiple 'gene' rows on the SAME contig for this
+                    # gene_id (rare but valid, e.g. split annotation
+                    # records) — safe to pool since they share a location.
+                    loc["start"] = min(loc["start"], s)
+                    loc["end"] = max(loc["end"], e)
+                    if loc["gene_name"] == gid and gname:
+                        loc["gene_name"] = gname
+                    if not loc["biotype"] and gtype:
+                        loc["biotype"] = gtype
             elif feat_l in _TX_LIKE:
-                tx_min[gid] = min(tx_min[gid], s)
-                tx_max[gid] = max(tx_max[gid], e)
+                cur_min = tx_min[gid].get(chrom, 10**18)
+                cur_max = tx_max[gid].get(chrom, -1)
+                tx_min[gid][chrom] = min(cur_min, s)
+                tx_max[gid][chrom] = max(cur_max, e)
 
     return genes, tx_min, tx_max, hints
 
 
-def finalize_rows(genes: Dict[str, Dict[str, object]],
-                  tx_min: Dict[str, int],
-                  tx_max: Dict[str, int],
+def finalize_rows(genes: Dict[str, Dict[str, Dict[str, object]]],
+                  tx_min: Dict[str, Dict[str, int]],
+                  tx_max: Dict[str, Dict[str, int]],
                   hints: Hints) -> list[tuple]:
     """
     Build final per-gene rows:
       (gene_id, gene_name, chr, strand, start, end, tss, tes, biotype)
 
     Logic:
-      1. If explicit 'gene' features exist, use those (extending with tx bounds).
-      2. Otherwise infer genes from transcript/exon-like rows.
+      1. If explicit 'gene' features exist anywhere in the GTF, use those
+         (per gene_id, resolved to a single contig via _select_primary_locus
+         when a gene_id has rows on more than one).
+      2. Otherwise infer genes from transcript/exon-like rows, resolved to a
+         single contig the same way.
     """
     out = []
     has_explicit_genes = len(genes) > 0
 
     if has_explicit_genes:
         for gid in sorted(genes.keys()):
-            g = genes[gid]
-            chrom = str(g.get("chr") or hints.chrom.get(gid) or "")
+            chrom, g = _select_primary_locus(gid, genes[gid], "gene_id")
             strand = str(g.get("strand") or hints.strand.get(gid) or "+")
-            gstart = int(g.get("start") or tx_min.get(gid, 1))
-            gend   = int(g.get("end")   or tx_max.get(gid, gstart))
+            gstart = int(g.get("start") or tx_min.get(gid, {}).get(chrom, 1))
+            gend   = int(g.get("end")   or tx_max.get(gid, {}).get(chrom, gstart))
             gname  = str(g.get("gene_name") or hints.name.get(gid) or gid)
             gtype  = str(g.get("biotype") or hints.bio.get(gid) or "")
             if gend <= gstart:
@@ -275,15 +355,20 @@ def finalize_rows(genes: Dict[str, Dict[str, object]],
     else:
         all_ids = set(tx_min.keys()) | set(tx_max.keys())
         for gid in sorted(all_ids):
-            chrom = hints.chrom.get(gid, "")
-            if not chrom:
-                # No chromosome info at all — skip
+            chroms = set(tx_min.get(gid, {})) | set(tx_max.get(gid, {}))
+            loci = {}
+            for c in chroms:
+                t_min = tx_min.get(gid, {}).get(c)
+                t_max = tx_max.get(gid, {}).get(c)
+                if t_min is None or t_max is None or t_max <= t_min:
+                    continue
+                loci[c] = {"start": t_min, "end": t_max}
+            if not loci:
+                # No chromosome info, or no valid span, on any contig — skip
                 continue
+            chrom, loc = _select_primary_locus(gid, loci, "gene_id (inferred from transcripts)")
             strand = hints.strand.get(gid, "+")
-            gstart = tx_min.get(gid, None)
-            gend   = tx_max.get(gid, None)
-            if gstart is None or gend is None or gend <= gstart:
-                continue
+            gstart, gend = loc["start"], loc["end"]
             gname = hints.name.get(gid, gid)
             gtype = hints.bio.get(gid, "")
             tss = gstart if strand == "+" else gend
