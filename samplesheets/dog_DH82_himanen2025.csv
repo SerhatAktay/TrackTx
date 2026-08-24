@@ -1,5 +1,0 @@
-sample,condition,timepoint,replicate,file1,file2
-DH82_PRO_NHS_rep1,no_heat_shock,0,1,SRR30159059,
-DH82_PRO_HS30min_rep1,heat_shock,30,1,SRR30159058,
-DH82_PRO_NHS_rep2,no_heat_shock,0,2,SRR30159057,
-DH82_PRO_HS30min_rep2,heat_shock,30,2,SRR30159056,

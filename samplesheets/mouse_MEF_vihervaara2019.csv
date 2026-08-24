@@ -1,7 +1,0 @@
-sample,condition,timepoint,replicate,file1,file2
-MEF_PRO_NHS_rep1,no_heat_shock,0,1,SRR8713360,
-MEF_PRO_NHS_rep2,no_heat_shock,0,2,SRR8713361,
-MEF_PRO_HS25min_rep1,heat_shock,25,1,SRR8713362,
-MEF_PRO_HS25min_rep2,heat_shock,25,2,SRR8713363,
-MEF_PRO_HS40min_rep1,heat_shock,40,1,SRR8713364,
-MEF_PRO_HS40min_rep2,heat_shock,40,2,SRR8713365,
