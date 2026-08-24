@@ -20,6 +20,13 @@ assets/*.bedgraph
 assets/*.fastq
 assets/*.png
 
+# Reference genome cache (params.genome_cache, default ./.cache/genomes --
+# also the Config Generator's default). Downloaded per run, multi-GB binary
+# FASTA/index files -- never belongs in git. Without this, `git add .` walks
+# and hashes the entire cache (can be tens of GB), which looks like a hang
+# rather than the very slow, unnecessary operation it actually is.
+.cache/
+
 # Runtime-generated sentinel files (created by main.nf each run).
 # Must NOT be tracked — otherwise a local run blocks `git pull` with
 # "untracked working tree files would be overwritten by merge".

@@ -222,13 +222,27 @@ def build_coordinate_lists(genes_tsv: str, tss_map: dict, tes_map: dict):
             tss = tss_map.get(gname, tss_map.get(gid, (None,tss_d,None)))[1]
             tes = tes_map.get(gname, tes_map.get(gid, (None,tes_d,None)))[1]
 
-            # Calculate all coordinates following old script logic EXACTLY
-            # CRITICAL: For minus strand, old script swaps TSS/CPS assignments!
+            # Calculate all coordinates.
+            #
+            # tss/tes above are read straight from genes.tsv's own tss/tes
+            # columns, which gtf_to_catalog.py already computes strand-aware
+            # (tss = gstart, tes = gend for "+"; tss = gend, tes = gstart for
+            # "-" -- see gtf_to_catalog.py build_catalog()). They are ALREADY
+            # the biological TSS/TES for either strand: do not swap them
+            # again here. (Historical bug: this branch used to re-swap them
+            # a second time, on the mistaken assumption that tss/tes were
+            # still raw, unstranded txStart/txEnd -- like the old R script
+            # this module was ported from. Because gtf_to_catalog.py already
+            # does that flip, the second swap put every minus-strand gene's
+            # Promoter/DivergentTx bands at its true 3' end and its CPS band
+            # at its true 5' end. Fixed: TSS = tss, CPS = tes for BOTH
+            # strands; only the downstream offset arithmetic differs by
+            # strand direction, which was already correct below.)
             if strand == "+":
-                TSS = tss    # For +: TSS = txStart
-                CPS = tes    # For +: CPS = txEnd
+                TSS = tss
+                CPS = tes
                 DIVs = TSS - args.div_outer    # TSS - 750
-                DIVe = TSS - args.div_inner    # TSS - 251  
+                DIVe = TSS - args.div_inner    # TSS - 251
                 PPs = TSS - args.prom_up       # TSS - 250
                 PPe = TSS + 249                # TSS + 249 (old script exact value)
                 GBs = TSS + args.prom_down     # TSS + 250
@@ -238,9 +252,8 @@ def build_coordinate_lists(genes_tsv: str, tss_map: dict, tes_map: dict):
                 TWs = CPS + 500
                 TWe = CPS + 10499              # CPS + 10499 (old script exact value)
             else:  # strand == "-"
-                # CRITICAL FIX: For minus strand, old script uses txEnd as TSS and txStart as CPS
-                TSS = tes    # For -: TSS = txEnd (old script: df$TSS <- df$txEnd)
-                CPS = tss    # For -: CPS = txStart (old script: df$CPS <- df$txStart)
+                TSS = tss
+                CPS = tes
                 DIVs = TSS + args.div_inner    # TSS + 251
                 DIVe = TSS + args.div_outer    # TSS + 750
                 PPs = TSS - 249                # TSS - 249 (old script exact value)

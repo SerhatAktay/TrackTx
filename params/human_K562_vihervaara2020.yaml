@@ -1,0 +1,135 @@
+# ============================================================
+# TrackTx Parameters — Human K562 PRO-seq (Primary human dataset)
+# GEO: GSE154746 | Vihervaara lab — transcriptional memory
+# Paper: K562 cells, NHS + heat shock 42°C time course (uC arm)
+# Protocol: PE PRO-seq (Lis lab, paired-end variant)
+# ============================================================
+
+# --- Core ---
+samplesheet: "samplesheets/human_K562_vihervaara2020.csv"
+sample_source: "srr"
+paired_end: true
+output_dir: "./results/human_K562_GSE154746"
+
+# --- Genome ---
+reference_genome: "hs1"          # T2T-CHM13v2 (most complete human assembly)
+spikein_genome: "dm6"            # Drosophila melanogaster spike-in (Lis lab standard)
+control_label: "no_heat_shock"   # REQUIRED for correct siCPM — must match the baseline
+                                  # condition name below exactly (module 08 has no
+                                  # fallback if this doesn't match; see nextflow.config)
+annotation_source: "refseq"
+annotation_exclude_biotypes: ""  # No biotypes excluded (project-wide policy)
+annotation_chr_naming: "none"
+
+# --- Adapter trimming ---
+# PE PRO-seq (Lis lab PE protocol): TruSeq small RNA adapters on both ends
+adapter_trimming:
+  enabled: true
+  preset: "illumina"
+  adapter1: "TGGAATTCTCGGGTGCCAAGGAACTCCAGTCAC"   # 3' adapter on R1 (RNA 3' → read 3')
+  adapter2: "GATCGTCGGACTGTAGAACTCTGAACGTGTAGATCTCGGTGGTCGCCGTATCATT"   # RC of 5' adapter on R2, incl. readthrough tail
+  minlen: 12
+
+# --- UMI ---
+# GSE154746 uses 5' UMI: 6nt random + C = 7 nt total (confirmed from GEO metadata)
+umi:
+  enabled: true
+  length: 7
+  location: 5
+
+# --- Barcode ---
+barcode:
+  enabled: false
+
+# --- Normalization ---
+# Spike-in (siCPM) is critical for heat shock: global transcription drops ~25% during HS
+# Gene-end normalization as independent cross-check
+norm:
+  emit_bw: true
+  emit_sicpm: true
+  emit_allmap: true
+  emit_5p: true                 # PE — 5' end tracks are meaningful
+  gene_end_method: tes_window
+  gene_end_window: 500
+  gene_end_min_reads: 10
+
+# --- Replicates ---
+replicates:
+  merge: true
+  concordance_method: pearson
+  concordance_min: 0.90
+
+# --- Polymerase contrasts ---
+# Primary cross-species comparison: NHS vs HS 25 min
+# Extended: include all timepoints for kinetics figure
+pol:
+  contrasts:
+    - ["heat_shock",    25,   "no_heat_shock", 0]   # PRIMARY: HS25 vs NHS
+    - ["heat_shock",    12.5, "no_heat_shock", 0]   # kinetics
+    - ["heat_shock",    40,   "no_heat_shock", 0]   # kinetics
+  top_n: 100
+  plots: true
+
+# --- Divergent transcription ---
+# Mammalian settings — wider windows for dispersed mammalian promoters
+advanced:
+  divergent_threshold: auto
+  divergent_sum_thr: auto
+  divergent_fdr: 0.05
+  divergent_calibration_percentile: 65
+  divergent_calibration_sum_multiplier: 1.5
+  divergent_merge_gap: 150          # merge gap for bidirectional peak pairs (mammal)
+  divergent_nt_window: 1000         # search window around annotated TSSs
+  divergent_balance: 0.0
+  divergent_qc: true
+
+# --- Functional region geometry ---
+functional_regions:
+  tss_active_pm: 500                # ±500 bp around TSS for active site calling
+  prom_up: 500                      # upstream promoter window for pausing index
+  prom_down: 250                    # downstream promoter window
+
+# --- Output ---
+publish_trimmed_fastq: true
+publish_alignments: true
+output:
+  cpm: true
+  crpmsi: true
+  raw_tracks: true
+  bigwig: true
+  bedgraph: true
+
+# ============================================================
+# EXPECTED KEY RESULTS:
+#   NHS: High PI at HSP genes (Pol II paused/primed for rapid induction)
+#   HS25: Dramatic PI decrease at HSPA1A, HSPA1B, HSPH1, DNAJB1 (pause-release)
+#         Global PI increase at housekeeping genes (elongation suppression)
+#   Enhancers: Stress-responsive enhancers gain eRNA signal; identify HSF motifs
+#   Divergent tx: Unchanged at most promoters; changes at stress-induced loci
+# ============================================================
+
+# ============================================================
+# Samplesheet provenance (moved from CSV — pipeline rejects # in CSV)
+# ============================================================
+# Samplesheet: Human K562 PRO-seq — Vihervaara lab transcriptional memory
+# GEO: GSE154746 | Paper: Vihervaara et al. 2020+ (transcriptional memory, K562)
+# Organism: Homo sapiens | Cell type: K562 (chronic myelogenous leukemia)
+# Assembly: hs1 (T2T-CHM13v2) | Method: PRO-seq PE | Spike-in: Drosophila dm6
+# Stress: Heat shock 42°C | Conditions: uC = unconditioned (no prior HS)
+# UMI: 5' end, 6nt + C = 7 nt total (Lis lab PE protocol)
+# 
+# PRIMARY cross-species conditions: NHS (0 min) + HS 25 min (uC arm)
+# Extended time course: include uC 12.5 and 40 min if needed for Fig 2 kinetics
+# 
+# SRX accession mapping (PE — tracktx downloads R1+R2 from SRA):
+# SRR12267707 = uC_0_rep1 (NHS)
+# SRR12267708 = uC_0_rep2 (NHS)
+# SRR12267709 = uC_12.5min_rep1
+# SRR12267710 = uC_12.5min_rep2
+# SRR12267711 = uC_25min_rep1 (PRIMARY HS)
+# SRR12267712 = uC_25min_rep2 (PRIMARY HS)
+# SRR12267713 = uC_40min_rep1
+# SRR12267714 = uC_40min_rep2
+# 
+# Preconditioned arm (pC) — for transcriptional memory analysis only:
+# SRX8772774–SRX8772781 = pC conditions (exclude from cross-species comparison)

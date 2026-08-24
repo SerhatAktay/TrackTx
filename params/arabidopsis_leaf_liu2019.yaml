@@ -1,0 +1,181 @@
+# ============================================================
+# TrackTx Parameters — Arabidopsis thaliana GRO-seq, Heat Shock
+# GEO: GSE128698 | PRJNA528518 | Liu et al. (2019)
+# Title: "Immediate transcriptional responses to heat shock of plant leaf"
+# Tissue: Arabidopsis Col-0 leaves (3-week-old) | Method: GRO-seq SE
+# Stress: 45°C for 5 min (confirmed: Liu et al. 2021 JIPB, PMID 32644278)
+# ============================================================
+#
+# ⚠️  CRITICAL: Set library_type: "groseq" (see below).
+# GRO-seq reads represent the RNA strand directly and must be aligned as-is.
+# PRO-seq (tracktx default) reverse-complements reads before alignment.
+# Running GRO-seq in PRO-seq mode maps every read to the wrong strand.
+# This was confirmed correct in the previous run logs: "Library type: groseq (Single-end)".
+#
+# NO SPIKE-IN: This GRO-seq dataset does not include a spike-in organism.
+# Use gene_end normalization as the primary normalization strategy.
+# siCPM cannot be calculated (crpmsi_factor will be 0 — normal/expected).
+#
+# ALREADY PROCESSED: results_arabidopsis/ exists on SanDisk (runs on same data).
+# This params file harmonizes settings with the other organisms in the study.
+# Re-run with these parameters to ensure consistent divergent/PI analysis.
+
+# --- Core ---
+samplesheet: "samplesheets/arabidopsis_leaf_liu2019.csv"
+sample_source: "srr"
+paired_end: false                  # SE GRO-seq (Illumina HiSeq 2500)
+library_type: "groseq"            # CRITICAL: aligns R1 as-is (no reverse-complement).
+                                  # Default is "proseq" which would flip all strands.
+output_dir: "./results/arabidopsis_GSE128698"
+
+# --- Genome ---
+reference_genome: "TAIR10"        # Arabidopsis thaliana TAIR10 (standard)
+spikein_genome: null              # No spike-in — using gene_end normalization
+annotation_source: "ensembl"      # Ensembl plants (Arabidopsis TAIR10) — NOTE:
+                                  # TrackTx's GTF module only implements a real
+                                  # Ensembl fetch for hg38/hg19/mm39/mm10; TAIR10
+                                  # is NOT in that list, so this is currently a
+                                  # no-op and the pipeline silently falls back to
+                                  # UCSC/NCBI RefSeq regardless (UCSC doesn't
+                                  # host Arabidopsis either, so in practice this
+                                  # resolves via the NCBI RefSeq fallback — see
+                                  # tracktx-tair10-support notes).
+annotation_exclude_biotypes: ""  # No biotypes excluded (project-wide policy)
+annotation_chr_naming: "none"     # TAIR10: Chr1, Chr2, Chr3, Chr4, Chr5
+
+# --- Adapter trimming ---
+# GRO-seq protocol (Luo/Liu lab or Lis-style): standard Illumina adapters.
+# UNVERIFIED — could not confirm the exact adapter sequence from GEO
+# metadata or the paper/supplement; this remains a genuine unknown, and if
+# wrong it will under- or over-trim every read.
+# Using the full 34nt TruSeq small-RNA adapter (was truncated to 21nt with
+# no documented reason) for consistency with the rest of the panel — same
+# base assumption, just not artificially shortened.
+adapter_trimming:
+  enabled: true
+  preset: "custom"
+  adapter1: "TGGAATTCTCGGGTGCCAAGGAACTCCAGTCAC"
+  minlen: 12
+
+# --- UMI ---
+umi:
+  enabled: false
+
+# --- Barcode ---
+barcode:
+  enabled: false
+
+# --- Normalization ---
+# No spike-in: use gene_end normalization (reads in last 500 bp upstream of TES)
+# This assumes most genes continue transcribing similarly between conditions,
+# which is reasonable for a short 5-min HS treatment.
+norm:
+  emit_bw: true
+  emit_sicpm: false               # No spike-in — disable siCPM
+  emit_allmap: true
+  emit_5p: true                   # forced on (all-output policy); SE, so less meaningful than PE
+  gene_end_method: tes_window
+  gene_end_window: 500
+  gene_end_min_reads: 10
+
+# --- Replicates ---
+replicates:
+  merge: true
+  concordance_method: pearson
+  concordance_min: 0.90
+
+# --- Polymerase contrasts ---
+pol:
+  contrasts:
+    - ["heat_shock",          5, "no_heat_shock",          0]    # PRIMARY: HS vs NHS (naïve)
+    - ["primed_heat_shock",   5, "primed_no_heat_shock",   0]    # memory: HS in primed cells
+    - ["primed_no_heat_shock",0, "no_heat_shock",          0]    # memory baseline
+  top_n: 100
+  plots: true
+
+# --- Divergent transcription ---
+# Arabidopsis has relatively compact genes (average ~2 kb) but promoter architecture
+# is more similar to mammals than to Drosophila. Use mammalian window sizes.
+# The 5-min HS timepoint means divergent peak changes may be subtle — check
+# calibration carefully. The existing results_arabidopsis/ run showed 2216
+# divergent regions at NHS, which is fewer than expected; re-calibrate if needed.
+advanced:
+  divergent_threshold: auto
+  divergent_sum_thr: auto
+  divergent_fdr: 0.05
+  divergent_calibration_percentile: 65
+  divergent_calibration_sum_multiplier: 1.5
+  divergent_merge_gap: 150          # mammal-like (plants have mammal-style promoters)
+  divergent_nt_window: 1000
+  divergent_balance: 0.0
+  divergent_qc: true
+
+# --- Functional region geometry ---
+# Use mammal-like windows for Arabidopsis (gene sizes similar to mammals)
+functional_regions:
+  tss_active_pm: 500
+  prom_up: 500
+  prom_down: 250
+
+# --- Output ---
+publish_trimmed_fastq: true
+publish_alignments: true
+output:
+  cpm: true
+  crpmsi: true                    # forced on (all-output policy); no spike-in, so this will be ~0
+  raw_tracks: true
+  bigwig: true
+  bedgraph: true
+
+# ============================================================
+# PREVIOUS RUN OBSERVATIONS (from results_arabidopsis/ on SanDisk):
+#   NHS (N_GRO_0_merged): 2216 divergent regions, 251 enhancers
+#   PT (primed+HS merged): 1556 divergent regions, 192 enhancers
+#   Median PI at NHS: 0 (likely calibration issue — check divergent_fdr)
+#   crpmsi_factor: 0 (expected — no spike-in)
+#
+# ACTION ITEMS BEFORE FINAL RUN:
+#   ✓ HS temperature confirmed: 45°C for 5 min (Liu et al. 2021 JIPB)
+#   □ Check adapter sequence from GEO metadata or paper methods
+#   □ Investigate why median PI = 0 in previous run (calibration/annotation issue?)
+#   □ Compare active site numbers to previous run to confirm re-run consistency
+# ============================================================
+
+# ============================================================
+# Samplesheet provenance (moved from CSV — pipeline rejects # in CSV)
+# ============================================================
+# Samplesheet: Arabidopsis thaliana GRO-seq — Liu et al. 2019 (GSE128698)
+# GEO: GSE128698 | Paper: Liu et al. (PRJNA528518)
+# Title: "Immediate transcriptional responses to heat shock of plant leaf"
+# Organism: Arabidopsis thaliana | Tissue: Leaf (3-week-old Col-0)
+# Assembly: TAIR10 | Method: GRO-seq SE | Spike-in: none (use gene_end normalization)
+# Stress: Heat shock 45°C, 5 min (confirmed: Liu et al. 2021 JIPB)
+# 
+# CONDITION LEGEND:
+# N = Naïve (no prior HS exposure) → equivalent to NHS in other species
+# T = Temperature stressed (5 min HS) → equivalent to HS in other species
+# P = Primed (prior mild HS, then recovered) → transcriptional memory control
+# PT = Primed + Temperature (re-challenge) → transcriptional memory + HS
+# 
+# FOR CROSS-SPECIES COMPARISON: use N (NHS) + T (HS 5min) only.
+# P and PT are for Arabidopsis-specific memory analysis.
+# 
+# NOTE: 5 min HS is shorter than other species (20-30 min) because plant leaves
+# respond faster to temperature. 45°C is higher than mammalian HS (42°C) but shorter duration.
+# transcriptional changes. This is a known limitation for direct comparison.
+# The direction of change (HSP induction, pausing dynamics) is still comparable.
+# 
+# ⚠️  DATA ALREADY PROCESSED LOCALLY (results_arabidopsis on SanDisk).
+# This samplesheet is for re-running with updated/harmonized params.
+# The sample names in results use the condition as the merged name
+# (N_GRO_0_merged, T_GRO__merged, P_GRO__merged, PT_GRO__merged).
+# 
+# SRX → SRR mapping (confirmed from SRA):
+# SRX5557585 = SRR8767369 = N_GRO_rep1 (NHS)
+# SRX5557586 = SRR8767370 = N_GRO_rep2 (NHS)
+# SRX5557587 = SRR8767371 = T_GRO_rep1 (HS)
+# SRX5557588 = SRR8767372 = T_GRO_rep2 (HS)
+# SRX5557589 = SRR8767373 = P_GRO_rep1 (Primed)
+# SRX5557590 = SRR8767374 = P_GRO_rep2 (Primed)
+# SRX5557591 = SRR8767375 = PT_GRO_rep1 (Primed+HS)
+# SRX5557592 = SRR8767376 = PT_GRO_rep2 (Primed+HS)

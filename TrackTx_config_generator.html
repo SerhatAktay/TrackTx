@@ -464,7 +464,8 @@ optgroup{ color:var(--fg); }
         <ul class="ml-4 mt-2">
           <li>Include at least 2 biological replicates per condition for statistical power</li>
           <li>Sample names become <code>SampleName_r1</code>, <code>SampleName_r2</code>, etc.</li>
-          <li>For spike-in normalization: name control samples "Control" at timepoint "0"</li>
+          <li>For spike-in normalization: give your baseline/untreated sample the earliest timepoint (usually <code>0</code>) — the pipeline can auto-detect it from that, or you can pick the condition explicitly under Advanced Settings → Control Condition</li>
+          <li>Timepoint must be a plain number (e.g. <code>0</code>, <code>30</code>, <code>120</code>) in one consistent unit across all samples — not <code>30min</code> or <code>2h</code></li>
           <li>Treatment and timepoint are optional but helpful for organizing results</li>
         </ul>
       </div>
@@ -802,9 +803,11 @@ optgroup{ color:var(--fg); }
         </div>
         <div class="column">
           <div class="field">
-            <label class="label">Control Condition Label</label>
-            <input class="input" id="control_label" value="Control" placeholder="Control">
-            <p class="help">The condition name used as baseline for spike-in normalization. Should match your sample conditions.</p>
+            <label class="label">Control Condition</label>
+            <select class="input" id="control_label" onchange="fillPreview()">
+              <option value="">— Auto-detect from earliest timepoint (recommended) —</option>
+            </select>
+            <p class="help">Which condition (from Step 4) is the untreated/baseline sample, used as the siCPM spike-in reference. Options are populated from the conditions you've entered. Leave on auto-detect and the pipeline will pick the condition at the earliest timepoint (usually 0) on its own — it only does this when unambiguous; if two conditions share the earliest timepoint (e.g. a primed and unprimed arm both starting at 0), the pipeline stops and asks you to pick here instead of guessing.</p>
           </div>
         </div>
       </div>
@@ -1423,8 +1426,8 @@ function addSampleUI(){
       </div>
       <div class="column is-2">
         <label class="label">Timepoint (optional)</label>
-        <input class="input sample-timepoint" placeholder="e.g., 30min">
-        <p class="help">Time value with unit (e.g., 0, 30min, 2h)</p>
+        <input class="input sample-timepoint" placeholder="e.g., 0, 30, 120">
+        <p class="help">Plain number only, one consistent unit across all samples (e.g. minutes). 0 = baseline/untreated.</p>
       </div>
       <div class="column is-4">
         <label class="label">Replicates</label>
@@ -1438,11 +1441,13 @@ function addSampleUI(){
   $('#samplesContainer').appendChild(box);
   addReplicateUI(box);
   addReplicateUI(box);
+  refreshControlLabelOptions();
 }
 
-function clearSamples(){ 
+function clearSamples(){
   if(confirm('Remove all samples?')){
-    $('#samplesContainer').innerHTML=''; 
+    $('#samplesContainer').innerHTML='';
+    refreshControlLabelOptions();
   }
 }
 
@@ -1473,12 +1478,13 @@ function loadExampleSamples(){
   if(box2){
     box2.querySelector('.sample-name').value = 'Treatment';
     box2.querySelector('.sample-treatment').value = 'treatment';
-    box2.querySelector('.sample-timepoint').value = '30min';
+    box2.querySelector('.sample-timepoint').value = '30';
     const rep2 = box2.querySelector('.rep-srr');
     if(rep2) rep2.value = 'SRR87654321';
     const reps2 = box2.querySelectorAll('.replicate');
     if(reps2.length > 1) reps2[1].remove();
   }
+  refreshControlLabelOptions();
 }
 
 function rebuildAllReplicateUIs(){
@@ -1514,6 +1520,28 @@ function collectAnalysisWarnings(){
   if(isFinite(twLen) && twLen > 20000){
     warnings.push('Termination window > 20000 bp is unusually large.');
   }
+  // Timepoint must be a plain number: the pipeline's baseline auto-detection
+  // (siCPM control selection) and several downstream steps compare timepoints
+  // numerically. A unit suffix like "30min" parses fine for THIS tool's own
+  // contrast-ordering helper (naturalTpKey), but will fail to parse as a
+  // number in the actual pipeline, silently excluding that sample from
+  // baseline auto-detection instead of erroring loudly.
+  $$('#samplesContainer .sample-box').forEach(box=>{
+    const sname = box.querySelector('.sample-name')?.value || '(unnamed sample)';
+    const tp = (box.querySelector('.sample-timepoint')?.value || '').trim();
+    if(tp && !/^\d+(\.\d+)?$/.test(tp)){
+      warnings.push(`Sample "${sname}": timepoint "${tp}" is not a plain number — use e.g. "30" not "30min" (pick one consistent unit across all samples).`);
+    }
+  });
+  // Control condition: if left on auto-detect but the earliest timepoint is
+  // genuinely tied between two+ conditions, the pipeline will refuse to guess
+  // and siCPM will be disabled until control_label is set explicitly.
+  if(!$('#control_label')?.value){
+    const suggestion = suggestBaselineCondition();
+    if(suggestion.ambiguous){
+      warnings.push(`Control Condition is on auto-detect, but ${suggestion.conditions.map(c=>`"${c}"`).join(' and ')} are tied at the earliest timepoint — the pipeline will NOT guess between them. Pick the real baseline condition explicitly in Advanced Settings, or siCPM normalization will be disabled.`);
+    }
+  }
   return warnings;
 }
 
@@ -1524,7 +1552,7 @@ function buildYAML(){
   const outputDir   = $('#output_dir').value || './results';
   const genomeCache = $('#genome_cache').value || './.cache/genomes';
   const samplesheet = $('#samplesheet_name').value || 'samplesheet.csv';
-  const controlLabel = $('#control_label').value || 'Control';
+  const controlLabel = $('#control_label')?.value || '';   // '' = auto-detect
   const assetsDir   = $('#assets_dir').value || './assets';
 
   const refGenome   = $('#ref_genome').value;
@@ -1634,7 +1662,16 @@ function buildYAML(){
   y += `paired_end: ${pairedEnd}\n`;
   y += `library_type: ${mono(libType())}\n`;
   y += `output_dir: ${mono(outputDir)}\n`;
-  y += `control_label: ${mono(controlLabel)}\n\n`;
+  if(controlLabel){
+    y += `control_label: ${mono(controlLabel)}\n\n`;
+  } else {
+    y += `# control_label left unset -- the pipeline auto-detects the baseline\n`;
+    y += `# sample from the earliest timepoint in your samplesheet, but only when\n`;
+    y += `# exactly one condition sits at that timepoint. If your design has more\n`;
+    y += `# than one arm starting at the same earliest timepoint, set this to the\n`;
+    y += `# real baseline condition name instead of leaving it null.\n`;
+    y += `control_label: null\n\n`;
+  }
 
   y += `# SRA download options\n`;
   y += `fastq_gzip: ${fastqGzip}\n`;
@@ -1839,6 +1876,69 @@ function buildContrasts(){
     });
   });
   return out;
+}
+
+/* ====== Control Condition dropdown (Advanced Settings) ====== */
+// Populated live from the conditions actually entered in Step 4, so this can
+// never mismatch/typo against the real samplesheet the way a free-text field
+// could (that mismatch — a manually-typed control_label not exactly matching
+// any real condition string — is the failure mode that produced a real,
+// previously-shipped siCPM bug; see modules/08_normalize_coverage_tracks.nf).
+function suggestBaselineCondition(){
+  // Mirrors the pipeline's own auto-detect logic in
+  // modules/08_normalize_coverage_tracks.nf exactly: find each condition's
+  // own earliest timepoint (0-like, else earliest by naturalTpKey), then look
+  // at whichever condition(s) sit at the MINIMUM of those across the whole
+  // table. Returns {condition, ambiguous:false} when exactly one condition is
+  // there, or {conditions:[...], ambiguous:true} when more than one condition
+  // ties for the earliest timepoint (e.g. a primed and unprimed arm both
+  // starting at 0) -- in that case the real pipeline refuses to guess, so
+  // this suggestion must say so too rather than confidently naming one.
+  const map = collectConditionTimepoints();
+  const perCond = [];
+  map.forEach((tps, cond)=>{
+    const zeroLike = tps.find(t => /^0(\D|$)/.test(t));
+    const earliest = zeroLike || [...tps].sort((a,b)=>naturalTpKey(a)-naturalTpKey(b))[0];
+    perCond.push({cond, key: naturalTpKey(earliest)});
+  });
+  if(!perCond.length) return {ambiguous: false, condition: ''};
+  const minKey = Math.min(...perCond.map(c => c.key));
+  const atMin = perCond.filter(c => c.key === minKey).map(c => c.cond);
+  if(atMin.length === 1) return {ambiguous: false, condition: atMin[0]};
+  return {ambiguous: true, conditions: atMin};
+}
+function refreshControlLabelOptions(){
+  const sel = $('#control_label');
+  if(!sel) return;
+  const prev = sel.value;
+  const seen = [];
+  $$('#samplesContainer .sample-box').forEach(box=>{
+    const cond = (box.querySelector('.sample-treatment')?.value || '').trim();
+    if(cond && !seen.includes(cond)) seen.push(cond);
+  });
+  const suggestion = suggestBaselineCondition();
+
+  sel.innerHTML = '';
+  const autoOpt = document.createElement('option');
+  autoOpt.value = '';
+  if(suggestion.ambiguous){
+    autoOpt.textContent = `— Auto-detect: AMBIGUOUS (${suggestion.conditions.join(' & ')} all start at the earliest timepoint) — pick one below —`;
+  } else if(suggestion.condition){
+    autoOpt.textContent = `— Auto-detect (currently would pick: "${suggestion.condition}") —`;
+  } else {
+    autoOpt.textContent = '— Auto-detect from earliest timepoint (recommended) —';
+  }
+  sel.appendChild(autoOpt);
+  seen.forEach(cond=>{
+    const opt = document.createElement('option');
+    opt.value = cond;
+    opt.textContent = cond;
+    sel.appendChild(opt);
+  });
+  // Preserve the user's own explicit pick if it's still a real option; if they
+  // renamed/removed that condition since picking it, fall back to auto-detect
+  // rather than silently keeping a stale, no-longer-matching selection.
+  sel.value = seen.includes(prev) ? prev : '';
 }
 
 /* ====================== Actions ====================== */
@@ -2168,6 +2268,15 @@ function init(){
   setAdapterPreset();
   applySpeciesProfileToUI();
   $('#div_preset').addEventListener('change', applyDivPreset);
+  // Live-refresh the Control Condition dropdown (Step 8) as the user types
+  // condition/timepoint values into Step 4, not just when adding/removing
+  // whole sample rows (addSampleUI/clearSamples already call this directly).
+  $('#samplesContainer').addEventListener('input', (e) => {
+    if(e.target.classList.contains('sample-treatment') || e.target.classList.contains('sample-timepoint')){
+      refreshControlLabelOptions();
+    }
+  });
+  refreshControlLabelOptions();
 }
 init();
 </script>

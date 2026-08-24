@@ -1,0 +1,13 @@
+sample,condition,timepoint,replicate,file1,file2
+DmS2_PRO_NHS_rep1,no_heat_shock,0,1,SRR3189208,
+DmS2_PRO_NHS_rep1,no_heat_shock,0,1,SRR3189209,
+DmS2_PRO_HS30sec_rep1,heat_shock,0.5,1,SRR3189210,
+DmS2_PRO_HS30sec_rep1,heat_shock,0.5,1,SRR3189211,
+DmS2_PRO_HS2min_rep1,heat_shock,2,1,SRR3146638,
+DmS2_PRO_HS2min_rep1,heat_shock,2,1,SRR3146639,
+DmS2_PRO_HS5min_rep1,heat_shock,5,1,SRR3146640,
+DmS2_PRO_HS5min_rep1,heat_shock,5,1,SRR3146641,
+DmS2_PRO_HS10min_rep1,heat_shock,10,1,SRR3146642,
+DmS2_PRO_HS10min_rep1,heat_shock,10,1,SRR3146643,
+DmS2_PRO_HS20min_rep1,heat_shock,20,1,SRR3146644,
+DmS2_PRO_HS20min_rep1,heat_shock,20,1,SRR3146645,

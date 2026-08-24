@@ -1,0 +1,6 @@
+sample,condition,timepoint,replicate,file1,file2
+mESC_PRO_NHS_rep2,no_heat_shock,0,2,SRR23260630,
+mESC_PRO_NHS_rep3,no_heat_shock,0,3,SRR23260629,
+mESC_PRO_HS30min_rep1,heat_shock,30,1,SRR23260625,
+mESC_PRO_HS30min_rep2,heat_shock,30,2,SRR23260624,
+mESC_PRO_HS30min_rep3,heat_shock,30,3,SRR23260623,

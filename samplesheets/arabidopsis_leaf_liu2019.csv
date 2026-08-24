@@ -1,0 +1,9 @@
+sample,condition,timepoint,replicate,file1,file2
+Athal_GRO_NHS_rep1,no_heat_shock,0,1,SRR8767369,
+Athal_GRO_NHS_rep2,no_heat_shock,0,2,SRR8767370,
+Athal_GRO_HS5min_rep1,heat_shock,5,1,SRR8767371,
+Athal_GRO_HS5min_rep2,heat_shock,5,2,SRR8767372,
+Athal_GRO_Primed_NHS_rep1,primed_no_heat_shock,0,1,SRR8767373,
+Athal_GRO_Primed_NHS_rep2,primed_no_heat_shock,0,2,SRR8767374,
+Athal_GRO_Primed_HS_rep1,primed_heat_shock,5,1,SRR8767375,
+Athal_GRO_Primed_HS_rep2,primed_heat_shock,5,2,SRR8767376,

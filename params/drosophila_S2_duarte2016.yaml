@@ -1,0 +1,181 @@
+# ============================================================
+# TrackTx Parameters — Drosophila S2 PRO-seq, Heat Shock
+# GEO: GSE77607 | Duarte, Fuda, Mahat, Core, Lis et al. 2016
+# Genes & Development 30:1731-1746 | PMID: 27492368
+# Cell type: S2 cells | Protocol: PRO-seq SE
+# Stress: 25°C → 37°C (instantaneous temperature jump)
+# ============================================================
+#
+# This is the canonical Drosophila PRO-seq heat shock dataset.
+# Same Lis lab protocol as Vihervaara 2017 (K562) — direct comparison
+# of heat shock transcriptional response between fly and human.
+#
+# KEY LIMITATION: No biological replicates in the heat shock time course.
+# Each timepoint = 1 library (sequenced across 2 lanes, merged by tracktx).
+# Statistical analyses relying on replicate variance are not possible.
+# Compensate with: (1) stable-gene normalization (gene_end) for fold changes,
+# (2) gene-body signal as within-sample internal reference,
+# (3) directional comparison rather than significance testing for HS kinetics.
+# No spike-in was used in Duarte 2016 — D. virilis reads are NOT in SRA deposits.
+#
+# Temperature note: Drosophila HS = 37°C (from 25°C baseline), while
+# mammalian HS = 42°C (from 37°C baseline). Both are ~12°C above normal.
+# The biological response (HSF1/HSF activation, HSP induction, pause-release)
+# is mechanistically equivalent.
+
+# --- Core ---
+samplesheet: "samplesheets/drosophila_S2_duarte2016.csv"
+sample_source: "srr"
+paired_end: false                  # SE PRO-seq (HiSeq 2000/2500, NextSeq 500)
+output_dir: "./results/drosophila_S2_GSE77607"
+
+# --- Genome ---
+reference_genome: "dm6"           # Drosophila melanogaster release 6 (BDGP6)
+spikein_genome: null              # NO spike-in. Duarte 2016 did NOT use D. virilis.
+                                  # Normalization: 335 stable genes identified from a
+                                  # Pol II ChIP-seq dataset (Teves & Henikoff 2011) where
+                                  # signal was unaffected by heat shock. siCPM cannot be
+                                  # used here — use gene_end normalization instead.
+annotation_source: "ensembl"      # BDGP6/dm6 via Ensembl — NOTE: TrackTx's GTF
+                                  # module only implements a real Ensembl fetch
+                                  # for hg38/hg19/mm39/mm10; dm6 is NOT in that
+                                  # list, so this setting is currently a no-op
+                                  # and the pipeline silently falls back to
+                                  # UCSC/NCBI RefSeq regardless. Left as
+                                  # "ensembl" here to document original intent;
+                                  # actual annotation is RefSeq until the
+                                  # pipeline gains a real dm6 Ensembl fetch path.
+annotation_exclude_biotypes: ""  # No biotypes excluded (project-wide policy)
+annotation_chr_naming: "none"     # dm6: 2L, 2R, 3L, 3R, 4, X, Y (no chr prefix)
+
+# --- Adapter trimming ---
+# Original Lis lab PRO-seq protocol (Kwak 2013): TruSeq Small RNA 3' adapter.
+# Using the full 34nt adapter (was truncated to 21nt with no documented
+# reason — standardized to match the full-length adapter used in the rest
+# of the panel; the truncated form trims more permissively/aggressively).
+adapter_trimming:
+  enabled: true
+  preset: "custom"
+  adapter1: "TGGAATTCTCGGGTGCCAAGGAACTCCAGTCAC"
+  minlen: 12
+
+# --- UMI ---
+# 2016 protocol did not use UMIs
+umi:
+  enabled: false
+
+# --- Barcode ---
+barcode:
+  enabled: false
+
+# --- Normalization ---
+# Heat shock dramatically redistributes Pol II in Drosophila, making total-read
+# normalization unreliable. Duarte 2016 identified 335 stable genes (Pol II ChIP-seq
+# signal unchanged by HS) and used their cumulative GRO-seq reads as the normalization
+# denominator — effectively a within-experiment stable-housekeeping reference.
+# We approximate this with gene_end normalization (TES-window reads), which captures
+# a similar stable-elongation signal. siCPM is disabled — no spike-in reads present.
+norm:
+  emit_bw: true
+  emit_sicpm: false               # No spike-in in SRA deposits — siCPM not available
+  emit_allmap: true
+  emit_5p: true                   # forced on (all-output policy); SE, so less meaningful than PE
+  gene_end_method: tes_window
+  gene_end_window: 500
+  gene_end_min_reads: 10
+
+# --- Replicates ---
+# The time course lanes (L1+L2 per timepoint) have the same replicate ID in
+# the samplesheet so tracktx merges them. No concordance test for single reps.
+replicates:
+  merge: true
+  concordance_method: pearson
+  concordance_min: 0.85
+
+# --- Polymerase contrasts ---
+pol:
+  contrasts:
+    - ["heat_shock", 20, "no_heat_shock", 0]    # PRIMARY: HS20min vs NHS
+    - ["heat_shock",  5, "no_heat_shock", 0]    # early kinetics
+    - ["heat_shock", 10, "no_heat_shock", 0]    # mid kinetics
+  top_n: 100
+  plots: true
+
+# --- Divergent transcription ---
+# Drosophila promoters are significantly more compact than mammalian promoters.
+# Fly pause sites: +20 to +60 bp (vs mammalian +30 to +100 bp).
+# Reduce nt_window and merge_gap accordingly.
+advanced:
+  divergent_threshold: auto
+  divergent_sum_thr: auto
+  divergent_fdr: 0.05
+  divergent_calibration_percentile: 65
+  divergent_calibration_sum_multiplier: 1.5
+  divergent_merge_gap: 100          # tighter than mammal (150) for compact fly promoters
+  divergent_nt_window: 500          # tighter than mammal (1000)
+  divergent_balance: 0.0
+  divergent_qc: true
+
+# --- Functional region geometry ---
+# Fly promoters are narrower — reduce windows relative to mammalian settings
+functional_regions:
+  tss_active_pm: 250               # ±250 bp (vs ±500 for mammals)
+  prom_up: 250
+  prom_down: 150
+
+# --- Output ---
+publish_trimmed_fastq: true
+publish_alignments: true
+output:
+  cpm: true
+  crpmsi: true                    # forced on (all-output policy); no spike-in, so this will be ~0
+  raw_tracks: true
+  bigwig: true
+  bedgraph: true
+
+# ============================================================
+# EXPECTED KEY RESULTS:
+#   NHS: Pol II paused at Hsp70, Hsp26, Hsp23, Hsp83 promoters
+#   HS5-20min: Rapid pause-release at HSP loci; elongation wave
+#   HS20min: Global suppression of housekeeping genes (passive silencing)
+#   Enhancers: Heat shock enhancer clusters activated (search for HSE motifs)
+#
+# COMPARISON WITH MAMMALS:
+#   The timing of pause-release should be faster in fly (minutes vs. fly baseline)
+#   than in mammals. PI changes at orthologous stress genes provide the key
+#   cross-species comparison point.
+# ============================================================
+
+# ============================================================
+# Samplesheet provenance (moved from CSV — pipeline rejects # in CSV)
+# ============================================================
+# Samplesheet: Drosophila melanogaster S2 PRO-seq — Duarte, Fuda, Mahat, Core, Lis et al. 2016
+# GEO: GSE77607 | Paper: Duarte et al. 2016, Genes & Development, PMID: 27492368
+# Organism: Drosophila melanogaster | Cell type: S2 cells
+# Assembly: dm6 | Method: PRO-seq SE | Spike-in: None (Duarte 2016 used stable-gene normalization, no spike-in in SRA deposits)
+# Stress: Heat shock 25°C → 37°C (instantaneous temperature shift)
+# 
+# ⚠️  NO BIOLOGICAL REPLICATES in the HS time course arm.
+# Each timepoint is a single library sequenced across two lanes.
+# Rows with the same `sample` name are merged by TrackTx (FASTQ concatenation before alignment).
+# Statistical power for differential analysis is limited — use
+# this dataset for directional comparison and genome browser views.
+# For significance testing, apply gene-end-normalized fold changes
+# rather than replicate-based statistics.
+# 
+# FOR CROSS-SPECIES COMPARISON: use NHS (rep1, lanes merged) + HS 20min (rep1, lanes merged)
+# The HS 20min endpoint is most comparable to other species' HS conditions.
+# Include intermediate timepoints for trajectory/kinetics figures only.
+# 
+# SRR accessions (SE):
+# NHS:      SRR3189208 (L1) + SRR3189209 (L2) → merged as DmS2_PRO_NHS_rep1
+# HS 30sec: SRR3189210 (L1) + SRR3189211 (L2) → merged as DmS2_PRO_HS30sec_rep1
+# HS 2min:  SRR3146638 (L1) + SRR3146639 (L2) → merged as DmS2_PRO_HS2min_rep1
+# HS 5min:  SRR3146640 (L1) + SRR3146641 (L2) → merged as DmS2_PRO_HS5min_rep1
+# HS 10min: SRR3146642 (L1) + SRR3146643 (L2) → merged as DmS2_PRO_HS10min_rep1
+# HS 20min: SRR3146644 (L1) + SRR3146645 (L2) → merged as DmS2_PRO_HS20min_rep1
+# 
+# NOTE: Two rows with the same `sample` value are treated as the same sample by TrackTx
+# (FASTQs are concatenated before alignment). The output directory for each merged sample
+# will be named after the `sample` value. This intentionally matches the sample IDs in
+# analysis/config/drosophila_S2.yaml and analysis/02_pausing_index/drosophila_timecourse.py.

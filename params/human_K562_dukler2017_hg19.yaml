@@ -1,0 +1,147 @@
+# ============================================================
+# TrackTx Parameters — Human K562 PRO-seq, Celastrol treatment
+# hg19/GENCODE v19 VALIDATION RUN (companion to human_K562_dukler2017.yaml)
+# GEO: GSE96869 | Dukler et al. 2017, Genome Research
+# DOI: 10.1101/gr.217935.116
+# Cell type: K562 | Protocol: PRO-seq SE
+# Stress: Celastrol (pharmacological HSF1 activator, heat shock mimic)
+# Time course: 0, 10, 20, 40, 60, 160 min
+# ============================================================
+#
+# ROLE: Validation-only rerun of the primary celastrol dataset
+# (human_K562_dukler2017.yaml, hs1/RefSeq) on hg19/GENCODE v19 — the exact
+# genome build and annotation Dukler et al. 2017 used (STAR alignment to
+# hg19, GENCODE v19 transcript models via their own TuSelector method;
+# confirmed from the paper's Methods section). Purpose: coordinate/gene-
+# level comparison back to the original publication's numbers, alongside
+# the hs1 run used for every other cross-species figure in this project.
+#
+# NOT a like-for-like genome-build ablation of the hs1 run: two things
+# change at once relative to human_K562_dukler2017.yaml — reference_genome
+# (hs1 -> hg19) AND annotation_source (refseq -> gencode), because hs1/T2T
+# has no mature GENCODE annotation and the original paper used GENCODE v19,
+# not RefSeq. Any hg19-vs-hs1 difference observed should be reported as
+# "closer to the original paper's build+annotation" rather than isolating
+# genome-build effects alone. Every other parameter (adapters, UMI, siCPM
+# normalization, replicate merging, divergent-transcription and functional-
+# region geometry) is held identical to the hs1 run so it isn't a third
+# confound.
+#
+# Excluded from cross-species scripts (datasets_manifest.tsv,
+# include_in_cross_species=no) — this is a human-only validation dataset,
+# not a new species/cell-line data point.
+#
+# Same raw data as the hs1 run: reuses samplesheet human_K562_dukler2017.csv
+# and the already-downloaded SRA/FASTQ cache; only the reference genome and
+# annotation differ downstream of trimming.
+#
+# Spike-in: dm6, confirmed. Dukler et al. 2017 methods: "an equal number of
+# permeable Drosophila cells were spiked in to each sample prior to run-on";
+# ~0.5M reads (0.1%) derived from the Drosophila spike-in.
+
+# --- Core ---
+samplesheet: "samplesheets/human_K562_dukler2017.csv"
+sample_source: "srr"
+paired_end: false                  # SE PRO-seq
+output_dir: "./results/human_K562_GSE96869_celastrol_hg19"
+
+# --- Genome ---
+reference_genome: "hg19"
+spikein_genome: "dm6"             # Confirmed — Drosophila spike-in, Dukler 2017 methods
+control_label: "no_treatment"     # REQUIRED for correct siCPM — must match the baseline
+                                   # condition name below exactly (module 08 has no
+                                   # fallback if this doesn't match; see nextflow.config)
+annotation_source: "gencode"      # GENCODE v19 — matches Dukler et al. 2017 Methods exactly
+annotation_exclude_biotypes: ""   # No biotypes excluded (project-wide policy)
+annotation_chr_naming: "none"     # GENCODE ships native chr-prefixed names already
+
+# --- Adapter trimming ---
+# Danko lab SE PRO-seq: TruSeq Small RNA 3' adapter (same as Lis lab)
+adapter_trimming:
+  enabled: true
+  preset: "custom"
+  adapter1: "TGGAATTCTCGGGTGCCAAGGAACTCCAGTCAC"
+  minlen: 12
+
+# --- UMI ---
+umi:
+  enabled: false                   # No UMI in 2017 protocol
+
+# --- Barcode ---
+barcode:
+  enabled: false
+
+# --- Normalization ---
+norm:
+  emit_bw: true
+  emit_sicpm: true                 # dm6 spike-in, confirmed (Dukler 2017 methods)
+  emit_allmap: true
+  emit_5p: true                    # forced on (all-output policy); SE, so less meaningful than PE
+  gene_end_method: tes_window
+  gene_end_window: 500
+  gene_end_min_reads: 10
+
+# --- Replicates ---
+replicates:
+  merge: true
+  concordance_method: pearson
+  concordance_min: 0.85            # Slightly relaxed — time course data
+
+# --- Polymerase contrasts ---
+# Primary: untreated vs. peak celastrol response
+pol:
+  contrasts:
+    - ["celastrol", 40, "no_treatment",  0]    # PRIMARY: 40min vs untreated
+    - ["celastrol", 60, "no_treatment",  0]    # 60min vs untreated
+    - ["celastrol", 20, "no_treatment",  0]    # early response
+    - ["celastrol", 160, "no_treatment", 0]    # late/sustained response
+  top_n: 100
+  plots: true
+
+# --- Divergent transcription ---
+advanced:
+  divergent_threshold: auto
+  divergent_sum_thr: auto
+  divergent_fdr: 0.05
+  divergent_calibration_percentile: 65
+  divergent_calibration_sum_multiplier: 1.5
+  divergent_merge_gap: 150
+  divergent_nt_window: 1000
+  divergent_balance: 0.0
+  divergent_qc: true
+
+# --- Functional region geometry ---
+functional_regions:
+  tss_active_pm: 500
+  prom_up: 500
+  prom_down: 250
+
+# --- Output ---
+publish_trimmed_fastq: true
+publish_alignments: true
+output:
+  cpm: true
+  crpmsi: true
+  raw_tracks: true
+  bigwig: true
+  bedgraph: true
+
+# ============================================================
+# NOTE ON REMAINING METHODOLOGICAL GAPS vs. the original paper
+# (not addressed by this params file — flagging for the manuscript text,
+# not attempting to replicate exactly):
+#   - Dukler et al. hard-trimmed all reads to a fixed 34 bp after adapter
+#     removal (fastx_trimmer) before STAR alignment; TrackTx here uses
+#     adapter-trimmed variable-length reads with bowtie2/its own aligner,
+#     consistent with every other dataset in this project. A fixed-length-
+#     trim rerun was NOT attempted — changing it would also break
+#     consistency with the hs1 run and the rest of the cohort.
+#   - Their gene models come from TuSelector (a per-sample, per-timepoint
+#     probabilistic isoform selector over GENCODE v19), not GENCODE v19
+#     used directly as a static annotation. TrackTx's fixed annotation
+#     approach means TSS/gene-body window definitions will not match
+#     TuSelector's data-driven windows exactly, even on identical
+#     coordinates.
+#   - Their siCPM control used the untreated (0 min) sample directly, same
+#     as the correction already applied via common.compute_sicpm_factors.
+# ============================================================

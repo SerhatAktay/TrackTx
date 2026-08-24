@@ -285,13 +285,34 @@ def count_reads_pysam(bed_path: Path, bam_path: str, region_type: str) -> Dict[s
         bamfile = pysam.AlignmentFile(bam_path, "rb")
         counts = {}
 
+        # Resolve BED chrom names against what the BAM header actually has.
+        # A gene catalog and its BAM can disagree on contig naming (e.g. the
+        # catalog carries an alt-haplotype/patch contig, or one file uses
+        # "chr1" and the other "1") even when the underlying assembly is the
+        # same. Building this set once and normalizing per-region avoids
+        # spurious fetch failures for every affected region up front, rather
+        # than only discovering the mismatch region-by-region below.
+        bam_contigs = set(bamfile.references)
+
+        def _resolve_contig(chrom: str):
+            if chrom in bam_contigs:
+                return chrom
+            alt = chrom[3:] if chrom.startswith("chr") else f"chr{chrom}"
+            if alt in bam_contigs:
+                return alt
+            return None
+
         with open(bed_path) as f:
             regions = [line for line in f if line.strip() and not line.startswith(("#", "track", "browser"))]
 
         total_regions = len(regions)
         log_info(f"Processing {total_regions:,} {region_type} regions (strand-aware)...")
 
-        skipped_chroms: set = set()
+        # Every region that fails to count is tracked here with WHY, and
+        # every such gene still gets an explicit 0 in `counts` (never a
+        # silently-missing key) so downstream code can't mistake "no data
+        # produced" for "gene genuinely has zero reads" without a trace.
+        failed_regions: list = []
         for i, line in enumerate(regions, 1):
             fields = line.replace("\r", "").rstrip("\n").split("\t")
             if len(fields) < 4:
@@ -314,10 +335,17 @@ def count_reads_pysam(bed_path: Path, bam_path: str, region_type: str) -> Dict[s
             # Progress indicator every 5000 regions
             if i % 5000 == 0:
                 log_progress(region_type.upper(), i, total_regions)
-            
+
+            counts.setdefault(gene_id, 0)
+
+            fetch_chrom = _resolve_contig(chrom)
+            if fetch_chrom is None:
+                failed_regions.append((gene_id, chrom, "contig_not_in_bam"))
+                continue
+
             try:
                 count = 0
-                for read in bamfile.fetch(contig=chrom, start=start, stop=end):
+                for read in bamfile.fetch(contig=fetch_chrom, start=start, stop=end):
                     # Skip unmapped, secondary, and supplementary
                     if read.is_unmapped or read.is_secondary or read.is_supplementary:
                         continue
@@ -328,13 +356,28 @@ def count_reads_pysam(bed_path: Path, bam_path: str, region_type: str) -> Dict[s
                         count += 1
                     elif strand == "-" and read.is_reverse:
                         count += 1
-                counts[gene_id] = counts.get(gene_id, 0) + count
-            except Exception:
-                skipped_chroms.add(chrom)
+                counts[gene_id] += count
+            except (ValueError, OverflowError) as e:
+                # pysam raises these for a region pysam itself considers
+                # invalid (bad coordinates, contig present but out of range,
+                # etc.) — a per-region data problem, safe to record as a
+                # failure and continue. Anything else is NOT caught here:
+                # an unexpected exception type propagates up to the outer
+                # handler instead of being silently absorbed as a "skip".
+                failed_regions.append((gene_id, chrom, str(e)))
                 continue
-        
+
         bamfile.close()
         log_info(f"Counted reads for {len(counts):,} genes in {region_type}")
+        if failed_regions:
+            by_reason: Dict[str, int] = {}
+            for _gid, _chrom, reason in failed_regions:
+                by_reason[reason] = by_reason.get(reason, 0) + 1
+            log_warning(
+                f"{len(failed_regions):,}/{total_regions:,} {region_type} regions "
+                f"could not be fetched and were counted as 0 — breakdown: {by_reason}. "
+                f"First 10 affected gene_ids: {[g for g, _, _ in failed_regions[:10]]}"
+            )
         return counts
 
     except Exception as e:

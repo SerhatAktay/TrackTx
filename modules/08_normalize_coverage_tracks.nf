@@ -19,21 +19,34 @@
 //   siCPM = (count / sample_spike) × (control_spike / control_reads) × 1,000,000
 //
 // siCPM Control Selection:
-//   Condition matches params.control_label (case-insensitive), lowest
-//   replicate number preferred (so a merged rep-0 track wins over stray
-//   per-replicate rows). params.control_label MUST be set explicitly per
-//   dataset to the real baseline condition name (default "CTRL" is a
-//   placeholder that will not match descriptive condition names like
-//   "no_heat_shock" or "no_treatment").
-//   If no row matches, siCPM is DISABLED (factor = 0) with a loud warning —
-//   there is deliberately no "guess a control from row order" fallback.
-//   An earlier version of this pipeline silently fell back to "first sample
-//   with spike_reads > 0" when the label didn't match, which produced a
-//   real but wrong siCPM factor (using an arbitrary, often treated-not-
-//   baseline sample as the reference) without any indication anything was
-//   wrong — see git history / project notes for the incident that surfaced
-//   this. Failing safe to "disabled and visibly zero" is far preferable to
-//   a plausible-looking but incorrect number.
+//   1) Condition matches params.control_label (case-insensitive), lowest
+//      replicate number preferred (so a merged rep-0 track wins over stray
+//      per-replicate rows). Set params.control_label explicitly per dataset
+//      to override auto-detection or to disambiguate a multi-arm design
+//      (see step 2).
+//   2) AUTO-DETECT (used when control_label doesn't match anything): every
+//      TrackTx samplesheet has a structured timepoint column, and the
+//      baseline/untreated sample is the minimum timepoint in the
+//      timecourse (0 in every dataset shipped with this pipeline) —
+//      independent of whatever free-text condition name a given study
+//      uses. This is trusted ONLY when unambiguous: exactly one distinct
+//      condition value at that minimum timepoint with spike reads. A
+//      design with more than one arm starting at timepoint 0 (e.g. a
+//      "primed" vs "unprimed" pre-treatment) is genuinely ambiguous —
+//      auto-detection refuses rather than guessing which arm a given
+//      sample belongs to, and control_label must be set by hand for that
+//      dataset.
+//   If neither resolves a control, siCPM is DISABLED (factor = 0) with a
+//   loud, actionable warning — there is deliberately no "guess a control
+//   from row order" fallback. An earlier version of this pipeline silently
+//   fell back to "first sample with spike_reads > 0" when the label didn't
+//   match, which produced a real but wrong siCPM factor (using an
+//   arbitrary, often treated-not-baseline sample as the reference) without
+//   any indication anything was wrong — see git history / project notes
+//   for the incident that surfaced this. Failing safe to "disabled and
+//   visibly zero" is far preferable to a plausible-looking but incorrect
+//   number; auto-detection only fires when it can be exactly as certain as
+//   an explicit label match.
 //
 // Inputs:
 //   tuple(sample_id, pos3_bg, neg3_bg, pos5_bg, neg5_bg,
@@ -67,10 +80,14 @@
 //   params.norm.emit_allmap   : Include allMap tracks (default: true)
 //   params.norm.emit_5p       : Force 5' track generation (default: auto)
 //   params.force_sort_bedgraph: Sort before BigWig (default: false)
-//   params.control_label      : Control condition name — MUST match a real
-//                                condition in your samplesheet (e.g.
+//   params.control_label      : Control condition name — if set, MUST match
+//                                a real condition in your samplesheet (e.g.
 //                                "no_heat_shock"); default "CTRL" is a
-//                                placeholder, not a real fallback
+//                                placeholder. When it doesn't match, the
+//                                minimum-timepoint sample is used instead
+//                                IF it is unambiguous (see siCPM Control
+//                                Selection above) — set control_label
+//                                explicitly for any multi-arm design.
 //   params.norm.timeout_bw    : BigWig timeout seconds (default: 900)
 //
 // ============================================================================
@@ -358,8 +375,6 @@ else:
 # every real dataset, unless control_label is set) — picked an arbitrary
 # sample (often the treated condition, not the baseline) as the siCPM
 # reference and produced a real-looking but wrong number with no warning.
-# If control_label doesn't match, siCPM is disabled (factor = 0) below and
-# the caller prints a loud, actionable warning instead of guessing.
 control_row = None
 
 def _rep_num(r):
@@ -369,11 +384,48 @@ def _rep_num(r):
     except (ValueError, TypeError):
         return 10**9
 
+def _timepoint(r):
+    try:
+        return float(r.get('timepoint', ''))
+    except (ValueError, TypeError):
+        return None
+
 control_candidates = [
     r for r in rows
     if normalize_str(r.get('condition', '')) == control_label
     and int(r.get('spike_reads', 0) or 0) > 0
 ]
+
+# AUTO-DETECT fallback (replaces requiring control_label to be set by hand
+# for the common case): if control_label didn't match anything, every
+# TrackTx samplesheet already carries a structured 'timepoint' column where
+# the untreated/baseline sample is the minimum timepoint in the timecourse
+# (0 in every dataset used so far) -- independent of whatever free-text
+# condition name a given study happens to use. This is trusted ONLY when
+# it is unambiguous: exactly one distinct condition value present at that
+# minimum timepoint with spike reads. If more than one condition shares
+# the minimum timepoint (e.g. a "primed" and an "unprimed" arm both
+# starting at timepoint 0), auto-detection refuses rather than guessing
+# which arm this sample belongs to -- same never-guess-silently principle
+# as the control_label match above, just narrowed to the genuinely
+# ambiguous case instead of firing for every dataset that simply doesn't
+# use the literal default control_label.
+auto_detail = ""
+if not control_candidates:
+    tp_rows = [(r, _timepoint(r)) for r in rows]
+    tp_rows = [(r, tp) for r, tp in tp_rows
+               if tp is not None and int(r.get('spike_reads', 0) or 0) > 0]
+    if tp_rows:
+        min_tp = min(tp for _r, tp in tp_rows)
+        at_min = [r for r, tp in tp_rows if tp == min_tp]
+        distinct_conditions = sorted(set(normalize_str(r.get('condition', '')) for r in at_min))
+        if len(distinct_conditions) == 1:
+            control_candidates = at_min
+            auto_detail = f"auto:timepoint={min_tp:g},condition={distinct_conditions[0]}"
+        else:
+            auto_detail = f"ambiguous:timepoint={min_tp:g},conditions={'|'.join(distinct_conditions)}"
+
+used_auto = bool(auto_detail) and auto_detail.startswith("auto:")
 if control_candidates:
     control_row = sorted(control_candidates, key=_rep_num)[0]
 
@@ -384,13 +436,16 @@ if control_row and sample_spike > 0:
 
     if control_spike > 0 and control_main > 0:
         fac_sicpm = (control_spike / float(sample_spike)) * (1_000_000.0 / control_main)
-        status = "ok"
+        status = "ok_auto:" + auto_detail.split("auto:", 1)[1] if used_auto else "ok"
     else:
         fac_sicpm = 0.0
         status = "control_has_no_spike"
 elif sample_spike <= 0:
     fac_sicpm = 0.0
     status = "sample_has_no_spike"
+elif auto_detail:
+    fac_sicpm = 0.0
+    status = "no_control_label_match:" + auto_detail
 else:
     fac_sicpm = 0.0
     status = "no_control_label_match"
@@ -413,14 +468,25 @@ PYSCRIPT
 
   # Check siCPM availability
   if awk -v x="\${FAC_SICPM}" 'BEGIN{exit (x>0?0:1)}'; then
-    echo "NORMALIZE | FACTORS | siCPM normalization enabled"
+    case "\${CONTROL_STATUS}" in
+      ok_auto:*)
+        echo "NORMALIZE | FACTORS | siCPM normalization enabled (control auto-detected: \${CONTROL_STATUS#ok_auto:})"
+        ;;
+      *)
+        echo "NORMALIZE | FACTORS | siCPM normalization enabled"
+        ;;
+    esac
     SICPM_AVAILABLE=1
   else
     echo "NORMALIZE | FACTORS | WARNING: siCPM disabled (factor = 0)"
     case "\${CONTROL_STATUS}" in
+      no_control_label_match:ambiguous:*)
+        echo "NORMALIZE | FACTORS | Cause: no sample has condition == [\${CONTROL_LABEL}] (params.control_label), and automatic timepoint-based detection found MORE THAN ONE condition at the minimum timepoint, so it refused to guess: \${CONTROL_STATUS#no_control_label_match:ambiguous:}"
+        echo "NORMALIZE | FACTORS | Fix: set control_label in your params file to the EXACT baseline condition name for the arm this sample belongs to."
+        ;;
       no_control_label_match)
-        echo "NORMALIZE | FACTORS | Cause: no sample has condition == [\${CONTROL_LABEL}] (params.control_label) with spike_reads > 0."
-        echo "NORMALIZE | FACTORS | Fix: set control_label in your params file to the EXACT baseline condition name used in your samplesheet (e.g. control_label: no_heat_shock). There is no automatic fallback — this is intentional (see module header)."
+        echo "NORMALIZE | FACTORS | Cause: no sample has condition == [\${CONTROL_LABEL}] (params.control_label) with spike_reads > 0, and automatic timepoint-based detection found no usable timepoint data either."
+        echo "NORMALIZE | FACTORS | Fix: set control_label in your params file to the EXACT baseline condition name used in your samplesheet (e.g. control_label: no_heat_shock), or ensure the samplesheet's timepoint column is populated."
         ;;
       sample_has_no_spike)
         echo "NORMALIZE | FACTORS | Cause: this sample (\${SAMPLE_ID}) itself has 0 spike-in reads."
