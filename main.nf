@@ -553,7 +553,11 @@ Paths are relative to: ${projectDir}"""
           def p = ln.split('\t')
           if (p.size() == 2) m[p[0]] = p[1]
         }
-      } catch (Exception e) { /* leave blanks if unreadable */ }
+      } catch (Exception e) {
+        // Leave the row's fields blank (NA) rather than failing the whole run,
+        // but log it so a systematically unreadable summary doesn't go unnoticed.
+        log.warn "STEP 6c | Could not parse alignment summary for sample=${sid}: ${e.message}"
+      }
       // Use genome_overall_aln_rate_pct (the REAL bowtie2 rate), not
       // genome_map_rate_pct (post-filter, always ~100%). spike_fraction_pct =
       // spike-mapped / genome-mapped × 100 — a real Drosophila spike-in is
@@ -1177,6 +1181,10 @@ Paths are relative to: ${projectDir}"""
     .mix(align_reads_to_genome.out.flagstats.flatten())
     .collect()
 
+  // Same genome_id used to build the primary Bowtie2 index (STEP 5), so the
+  // IGV session file declares the correct reference instead of a hardcoded one.
+  def cohort_genome_id = (params.reference_genome == 'other') ? 'custom' : params.reference_genome
+
   cohort_qc_and_viz(
     multiqc_logs_ch,
     cohort_bw_pos3,
@@ -1189,7 +1197,8 @@ Paths are relative to: ${projectDir}"""
     cohort_neg3_bg,
     cohort_pos5_bg,
     cohort_neg5_bg,
-    genes_ch
+    genes_ch,
+    cohort_genome_id
   )
 
   if (params.verbose) {

@@ -65,7 +65,6 @@ process collect_pol_metrics_per_replicate {
   # manifest's metric_N references always resolve.
   if [[ -e metric_ && ! -e metric_1 ]]; then mv metric_ metric_1; fi
 
-  ROWS=0
   # Skip the manifest header; iterate one replicate per line.
   tail -n +2 samples.tsv | while IFS=\$'\\t' read -r SID COND TP REP FNAME; do
     [[ -z "\${SID:-}" ]] && continue
@@ -90,7 +89,6 @@ process collect_pol_metrics_per_replicate {
         printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n", gi, gn, sid, cond, tp, rep, tc, bc, pr, pln
       }
     ' "\${FNAME}" >> "\${OUT}"
-    ROWS=\$((ROWS+1))
   done
 
   N_LINES=\$(( \$(wc -l < "\${OUT}") - 1 ))

@@ -414,12 +414,15 @@ process calculate_polymerase_occupancy_metrics {
     echo "POL | BAM | BAM is not coordinate-sorted, will sort"
   fi
 
-  # Build filtering flags
-  FILTER_FLAGS="-F 0x4"  # Exclude unmapped
+  # Build filtering flags as a SINGLE combined -F value. samtools only honors
+  # the LAST -F given if it is passed twice (it does not OR repeated -F
+  # values together), so unmapped + duplicate exclusion must be combined into
+  # one flag rather than appended as a second -F argument.
   if [[ \${DEDUP_ENABLED} -eq 1 ]]; then
-    FILTER_FLAGS="\${FILTER_FLAGS} -F 0x400"  # Exclude duplicates
+    FILTER_FLAGS="-F 0x404"  # Exclude unmapped (0x4) + duplicates (0x400)
     echo "POL | BAM | Will exclude duplicates"
   else
+    FILTER_FLAGS="-F 0x4"  # Exclude unmapped only
     echo "POL | BAM | Will retain duplicates"
   fi
 
@@ -530,7 +533,7 @@ PAUSINGEOF
 
   echo "POL | README | Creating documentation..."
 
-  cat > README_pol_metrics.txt <<'DOCEOF'
+  cat > README_pol_metrics.txt <<DOCEOF
 ================================================================================
 POL-II METRICS — ${sid}
 ================================================================================

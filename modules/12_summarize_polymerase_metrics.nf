@@ -452,7 +452,7 @@ ${(params.replicates?.merge == true) ? '  echo "AGGREGATE | CONFIG | Contrasts f
 
   echo "AGGREGATE | README | Creating documentation..."
 
-  cat > README_aggregate.txt <<'DOCEOF'
+  cat > README_aggregate.txt <<DOCEOF
 ================================================================================
 POL-II METRICS AGGREGATION — COHORT ANALYSIS
 ================================================================================

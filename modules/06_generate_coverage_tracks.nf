@@ -693,7 +693,7 @@ process generate_coverage_tracks {
   echo "TRACKS | README | Creating documentation..."
   echo "────────────────────────────────────────────────────────────────────────"
 
-  cat > \${SAMPLE_ID}.README_tracks.txt <<'DOCEOF'
+  cat > \${SAMPLE_ID}.README_tracks.txt <<DOCEOF
 ================================================================================
 COVERAGE TRACKS — ${sample_id}
 ================================================================================

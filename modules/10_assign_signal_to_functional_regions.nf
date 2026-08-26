@@ -363,7 +363,7 @@ SUMMARYEOF
 
   echo "FUNCREGION | README | Creating documentation..."
 
-  cat > README_functional_regions.txt <<'DOCEOF'
+  cat > README_functional_regions.txt <<DOCEOF
 ================================================================================
 FUNCTIONAL REGIONS — ${sample_id}
 ================================================================================
@@ -387,7 +387,7 @@ METHOD
      c. CPS (Cleavage/Polyadenylation Site) regions
      d. Enhancer regions (from divergent transcription)
      e. Termination windows
-     g. Remaining signal → Non-localized
+     f. Remaining signal → Non-localized
   4. Quantify signal per region using bedtools map
   5. Summarize by category
 
@@ -456,12 +456,12 @@ REGION DEFINITIONS
    Source: Divergent transcription regions not overlapping promoters
    Purpose: Putative enhancer elements
 
-7. Termination Window:
+6. Termination Window:
    Location: \${TW_LENGTH} bp downstream of CPS end
    Strand: Gene strand
    Purpose: Readthrough and termination region
 
-8. Non-localized:
+7. Non-localized:
    Definition: Signal not assigned to any category above
    Purpose: Intergenic, intronic, or unannotated transcription
 
@@ -491,7 +491,7 @@ HIERARCHICAL MASKING
   Step 3: Assign CPS signal → mask CPS regions
   Step 4: Assign enhancer signal → mask enhancers
   Step 5: Assign termination window signal → mask TW
-  Step 7: Assign remaining signal → non-localized
+  Step 6: Assign remaining signal → non-localized
   
   Result: Each signal unit counted exactly once
 

@@ -131,7 +131,7 @@ process detect_divergent_transcription {
   script:
   """
   #!/usr/bin/env bash
-  set -eu
+  set -euo pipefail
   export LC_ALL=C
 
   # Stdout → log + terminal; stderr → log + terminal (kept separate for Nextflow "Command error")
@@ -435,7 +435,7 @@ SUMMARYEOF
 
   echo "DIVERGENT | README | Creating documentation..."
 
-  cat > README_divergent.txt <<'DOCEOF'
+  cat > README_divergent.txt <<DOCEOF
 ================================================================================
 DIVERGENT TRANSCRIPTION — ${sample_id} (Statistical)
 ================================================================================

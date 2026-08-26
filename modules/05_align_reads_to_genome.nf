@@ -607,7 +607,7 @@ PYEND
 
   echo "ALIGN | README | Creating documentation..."
 
-  cat > README_alignment.txt <<'DOCEOF'
+  cat > README_alignment.txt <<DOCEOF
 ================================================================================
 ALIGNMENT ARTIFACTS — PRO-seq Pipeline
 ================================================================================

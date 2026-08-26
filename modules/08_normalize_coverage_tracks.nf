@@ -784,7 +784,7 @@ FACTOREOF
 
   echo "NORMALIZE | README | Creating documentation..."
 
-  cat > README_normalization.txt <<'DOCEOF'
+  cat > README_normalization.txt <<DOCEOF
 ================================================================================
 NORMALIZED TRACKS — ${sample_id}
 ================================================================================

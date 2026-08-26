@@ -425,7 +425,7 @@ process download_sra_samples {
 
   echo "SRR | README | Creating provenance documentation..."
 
-  cat > README_fastq.txt <<'DOCEOF'
+  cat > README_fastq.txt <<DOCEOF
 ================================================================================
 SRA FASTQ DOWNLOAD — ${sra_id}
 ================================================================================

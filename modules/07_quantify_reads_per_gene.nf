@@ -287,7 +287,7 @@ process quantify_reads_per_gene {
 
   echo "COUNTS | README | Creating documentation..."
 
-  cat > README_counts.txt <<'DOCEOF'
+  cat > README_counts.txt <<DOCEOF
 ================================================================================
 READ COUNTS — ${sid}
 ================================================================================

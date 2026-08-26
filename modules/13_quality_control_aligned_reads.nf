@@ -109,6 +109,10 @@ process quality_control_aligned_reads {
   def mapq_thr = params.qc?.mapq ?: 10
   def dedup_flag = (params.qc?.dedup == null || params.qc.dedup) ? '-F 0x400' : ''
   def dedup_enabled = (params.qc?.dedup == null || params.qc.dedup)
+  // Combined into ONE -F value: samtools only honors the LAST -F given if
+  // passed twice, so secondary/supplementary/unmapped + duplicate exclusion
+  // must be OR'd together (0x904 | 0x400 = 0xD04), not passed as two -F args.
+  def strand_frag_exclude_flag = dedup_enabled ? '-F 0xD04' : '-F 0x904'
   def fail_map_rate = params.qc?.fail_map_rate_below
   def fail_strand = params.qc?.fail_strand_min
 
@@ -294,7 +298,7 @@ process quality_control_aligned_reads {
 
   # Count reads on each strand (after MAPQ filtering)
   # Flag 0x10 = reverse strand
-  samtools view -F 0x904 \${MAPQ_ARG} ${dedup_flag} "\${QC_BAM}" | \
+  samtools view ${strand_frag_exclude_flag} \${MAPQ_ARG} "\${QC_BAM}" | \
     awk '{
       if (and(\$2, 16)) {
         strand = "-"
@@ -350,7 +354,7 @@ process quality_control_aligned_reads {
     echo "QC | FRAGMENT | Extracting insert size distribution..."
     
     # Use samtools stats to get insert size distribution (IS lines: length, count)
-    samtools stats -F 0x904 \${MAPQ_ARG} ${dedup_flag} "\${QC_BAM}" 2>/dev/null | \
+    samtools stats ${strand_frag_exclude_flag} \${MAPQ_ARG} "\${QC_BAM}" 2>/dev/null | \
       awk '/^IS[[:space:]]/ && NF>=3 && \$2+0==\$2 && \$3+0==\$3 {print \$2 "\\t" \$3}' > frag_tmp.tsv || true
 
     if [[ -s frag_tmp.tsv ]]; then

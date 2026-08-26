@@ -82,6 +82,7 @@ process cohort_qc_and_viz {
     val   pos5_bg_list
     val   neg5_bg_list
     path  genes_bed
+    val   genome_id
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:
@@ -124,6 +125,10 @@ process cohort_qc_and_viz {
   exec > >(tee -a cohort_qc.log)
   exec 2> >(tee -a cohort_qc.log >&2)
 
+  # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
+  source tracktx_error_fragment.sh
+  trap 'tracktx_error \"cohort_qc_and_viz\" \"Unexpected process failure\" \"Check cohort_qc.log in work dir\"' ERR
+
   TIMESTAMP=\$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")
   echo \"════════════════════════════════════════════════════════════════════════\"
   echo \"COHORT_QC | START | ts=\${TIMESTAMP}\"
@@ -141,6 +146,7 @@ process cohort_qc_and_viz {
   read -ra POS5_BGS      <<< \"${pos5BgStr}\"
   read -ra NEG5_BGS      <<< \"${neg5BgStr}\"
   GENES_BED=\"${genes_bed}\"
+  GENOME_ID=\"${genome_id}\"
   N_SAMPLES=\"\${#SAMPLE_IDS[@]}\"
 
   echo \"COHORT_QC | CONFIG | Samples: \${N_SAMPLES}\"
@@ -251,7 +257,7 @@ process cohort_qc_and_viz {
   PALETTE=(\"31,119,180\" \"255,127,14\" \"44,160,44\" \"214,39,40\"
            \"148,103,189\" \"140,86,75\" \"227,119,194\" \"127,127,127\")
 
-  python3 - \\
+  GENOME_ID=\"\${GENOME_ID}\" python3 - \\
     \"\${SAMPLE_IDS[@]}\" \\
     \"---conditions\" \\
     \"\${CONDITIONS[@]}\" \\
@@ -264,7 +270,7 @@ process cohort_qc_and_viz {
     \"---bw_amneg3\" \\
     \"\${BW_AMNEG3[@]}\" \\
     <<'PYEOF'
-import sys, xml.dom.minidom
+import sys, os, xml.dom.minidom
 
 args = sys.argv[1:]
 
@@ -303,8 +309,9 @@ for c in conditions:
         unique_conds.append(c)
 cond_color = {c: palette[i % len(palette)] for i, c in enumerate(unique_conds)}
 
+genome_id = os.environ.get('GENOME_ID') or 'hg38'
 lines = ['<?xml version=\"1.0\" encoding=\"UTF-8\"?>',
-         '<Session genome=\"hg38\" version=\"8\">',
+         f'<Session genome=\"{genome_id}\" version=\"8\">',
          '  <Resources>']
 
 def safe_path(p):

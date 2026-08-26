@@ -1,0 +1,45 @@
+# Structural smoke test for the TrackTx pipeline.
+#
+# Runs `nextflow run main.nf -preview`, which validates the DSL2 workflow
+# (parameter handling, samplesheet parsing, channel/process wiring) WITHOUT
+# executing any process — no genome download, no alignment, no containers
+# pulled. This catches wiring/syntax regressions on every push/PR in about a
+# minute.
+#
+# This intentionally does NOT run real data through the pipeline (that would
+# require downloading/aligning against the full hs1 human genome used by
+# test_PE, which is impractical on standard GitHub-hosted runners). See
+# test_PE/README.md to run the real end-to-end smoke test locally or on
+# self-hosted infrastructure.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  structural-dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java (required by Nextflow)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Nextflow
+        run: |
+          curl -fsSL https://get.nextflow.io | bash
+          sudo mv nextflow /usr/local/bin/
+          nextflow -version
+
+      - name: Validate pipeline wiring (structural dry-run, test_PE params)
+        run: |
+          nextflow run main.nf \
+            -profile docker \
+            -params-file test_PE/params_PE.yaml \
+            -preview

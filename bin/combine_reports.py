@@ -314,6 +314,11 @@ def normalize_sample_data(
     region_len_totals = {}
     region_len_medians = {}
     
+    # Every region entry that fails to parse is tracked here (with why) so a
+    # malformed report doesn't just quietly under-count a sample's regions
+    # with no trace -- mirrors the aggregated-warning pattern already used in
+    # calculate_pol_metrics.py's count_reads_pysam().
+    skipped_regions: list = []
     for region_item in regions:
         try:
             region_name = str(region_item.get("region", ""))
@@ -332,8 +337,17 @@ def normalize_sample_data(
                     region_len_medians[region_name] = (region_len_medians[region_name] + len_median) / 2.0
                 else:
                     region_len_medians[region_name] = len_median
-        except Exception:
+        except Exception as e:
+            skipped_regions.append((str(region_item.get("region", "?")), str(e)))
             continue
+
+    if skipped_regions:
+        examples = ", ".join(f"{name!r} ({reason})" for name, reason in skipped_regions[:5])
+        log_warning(
+            f"{sample_id}: skipped {len(skipped_regions)} malformed region "
+            f"entr{'y' if len(skipped_regions) == 1 else 'ies'} while combining reports "
+            f"(first {min(5, len(skipped_regions))}: {examples})"
+        )
     
     # Separate localized from unlocalized reads
     unlocalized_reads = sum(

@@ -934,8 +934,8 @@ def main():
                     f.write("Candidate pairs: 0\nFinal regions: 0\n")
                     f.write("No paired peaks were found (no bidirectional signal "
                             "within the pairing window).\n")
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"WARNING: could not write QC report to {report_path}: {e}", args.quiet)
         print("\nCOMPLETE — 0 divergent regions (no paired peaks)")
         return
 
