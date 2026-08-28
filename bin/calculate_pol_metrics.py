@@ -435,18 +435,16 @@ def auto_body_offset(
     """
     Choose an organism-aware body offset from the gene-length distribution.
 
-    Strategy (median-gated — only shrink for genuinely compact genomes):
+    Strategy (median-gated -- only shrink for genuinely compact genomes):
       - Look at the MEDIAN gene length across parsed features.
-      - If median >= COMPACT_MEDIAN_BP (mammalian-scale, e.g. human/mouse), keep
-        the user's --body-offset-min unchanged. The previous version took
-        min(user, P25*0.2); because P25 over all transcript/gene records is small
-        even in human, that silently shrank the body offset below the documented
-        2000 bp for EVERY organism, pulling the promoter-proximal pause peak into
-        the "body" and deflating the pausing index. Gating on the median fixes
-        that: human/mouse stay at 2000 bp, only compact genomes shrink.
-      - For compact genomes (small median), scale the offset to 20% of P25 with a
-        200 bp hard floor, but never above the user value.
+      - If median >= COMPACT_MEDIAN_BP (mammalian-scale, e.g. human/mouse),
+        keep the user's --body-offset-min unchanged.
+      - For compact genomes (small median), scale the offset to 20% of P25
+        with a 200 bp hard floor, but never above the user value.
       - The caller still applies body_offset_frac on top of this minimum.
+
+    See CHANGELOG.md for why this is median-gated rather than a flat
+    P25-based shrink, and how COMPACT_MEDIAN_BP was chosen.
 
     Args:
         gene_lengths: List of gene lengths (bp) from the GTF
@@ -460,15 +458,13 @@ def auto_body_offset(
         return user_offset_min
 
     # Genomes whose median gene length is at least this are treated as "large"
-    # and keep the user offset unchanged. NOTE: this is the median over ALL genes
-    # in the catalog, which is pulled DOWN by the many small ncRNAs — observed
-    # ~5.9 kb for human/T2T RefSeq (NOT the ~24 kb protein-coding median). Truly
-    # compact genomes (Drosophila / C. elegans) sit at ~2–3 kb. So the separating
-    # threshold must be a few kb, not tens of kb: an earlier 10 kb value wrongly
-    # classified human as compact and shrank the offset to 200 bp. 4 kb keeps
-    # human/mouse (~5–6 kb) at the user offset while still shrinking for fly/worm.
-    # body_offset_min is overridable per-organism if a particular annotation's
-    # all-gene median falls on the wrong side of this heuristic.
+    # and keep the user offset unchanged. This is the median over ALL genes in
+    # the catalog, which is pulled down by the many small ncRNAs (observed
+    # ~5.9 kb for human/T2T RefSeq, not the ~24 kb protein-coding median);
+    # truly compact genomes (Drosophila / C. elegans) sit at ~2-3 kb. 4 kb
+    # keeps human/mouse (~5-6 kb) at the user offset while still shrinking for
+    # fly/worm. body_offset_min is overridable per-organism if a particular
+    # annotation's all-gene median falls on the wrong side of this heuristic.
     COMPACT_MEDIAN_BP = 4_000
 
     arr = sorted(gene_lengths)

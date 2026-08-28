@@ -14,32 +14,32 @@
 
 ---
 
-## 📚 Contents
+## Contents
 
-- [⚡ Quick Start](#-quick-start)
-- [🧪 Testing the Pipeline](#-testing-the-pipeline)
-- [📊 What Does TrackTx Do?](#-what-does-tracktx-do)
-- [🔧 Installation](#-installation)
-- [📁 Input Files](#-input-files)
-- [📊 Outputs](#-outputs)
-- [🎯 Common Use Cases](#-common-use-cases)
-- [⚙️ Execution Profiles](#-execution-profiles)
-- [⚡ Performance Optimization](#-performance-optimization)
-- [🔧 Troubleshooting](#-troubleshooting)
-- [📖 Documentation](#-documentation)
-- [🧬 Citation](#-citation)
-- [📜 License](#-license)
-
----
-
+- [Quick Start](#quick-start)
+- [Testing the Pipeline](#testing-the-pipeline)
+- [What Does TrackTx Do?](#what-does-tracktx-do)
+- [Installation](#installation)
+- [Input Files](#input-files)
+- [Outputs](#outputs)
+- [Common Use Cases](#common-use-cases)
+- [Execution Profiles](#execution-profiles)
+- [Performance Optimization](#performance-optimization)
+- [Troubleshooting](#troubleshooting)
+- [Documentation](#documentation)
+- [Citation](#citation)
+- [License](#license)
 
 ---
 
-## ⚡ Quick Start
+
+---
+
+## Quick Start
 
 Get started in **3 simple steps**:
 
-### 1️⃣ Generate Configuration (Interactive, Recommended)
+### Step 1: Generate Configuration (Interactive, Recommended)
 
 Open the **TrackTx configuration generator** in your browser:
 
@@ -53,7 +53,7 @@ open TrackTx_config_generator.html   # macOS
 - Click **Download ZIP** to save `params.yaml` and `samplesheet.csv`
 - **Put both files in the same folder as the pipeline** (the tracktx directory where `main.nf` lives)
 
-### 2️⃣ Run Pipeline (Automatic)
+### Step 2: Run Pipeline (Automatic)
 
 Use the **smart launcher** that auto-detects your environment:
 
@@ -62,10 +62,10 @@ Use the **smart launcher** that auto-detects your environment:
 ```
 
 That's it! The script will:
-- ✅ Auto-detect Docker, Conda, or local environment
-- ✅ Load your `params.yaml` and `samplesheet.csv`
-- ✅ Optimize resource allocation for your system
-- ✅ Start the pipeline
+- Auto-detect Docker, Conda, or local environment
+- Load your `params.yaml` and `samplesheet.csv`
+- Optimize resource allocation for your system
+- Start the pipeline
 
 **Advanced options:**
 ```bash
@@ -76,9 +76,9 @@ That's it! The script will:
 ./run_pipeline.sh --output_dir my_run    # Custom output directory
 ```
 
-**💡 All files in project dir by default.** Use `--external-drive` only when project is on exFAT/USB — then cache, temp, and work (~10–50 GB) go to local; results stay on project.
+**All files in project dir by default.** Use `--external-drive` only when project is on exFAT/USB — then cache, temp, and work (~10–50 GB) go to local; results stay on project.
 
-### 3️⃣ Monitor Progress (Real-time)
+### Step 3: Monitor Progress (Real-time)
 
 Watch your pipeline in action with the **live monitor**:
 
@@ -105,10 +105,10 @@ conda install -c conda-forge rich
 ```
 
 Features:
-- 📊 Real-time task progress and resource usage (based on Nextflow trace)
-- 🎯 Live log tailing for active tasks (TrackTx module logs preferred over `.command.*`)
-- 💻 CPU/memory/load monitoring
-- ⚡ Per-task performance metrics and slow-task detection
+- Real-time task progress and resource usage (based on Nextflow trace)
+- Live log tailing for active tasks (TrackTx module logs preferred over `.command.*`)
+- CPU/memory/load monitoring
+- Per-task performance metrics and slow-task detection
 
 **Header fields in nfmon:**
 
@@ -132,7 +132,7 @@ python3 nfmon.py --oneshot --json status.json    # Export JSON
 
 ---
 
-## 🧪 Testing the Pipeline
+## Testing the Pipeline
 
 Want to verify the pipeline works before running your own data? Use the bundled test setup with readymade samplesheets, params, and a script that downloads small test datasets.
 
@@ -166,18 +166,18 @@ The config uses `sample_source: "local"` and points to the subset FASTQs. See `t
 
 ---
 
-## 📊 What Does TrackTx Do?
+## What Does TrackTx Do?
 
 TrackTx analyzes nascent RNA sequencing data (PRO-seq, GRO-seq, etc.) to understand **real-time transcription**:
 
 ```mermaid
 graph LR
-    A[📁 FASTQ Files] --> B[✂️ QC & Trimming]
-    B --> C[🧭 Alignment]
-    C --> D[📈 Track Generation]
-    D --> E[⚖️ Normalization]
-    E --> F[🔬 Statistical Detection]
-    F --> G[📊 Comprehensive Reports]
+    A[FASTQ Files] --> B[QC and Trimming]
+    B --> C[Alignment]
+    C --> D[Track Generation]
+    D --> E[Normalization]
+    E --> F[Statistical Detection]
+    F --> G[Comprehensive Reports]
 ```
 
 **Key capabilities:**
@@ -192,7 +192,7 @@ graph LR
 
 ---
 
-## 🔬 Pipeline Modules
+## Pipeline Modules
 
 TrackTx runs 17 modules in sequence. Here is what each one does.
 
@@ -253,7 +253,7 @@ Cohort-level signal QC module that runs after all per-sample tracks are ready, a
 
 ---
 
-## 🔧 Installation
+## Installation
 
 ### Prerequisites
 
@@ -403,7 +403,7 @@ nextflow run main.nf -entry TrackTx -profile local --samplesheet samplesheet.csv
 
 ---
 
-## 📁 Input Files
+## Input Files
 
 ### Sample Sheet (`samplesheet.csv`)
 
@@ -454,32 +454,32 @@ For a complete, always-current worked example see [`test_PE/params_PE.yaml`](tes
 
 ---
 
-## 📊 Outputs
+## Outputs
 
 ```
 results/
-├── 📈 05_normalized_tracks/        # Load in IGV/UCSC Browser
+├── 05_normalized_tracks/          # Load in IGV/UCSC Browser
 │   └── <sample>/3p/*.cpm.bw        # CPM and siCPM normalized BigWigs
-├── 🔬 06_divergent_tx/             # Divergent transcription (statistical)
+├── 06_divergent_tx/               # Divergent transcription (statistical)
 │   └── <sample>/
 │       ├── divergent_transcription.bed   # High-confidence regions (BED5)
 │       └── divergent_transcription_qc.txt # Statistical QC report
-├── 🧬 07_functional_regions/       # Genomic region annotations
+├── 07_functional_regions/         # Genomic region annotations
 │   └── <sample>/
 │       ├── functional_regions.bed
 │       └── functional_regions_summary.tsv
-├── 📊 08_pol_metrics/             # Pol-II pausing & density
+├── 08_pol_metrics/                # Pol-II pausing & density
 │   └── <sample>/
 │       ├── pausing_index.tsv
 │       └── pol_density.tsv
-├── 🔍 10_qc/                       # Quality control metrics
+├── 10_qc/                         # Quality control metrics
 │   └── <sample>/qc_pol.json
-├── 📋 11_reports/                  # Interactive HTML reports
+├── 11_reports/                    # Interactive HTML reports
 │   ├── cohort/
-│   │   └── global_summary.html     # ⭐ Comprehensive cohort dashboard
+│   │   └── global_summary.html     # Comprehensive cohort dashboard
 │   └── samples/
 │       └── <sample>/<sample>.report.html
-└── 🔍 trace/                       # Pipeline performance (in output_dir)
+└── trace/                         # Pipeline performance (in output_dir)
     ├── report.html
     ├── timeline.html
     └── trace.txt
@@ -489,7 +489,7 @@ results/
 
 **`main` vs `allMap` tracks:** every track set is emitted twice — `main` (best alignment per read; use for quantitative analysis and as the default browser track) and `allMap` (every reported alignment when `align.multimap_k > 1`; use to inspect signal across repeat copies). With `align.multimap_k: 1` the two are identical.
 
-**🎯 Start Here:**
+**Start Here:**
 1. **`11_reports/cohort/global_summary.html`** - Comprehensive cohort analysis with:
    - Quality control assessment and outlier detection
    - Mapping uniqueness method and multimapper % per sample
@@ -507,7 +507,7 @@ results/
 
 ---
 
-## 🎯 Common Use Cases
+## Common Use Cases
 
 ### Time-Course Heat Shock
 
@@ -559,7 +559,7 @@ output_dir: "./results"
 
 ---
 
-## ⚙️ Execution Profiles
+## Execution Profiles
 
 The pipeline **auto-detects** your environment, but you can force a specific profile:
 
@@ -584,7 +584,7 @@ The pipeline **auto-detects** your environment, but you can force a specific pro
 
 ---
 
-## ⚡ Performance Optimization
+## Performance Optimization
 
 ### Pipeline Too Slow? Try These Fixes
 
@@ -597,11 +597,11 @@ The pipeline **auto-detects** your environment, but you can force a specific pro
 ```
 
 This automatically:
-- ✅ Keeps **results** on your project directory (no local space needed for outputs)
-- ✅ Fixes publish errors (uses copy instead of hard links)
-- ✅ Fixes OverlappingFileLockException (cache, temp, work on local — exFAT lacks file locking)
-- ✅ Disables scratch space (reduces file copying on slow storage)
-- ✅ Increases task parallelism for better I/O utilization
+- Keeps **results** on your project directory (no local space needed for outputs)
+- Fixes publish errors (uses copy instead of hard links)
+- Fixes OverlappingFileLockException (cache, temp, work on local — exFAT lacks file locking)
+- Disables scratch space (reduces file copying on slow storage)
+- Increases task parallelism for better I/O utilization
 
 **Note:** `--external-drive` puts cache, temp, and work (~10–50 GB) on local disk (`~/tmp/tracktx_*`); only results stay on the project dir. Ensure ~20–50 GB free on your internal drive.
 
@@ -634,11 +634,11 @@ Typical sizes for a single-sample PE test run (10% subset):
 
 | Sample Count | Optimized (Internal SSD) | Default (External SSD) |
 |--------------|-------------------------|------------------------|
-| 2 samples    | 30-60 min               | 2-3 hours ⚠️           |
-| 4 samples    | 1-2 hours               | 4-6 hours ⚠️           |
-| 8 samples    | 2-4 hours               | 8-12 hours ⚠️          |
+| 2 samples    | 30-60 min               | 2-3 hours              |
+| 4 samples    | 1-2 hours               | 4-6 hours              |
+| 8 samples    | 2-4 hours               | 8-12 hours             |
 
-## 🔧 Troubleshooting
+## Troubleshooting
 
 ### Reading Error Messages
 
@@ -769,7 +769,7 @@ Java file-lock conflict. Common causes and fixes:
 
 ---
 
-## 📖 Documentation
+## Documentation
 
 | Document | Description |
 |----------|-------------|
@@ -777,7 +777,7 @@ Java file-lock conflict. Common causes and fixes:
 
 ---
 
-## 🧬 Citation
+## Citation
 
 If TrackTx is useful for your research, please cite: [https://github.com/serhataktay/tracktx](https://github.com/serhataktay/tracktx)
 
@@ -788,7 +788,7 @@ If TrackTx is useful for your research, please cite: [https://github.com/serhata
 
 ---
 
-## 📜 License
+## License
 
 TrackTx is released under the [MIT License](LICENSE).
 
@@ -796,7 +796,7 @@ TrackTx is released under the [MIT License](LICENSE).
 
 <div align="center">
 
-**⭐ Star this repo if TrackTx is useful for your research!**
+**Star this repo if TrackTx is useful for your research!**
 
 [Issues](https://github.com/serhataktay/tracktx/issues) • [Releases](https://github.com/serhataktay/tracktx/releases)
 

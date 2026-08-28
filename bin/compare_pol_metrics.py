@@ -590,12 +590,28 @@ def compute_all_contrasts(
 
     contrasts_df = pd.concat(all_results, ignore_index=True)
 
-    # Benjamini-Hochberg correction per (contrast, metric)
-    log("CONTRAST", "Applying Benjamini-Hochberg FDR correction...")
+    # Benjamini-Hochberg correction per (contrast, metric), with independent
+    # filtering (Bourgon et al. 2010; same convention DESeq2 uses): genes
+    # failing the expression filter (passes_filter == False, i.e. ~0 in both
+    # groups) are excluded from the correction rather than just flagged.
+    # They carry little power to reject the null, so including them in BH's
+    # p*n/rank formula inflates n and makes it harder for genuinely
+    # differential genes elsewhere in the same contrast+metric group to
+    # reach significance -- the correction was previously computed but not
+    # applied, i.e. always conservative relative to independent filtering.
+    # Filtered-out genes get padj = NaN, matching DESeq2's own reporting for
+    # independently-filtered rows.
+    log("CONTRAST", "Applying Benjamini-Hochberg FDR correction (with independent filtering)...")
     padj_arr = np.full(len(contrasts_df), np.nan, dtype=float)
+    if "passes_filter" in contrasts_df.columns:
+        passes = contrasts_df["passes_filter"].to_numpy(dtype=bool)
+    else:
+        passes = np.ones(len(contrasts_df), dtype=bool)
     for (_, _), grp in contrasts_df.groupby(["contrast", "metric"]):
         idx = grp.index
-        padj_arr[idx] = benjamini_hochberg(grp["pvalue"].values)
+        pvals = grp["pvalue"].to_numpy(dtype=float).copy()
+        pvals[~passes[idx]] = np.nan
+        padj_arr[idx] = benjamini_hochberg(pvals)
     contrasts_df["padj"] = padj_arr
 
     # Stable column order. Keep log2FC/pvalue/padj at positions 9/10/11 (downstream

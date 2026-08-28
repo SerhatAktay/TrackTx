@@ -9,14 +9,21 @@
 //
 // Workflow:
 //   1. Group BAMs by (condition, timepoint)
-//   2. For 2+ replicates: compute Pearson/Spearman correlation via
-//      deepTools multiBamSummary (10kb bins) + custom awk/python correlation
+//   2. For 2+ replicates: bin the genome into fixed-size windows (bedtools
+//      makewindows), count reads per window per replicate (bedtools multicov),
+//      then compute Pearson/Spearman correlation across bins (custom python)
 //   3. If min(pairwise correlations) >= concordance_min → merge with samtools merge
 //      If concordance is below threshold → warn and emit individual BAMs unchanged
 //   4. Single-replicate groups are passed through unmodified
 //
 // Key Design Decisions:
-//   • deepTools multiBamSummary bins (10kb) for fast genome-wide correlation
+//   • Genome-wide bedtools multicov bins (default 10 kb) for correlation, not
+//     per-chromosome read totals: chromosome totals are dominated by
+//     chromosome length and so have little power to catch real replicate
+//     discordance (deepTools multiBamSummary was tried first for the same
+//     bin-level idea but returned Pearson = 0 for every condition regardless
+//     of data quality; bedtools multicov gives the same bin-count matrix
+//     without that failure mode)
 //   • allMap BAMs are also merged in parallel (always match filtered BAM fate)
 //   • Merged sample_id is: {condition}_{timepoint}_merged
 //   • Replicate metadata is collapsed (replicate set to 0 for merged samples)
@@ -30,8 +37,9 @@
 //   path  concordance_report
 //
 // Parameters:
-//   params.replicates.concordance_min    : Minimum correlation (default: 0.9)
-//   params.replicates.concordance_method : pearson | spearman (default: pearson)
+//   params.replicates.concordance_min       : Minimum correlation (default: 0.9)
+//   params.replicates.concordance_method    : pearson | spearman (default: pearson)
+//   params.replicates.concordance_bin_size  : Genome bin size, bp (default: 10000)
 //
 // ============================================================================
 
@@ -89,6 +97,7 @@ process check_and_merge_replicates {
   script:
   concordanceMin    = params.replicates?.concordance_min    ?: 0.9
   concordanceMethod = params.replicates?.concordance_method ?: 'pearson'
+  concordanceBinSize = params.replicates?.concordance_bin_size ?: 10000
   sampleIdList      = sample_ids instanceof List ? sample_ids.join(' ') : sample_ids.toString()
   conditionStr      = condition.toString().replaceAll(/[^a-zA-Z0-9_-]/, '_')
   timepointStr      = timepoint.toString().replaceAll(/[^a-zA-Z0-9_-]/, '_')
@@ -106,6 +115,7 @@ process check_and_merge_replicates {
   MERGED_PREFIX="${mergedPrefix}"
   CONCORDANCE_MIN="${concordanceMin}"
   CONCORDANCE_METHOD="${concordanceMethod}"
+  BIN_SIZE="${concordanceBinSize}"
   SAMPLE_IDS=(${sampleIdList})
 
   echo "════════════════════════════════════════════════════════════"
@@ -166,18 +176,33 @@ process check_and_merge_replicates {
     [[ -f "\${bam}.bai" ]] || samtools index -@ ${task.cpus} "\$bam"
   done
 
-  # ── Per-chromosome read counts via samtools idxstats ──────────────────────
-  # deepTools multiBamSummary was tried (10kb bins and TSS ±500bp windows) but
-  # returned Pearson = 0 for all conditions regardless of actual data quality.
-  # Per-chromosome idxstats counts are fast, need no extra tools, and give the
-  # correct result: all six Dukler replicate pairs score Pearson ≥ 0.99.
+  # ── Genome-wide binned read counts via bedtools multicov ──────────────────
+  # Per-chromosome idxstats totals (used here previously) are dominated by
+  # chromosome length: two samples score a near-1.0 correlation just because
+  # both put proportionally more reads on bigger chromosomes, regardless of
+  # whether their actual signal patterns agree -- weak power to catch real
+  # replicate discordance. deepTools multiBamSummary was tried for genuine
+  # bin-level correlation (10kb bins and TSS ±500bp windows) but returned
+  # Pearson = 0 for all conditions regardless of actual data quality (root
+  # cause not tracked down). bedtools multicov gives the same 10kb-bin
+  # read-count matrix this check was always meant to use, without that
+  # failure mode, using a tool already required elsewhere in this pipeline.
+  GENOME_FILE="chrom_sizes.genome"
+  samtools idxstats "\${FILTERED_BAMS[0]}" \\
+    | awk '\$1 != "*" && \$2 > 0 {print \$1"\\t"\$2}' \\
+    > "\${GENOME_FILE}"
+
+  bedtools makewindows -g "\${GENOME_FILE}" -w "\${BIN_SIZE}" > bins.bed
+
+  bedtools multicov -bams "\${FILTERED_BAMS[@]}" -bed bins.bed > multicov.tsv
+
   for i in "\${!FILTERED_BAMS[@]}"; do
-    samtools idxstats "\${FILTERED_BAMS[\$i]}" \\
-      | awk '\$1 != "*" && \$3 > 0 {print \$1"\\t"\$3}' \\
+    col=\$(( i + 4 ))
+    awk -v c="\${col}" '\$c > 0 {print \$1":"\$2"-"\$3"\\t"\$c}' multicov.tsv \\
       > "counts_\${i}.tsv"
   done
 
-  # ── Python: Pearson / Spearman on chromosome-level counts ─────────────────
+  # ── Python: Pearson / Spearman on genome-wide bin-level counts ───────────
   MIN_CORR=\$(python3 - << 'PYEOF'
 import math, glob, sys
 
@@ -185,16 +210,16 @@ def read_counts(path):
     counts = {}
     with open(path) as f:
         for line in f:
-            chrom, n = line.strip().split("\\t")
-            counts[chrom] = int(n)
+            bin_id, n = line.strip().split("\\t")
+            counts[bin_id] = int(n)
     return counts
 
 def pearson(d1, d2):
-    chroms = sorted(set(d1) & set(d2))
-    if not chroms:
+    keys = sorted(set(d1) & set(d2))
+    if not keys:
         return float("nan")
-    v1 = [d1[c] for c in chroms]
-    v2 = [d2[c] for c in chroms]
+    v1 = [d1[c] for c in keys]
+    v2 = [d2[c] for c in keys]
     n = len(v1)
     m1, m2 = sum(v1)/n, sum(v2)/n
     cov = sum((v1[i]-m1)*(v2[i]-m2) for i in range(n))
@@ -203,11 +228,11 @@ def pearson(d1, d2):
     return cov/(s1*s2) if s1*s2 > 0 else float("nan")
 
 def spearman(d1, d2):
-    chroms = sorted(set(d1) & set(d2))
-    if not chroms:
+    keys = sorted(set(d1) & set(d2))
+    if not keys:
         return float("nan")
-    v1 = [d1[c] for c in chroms]
-    v2 = [d2[c] for c in chroms]
+    v1 = [d1[c] for c in keys]
+    v2 = [d2[c] for c in keys]
     def ranks(lst):
         s = sorted(range(len(lst)), key=lambda i: lst[i])
         r = [0]*len(lst)
@@ -215,8 +240,8 @@ def spearman(d1, d2):
             r[idx] = rank + 1
         return r
     r1, r2 = ranks(v1), ranks(v2)
-    d1r = dict(zip(chroms, r1))
-    d2r = dict(zip(chroms, r2))
+    d1r = dict(zip(keys, r1))
+    d2r = dict(zip(keys, r2))
     return pearson(d1r, d2r)
 
 files = sorted(glob.glob("counts_*.tsv"))

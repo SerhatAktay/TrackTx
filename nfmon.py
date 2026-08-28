@@ -114,6 +114,9 @@ RE_CONTAINER = re.compile(r"(?:^|\s)container\s*>\s*'?(?P<container>[^'\s]+)'?",
 # allocated-CPU count actually lives for Docker-executed tasks — .command.env
 # is never populated by the docker executor.
 RE_RUN_CPUS = re.compile(r"--cpus[= ]([0-9]+(?:\.[0-9]+)?)")
+# Leading per-line timestamp nextflow writes to .nextflow.log, e.g. 'Aug-27 09:12:54.016'.
+# No year is present; parse_log_timestamp() below assumes the current year.
+RE_LOG_TS = re.compile(r"^(?P<ts>[A-Za-z]{3}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})")
 
 def norm_state(tok: str) -> str:
     """Normalize state token to standard format"""
@@ -955,11 +958,50 @@ def parse_line(world: World, line: str, now: float):
         token = "Completed" if ("succeed" in tail or "completed" in tail) else tail
         _apply(world, (m.group("name") or "").strip(), (m.group("tag") or "").strip(), (m.group("id") or "").strip(), token, now)
 
+def parse_log_timestamp(line: str, ref_now: float) -> Optional[float]:
+    """Parse the leading timestamp nextflow writes on each .nextflow.log line
+    (e.g. 'Aug-27 09:12:54.016') into a real epoch time. The log has no year,
+    so the current year is assumed; if that would place the timestamp more
+    than a day in the future relative to ref_now (e.g. bootstrap runs in
+    January against a log written the previous December), the previous year
+    is assumed instead. Returns None for lines with no leading timestamp
+    (continuation lines, stack traces, etc.)."""
+    m = RE_LOG_TS.match(line)
+    if not m:
+        return None
+    try:
+        ref_dt = datetime.fromtimestamp(ref_now)
+        dt = datetime.strptime(m.group("ts"), "%b-%d %H:%M:%S.%f").replace(year=ref_dt.year)
+        ts = dt.timestamp()
+        if ts > ref_now + 86400:
+            dt = dt.replace(year=ref_dt.year - 1)
+            ts = dt.timestamp()
+        return ts
+    except Exception:
+        return None
+
 def bootstrap(world: World, log_path: str):
-    """Bootstrap world state from full log"""
+    """Bootstrap world state from full log.
+
+    Replays the whole log on startup. Each line is timestamped with its own
+    real log time (parsed via parse_log_timestamp), not nfmon's current
+    wall-clock time -- otherwise a task still RUNNING at bootstrap gets
+    first_ts pinned to nfmon's own startup time, and the Age column shows
+    time-since-nfmon-started instead of time-since-task-started for as long
+    as that task keeps running. Lines without a parseable timestamp (e.g.
+    stack-trace continuation lines) reuse the most recent real timestamp
+    seen so far, keeping replay time monotonic; live-tailed lines after
+    bootstrap continue to use time.time() at their own call sites, since
+    those really are happening now.
+    """
+    bootstrap_now = time.time()
+    last_ts = bootstrap_now
     for ln in read_all_lines(log_path):
         update_meta(world, ln)
-        parse_line(world, ln, time.time())
+        parsed_ts = parse_log_timestamp(ln, bootstrap_now)
+        if parsed_ts is not None:
+            last_ts = parsed_ts
+        parse_line(world, ln, last_ts)
         
         if any(k in ln for k in ("ERROR", "FAILED", "Exception", "Caused by:")) and "collect-file" not in ln:
             world.recent_errors.append(ln.strip())

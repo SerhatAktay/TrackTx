@@ -1,38 +1,35 @@
 #!/usr/bin/env python3
 # =============================================================================
-# functional_regions.py — v9.1 (Gene-based, OLD script exact replication)
-# -----------------------------------------------------------------------------
-# PHILOSOPHY: DT sites identify active genes; gene structure defines regions
-# 
-# v9.0 REWRITE: Return to gene-based assignment
-#      - DT sites: DISCOVERY (which genes are active?)
-#      - Gene annotations: ASSIGNMENT (where do reads belong?)
-# 
-# v9.1 FIX: CRITICAL - Replicate old bash script EXACTLY
-#      - Assignment: Use strand-specific intersect (-s or -S)
-#      - Removal: Use UNSTRANDED intersect (-v, NO strand flag!)
-#      - This matches original TrackTx.sh logic precisely
-# 
-# Key difference from v9.0:
-#   v9.0: Used -s flag on removal steps (wrong!)
-#   v9.1: Unstranded removal like old script (correct!)
-# 
-# Overlapping genes: When multiple genes overlap (nested, convergent), a read in the
-#   overlap zone is assigned to the first matching region in the sequential order.
-#   No prioritization by expression or gene type; first match wins.
+# functional_regions.py — Functional Region Assignment for Gene/Enhancer Loci
+# =============================================================================
+#
+# Purpose:
+#   Assigns PRO-seq 3' reads to functional genomic regions (Promoter,
+#   DivergentTx, CPS, Gene body, Termination window, Enhancers) using a
+#   gene-based scheme: divergent-transcription (DT) sites identify which
+#   genes are transcriptionally active; gene annotations then define where
+#   reads within an active locus belong.
 #
 # Assignment logic:
-#   1. Divergent sites overlapping gene promoters → Active Promoters
-#   2. Divergent sites NOT overlapping → Enhancers
-#   3. For genes with active promoters, create extended regions:
-#      - Divergent (opposite strand from promoter)
-#      - Gene body, CPS, Termination window
+#   1. Divergent sites overlapping gene promoters -> Active Promoters
+#   2. Divergent sites NOT overlapping any promoter -> Enhancers
+#   3. For genes with an active promoter, build extended regions:
+#      Divergent (opposite strand from promoter), Gene body, CPS,
+#      Termination window
+#   Reads are assigned sequentially through these regions in the order
+#   above. Each step assigns same/opposite-strand reads (bedtools
+#   intersect -s/-S) but removes ALL overlapping reads from further
+#   consideration regardless of strand (-v, unstranded), matching the
+#   original TrackTx.sh logic this module replaces -- see the removal-step
+#   note in sequential_read_assignment() for what that means for antisense
+#   reads near a region boundary.
 #
-# Key insight: The ~20k divergent sites ARE the promoters/enhancers.
-# We don't create new promoter regions from genes; we categorize the DT sites.
+# Overlapping genes: when multiple genes overlap (nested, convergent), a
+#   read in the overlap zone is assigned to the first matching region in
+#   sequential order -- no prioritization by expression or gene type.
 #
 # Default geometry:
-#   Promoter detection: TSS ±250 bp (defines what counts as promoter overlap)
+#   Promoter detection: TSS -250 .. +249 bp (defines promoter overlap)
 #   Divergent: TSS -750 .. -251 (for +) / TSS +251 .. +750 (for -)
 #   CPS:       TES -500 .. +499 (for +) / TES -499 .. +500 (for -)
 #   TW:        from CPS +500 .. +10499 (for +) / CPS -10499 .. -500 (for -)
@@ -40,10 +37,13 @@
 #
 # Outputs (under --outdir):
 #   functional_regions.bed, functional_regions_summary.tsv
+#
+# See CHANGELOG.md for this script's version history.
+#
 # =============================================================================
 
 from __future__ import annotations
-import argparse, os, sys, shutil, tempfile, subprocess, math
+import argparse, os, sys, shutil, tempfile, subprocess, math, random
 from pathlib import Path
 
 # ---- CLI --------------------------------------------------------------------
@@ -228,16 +228,12 @@ def build_coordinate_lists(genes_tsv: str, tss_map: dict, tes_map: dict):
             # columns, which gtf_to_catalog.py already computes strand-aware
             # (tss = gstart, tes = gend for "+"; tss = gend, tes = gstart for
             # "-" -- see gtf_to_catalog.py build_catalog()). They are ALREADY
-            # the biological TSS/TES for either strand: do not swap them
-            # again here. (Historical bug: this branch used to re-swap them
-            # a second time, on the mistaken assumption that tss/tes were
-            # still raw, unstranded txStart/txEnd -- like the old R script
-            # this module was ported from. Because gtf_to_catalog.py already
-            # does that flip, the second swap put every minus-strand gene's
-            # Promoter/DivergentTx bands at its true 3' end and its CPS band
-            # at its true 5' end. Fixed: TSS = tss, CPS = tes for BOTH
-            # strands; only the downstream offset arithmetic differs by
-            # strand direction, which was already correct below.)
+            # the biological TSS/TES for either strand -- do NOT swap them
+            # again here. Re-swapping (a past bug, see CHANGELOG.md) puts
+            # every minus-strand gene's Promoter/DivergentTx bands at its
+            # true 3' end and its CPS band at its true 5' end. TSS = tss,
+            # CPS = tes for BOTH strands; only the offset arithmetic below
+            # differs by strand direction.
             if strand == "+":
                 TSS = tss
                 CPS = tes
@@ -417,27 +413,46 @@ def bedgraph_to_reads(pos_bg: str, neg_bg: str) -> str:
     # Determine dynamic threshold if quantile mode
     thr = float(args.min_signal)
     if args.min_signal_mode == "quantile":
-        vals: list[float] = []
+        # Reservoir-sample up to RESERVOIR_SIZE |signal| values across BOTH
+        # strand bedGraphs combined, so the quantile threshold reflects the
+        # genome-wide signal distribution. bedGraphs are coordinate-sorted,
+        # so the previous "take the first 200k lines" approach was a
+        # systematic (not random) sample of whichever genomic regions
+        # happen to come first in file order -- and since the cap was
+        # checked against a running total shared across both files, once
+        # pos_bg alone filled the quota neg_bg contributed close to zero
+        # values. Algorithm-R reservoir sampling with a fixed seed gives an
+        # unbiased, order-independent sample in a single memory-bounded
+        # pass, while staying fully deterministic/reproducible.
+        RESERVOIR_SIZE = 200000
+        rng = random.Random(0)
+        reservoir: list[float] = []
+        n_seen = 0
         for bg in (pos_bg, neg_bg):
             if Path(bg).exists() and Path(bg).stat().st_size > 0:
                 with open(bg) as f:
-                    for i, ln in enumerate(f):
+                    for ln in f:
                         if ln.strip() and not ln.startswith(("track","browser","#")):
                             fields = split_fields(ln)
                             if len(fields) >= 4:
                                 try:
-                                    s = abs(float(fields[3]));
-                                    vals.append(s)
+                                    s = abs(float(fields[3]))
                                 except Exception:
-                                    pass
-                        if len(vals) >= 200000:  # cap memory; sample first 200k values
-                            break
-        if vals:
-            vals.sort()
+                                    continue
+                                n_seen += 1
+                                if len(reservoir) < RESERVOIR_SIZE:
+                                    reservoir.append(s)
+                                else:
+                                    j = rng.randint(0, n_seen - 1)
+                                    if j < RESERVOIR_SIZE:
+                                        reservoir[j] = s
+        if reservoir:
+            reservoir.sort()
             q = min(max(args.min_signal_quantile, 0.0), 1.0)
-            idx = int(q * (len(vals)-1))
-            thr = float(vals[idx])
-            log(f"INFO  dynamic min_signal (quantile {q:.2f}) => {thr:.6g}")
+            idx = int(q * (len(reservoir)-1))
+            thr = float(reservoir[idx])
+            log(f"INFO  dynamic min_signal (quantile {q:.2f}, sampled {len(reservoir)}/{n_seen} "
+                f"values from both strands) => {thr:.6g}")
 
     with open(reads_file, "w") as out:
         # Process positive strand
@@ -477,20 +492,30 @@ def bedgraph_to_reads(pos_bg: str, neg_bg: str) -> str:
 # ---- sequential read assignment (NEW LOGIC) ---------------------------------
 def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed: str):
     """
-    v9.1: Sequential read assignment - EXACT replication of old bash script.
-    
-    CRITICAL: Assignment uses strand-specific (-s/-S), removal uses UNSTRANDED (-v)
-    
-    Assignment order (sequential masking):
-    1. Promoter:     assign -s, remove UNSTRANDED
-    2. Divergent:    assign -S, remove UNSTRANDED
-    3. CPS:          assign -s, remove UNSTRANDED
-    4. Gene body:    assign -s, remove UNSTRANDED
+    Sequential read assignment, replicating the original TrackTx.sh logic.
+
+    Assignment order (sequential masking): each step ASSIGNS same/opposite-
+    strand reads (-s/-S) to its category, then REMOVES every overlapping
+    read from the pool regardless of strand (-v, unstranded) before the
+    next step runs.
+
+    1. Promoter:     assign -s, remove unstranded
+    2. Divergent:    assign -S, remove unstranded
+    3. CPS:          assign -s, remove unstranded
+    4. Gene body:    assign -s, remove unstranded
     5. Enhancers:    assign unstranded, remove unstranded
-    6. Termination:  assign -s, remove UNSTRANDED
+    6. Termination:  assign -s, remove unstranded
     7. Non-localized: remaining
-    
-    v10.0: Removed "short genes" step - all genes processed uniformly.
+
+    Consequence of unstranded removal: a read whose position overlaps a
+    region's window on the strand that does NOT match (e.g. an antisense
+    read sitting inside a gene's promoter window) is removed from the pool
+    at that step -- it is never assigned to that category, never reaches
+    later categories, and never lands in "Non-localized polymerase" either.
+    This is invisible in functional_regions_summary.tsv: total reads summed
+    across every reported category will be less than the number of reads
+    fed into this function, by an amount this function does not track or
+    report. All genes are processed uniformly (no short-gene special case).
     """
     current_reads = reads_file
     assigned_reads = {}

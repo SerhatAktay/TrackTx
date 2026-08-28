@@ -1,8 +1,11 @@
-// ────────────────────────────────────────────────────────────────────────────
-// 11b_collect_pol_metrics_per_replicate.nf
-// Collect PER-REPLICATE polymerase gene metrics into one tidy long table.
+// ============================================================================
+// collect_pol_metrics_per_replicate.nf — Per-Replicate Polymerase Metrics Collection
+// ============================================================================
 //
-// WHY THIS EXISTS
+// Purpose:
+//   Collect PER-REPLICATE polymerase gene metrics into one tidy long table.
+//
+// Why this exists:
 //   When params.replicates.merge=true the main pipeline pools replicates into a
 //   single track per condition (n=1). That is correct for visualization, but it
 //   destroys the within-condition variance estimate that any differential test
@@ -16,15 +19,16 @@
 //   DESeq2 / edgeR, where the user supplies the design and the variance comes
 //   from real replication.
 //
-// INPUT
+// Inputs:
 //   samples_tsv : manifest (sample_id, condition, timepoint, replicate, file)
 //                 where `file` is the staged name (metric_N) of that replicate's
 //                 pol_gene_metrics.tsv
 //   metric_*    : the staged per-replicate pol_gene_metrics.tsv files
 //
-// OUTPUT
+// Outputs:
 //   pol_gene_metrics_per_replicate.tsv  (long format; columns below)
-// ────────────────────────────────────────────────────────────────────────────
+//
+// ============================================================================
 
 process collect_pol_metrics_per_replicate {
 

@@ -1,30 +1,28 @@
 #!/usr/bin/env python3
-"""
-detect_divergent_transcription.py
-
-Statistical detection of divergent transcription from PRO-seq data.
-
-Uses relaxed initial thresholds followed by Gaussian Mixture Model scoring
-and FDR-controlled filtering to identify bidirectional transcription sites.
-
-Output BED format: chr, start, end, total_signal, confidence_score
-
-Author: Serhat Aktay (adapted from TrackTx pipeline)
-Date: December 2025
-Version: 1.0
-
-Dependencies: pandas, numpy, scikit-learn, scipy
-
-Usage:
-    python detect_divergent_transcription.py \
-        --pos sample_pos.bedgraph \
-        --neg sample_neg.bedgraph \
-        --out divergent.bed \
-        --threshold 1.0 \
-        --sum-thr 5.0 \
-        --ncores 4 \
-        --fdr 0.05
-"""
+# =============================================================================
+# detect_divergent_transcription.py — Statistical Divergent Transcription Detection
+# =============================================================================
+#
+# Purpose:
+#   Detects divergent transcription from PRO-seq data. Uses relaxed initial
+#   thresholds followed by Gaussian Mixture Model scoring and FDR-controlled
+#   filtering to identify bidirectional transcription sites.
+#
+# Output BED format: chr, start, end, total_signal, confidence_score
+#
+# Dependencies: pandas, numpy, scikit-learn, scipy
+#
+# Usage:
+#   python detect_divergent_transcription.py \
+#       --pos sample_pos.bedgraph \
+#       --neg sample_neg.bedgraph \
+#       --out divergent.bed \
+#       --threshold 1.0 \
+#       --sum-thr 5.0 \
+#       --ncores 4 \
+#       --fdr 0.05
+#
+# =============================================================================
 
 import argparse
 import sys
@@ -531,16 +529,22 @@ def merge_overlapping_regions(
         while i < len(grp):
             s, e = starts[i], ends[i]
             best_score = scores[i]
-            best_total = totals[i]
+            # Bug fix: this used to take max(totals) like the score, so a merged
+            # region reported only its single strongest sub-peak's signal and
+            # silently dropped the rest -- an undercount exactly where merging
+            # matters most (dense, overlapping candidate pairs at busy loci).
+            # The docstring always said "sum of total signal"; make the code
+            # match it.
+            summed_total = totals[i]
             j = i + 1
             
             while j < len(grp) and starts[j] <= e + merge_gap:
                 e = max(e, ends[j])
                 best_score = max(best_score, scores[j])
-                best_total = max(best_total, totals[j])
+                summed_total += totals[j]
                 j += 1
             
-            merged_rows.append((chrom, int(s), int(e), float(best_total), float(best_score)))
+            merged_rows.append((chrom, int(s), int(e), float(summed_total), float(best_score)))
             i = j
     
     result = pd.DataFrame(merged_rows, columns=['chr', 'start', 'end', total_col, score_col])

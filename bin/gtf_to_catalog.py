@@ -1,32 +1,34 @@
 #!/usr/bin/env python3
-# ╔══════════════════════════════════════════════════════════════════════════╗
-# ║  gtf_to_catalog.py — build gene catalog from a GTF/GFF                   ║
-# ║                                                                          ║
-# ║  Inputs  : <in.gtf[.gz]>                                                 ║
-# ║  Outputs : genes.tsv  (gene_id, gene_name, chr, strand, start, end, …)   ║
-# ║            tss.bed    (BED6; 1bp TSS per gene; name = gene_name|gene_id) ║
-# ║            tes.bed    (BED6; 1bp TES per gene; name = gene_name|gene_id) ║
-# ║                                                                          ║
-# ║  Options : --exclude-biotypes rRNA,tRNA  (exclude genes by biotype)       ║
-# ║            --chr-add-prefix|--chr-remove-prefix (normalize chr names)    ║
-# ║                                                                          ║
-# ║  Design                                                                  ║
-# ║   • Streaming parser (low memory); tolerant to GTF or GFF attributes.    ║
-# ║   • Source-agnostic: Ensembl ("1"/"MT"), GENCODE ("chr1"), RefSeq        ║
-# ║     (renamed "chr1") — incl. files carrying stray CR / CRLF line         ║
-# ║     endings from NCBI assembly-report based renaming.                    ║
-# ║   • Falls back across common keys: gene_id, gene_name, biotype           ║
-# ║   • Consolidates per-gene extents using gene features when present;     ║
-# ║     otherwise uses min/max across transcripts/exons.                      ║
-# ║   • Coordinates are pooled ONLY within a single contig. A gene_id that   ║
-# ║     appears on more than one contig (e.g. a primary chromosome plus an   ║
-# ║     alt-haplotype/patch/random duplicate) is resolved to ONE locus via   ║
-# ║     _select_primary_locus() — never merged into one nonsensical window.  ║
-# ║   • Deterministic iteration/sorting at write stage.                       ║
-# ║   • BED rows are BED6, 0-based start, 1-based end, with strand.           ║
-# ║   • Aborts (non-zero exit) if any output gene has an empty/whitespace     ║
-# ║     chromosome — this can never silently corrupt downstream steps.        ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
+# =============================================================================
+# gtf_to_catalog.py — Build Gene Catalog from a GTF/GFF
+# =============================================================================
+#
+# Inputs  : <in.gtf[.gz]>
+# Outputs : genes.tsv  (gene_id, gene_name, chr, strand, start, end, ...)
+#           tss.bed    (BED6; 1bp TSS per gene; name = gene_name|gene_id)
+#           tes.bed    (BED6; 1bp TES per gene; name = gene_name|gene_id)
+#
+# Options : --exclude-biotypes rRNA,tRNA  (exclude genes by biotype)
+#           --chr-add-prefix|--chr-remove-prefix (normalize chr names)
+#
+# Design:
+#   • Streaming parser (low memory); tolerant to GTF or GFF attributes.
+#   • Source-agnostic: Ensembl ("1"/"MT"), GENCODE ("chr1"), RefSeq
+#     (renamed "chr1") -- incl. files carrying stray CR / CRLF line
+#     endings from NCBI assembly-report based renaming.
+#   • Falls back across common keys: gene_id, gene_name, biotype
+#   • Consolidates per-gene extents using gene features when present;
+#     otherwise uses min/max across transcripts/exons.
+#   • Coordinates are pooled ONLY within a single contig. A gene_id that
+#     appears on more than one contig (e.g. a primary chromosome plus an
+#     alt-haplotype/patch/random duplicate) is resolved to ONE locus via
+#     _select_primary_locus() -- never merged into one nonsensical window.
+#   • Deterministic iteration/sorting at write stage.
+#   • BED rows are BED6, 0-based start, 1-based end, with strand.
+#   • Aborts (non-zero exit) if any output gene has an empty/whitespace
+#     chromosome -- this can never silently corrupt downstream steps.
+#
+# =============================================================================
 
 from __future__ import annotations
 import sys, os, io, gzip, datetime, argparse
