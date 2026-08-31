@@ -50,8 +50,18 @@ process download_genome_annotations {
   cache      'lenient'
   conda      'envs/tracktx.yaml'
 
-  // Persistent storage for caching across runs (includes annotation_source for cache key)
-  storeDir   "${params.assets_dir ?: "${projectDir}/assets"}/annotation/${params.reference_genome}_${params.annotation_source ?: 'refseq'}_${params.annotation_exclude_biotypes ?: ''}_${params.annotation_chr_naming ?: 'none'}"
+  // Persistent storage for caching across runs (includes annotation_source for cache key).
+  // When reference_genome='other', params.reference_genome is the literal
+  // string "other" for every custom-genome dataset -- without the extra
+  // params.custom_genome_id suffix below, two different custom genomes
+  // (e.g. maize vs. E. coli) would collapse to the same cache directory and
+  // the second dataset to run would silently inherit the first's gene
+  // catalog. main.nf requires --custom_genome_id whenever reference_genome
+  // is 'other' (fails fast if missing, see customGenomeId there) -- reuse
+  // that same required value here, sanitized to safe path characters, so
+  // this cache key and module 04's genome/index cache key are always
+  // derived from the same user-chosen name.
+  storeDir   "${params.assets_dir ?: "${projectDir}/assets"}/annotation/${params.reference_genome == 'other' ? 'other_' + params.custom_genome_id.toString().trim().replaceAll(/[^A-Za-z0-9_.-]/, '_') : params.reference_genome}_${params.annotation_source ?: 'refseq'}_${params.annotation_exclude_biotypes ?: ''}_${params.annotation_chr_naming ?: 'none'}"
   
   // Use params.publish_mode: 'link' (default) or 'copy' (required for exFAT/USB drives)
   publishDir "${params.output_dir}/00_references/${params.reference_genome}", 

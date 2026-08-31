@@ -23,6 +23,15 @@
 #     appears on more than one contig (e.g. a primary chromosome plus an
 #     alt-haplotype/patch/random duplicate) is resolved to ONE locus via
 #     _select_primary_locus() -- never merged into one nonsensical window.
+#   • Within a single contig, a gene_id's rows are further split into
+#     spatial clusters wherever consecutive rows are more than
+#     MAX_INTRON_GAP_BP apart (see _cluster_intervals_by_gap()) -- this
+#     catches a DIFFERENT collision than the multi-contig case above: two
+#     unrelated genomic loci that happen to share one gene_id on the SAME
+#     chromosome (e.g. a repeat-family/tRNA naming convention that reuses
+#     one symbol for many genomic copies, or an unrelated gene elsewhere
+#     reusing a symbol). Only the best-supported cluster is kept; dropped
+#     clusters are logged loudly, never silently pooled into one span.
 #   • Deterministic iteration/sorting at write stage.
 #   • BED rows are BED6, 0-based start, 1-based end, with strand.
 #   • Aborts (non-zero exit) if any output gene has an empty/whitespace
@@ -244,25 +253,101 @@ def _select_primary_locus(gid: str, loci: Dict[str, dict], kind: str) -> Tuple[s
     return chosen, loci[chosen]
 
 
+# Ceiling on the gap between two of a gene_id's rows on one contig before
+# they're treated as unrelated loci rather than one gene's own intron.
+# Calibrated against real data, not guessed: every genuinely giant gene
+# checked in this pipeline's own genome builds (human CNTNAP2 ~2.3Mb/1
+# transcript row, DMD ~2.2Mb/17 rows, PTPRD ~2.3Mb/10 rows, DLG2 ~2.2Mb/27
+# rows, mouse's Igk immunoglobulin locus ~3.2Mb/1 row) has a MAX INTERNAL
+# GAP of exactly 0bp -- every row overlaps the next, because each
+# transcript/isoform row already spans that isoform's own full length
+# including its introns. A real confirmed collision (two unrelated loci
+# sharing one gene_id, e.g. a repeat-family/tRNA naming convention, or an
+# unrelated gene symbol reused elsewhere on the same chromosome) instead
+# jumps by millions of bp with nothing in between (observed: 3.49Mb, 4.14Mb,
+# 17.6Mb, 31Mb in this pipeline's own genome builds). 2Mb sits safely above
+# every real 0-gap giant found and safely below every confirmed collision.
+MAX_INTRON_GAP_BP = 2_000_000
+
+
+def _cluster_intervals_by_gap(
+    intervals: list[tuple[int, int]], max_gap: int
+) -> list[tuple[int, int, int]]:
+    """Group (start, end) rows for one gene_id on ONE contig into spatial
+    clusters, splitting wherever the gap to the next row exceeds max_gap.
+
+    Returns one (cluster_start, cluster_end, n_rows) tuple per cluster,
+    sorted by n_rows descending (most-supported cluster first; ties broken
+    by cluster_start for determinism).
+    """
+    if not intervals:
+        return []
+    ivs = sorted(intervals)
+    clusters: list[list[int]] = [[ivs[0][0], ivs[0][1], 1]]
+    for s, e in ivs[1:]:
+        cur = clusters[-1]
+        if s - cur[1] > max_gap:
+            clusters.append([s, e, 1])
+        else:
+            cur[1] = max(cur[1], e)
+            cur[2] += 1
+    clusters.sort(key=lambda c: (-c[2], c[0]))
+    return [tuple(c) for c in clusters]
+
+
+def _resolve_span(
+    intervals: list[tuple[int, int]], gid: str, chrom: str, kind: str
+) -> Tuple[int, int]:
+    """Collapse one gene_id's rows on one contig into a single (start, end)
+    span, guarding against the same-chromosome collision _select_primary_locus
+    doesn't cover (see MAX_INTRON_GAP_BP above). The single-cluster case
+    (the overwhelming majority of genes) is a plain min/max with no logging,
+    identical to the old behavior. A multi-cluster case keeps only the
+    best-supported cluster and logs exactly what was dropped -- same
+    never-silently-pool philosophy as _select_primary_locus above.
+    """
+    clusters = _cluster_intervals_by_gap(intervals, MAX_INTRON_GAP_BP)
+    if len(clusters) == 1:
+        s, e, _n = clusters[0]
+        return s, e
+    kept = clusters[0]
+    dropped = clusters[1:]
+    sys.stderr.write(
+        f"[gtf_to_catalog] WARNING: {kind} {gid!r} on {chrom!r} has "
+        f"{sum(c[2] for c in clusters)} rows split across {len(clusters)} "
+        f"clusters more than {MAX_INTRON_GAP_BP:,}bp apart -- likely two "
+        f"unrelated loci sharing one gene_id (e.g. a repeat-family/tRNA "
+        f"naming collision), not one gene's own intron. Keeping the "
+        f"best-supported cluster {kept[0]}-{kept[1]} ({kept[2]} rows); "
+        f"dropping {[(d[0], d[1], d[2]) for d in dropped]} (start, end, "
+        f"n_rows). Coordinates are NOT pooled across clusters.\n"
+    )
+    return kept[0], kept[1]
+
+
 def build_catalog(gtf_path: str) -> Tuple[
     Dict[str, Dict[str, Dict[str, object]]],
-    Dict[str, Dict[str, int]], Dict[str, Dict[str, int]],
+    Dict[str, Dict[str, list]],
     Hints,
 ]:
     """
     Single streaming pass. Returns:
-      genes  : gene_id -> chrom -> {strand, start, end, gene_name, biotype}
-               (kept PER CHROMOSOME — a gene_id's rows are only ever pooled
-               with other rows on the SAME contig; see _select_primary_locus
-               for how one locus is chosen when a gene_id spans more than one)
-      tx_min : gene_id -> chrom -> min coord across transcript/exon-like rows
-      tx_max : gene_id -> chrom -> max coord across transcript/exon-like rows
-      hints  : Hints() with strand/name/biotype fallbacks per gene_id, used
-               only when a gene has no explicit 'gene' feature row at all
+      genes        : gene_id -> chrom -> {strand, intervals, gene_name, biotype}
+                     (kept PER CHROMOSOME — a gene_id's rows are only ever
+                     grouped with other rows on the SAME contig; see
+                     _select_primary_locus for how one CONTIG is chosen when a
+                     gene_id spans more than one, and _resolve_span for how one
+                     SPAN is chosen when a gene_id's rows on one contig are
+                     themselves split into unrelated spatial clusters)
+      tx_intervals : gene_id -> chrom -> list of (start, end) rows from every
+                     transcript/exon-like feature -- kept as a full list, not
+                     collapsed to a running min/max, so _resolve_span can
+                     detect a same-chromosome collision after the fact
+      hints        : Hints() with strand/name/biotype fallbacks per gene_id,
+                     used only when a gene has no explicit 'gene' feature row
     """
     genes: Dict[str, Dict[str, Dict[str, object]]] = defaultdict(dict)
-    tx_min: Dict[str, Dict[str, int]] = defaultdict(dict)
-    tx_max: Dict[str, Dict[str, int]] = defaultdict(dict)
+    tx_intervals: Dict[str, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
     hints = Hints()
 
     with open_text(gtf_path) as fh:
@@ -299,33 +384,28 @@ def build_catalog(gtf_path: str) -> Tuple[
                 if loc is None:
                     genes[gid][chrom] = {
                         "strand": strand if strand in {"+", "-"} else hints.strand.get(gid, "+"),
-                        "start": s,
-                        "end": e,
+                        "intervals": [(s, e)],
                         "gene_name": gname or gid,
                         "biotype": gtype or "",
                     }
                 else:
                     # Multiple 'gene' rows on the SAME contig for this
-                    # gene_id (rare but valid, e.g. split annotation
-                    # records) — safe to pool since they share a location.
-                    loc["start"] = min(loc["start"], s)
-                    loc["end"] = max(loc["end"], e)
+                    # gene_id -- kept as separate intervals (not pooled here)
+                    # so _resolve_span can tell a real split annotation record
+                    # apart from two unrelated loci sharing one gene_id.
+                    loc["intervals"].append((s, e))
                     if loc["gene_name"] == gid and gname:
                         loc["gene_name"] = gname
                     if not loc["biotype"] and gtype:
                         loc["biotype"] = gtype
             elif feat_l in _TX_LIKE:
-                cur_min = tx_min[gid].get(chrom, 10**18)
-                cur_max = tx_max[gid].get(chrom, -1)
-                tx_min[gid][chrom] = min(cur_min, s)
-                tx_max[gid][chrom] = max(cur_max, e)
+                tx_intervals[gid][chrom].append((s, e))
 
-    return genes, tx_min, tx_max, hints
+    return genes, tx_intervals, hints
 
 
 def finalize_rows(genes: Dict[str, Dict[str, Dict[str, object]]],
-                  tx_min: Dict[str, Dict[str, int]],
-                  tx_max: Dict[str, Dict[str, int]],
+                  tx_intervals: Dict[str, Dict[str, list]],
                   hints: Hints) -> list[tuple]:
     """
     Build final per-gene rows:
@@ -333,20 +413,35 @@ def finalize_rows(genes: Dict[str, Dict[str, Dict[str, object]]],
 
     Logic:
       1. If explicit 'gene' features exist anywhere in the GTF, use those
-         (per gene_id, resolved to a single contig via _select_primary_locus
+         (per gene_id: each contig's own rows are first collapsed to one span
+         via _resolve_span, then _select_primary_locus picks a single contig
          when a gene_id has rows on more than one).
-      2. Otherwise infer genes from transcript/exon-like rows, resolved to a
-         single contig the same way.
+      2. Otherwise infer genes from transcript/exon-like rows, resolved the
+         same way (_resolve_span per contig, then _select_primary_locus).
     """
     out = []
     has_explicit_genes = len(genes) > 0
 
     if has_explicit_genes:
         for gid in sorted(genes.keys()):
-            chrom, g = _select_primary_locus(gid, genes[gid], "gene_id")
+            loci = {}
+            for chrom, loc in genes[gid].items():
+                s, e = _resolve_span(loc["intervals"], gid, chrom, "gene_id")
+                if e <= s:
+                    continue
+                loci[chrom] = {
+                    "strand": loc["strand"],
+                    "start": s,
+                    "end": e,
+                    "gene_name": loc["gene_name"],
+                    "biotype": loc["biotype"],
+                }
+            if not loci:
+                continue
+            chrom, g = _select_primary_locus(gid, loci, "gene_id")
             strand = str(g.get("strand") or hints.strand.get(gid) or "+")
-            gstart = int(g.get("start") or tx_min.get(gid, {}).get(chrom, 1))
-            gend   = int(g.get("end")   or tx_max.get(gid, {}).get(chrom, gstart))
+            gstart = int(g.get("start") or 1)
+            gend   = int(g.get("end")   or gstart)
             gname  = str(g.get("gene_name") or hints.name.get(gid) or gid)
             gtype  = str(g.get("biotype") or hints.bio.get(gid) or "")
             if gend <= gstart:
@@ -355,16 +450,16 @@ def finalize_rows(genes: Dict[str, Dict[str, Dict[str, object]]],
             tes = gend   if strand == "+" else gstart
             out.append((gid, gname, chrom, strand, gstart, gend, tss, tes, gtype))
     else:
-        all_ids = set(tx_min.keys()) | set(tx_max.keys())
+        all_ids = set(tx_intervals.keys())
         for gid in sorted(all_ids):
-            chroms = set(tx_min.get(gid, {})) | set(tx_max.get(gid, {}))
             loci = {}
-            for c in chroms:
-                t_min = tx_min.get(gid, {}).get(c)
-                t_max = tx_max.get(gid, {}).get(c)
-                if t_min is None or t_max is None or t_max <= t_min:
+            for chrom, intervals in tx_intervals.get(gid, {}).items():
+                if not intervals:
                     continue
-                loci[c] = {"start": t_min, "end": t_max}
+                s, e = _resolve_span(intervals, gid, chrom, "gene_id (inferred from transcripts)")
+                if e <= s:
+                    continue
+                loci[chrom] = {"start": s, "end": e}
             if not loci:
                 # No chromosome info, or no valid span, on any contig — skip
                 continue
@@ -461,8 +556,8 @@ def main(argv: list[str]) -> int:
         return 2
 
     # Single streaming pass collects genes + hints together (no fragile re-read).
-    genes, tx_min, tx_max, hints = build_catalog(gtf_in)
-    rows = finalize_rows(genes, tx_min, tx_max, hints)
+    genes, tx_intervals, hints = build_catalog(gtf_in)
+    rows = finalize_rows(genes, tx_intervals, hints)
 
     # Filter by biotype if requested
     if exclude_biotypes:

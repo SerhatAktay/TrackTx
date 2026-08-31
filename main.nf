@@ -160,9 +160,42 @@ Debug mode:       ${params.debug ?: false}
   if (params.reference_genome == 'other' && !params.genome_fasta) {
     error "PIPELINE | ERROR | When reference_genome=other, must provide --genome_fasta"
   }
+  // A custom ('other') reference genome used to collapse every dataset down
+  // to the literal id 'custom' everywhere below -- harmless while only one
+  // dataset at a time ever used 'other', but two different 'other' genomes
+  // (e.g. maize vs. E. coli, both reference_genome='other') share nothing
+  // that distinguishes them, and modules 01/04's storeDir caching is keyed
+  // on exactly this id: the second such dataset to run would silently
+  // reuse the first's genome, Bowtie2 index, and gene catalog (Nextflow's
+  // storeDir skips re-executing a process whenever its declared outputs
+  // already exist at that path -- it never inspects the actual input, and
+  // this persists across separate `nextflow run` invocations, not just
+  // within one). Requiring an explicit, unique name -- same
+  // required-when-other pattern as --genome_fasta just above -- fails fast
+  // at validation time instead of silently defaulting, and gives the cache
+  // directory a human-readable name (assets/references/custom_ecoli_asm584v2/)
+  // instead of an opaque one.
+  if (params.reference_genome == 'other' && !params.custom_genome_id?.toString()?.trim()) {
+    error "PIPELINE | ERROR | When reference_genome=other, must provide --custom_genome_id -- a short, unique name for this genome (e.g. 'ecoli_ASM584v2'). Used as the cache/output directory name so distinct custom genomes never collide; every 'other' dataset needs its own value."
+  }
   if (params.spikein_genome == 'other' && !params.spikein_fasta) {
     error "PIPELINE | ERROR | When spikein_genome=other, must provide --spikein_fasta"
   }
+  if (params.spikein_genome == 'other' && !params.custom_spikein_id?.toString()?.trim()) {
+    error "PIPELINE | ERROR | When spikein_genome=other, must provide --custom_spikein_id -- a short, unique name for this spike-in genome, same reasoning as --custom_genome_id above."
+  }
+
+  // Sanitized to safe path characters only, since this becomes part of a
+  // storeDir path verbatim; prefixed so a custom id can never collide with
+  // a real named-genome cache directory (e.g. someone naming their custom
+  // genome "mm10").
+  def sanitizeGenomeId = { raw -> raw.toString().trim().replaceAll(/[^A-Za-z0-9_.-]/, '_') }
+  def customGenomeId = params.reference_genome == 'other'
+    ? "custom_${sanitizeGenomeId(params.custom_genome_id)}"
+    : null
+  def customSpikeinId = params.spikein_genome == 'other'
+    ? "custom_spike_${sanitizeGenomeId(params.custom_spikein_id)}"
+    : null
 
   // Validate samplesheet exists (resolve relative paths from projectDir)
   def samplesheetPath = params.samplesheet?.trim()
@@ -458,7 +491,7 @@ Paths are relative to: ${projectDir}"""
 
   build_index(
     channel.value(tuple(
-      params.reference_genome == 'other' ? 'custom' : params.reference_genome,
+      params.reference_genome == 'other' ? customGenomeId : params.reference_genome,
       params.reference_genome == 'other' ? 'custom' : 'ucsc',
       reference_fa
     ))
@@ -483,7 +516,7 @@ Paths are relative to: ${projectDir}"""
 
     spike_index(
       channel.value(tuple(
-        params.spikein_genome == 'other' ? 'custom_spike' : params.spikein_genome,
+        params.spikein_genome == 'other' ? customSpikeinId : params.spikein_genome,
         params.spikein_genome == 'other' ? 'custom' : 'ucsc',
         spike_fa
       ))
@@ -1183,7 +1216,7 @@ Paths are relative to: ${projectDir}"""
 
   // Same genome_id used to build the primary Bowtie2 index (STEP 5), so the
   // IGV session file declares the correct reference instead of a hardcoded one.
-  def cohort_genome_id = (params.reference_genome == 'other') ? 'custom' : params.reference_genome
+  def cohort_genome_id = (params.reference_genome == 'other') ? customGenomeId : params.reference_genome
 
   cohort_qc_and_viz(
     multiqc_logs_ch,

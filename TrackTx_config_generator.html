@@ -103,6 +103,9 @@ strong { color:var(--fg); }
        box-shadow:0 0 0 3px var(--accent-soft); }
 .input.mono { font-family:var(--mono); }
 .small-input{ max-width:260px; }
+.detect-fields{ transition: filter 0.15s ease, opacity 0.15s ease; }
+.detect-fields-inert{ filter: blur(2.5px); opacity:0.55; pointer-events:none; user-select:none; }
+.detect-auto-note{ color: var(--accent, #b5651d); font-style: italic; }
 .select { position:relative; display:inline-block; width:100%; }
 .select select { appearance:none; -webkit-appearance:none; padding-right:2rem; cursor:pointer; }
 .select::after { content:"▾"; position:absolute; right:0.7rem; top:50%;
@@ -387,6 +390,11 @@ optgroup{ color:var(--fg); }
               <input class="input" type="text" id="ref_genome_path" placeholder="/path/to/genome.fa or genome.fa.gz">
               <p class="help">Full path to your genome FASTA file (gzipped OK).</p>
             </div>
+            <div class="field">
+              <label class="label">Custom Genome Name</label>
+              <input class="input" type="text" id="ref_genome_custom_id" placeholder="e.g. ecoli_ASM584v2">
+              <p class="help">Required. A short, unique name for this genome -- becomes its cache directory name, so every custom genome in your cohort needs a different one (two datasets sharing a name/blank value will silently share the same cached genome, index, and gene catalog).</p>
+            </div>
           </div>
         </div>
         
@@ -421,6 +429,11 @@ optgroup{ color:var(--fg); }
               <label class="label">Custom Spike-in FASTA</label>
               <input class="input" type="text" id="spikein_genome_path" placeholder="/path/to/spikein.fa or spikein.fa.gz">
               <p class="help">Full path to spike-in genome FASTA file.</p>
+            </div>
+            <div class="field">
+              <label class="label">Custom Spike-in Name</label>
+              <input class="input" type="text" id="spikein_genome_custom_id" placeholder="e.g. my_custom_spikein">
+              <p class="help">Required. Same reasoning as Custom Genome Name above, kept separate so it can never collide with the primary genome's name.</p>
             </div>
           </div>
         </div>
@@ -589,7 +602,7 @@ optgroup{ color:var(--fg); }
       </div>
       
       <div id="umiOptions" style="display:none" class="mt-4">
-        <div class="columns">
+        <div class="columns detect-fields" id="umi_fields_wrap">
           <div class="column is-one-quarter">
             <div class="field">
               <label class="label">UMI Length (bases)</label>
@@ -611,9 +624,44 @@ optgroup{ color:var(--fg); }
               <p class="help">PRO-seq UMIs are typically at the 5' end. Check your protocol if unsure.</p>
             </div>
           </div>
+          <div class="column">
+            <div class="field">
+              <label class="label">Which Read</label>
+              <div class="control">
+                <label class="radio">
+                  <input type="radio" name="umi_read" value="R1" checked> R1
+                </label>
+                <label class="radio">
+                  <input type="radio" name="umi_read" value="R2"> R2
+                </label>
+              </div>
+              <p class="help">Which mate carries the UMI. Depends on ligation order in your library prep — most protocols put it on R1, but not all (see help text below).</p>
+            </div>
+          </div>
+        </div>
+        <p class="help detect-auto-note" id="umi_auto_note" style="display:none"><strong>Grayed out because they won't be used:</strong> auto-detect will scan the raw reads and decide the length, location, and read itself, regardless of what's set above.</p>
+        <div class="field mt-2">
+          <label class="label">How sure are you about the length/location/read above?</label>
+          <div class="control">
+            <label class="radio">
+              <input type="radio" name="umi_detect_mode" value="trust" checked onclick="updateDetectModeUI('umi')"> I know exactly where it is — use my settings as given
+            </label><br>
+            <label class="radio">
+              <input type="radio" name="umi_detect_mode" value="auto" onclick="updateDetectModeUI('umi')"> I don't know — scan the raw reads and figure it out automatically
+            </label><br>
+            <label class="radio">
+              <input type="radio" name="umi_detect_mode" value="verify" onclick="updateDetectModeUI('umi')"> I'm not sure — use my settings, but stop the pipeline if the raw reads don't actually look like that
+            </label>
+          </div>
+          <div id="umi_tolerance_row" style="display:none" class="mt-2">
+            <label class="label">Verify tolerance (bases)</label>
+            <input class="input small-input" id="umi_detect_tolerance" type="number" min="0" max="10" value="1">
+            <p class="help">How many bases of wiggle room to allow before "I'm not sure" counts it as a mismatch and halts.</p>
+          </div>
+          <p class="help">"Automatically" and "stop if it doesn't match" both work by comparing the letter-mix at each end of your raw reads to the letter-mix in the middle — a real UMI looks random, a real barcode looks fixed. It's a good sanity check, not a substitute for knowing your library prep.</p>
         </div>
       </div>
-      
+
       <!-- Barcode Section -->
       <div class="section-header mt-6"><strong>Sample Barcodes</strong> (Multiplexing)</div>
       <div class="help-box mb-4">
@@ -631,7 +679,7 @@ optgroup{ color:var(--fg); }
       </div>
       
       <div id="barcodeOptions" style="display:none" class="mt-4">
-        <div class="columns">
+        <div class="columns detect-fields" id="barcode_fields_wrap">
           <div class="column is-one-quarter">
             <div class="field">
               <label class="label">Barcode Length (bases)</label>
@@ -653,9 +701,43 @@ optgroup{ color:var(--fg); }
               <p class="help">Most inline barcodes are at the 5' end. If you also have UMIs, the barcode typically comes after the UMI.</p>
             </div>
           </div>
+          <div class="column">
+            <div class="field">
+              <label class="label">Which Read</label>
+              <div class="control">
+                <label class="radio">
+                  <input type="radio" name="barcode_read" value="R1" checked> R1
+                </label>
+                <label class="radio">
+                  <input type="radio" name="barcode_read" value="R2"> R2
+                </label>
+              </div>
+              <p class="help">Which mate carries the barcode.</p>
+            </div>
+          </div>
+        </div>
+        <p class="help detect-auto-note" id="barcode_auto_note" style="display:none"><strong>Grayed out because they won't be used:</strong> auto-detect will scan the raw reads and decide the length, location, and read itself, regardless of what's set above.</p>
+        <div class="field mt-2">
+          <label class="label">How sure are you about the length/location/read above?</label>
+          <div class="control">
+            <label class="radio">
+              <input type="radio" name="barcode_detect_mode" value="trust" checked onclick="updateDetectModeUI('barcode')"> I know exactly where it is — use my settings as given
+            </label><br>
+            <label class="radio">
+              <input type="radio" name="barcode_detect_mode" value="auto" onclick="updateDetectModeUI('barcode')"> I don't know — scan the raw reads and figure it out automatically
+            </label><br>
+            <label class="radio">
+              <input type="radio" name="barcode_detect_mode" value="verify" onclick="updateDetectModeUI('barcode')"> I'm not sure — use my settings, but stop the pipeline if the raw reads don't actually look like that
+            </label>
+          </div>
+          <div id="barcode_tolerance_row" style="display:none" class="mt-2">
+            <label class="label">Verify tolerance (bases)</label>
+            <input class="input small-input" id="barcode_detect_tolerance" type="number" min="0" max="10" value="1">
+            <p class="help">How many bases of wiggle room to allow before "I'm not sure" counts it as a mismatch and halts.</p>
+          </div>
         </div>
       </div>
-      
+
       <!-- Bowtie2 options -->
     </div>
 
@@ -1320,6 +1402,27 @@ function toggleBlock(id, show){
   el.style.display = (show === undefined) ? (el.style.display==='none'?'block':'none') : (show?'block':'none');
 }
 
+function updateDetectModeUI(kind){
+  // kind is 'umi' or 'barcode'. Two things change with detect_mode:
+  //  - the tolerance field only makes sense for "verify" ("I'm not sure")
+  //  - the length/location/read inputs above get blurred + disabled under
+  //    "auto" ("I don't know"), since whatever's typed there is ignored —
+  //    the QC scan decides those values instead. Blurring (not just hiding)
+  //    keeps the user's typed values visible-but-inert, so switching back
+  //    to "trust" restores exactly what they had.
+  const mode = document.querySelector(`input[name="${kind}_detect_mode"]:checked`)?.value;
+  toggleBlock(`${kind}_tolerance_row`, mode === 'verify');
+
+  const wrap = document.getElementById(`${kind}_fields_wrap`);
+  const note = document.getElementById(`${kind}_auto_note`);
+  const isAuto = mode === 'auto';
+  if(wrap){
+    wrap.classList.toggle('detect-fields-inert', isAuto);
+    wrap.querySelectorAll('input').forEach(el => { el.disabled = isAuto; });
+  }
+  if(note) note.style.display = isAuto ? 'block' : 'none';
+}
+
 function toggleOtherGenomeUpload(kind){
   if(kind==='ref'){
     const show = ($('#ref_genome').value === 'other');
@@ -1533,6 +1636,16 @@ function collectAnalysisWarnings(){
       warnings.push(`Sample "${sname}": timepoint "${tp}" is not a plain number — use e.g. "30" not "30min" (pick one consistent unit across all samples).`);
     }
   });
+  // Custom genome/spike-in name: required by the pipeline whenever
+  // reference_genome/spikein_genome is 'other' -- it fails fast at
+  // validation time if missing, same as a missing FASTA path. Warn here too
+  // so the gap is visible before the run, not after a failed submission.
+  if($('#ref_genome')?.value === 'other' && !$('#ref_genome_custom_id')?.value.trim()){
+    warnings.push('Reference genome is "Custom" but no Custom Genome Name is set -- the pipeline will refuse to run without one (required so two different custom genomes never share a cache directory).');
+  }
+  if($('#spike_genome')?.value === 'other' && !$('#spikein_genome_custom_id')?.value.trim()){
+    warnings.push('Spike-in genome is "Custom" but no Custom Spike-in Name is set -- the pipeline will refuse to run without one.');
+  }
   // Control condition: if left on auto-detect but the earliest timepoint is
   // genuinely tied between two+ conditions, the pipeline will refuse to guess
   // and siCPM will be disabled until control_label is set explicitly.
@@ -1559,6 +1672,8 @@ function buildYAML(){
   const spikeGenome = $('#spike_genome').value;
   const genomeFasta = (refGenome==='other') ? ($('#ref_genome_path').value.trim() || null) : null;
   const spikeFasta  = (spikeGenome==='other') ? ($('#spikein_genome_path').value.trim() || null) : null;
+  const customGenomeId  = (refGenome==='other')   ? ($('#ref_genome_custom_id').value.trim()      || null) : null;
+  const customSpikeinId = (spikeGenome==='other') ? ($('#spikein_genome_custom_id').value.trim()  || null) : null;
 
   const gtfPath = (refGenome==='other') ? ($('#gtf_path').value.trim() || '') : '';
   const gtfUrl  = (refGenome==='other') ? ($('#gtf_url').value.trim()  || '') : '';
@@ -1582,13 +1697,19 @@ function buildYAML(){
   const qcEnabled = !!$('#qc_enabled')?.checked;
   const qcRaw     = !!$('#qc_raw')?.checked;
 
-  const umiOn  = $('#enableUMI').checked;
-  const umiLen = umiOn ? parseInt($('#umi_length').value||'8',10) : 0;
-  const umiLoc = umiOn ? parseInt(document.querySelector('input[name="umi_end"]:checked')?.value || '5',10) : 5;
+  const umiOn   = $('#enableUMI').checked;
+  const umiLen  = umiOn ? parseInt($('#umi_length').value||'8',10) : 0;
+  const umiLoc  = umiOn ? parseInt(document.querySelector('input[name="umi_end"]:checked')?.value || '5',10) : 5;
+  const umiRead = document.querySelector('input[name="umi_read"]:checked')?.value || 'R1';
+  const umiDetectMode = document.querySelector('input[name="umi_detect_mode"]:checked')?.value || 'trust';
+  const umiDetectTol  = parseInt($('#umi_detect_tolerance')?.value || '1', 10);
 
-  const bcOn  = $('#enableBarcode').checked;
-  const bcLen = bcOn ? parseInt($('#barcode_length').value||'6',10) : 0;
-  const bcLoc = bcOn ? parseInt(document.querySelector('input[name="barcode_end"]:checked')?.value || '5',10) : 5;
+  const bcOn   = $('#enableBarcode').checked;
+  const bcLen  = bcOn ? parseInt($('#barcode_length').value||'6',10) : 0;
+  const bcLoc  = bcOn ? parseInt(document.querySelector('input[name="barcode_end"]:checked')?.value || '5',10) : 5;
+  const bcRead = document.querySelector('input[name="barcode_read"]:checked')?.value || 'R1';
+  const bcDetectMode = document.querySelector('input[name="barcode_detect_mode"]:checked')?.value || 'trust';
+  const bcDetectTol  = parseInt($('#barcode_detect_tolerance')?.value || '1', 10);
 
   // Divergent (statistical)
   const divThrVal = $('#div_thr').value.trim();
@@ -1682,8 +1803,18 @@ function buildYAML(){
   y += `# Reference genomes\n`;
   y += `reference_genome: ${mono(refGenome)}\n`;
   y += `genome_fasta: ${genomeFasta?mono(genomeFasta):'null'}\n`;
+  if(refGenome==='other'){
+    // Required by the pipeline whenever reference_genome=other -- it fails
+    // fast if missing. Used as the genome/index/annotation cache directory
+    // name so two different custom genomes never collide.
+    y += `custom_genome_id: ${customGenomeId?mono(customGenomeId):'null'}\n`;
+  }
   y += `spikein_genome: ${mono(spikeGenome)}\n`;
-  y += `spikein_fasta: ${spikeFasta?mono(spikeFasta):'null'}\n\n`;
+  y += `spikein_fasta: ${spikeFasta?mono(spikeFasta):'null'}\n`;
+  if(spikeGenome==='other'){
+    y += `custom_spikein_id: ${customSpikeinId?mono(customSpikeinId):'null'}\n`;
+  }
+  y += `\n`;
 
   const preprocessLenientCache = !!$('#preprocess_reads_lenient_cache')?.checked;
   y += `# Directories\n`;
@@ -1727,13 +1858,19 @@ function buildYAML(){
   y += `umi:\n`;
   y += `  enabled: ${umiOn}\n`;
   y += `  length: ${umiLen}\n`;
-  y += `  location: ${umiLoc}\n\n`;
+  y += `  location: ${umiLoc}\n`;
+  y += `  read: ${mono(umiRead)}\n`;
+  y += `  detect_mode: ${mono(umiDetectMode)}  # trust | auto (\"I don't know\") | verify (\"I'm not sure\")\n`;
+  y += `  detect_tolerance: ${umiDetectTol}\n\n`;
 
   y += `# Barcode processing\n`;
   y += `barcode:\n`;
   y += `  enabled: ${bcOn}\n`;
   y += `  length: ${bcLen}\n`;
-  y += `  location: ${bcLoc}\n\n`;
+  y += `  location: ${bcLoc}\n`;
+  y += `  read: ${mono(bcRead)}\n`;
+  y += `  detect_mode: ${mono(bcDetectMode)}  # trust | auto (\"I don't know\") | verify (\"I'm not sure\")\n`;
+  y += `  detect_tolerance: ${bcDetectTol}\n\n`;
 
   y += `# Alignment / multimapping\n`;
   y += `align:\n`;
