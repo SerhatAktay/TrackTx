@@ -51,6 +51,15 @@ def resolveSamplesheetPath(p, projectDir) {
   return f.isAbsolute() ? f : new File(projectDir.toString(), s)
 }
 
+// Sanitize a user-supplied custom genome/spike-in id to safe path characters
+// only, since this becomes part of a storeDir path verbatim. Defined as a
+// top-level function (not a workflow-block closure) -- Nextflow's script
+// parser v2 fails to resolve closures assigned inside a workflow block when
+// they're later invoked with call syntax (false "not defined" compile error).
+def sanitizeGenomeId(raw) {
+  return raw.toString().trim().replaceAll(/[^A-Za-z0-9_.-]/, '_')
+}
+
 // ============================================================================
 // MODULE IMPORTS
 // Paths inlined (def MOD = ... was a top-level statement, not allowed in strict)
@@ -185,11 +194,10 @@ Debug mode:       ${params.debug ?: false}
     error "PIPELINE | ERROR | When spikein_genome=other, must provide --custom_spikein_id -- a short, unique name for this spike-in genome, same reasoning as --custom_genome_id above."
   }
 
-  // Sanitized to safe path characters only, since this becomes part of a
-  // storeDir path verbatim; prefixed so a custom id can never collide with
-  // a real named-genome cache directory (e.g. someone naming their custom
-  // genome "mm10").
-  def sanitizeGenomeId = { raw -> raw.toString().trim().replaceAll(/[^A-Za-z0-9_.-]/, '_') }
+  // Sanitized to safe path characters only (see sanitizeGenomeId, defined
+  // above with the other top-level helpers); prefixed so a custom id can
+  // never collide with a real named-genome cache directory (e.g. someone
+  // naming their custom genome "mm10").
   def customGenomeId = params.reference_genome == 'other'
     ? "custom_${sanitizeGenomeId(params.custom_genome_id)}"
     : null
