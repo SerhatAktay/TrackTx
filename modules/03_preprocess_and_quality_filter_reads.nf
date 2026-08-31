@@ -328,7 +328,16 @@ process preprocess_and_quality_filter_reads {
       fi
       echo "\${BC1_CHECK}" >> barcode_umi_detect.log
       if [[ \${BC1_CHECK_RC} -ne 0 ]]; then
-        BC1_ELSEWHERE=\$(echo "\${BC1_CHECK}" | python3 -c "import json,sys; d=json.load(sys.stdin); b=d.get('best_guess_elsewhere'); print(f\"{b['read']} {b['location']}' {b['length']}bp\" if b else 'nothing conclusive found elsewhere either')" 2>/dev/null || echo "unknown")
+        BC1_ELSEWHERE=\$(python3 - "\${BC1_CHECK}" <<'PYEOF' 2>/dev/null || echo "unknown"
+import json, sys
+d = json.loads(sys.argv[1])
+b = d.get("best_guess_elsewhere")
+if b:
+    print(f"{b['read']} {b['location']}' {b['length']}bp")
+else:
+    print("nothing conclusive found elsewhere either")
+PYEOF
+)
         tracktx_error "preprocess_and_quality_filter_reads" \\
           "Barcode 1 mismatch: you said \${BC1_READ} \${BC1_LOCATION}' \${BC1_LENGTH}bp, but the QC scan of the raw reads doesn't support that (nearest match: \${BC1_ELSEWHERE})" \\
           "Fix params.barcode.read/location/length, widen params.barcode.detect_tolerance, or switch params.barcode.detect_mode to 'auto'. Full profile: barcode_umi_profile.json"
@@ -366,7 +375,16 @@ process preprocess_and_quality_filter_reads {
       fi
       echo "\${BC2_CHECK}" >> barcode_umi_detect.log
       if [[ \${BC2_CHECK_RC} -ne 0 ]]; then
-        BC2_ELSEWHERE=\$(echo "\${BC2_CHECK}" | python3 -c "import json,sys; d=json.load(sys.stdin); b=d.get('best_guess_elsewhere'); print(f\"{b['read']} {b['location']}' {b['length']}bp\" if b else 'nothing conclusive found elsewhere either')" 2>/dev/null || echo "unknown")
+        BC2_ELSEWHERE=\$(python3 - "\${BC2_CHECK}" <<'PYEOF' 2>/dev/null || echo "unknown"
+import json, sys
+d = json.loads(sys.argv[1])
+b = d.get("best_guess_elsewhere")
+if b:
+    print(f"{b['read']} {b['location']}' {b['length']}bp")
+else:
+    print("nothing conclusive found elsewhere either")
+PYEOF
+)
         tracktx_error "preprocess_and_quality_filter_reads" \\
           "Barcode 2 mismatch: you said \${BC2_READ} \${BC2_LOCATION}' \${BC2_LENGTH}bp, but the QC scan of the raw reads doesn't support that (nearest match: \${BC2_ELSEWHERE})" \\
           "Fix params.barcode.read2/location2/length2, widen params.barcode.detect_tolerance2, or switch params.barcode.detect_mode2 to 'auto'. Full profile: barcode_umi_profile.json"
@@ -397,7 +415,16 @@ process preprocess_and_quality_filter_reads {
       fi
       echo "\${UMI_CHECK}" >> barcode_umi_detect.log
       if [[ \${UMI_CHECK_RC} -ne 0 ]]; then
-        UMI_ELSEWHERE=\$(echo "\${UMI_CHECK}" | python3 -c "import json,sys; d=json.load(sys.stdin); b=d.get('best_guess_elsewhere'); print(f\"{b['read']} {b['location']}' {b['length']}bp\" if b else 'nothing conclusive found elsewhere either')" 2>/dev/null || echo "unknown")
+        UMI_ELSEWHERE=\$(python3 - "\${UMI_CHECK}" <<'PYEOF' 2>/dev/null || echo "unknown"
+import json, sys
+d = json.loads(sys.argv[1])
+b = d.get("best_guess_elsewhere")
+if b:
+    print(f"{b['read']} {b['location']}' {b['length']}bp")
+else:
+    print("nothing conclusive found elsewhere either")
+PYEOF
+)
         tracktx_error "preprocess_and_quality_filter_reads" \\
           "UMI mismatch: you said \${UMI_READ} \${UMI_LOCATION}' \${UMI_LENGTH}bp, but the QC scan of the raw reads doesn't support that (nearest match: \${UMI_ELSEWHERE})" \\
           "Fix params.umi.read/location/length, widen params.umi.detect_tolerance, or switch params.umi.detect_mode to 'auto'. Full profile: barcode_umi_profile.json"
