@@ -220,7 +220,7 @@ while IFS=$' \t' read -r samplesheet params_file _rest; do
     ./run_pipeline.sh \
         --samplesheet "$samplesheet" \
         --params-file "$params_file" \
-        --no-clear --no-docker-prompt \
+        --no-clear --resume --no-docker-prompt \
         "${EXTRA_PIPELINE_ARGS[@]}" \
         < /dev/null > "$sample_log" 2>&1
     exit_code=$?
