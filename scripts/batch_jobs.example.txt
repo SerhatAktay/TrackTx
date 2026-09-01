@@ -1,0 +1,32 @@
+# TrackTx batch job list -- input for scripts/run_batch.sh
+#
+# One job per line:   <samplesheet path>  <params-file path>
+# Paths are relative to the pipeline root (same as you'd pass to
+# run_pipeline.sh directly). Blank lines and lines starting with # are
+# ignored. Jobs run in the order they appear here.
+#
+# Copy this file to scripts/batch_jobs.txt and edit it -- that's the
+# default file run_batch.sh looks for (scripts/batch_jobs.txt is
+# gitignored, so your local queue/run order never gets committed).
+#
+# Example:
+# samplesheets/human_K562_dukler2017.csv   params/human_K562_dukler2017.yaml
+# samplesheets/human_K562_dukler2017.csv   params/human_K562_dukler2017_hg19.yaml
+# samplesheets/mouse_MEF_himanen2022.csv   params/mouse_MEF_himanen2022.yaml
+#
+# Pairs available at the time this template was written (verify against
+# your own samplesheets/ and params/ before running -- this list is not
+# kept in sync automatically):
+#
+# samplesheets/arabidopsis_leaf_liu2019.csv          params/arabidopsis_leaf_liu2019.yaml
+# samplesheets/cassava_Nase3_vera2021.csv            params/cassava_Nase3_vera2021.yaml
+# samplesheets/dog_DH82_himanen2025.csv              params/dog_DH82_himanen2025.yaml
+# samplesheets/drosophila_S2Rplus_prajapati2024.csv  params/drosophila_S2Rplus_prajapati2024.yaml
+# samplesheets/drosophila_S2_duarte2016.csv          params/drosophila_S2_duarte2016.yaml
+# samplesheets/ecoli_MG1655_vill2024.csv             params/ecoli_MG1655_vill2024.yaml
+# samplesheets/human_K562_dukler2017.csv             params/human_K562_dukler2017.yaml
+# samplesheets/human_K562_dukler2017.csv             params/human_K562_dukler2017_hg19.yaml
+# samplesheets/human_K562_vihervaara2017.csv         params/human_K562_vihervaara2017.yaml
+# samplesheets/human_K562_vihervaara2020.csv         params/human_K562_vihervaara2020.yaml
+# samplesheets/maize_B73shoot_vera2021.csv           params/maize_B73shoot_vera2021.yaml
+# samplesheets/mouse_MEF_himanen2022.csv             params/mouse_MEF_himanen2022.yaml

@@ -397,16 +397,20 @@ SUMMARYEOF
 
   # Parse confidence scores if BED has 5 columns
   if [[ \${DT_COUNT} -gt 0 ]]; then
-    FIRST_LINE=\$(grep -v '^#' divergent_transcription.bed | head -1)
+    FIRST_LINE=\$(grep -v -m1 '^#' divergent_transcription.bed || true)
     COL_COUNT=\$(echo "\${FIRST_LINE}" | awk '{print NF}')
     
     if [[ \${COL_COUNT} -eq 5 ]]; then
       echo "DIVERGENT | RESULTS | Output format: BED5 (with confidence scores)"
       
-      # Calculate score statistics
-      SCORE_MIN=\$(awk '{print \$5}' divergent_transcription.bed | sort -n | head -1)
-      SCORE_MAX=\$(awk '{print \$5}' divergent_transcription.bed | sort -n | tail -1)
-      SCORE_MEAN=\$(awk '{sum+=\$5; n++} END {if(n>0) printf "%.4f", sum/n; else print "N/A"}' divergent_transcription.bed)
+      # Calculate score statistics in a single awk pass -- sort|head/tail can raise
+      # SIGPIPE under 'set -o pipefail' and abort the whole module even after detection
+      # already succeeded (this is what crashed a completed 20,491-region run on 2026-09-01).
+      read -r SCORE_MIN SCORE_MAX SCORE_MEAN < <(awk '
+        NR==1 { min=\$5; max=\$5 }
+        { if (\$5<min) min=\$5; if (\$5>max) max=\$5; sum+=\$5; n++ }
+        END { if (n>0) printf "%s %s %.4f\n", min, max, sum/n; else print "N/A N/A N/A" }
+      ' divergent_transcription.bed)
       
       echo "DIVERGENT | RESULTS | Confidence scores:"
       echo "DIVERGENT | RESULTS |   Min:  \${SCORE_MIN}"

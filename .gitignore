@@ -61,3 +61,6 @@ HOW.md
 *.log
 log/
 logs/
+
+# Local batch-run queue (see scripts/batch_jobs.example.txt for the template)
+scripts/batch_jobs.txt
