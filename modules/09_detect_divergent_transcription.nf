@@ -409,7 +409,7 @@ SUMMARYEOF
       read -r SCORE_MIN SCORE_MAX SCORE_MEAN < <(awk '
         NR==1 { min=\$5; max=\$5 }
         { if (\$5<min) min=\$5; if (\$5>max) max=\$5; sum+=\$5; n++ }
-        END { if (n>0) printf "%s %s %.4f\n", min, max, sum/n; else print "N/A N/A N/A" }
+        END { if (n>0) printf "%s %s %.4f\\n", min, max, sum/n; else print "N/A N/A N/A" }
       ' divergent_transcription.bed)
       
       echo "DIVERGENT | RESULTS | Confidence scores:"
