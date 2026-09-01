@@ -397,7 +397,7 @@ SUMMARYEOF
 
   # Parse confidence scores if BED has 5 columns
   if [[ \${DT_COUNT} -gt 0 ]]; then
-    FIRST_LINE=\$(grep -v '^#' divergent_transcription.bed | head -1)
+    FIRST_LINE=\$(grep -v -m1 '^#' divergent_transcription.bed || true)
     COL_COUNT=\$(echo "\${FIRST_LINE}" | awk '{print NF}')
     
     if [[ \${COL_COUNT} -eq 5 ]]; then
