@@ -83,6 +83,32 @@ process download_genome_annotations {
 
   // ── Main Script ───────────────────────────────────────────────────────────
   script:
+  // Disambiguated cache key for this genome, used for every INTERNAL/persistent
+  // cache path in this script (params.genome_cache fast-path files below).
+  // params.reference_genome is the literal string "other" for every dataset
+  // whose genome isn't a named assembly (e.g. both cassava and E. coli use
+  // reference_genome='other') -- using it bare as a cache key would collapse
+  // every such dataset onto the same cache filenames ("other.gtf",
+  // "other.genes.tsv", ...), so the SECOND "other" dataset to run would
+  // silently reuse the FIRST's cached GTF/gene-catalog files. This exact
+  // collision already happened in practice (found 2026-09-03): E. coli's
+  // gene-level output turned out to be cassava's, because the persistent
+  // ${params.genome_cache}/other.* files cassava wrote days earlier looked
+  // "complete" to E. coli's own run and were reused as-is by the FAST PATH
+  // below. This mirrors, character for character, the same disambiguation
+  // already applied to this process's own `storeDir` above (and to module
+  // 04's `genome_id` input) -- that fix stops two "other" datasets' FINAL
+  // published outputs from colliding, but did not extend to this script's
+  // own internal `${params.genome_cache}` fast-path cache, which is what
+  // actually caused the corruption. `ASM` itself is intentionally left
+  // untouched below: the Nextflow `output: path("${params.reference_genome}...")`
+  // declarations above are fixed at "other", so every file this script WRITES
+  // for Nextflow to collect must still be literally named "other.*" --
+  // only the separate, persistent genome_cache lookup/storage below needs
+  // its own unique key.
+  def cacheKey = params.reference_genome == 'other'
+      ? 'other_' + params.custom_genome_id.toString().trim().replaceAll(/[^A-Za-z0-9_.-]/, '_')
+      : params.reference_genome
   """
   #!/usr/bin/env bash
   set -euo pipefail
@@ -101,20 +127,29 @@ process download_genome_annotations {
   ###########################################################################
 
   ASM='${params.reference_genome}'
+  # See the cacheKey note above the shebang: deliberately NOT the same as ASM
+  # whenever ASM=="other" -- this is what keeps two different custom genomes
+  # (e.g. cassava vs. E. coli) from colliding in the persistent genome_cache
+  # below. ASM itself must stay as params.reference_genome verbatim because
+  # it also names the files this script hands back to Nextflow (OUT_* below),
+  # which must match this process's declared `output: path(...)` patterns.
+  CACHE_KEY='${cacheKey}'
   CACHE_DIR='${params.genome_cache ?: "/tmp/genomes_cache"}'
   mkdir -p "\${CACHE_DIR}"
 
-  # Output file names
+  # Output file names (must match this process's declared Nextflow outputs --
+  # always named from ASM, never from CACHE_KEY)
   OUT_GTF="\${ASM}.gtf"
   OUT_GENES="\${ASM}.genes.tsv"
   OUT_TSS="\${ASM}.tss.bed"
   OUT_TES="\${ASM}.tes.bed"
 
-  # Cache file paths
-  CACHE_GTF="\${CACHE_DIR}/\${ASM}.gtf"
-  CACHE_GENES="\${CACHE_DIR}/\${ASM}.genes.tsv"
-  CACHE_TSS="\${CACHE_DIR}/\${ASM}.tss.bed"
-  CACHE_TES="\${CACHE_DIR}/\${ASM}.tes.bed"
+  # Persistent cache file paths -- keyed by CACHE_KEY (unique per genome,
+  # even for two different reference_genome='other' datasets), NOT by ASM.
+  CACHE_GTF="\${CACHE_DIR}/\${CACHE_KEY}.gtf"
+  CACHE_GENES="\${CACHE_DIR}/\${CACHE_KEY}.genes.tsv"
+  CACHE_TSS="\${CACHE_DIR}/\${CACHE_KEY}.tss.bed"
+  CACHE_TES="\${CACHE_DIR}/\${CACHE_KEY}.tes.bed"
 
   # Custom GTF sources
   CUSTOM_PATH='${params.gtf_path ?: ""}'
@@ -326,8 +361,10 @@ process download_genome_annotations {
 
     # ── Source 1: Local file in genomes/ directory ──
     echo "GTF | FETCH | Checking for local GTF file..."
-    LOCAL_GTF_1="\${CACHE_DIR}/local_genomes/\${ASM}.gtf"
-    LOCAL_GTF_2="\${CACHE_DIR}/local_genomes/\${ASM}/\${ASM}.gtf"
+    # Same CACHE_KEY-not-ASM reasoning as above: a hand-placed local GTF for
+    # one "other" genome must not be silently picked up by a different one.
+    LOCAL_GTF_1="\${CACHE_DIR}/local_genomes/\${CACHE_KEY}.gtf"
+    LOCAL_GTF_2="\${CACHE_DIR}/local_genomes/\${CACHE_KEY}/\${CACHE_KEY}.gtf"
     
     if [[ -s "\${LOCAL_GTF_1}" ]]; then
       echo "GTF | FETCH | Found local GTF: \${LOCAL_GTF_1}"
