@@ -887,23 +887,35 @@ def score_with_mixture_model(
     )
     gmm.fit(X.values)
 
-    # Identify positive component (higher mean signal)
-    means = gmm.means_[:, 0]  # log_total means
-    pos_component = int(np.argmax(means))
+    # Identify positive component by mean BALANCE, not mean signal magnitude.
+    # This script finds DIVERGENT transcription -- promoters and enhancers
+    # both count, and the split between them happens downstream (module 10)
+    # by position, not here. "Divergent" is defined by strand balance
+    # (balance_bayesian), not by how much signal there is (log_total): a
+    # canonical active promoter's hallmark is near-symmetric bidirectional
+    # initiation, and a real-but-modest enhancer is still genuinely
+    # divergent. log_total mainly reflects sequencing depth/power, not
+    # divergent-or-not, so a high-signal but one-sided component (readthrough,
+    # a strong unidirectional element, an alignment artifact) should not
+    # outrank a lower-signal but well-balanced component.
+    bal_idx = feature_cols.index('balance_bayesian')
+    means_bal = gmm.means_[:, bal_idx]
+    pos_component = int(np.argmax(means_bal))
     other_component = 1 - pos_component
 
-    log(f"  Positive component: {pos_component} (mean log_total={gmm.means_[pos_component][0]:.2f})", quiet)
-    log(f"  Negative component: {other_component} (mean log_total={gmm.means_[other_component][0]:.2f})", quiet)
+    log(f"  Positive component: {pos_component} (mean balance_bayesian={means_bal[pos_component]:.3f})", quiet)
+    log(f"  Negative component: {other_component} (mean balance_bayesian={means_bal[other_component]:.3f})", quiet)
 
-    # Sanity check (not an override): the pick above uses ONLY the log_total
-    # mean, so a component of wide, low-specificity high-signal regions could
-    # outrank a true low-signal-but-well-balanced component. Cross-check
-    # against balance_bayesian and warn with both components' full feature
-    # means when they disagree, so a run can be sanity-checked by hand.
-    bal_idx = feature_cols.index('balance_bayesian')
-    if gmm.means_[pos_component][bal_idx] < gmm.means_[other_component][bal_idx]:
-        log(f"  WARNING: component chosen by log_total ({pos_component}) has LOWER mean "
-            f"balance_bayesian than the other component — possible mis-selection. "
+    # Cross-check (not an override) against log_total: a "positive" component
+    # with lower mean signal than the "negative" one is unusual -- balance is
+    # the primary definition of divergent here, signal magnitude is
+    # secondary -- but still worth a visible note to sanity-check by hand.
+    total_idx = feature_cols.index('log_total')
+    if gmm.means_[pos_component][total_idx] < gmm.means_[other_component][total_idx]:
+        log(f"  NOTE: component chosen by balance_bayesian ({pos_component}) has LOWER mean "
+            f"log_total than the other component -- the more-balanced component also has "
+            f"less signal; this is plausible (weak-but-real divergent transcription) but "
+            f"worth a manual look. "
             f"Component {pos_component} means: {dict(zip(feature_cols, gmm.means_[pos_component]))}; "
             f"Component {other_component} means: {dict(zip(feature_cols, gmm.means_[other_component]))}",
             quiet)
