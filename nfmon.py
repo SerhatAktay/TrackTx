@@ -103,8 +103,14 @@ RE_HANDLER = re.compile(
     r"TaskHandler\[id:\s*\d+;\s*name:\s*(?P<name>[^;(]+)(?:\s*\((?P<tag>[^)]+)\))?;\s*status:\s*(?P<status>[^;]+);\s*.*?workDir:\s*(?P<workdir>[^\]]+)\]", re.I
 )
 RE_EXEC = re.compile(r"(?:^|\s)executor\s*>\s*(?P<exec>[^\s]+)", re.I)
-RE_RUN = re.compile(r"(?:Workflow run name:|(?:^|\s)runName\s*[:=]\s*)(?P<name>[A-Za-z0-9_.:-]+)")
-RE_SES = re.compile(r"(?:^|\s)(?:session:|sessionId[ :=]+|Session id[ :=]+)(?P<sid>[A-Za-z0-9-]+)")
+# Nextflow 26.04's DEBUG log actually prints "Run name: X" / "Session UUID: X"
+# (nextflow.Session) -- neither previously listed alternative matched this
+# (missing \s* after the colon, and no "Session UUID" alternative existed at
+# all), so run_name/session silently stayed "?" forever. Confirmed against a
+# real .nextflow.log line-for-line before fixing. Old alternatives kept for
+# older Nextflow versions/other log sources that may still use them.
+RE_RUN = re.compile(r"(?:Workflow run name:\s*|Run name:\s*|(?:^|\s)runName\s*[:=]\s*)(?P<name>[A-Za-z0-9_.:-]+)")
+RE_SES = re.compile(r"(?:^|\s)(?:session:\s*|sessionId[ :=]+|Session id[ :=]+|Session UUID[ :=]+\s*)(?P<sid>[A-Za-z0-9-]+)")
 RE_WORK = re.compile(r"(?:^|\s)(?:Work-dir|Working (?:dir|directory))\s*:\s*(?P<dir>\S+)")
 RE_WORK_HANDLER = re.compile(r"\bworkDir:\s*(?P<dir>[^\]]+)\]")
 RE_TASKDIR = re.compile(r".*/work/[0-9a-f]{2}/[0-9a-f]+$")
