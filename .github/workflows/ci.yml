@@ -1,16 +1,20 @@
-# Structural smoke test for the TrackTx pipeline.
+# CI for the TrackTx pipeline: two tiers.
 #
-# Runs `nextflow run main.nf -preview`, which validates the DSL2 workflow
-# (parameter handling, samplesheet parsing, channel/process wiring) WITHOUT
-# executing any process — no genome download, no alignment, no containers
-# pulled. This catches wiring/syntax regressions on every push/PR in about a
-# minute.
+# 1. structural-dry-run: `nextflow run main.nf -preview` validates the DSL2
+#    workflow (parameter handling, samplesheet parsing, channel/process
+#    wiring) WITHOUT executing any process — no genome download, no
+#    alignment, no containers pulled. Catches wiring/syntax regressions in
+#    about a minute. Does NOT run real data through the pipeline (that would
+#    require downloading/aligning against the full hs1 human genome used by
+#    test_PE, impractical on standard GitHub-hosted runners) — see
+#    test_PE/README.md for the real end-to-end smoke test.
 #
-# This intentionally does NOT run real data through the pipeline (that would
-# require downloading/aligning against the full hs1 human genome used by
-# test_PE, which is impractical on standard GitHub-hosted runners). See
-# test_PE/README.md to run the real end-to-end smoke test locally or on
-# self-hosted infrastructure.
+# 2. module-tests: `nf-test` DOES execute real process bodies (against tiny
+#    synthetic fixtures under tests/fixtures/, not real genomes), so this
+#    catches a broken command/flag/script bug inside a process that -preview
+#    cannot see. Currently covers module 01 (annotation download/caching,
+#    including a regression test for the cache-key bug fixed in 2faa86e);
+#    add more tests/modules/*.nf.test files as coverage grows.
 name: CI
 
 on:
@@ -43,3 +47,30 @@ jobs:
             -profile docker \
             -params-file test_PE/params_PE.yaml \
             -preview
+
+  module-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java (required by Nextflow/nf-test)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Nextflow
+        run: |
+          curl -fsSL https://get.nextflow.io | bash
+          sudo mv nextflow /usr/local/bin/
+          nextflow -version
+
+      - name: Install nf-test
+        run: |
+          curl -fsSL https://code.askimed.com/install/nf-test | bash
+          sudo mv nf-test /usr/local/bin/
+          nf-test version
+
+      - name: Run module tests (real process execution, tiny fixtures)
+        run: nf-test test tests/ --profile docker

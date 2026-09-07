@@ -1,0 +1,3 @@
+chr1	test	gene	1001	2000	.	+	.	gene_id "geneA"; gene_name "geneA";
+chr1	test	gene	5001	6500	.	-	.	gene_id "geneB"; gene_name "geneB";
+chr2	test	gene	201	900	.	+	.	gene_id "geneC"; gene_name "geneC";

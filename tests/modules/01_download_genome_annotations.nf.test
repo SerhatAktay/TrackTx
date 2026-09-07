@@ -1,0 +1,99 @@
+nextflow_process {
+
+    name "Test Process download_genome_annotations"
+    script "modules/01_download_genome_annotations.nf"
+    process "download_genome_annotations"
+
+    // Both tests point genome_cache at the SAME fixed, shared directory
+    // (not nf-test's own per-test isolated workDir) -- this is deliberate:
+    // the bug this regression-tests (fixed in commit 2faa86e) lived in that
+    // shared, cross-run cache directory, keyed by custom_genome_id +
+    // annotation_source. Cleaned at the start of the first test so repeated
+    // local `nf-test test` runs start from a known-empty cache.
+
+    test("Should build a gene catalog from a custom GTF") {
+
+        when {
+            params {
+                reference_genome = 'other'
+                custom_genome_id = 'nftest_shared'
+                gtf_path         = "${baseDir}/tests/fixtures/tiny.gtf"
+                annotation_source = 'refseq'
+                assets_dir       = "${baseDir}/.nf-test/tmp_assets_01"
+                genome_cache     = "${baseDir}/.nf-test/tmp_genome_cache_01"
+            }
+            process {
+                """
+                new File(params.genome_cache).deleteDir()
+                new File(params.assets_dir).deleteDir()
+                """
+            }
+        }
+
+        then {
+            assert process.success
+
+            def genesLines = path(process.out.genes.get(0)).text.readLines()
+            def tssLines   = path(process.out.tss.get(0)).text.readLines()
+            def tesLines   = path(process.out.tes.get(0)).text.readLines()
+
+            // tests/fixtures/tiny.gtf has exactly 3 genes (geneA +, geneB -, geneC +).
+            // genes.tsv has a header row; tss.bed/tes.bed (BED6) do not.
+            assert genesLines.findAll { it }.size() == 4
+            assert tssLines.size() == 3
+            assert tesLines.size() == 3
+
+            assert genesLines.any { it.contains('geneA') }
+            assert genesLines.any { it.contains('geneB') }
+            assert genesLines.any { it.contains('geneC') }
+
+            // TSS is strand-aware: geneA is '+' (1001-2000, 1-based GTF -> TSS at
+            // the gene's start), geneB is '-' (5001-6500 -> TSS at its END, since
+            // transcription starts from the high-coordinate side on '-' strand).
+            def tssByGene = tssLines.collectEntries { line ->
+                def f = line.split('\t')
+                [(f[3].split(/\|/).last()): f[1] as int]
+            }
+            assert tssByGene['geneA'] == 1000  // BED is 0-based: GTF start 1001 -> 1000
+            assert tssByGene['geneB'] == 6499  // '-' strand TSS at the gene's end (6500), 0-based -> 6499
+        }
+
+    }
+
+    test("Should NOT reuse cached annotation across a different annotation_source") {
+
+        when {
+            params {
+                reference_genome  = 'other'
+                custom_genome_id  = 'nftest_shared'          // SAME id as the previous test
+                gtf_path          = "${baseDir}/tests/fixtures/tiny_v2.gtf"  // different gene set
+                annotation_source = 'ensembl'                 // DIFFERENT source, same id
+                assets_dir        = "${baseDir}/.nf-test/tmp_assets_01"
+                genome_cache      = "${baseDir}/.nf-test/tmp_genome_cache_01"  // SAME shared cache dir
+            }
+            process {
+                """
+                """
+            }
+        }
+
+        then {
+            assert process.success
+
+            def genesLines = path(process.out.genes.get(0)).text.readLines()
+
+            // Regression test for the exact bug fixed in commit 2faa86e: before
+            // that fix, the internal genome_cache fast-path key didn't include
+            // annotation_source, so this run (same custom_genome_id, different
+            // annotation_source) would silently reuse the FIRST test's cached
+            // refseq-derived files (geneA/geneB/geneC) instead of rebuilding
+            // from its own gtf_path (geneD).
+            // 1 data row + header (see the header-row note in the previous test)
+            assert genesLines.findAll { it }.size() == 2
+            assert genesLines.any { it.contains('geneD') }
+            assert !genesLines.any { it.contains('geneA') }
+        }
+
+    }
+
+}
