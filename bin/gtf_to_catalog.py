@@ -555,7 +555,7 @@ def main(argv: list[str]) -> int:
         chr_mode = "remove"
         log_info("Removing chr prefix from chromosome names")
 
-    log_info(f"start ts={datetime.datetime.utcnow().isoformat()}Z")
+    log_info(f"start ts={datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()}Z")
     if not os.path.exists(gtf_in):
         log_error(f"input not found: {gtf_in}")
         return 2
@@ -587,7 +587,7 @@ def main(argv: list[str]) -> int:
         f"✓ Wrote {len(rows)} genes across {n_chroms} sequences to "
         f"{genes_tsv}, TSS={tss_bed}, TES={tes_bed}"
     )
-    log_info(f"done ts={datetime.datetime.utcnow().isoformat()}Z")
+    log_info(f"done ts={datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()}Z")
     return 0
 
 

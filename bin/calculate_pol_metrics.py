@@ -63,7 +63,7 @@ log_info, log_warning, log_error, log_progress = make_logger("POL_CALC")
 
 def log(section: str, message: str, flush: bool = True):
     """Consistent logging format: [POL_CALC] SECTION | message"""
-    timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     print(f"{LOG_PREFIX} {section} | {message} | ts={timestamp}", flush=flush)
 
 # =============================================================================

@@ -78,7 +78,7 @@ log_info, log_warning, log_error, _log_progress_unused = make_logger("COMBINE")
 
 def log(section: str, message: str):
     """Consistent logging format"""
-    timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     print(f"{LOG_PREFIX} {section} | {message} | ts={timestamp}", flush=True)
 
 # =============================================================================

@@ -65,9 +65,34 @@ ap.add_argument("--warn-reads", type=float, default=2e6, help="Min reads for WAR
 ap.add_argument("--warn-dup", type=float, default=30, help="Max dup %% for WARN [default: 30]")
 
 
+def classify_qc_status(
+    input_reads: float,
+    dup_percent: float,
+    divergent_regions: int,
+    total_regions: int,
+    pass_reads: float,
+    pass_dup: float,
+    warn_reads: float,
+    warn_dup: float,
+) -> tuple[str, str]:
+    """PASS/WARN/FAIL heuristic badge for the sample report header.
+
+    Returns (status, color_hex). Extracted out of main()'s status_strip()
+    closure so this classification logic is callable/testable on its own
+    (see _selftest below) instead of only reachable via a full report render.
+    """
+    ok_regions = (divergent_regions > 0) and (total_regions > 0)
+    if input_reads >= pass_reads and dup_percent < pass_dup and ok_regions:
+        return "PASS", "#10b981"
+    elif input_reads >= warn_reads and dup_percent < warn_dup and ok_regions:
+        return "WARN", "#f59e0b"
+    else:
+        return "FAIL", "#ef4444"
+
+
 def main():
     args = ap.parse_args()
-    log_info(f"start ts={datetime.datetime.utcnow().isoformat()}Z")
+    log_info(f"start ts={datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()}Z")
 
     SID, COND, TP, REP = args.sample, args.condition or "", args.timepoint or "", args.replicate or ""
 
@@ -426,17 +451,17 @@ def main():
     # Status badge (very light heuristic)
     def status_strip() -> str:
         inp = float(input_reads or 0)
-    
+
         # Use UMI deduplication rate if available, otherwise fall back to PCR duplicate rate
         if umi_enabled and umi_dedup_percent is not None:
             dup = float(umi_dedup_percent)
         else:
             dup = float(duplicate_percent if duplicate_percent is not None else 100.0)
-    
-        ok_regions = (divergent_regions > 0) and (total_regions > 0)
-        if inp >= args.pass_reads and dup < args.pass_dup and ok_regions: s, color = "PASS", "#10b981"
-        elif inp >= args.warn_reads and dup < args.warn_dup and ok_regions: s, color = "WARN", "#f59e0b"
-        else: s, color = "FAIL", "#ef4444"
+
+        s, color = classify_qc_status(
+            inp, dup, divergent_regions, total_regions,
+            args.pass_reads, args.pass_dup, args.warn_reads, args.warn_dup
+        )
         return f"<div class='status' style='--status:{color}'>{s}</div>"
 
     # ── JSON (stable schema) ───────────────────────────────────────────────────
@@ -911,8 +936,30 @@ def main():
 
         with open(args.out_plots_html, "w", encoding="utf-8") as fh:
             fh.write(page.getvalue())
-        log_info(f"done ts={datetime.datetime.utcnow().isoformat()}Z")
+        log_info(f"done ts={datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()}Z")
+
+
+def _selftest():
+    """Runs on every invocation (matches calculate_pol_metrics.py's convention)
+    -- exercises classify_qc_status's PASS/WARN/FAIL boundaries, the only pure
+    logic in this otherwise I/O-heavy rendering script."""
+    P, W, F = ("PASS", "#10b981"), ("WARN", "#f59e0b"), ("FAIL", "#ef4444")
+    # thresholds fixed at the argparse defaults for readability
+    args = (5e6, 15, 2e6, 30)  # pass_reads, pass_dup, warn_reads, warn_dup
+    assert classify_qc_status(6e6, 10, 5, 5, *args) == P
+    assert classify_qc_status(3e6, 20, 5, 5, *args) == W
+    assert classify_qc_status(1e6, 50, 5, 5, *args) == F
+    assert classify_qc_status(6e6, 10, 0, 5, *args) == F   # no divergent regions -> FAIL regardless of depth/dup
+    assert classify_qc_status(6e6, 10, 5, 0, *args) == F   # no functional regions -> FAIL regardless of depth/dup
+    assert classify_qc_status(6e6, 20, 5, 5, *args) == W   # dup between pass and warn cutoffs
+    assert classify_qc_status(2e6, 29, 5, 5, *args) == W   # right at the warn boundary (dup < warn_dup)
+    assert classify_qc_status(2e6, 30, 5, 5, *args) == F   # dup == warn_dup fails (strict <)
+
+
+def _run():
+    _selftest()
+    return main()
 
 
 if __name__ == "__main__":
-    sys.exit(run_main(main, log_error))
+    sys.exit(run_main(_run, log_error))
