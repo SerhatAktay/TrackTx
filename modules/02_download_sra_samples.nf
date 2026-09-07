@@ -168,11 +168,26 @@ process download_sra_samples {
   CACHE_FOUND=0
   for CACHED in "\${CACHE_DIR}/\${SRR}_R1.fastq" "\${CACHE_DIR}/\${SRR}_R1.fastq.gz" \\
                 "\${CACHE_DIR}/\${SRR}_R2.fastq" "\${CACHE_DIR}/\${SRR}_R2.fastq.gz"; do
-    if [[ -e "\${CACHED}" ]]; then
+    # -s (non-empty), not just -e (exists): a zero-byte or truncated file left
+    # by an interrupted prior run at this exact path would otherwise be
+    # silently trusted as "already downloaded", skipping real work. Same
+    # completeness-check idiom already used below for freshly-downloaded
+    # FASTQs (header check for uncompressed .fastq; gz files get -s only,
+    # matching that same later validation's asymmetry).
+    if [[ -s "\${CACHED}" ]]; then
+      if [[ "\${CACHED}" == *.fastq ]]; then
+        FIRST_LINE=\$(head -n 1 "\${CACHED}" 2>/dev/null || echo "")
+        if [[ ! "\${FIRST_LINE}" =~ ^@ ]]; then
+          echo "SRR | CACHE | Ignoring corrupt/truncated cache file (bad header): \$(basename "\${CACHED}")"
+          continue
+        fi
+      fi
       FILE_SIZE=\$(stat -c%s "\${CACHED}" 2>/dev/null || stat -f%z "\${CACHED}" 2>/dev/null || echo "unknown")
       echo "SRR | CACHE | Found: \$(basename "\${CACHED}") (\${FILE_SIZE} bytes)"
       ln -sf "\${CACHED}" .
       CACHE_FOUND=1
+    elif [[ -e "\${CACHED}" ]]; then
+      echo "SRR | CACHE | Ignoring empty cache file (likely a truncated prior run): \$(basename "\${CACHED}")"
     fi
   done
 

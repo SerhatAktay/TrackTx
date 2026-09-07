@@ -57,6 +57,9 @@ process collect_pol_metrics_per_replicate {
   set -euo pipefail
   export LC_ALL=C
 
+  # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
+  source tracktx_error_fragment.sh
+
   exec > >(tee -a collect_per_replicate.log)
   exec 2> >(tee -a collect_per_replicate.log >&2)
 

@@ -192,7 +192,7 @@ process quality_control_aligned_reads {
   # Check if BAM is indexed (create if needed)
   if [[ ! -e "\${BAM_FILE}.bai" ]]; then
     echo "QC | VALIDATE | BAM index not found, creating..."
-    samtools index "\${BAM_FILE}"
+    samtools index -@ \${THREADS} "\${BAM_FILE}"
     echo "QC | VALIDATE | BAM index created"
   else
     echo "QC | VALIDATE | BAM index: present"
@@ -225,7 +225,7 @@ process quality_control_aligned_reads {
   IS_PAIRED=0
   if samtools view -H "\${BAM_FILE}" | grep -q '@PG.*bowtie2'; then
     # Additional check: look for properly paired reads
-    PAIRED_COUNT=\$(samtools view -c -f 0x1 "\${BAM_FILE}" | head -1)
+    PAIRED_COUNT=\$(samtools view -@ \${THREADS} -c -f 0x1 "\${BAM_FILE}" | head -1)
     if [[ \${PAIRED_COUNT} -gt 0 ]]; then
       IS_PAIRED=1
       echo "QC | DETECT | Sequencing mode: Paired-end"
@@ -261,27 +261,27 @@ process quality_control_aligned_reads {
 
   # Total reads (primary alignments, not secondary/supplementary)
   echo "QC | STATS | Counting total reads..."
-  TOTAL_READS=\$(samtools view -c -F 0x900 "\${BAM_FILE}")
+  TOTAL_READS=\$(samtools view -@ \${THREADS} -c -F 0x900 "\${BAM_FILE}")
   echo "QC | STATS | Total reads: \${TOTAL_READS}"
 
   # Mapped reads (primary, not unmapped)
   echo "QC | STATS | Counting mapped reads..."
-  MAPPED_READS=\$(samtools view -c -F 0x904 "\${BAM_FILE}")
+  MAPPED_READS=\$(samtools view -@ \${THREADS} -c -F 0x904 "\${BAM_FILE}")
   echo "QC | STATS | Mapped reads: \${MAPPED_READS}"
 
   # Duplicate reads
   echo "QC | STATS | Counting duplicate reads..."
-  DUP_READS=\$(samtools view -c -f 0x400 -F 0x900 "\${BAM_FILE}")
+  DUP_READS=\$(samtools view -@ \${THREADS} -c -f 0x400 -F 0x900 "\${BAM_FILE}")
   echo "QC | STATS | Duplicate reads: \${DUP_READS}"
 
   # Unique reads (primary, mapped, NH==1 in -k mode / MAPQ≥threshold otherwise)
   echo "QC | STATS | Counting unique (\${UNIQUE_LABEL}) reads..."
-  MAPQ_READS=\$(samtools view -c -F 0x904 \${MAPQ_ARG} "\${QC_BAM}")
+  MAPQ_READS=\$(samtools view -@ \${THREADS} -c -F 0x904 \${MAPQ_ARG} "\${QC_BAM}")
   echo "QC | STATS | Unique (\${UNIQUE_LABEL}) reads: \${MAPQ_READS}"
 
   # Unique + deduplicated reads
   echo "QC | STATS | Counting unique (\${UNIQUE_LABEL}) + non-duplicate reads..."
-  MAPQ_NODUP_READS=\$(samtools view -c -F 0xD04 \${MAPQ_ARG} "\${QC_BAM}")
+  MAPQ_NODUP_READS=\$(samtools view -@ \${THREADS} -c -F 0xD04 \${MAPQ_ARG} "\${QC_BAM}")
   echo "QC | STATS | Unique (\${UNIQUE_LABEL}) no-dup: \${MAPQ_NODUP_READS}"
 
   STATS_END=\$(date +%s)
@@ -298,7 +298,7 @@ process quality_control_aligned_reads {
 
   # Count reads on each strand (after MAPQ filtering)
   # Flag 0x10 = reverse strand
-  samtools view ${strand_frag_exclude_flag} \${MAPQ_ARG} "\${QC_BAM}" | \
+  samtools view -@ \${THREADS} ${strand_frag_exclude_flag} \${MAPQ_ARG} "\${QC_BAM}" | \
     awk '{
       if (and(\$2, 16)) {
         strand = "-"
@@ -354,7 +354,7 @@ process quality_control_aligned_reads {
     echo "QC | FRAGMENT | Extracting insert size distribution..."
     
     # Use samtools stats to get insert size distribution (IS lines: length, count)
-    samtools stats ${strand_frag_exclude_flag} \${MAPQ_ARG} "\${QC_BAM}" 2>/dev/null | \
+    samtools stats -@ \${THREADS} ${strand_frag_exclude_flag} \${MAPQ_ARG} "\${QC_BAM}" 2>/dev/null | \
       awk '/^IS[[:space:]]/ && NF>=3 && \$2+0==\$2 && \$3+0==\$3 {print \$2 "\\t" \$3}' > frag_tmp.tsv || true
 
     if [[ -s frag_tmp.tsv ]]; then

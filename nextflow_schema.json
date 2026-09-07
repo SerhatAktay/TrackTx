@@ -127,6 +127,7 @@
     "conda_divergent": { "type": ["string", "null"], "description": "Override conda env for the divergent-transcription module." },
     "conda_fgr": { "type": ["string", "null"], "description": "Override conda env for the functional-regions module." },
     "conda_sra": { "type": ["string", "null"], "description": "Override conda env for the SRA download module." },
+    "conda_annotation": { "type": ["string", "null"], "description": "Override conda env for the genome-annotation download module." },
 
     "experiment_name": { "type": "string", "description": "Free-text label for this run, shown in reports." },
     "revcomp_r1": { "type": ["boolean", "null"], "description": "Override: reverse-complement R1 before alignment. Null = auto-derive from library_type." },
