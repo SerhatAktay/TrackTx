@@ -28,6 +28,19 @@
 //   • Merged sample_id is: {condition}_{timepoint}_merged
 //   • Replicate metadata is collapsed (replicate set to 0 for merged samples)
 //   • Spike-in BAMs are merged the same way (if present)
+//   • Bin counts are log2(n+1)-transformed before correlation (added
+//     2026-09): raw untransformed Pearson on genome-wide bin counts is
+//     heavily skewed by a handful of extreme-count bins and over-penalizes
+//     ordinary technical noise at low/moderate counts, where most of the
+//     genome sits. Found by comparing this check's own output against
+//     several source papers' published replicate correlations for the
+//     same underlying data (rho 0.93-0.98 published vs. 0.58-0.85 from
+//     this check pre-fix, same replicate pairs) -- recomputing gene-level
+//     log2(cpm+1) Pearson on the identical raw data reproduced the
+//     published values within ~0.01-0.02 in every case checked. The
+//     replicate data was fine; the missing transform was not. log2 is
+//     monotonic so this is a no-op for concordance_method=spearman
+//     (already rank-based) and only changes the pearson path.
 //
 // Inputs:
 //   tuple(condition, timepoint, sample_ids[], bam_files[], allmap_bams[], spike_bams[])
@@ -210,11 +223,26 @@ process check_and_merge_replicates {
 import math, glob, sys
 
 def read_counts(path):
+    # log2(n+1) transform: genome-wide bin/gene read counts are heavily
+    # right-skewed (a handful of very-high-count loci, most bins low/sparse).
+    # Raw untransformed Pearson on data this skewed is dominated by the few
+    # extreme-count bins and heavily penalized by ordinary technical noise
+    # at low-to-moderate counts -- exactly where most of the genome sits.
+    # Found 2026-09 comparing this check's own output against source papers'
+    # published replicate correlations for the same raw data: papers
+    # consistently report rho 0.93-0.98 using log/rank-based correlation on
+    # gene-level CPM, while this check (raw-count Pearson) flagged the same
+    # replicate pairs as low as 0.58-0.85. Recomputing gene-level log2(cpm+1)
+    # Pearson on the identical underlying data reproduced the published
+    # values within ~0.01-0.02 in every case checked (3 independent
+    # datasets/papers) -- the discordance was the missing transform, not the
+    # underlying replicate data. log2 is monotonic, so this is a no-op for
+    # spearman() below (rank-based) and only changes the pearson() path.
     counts = {}
     with open(path) as f:
         for line in f:
             bin_id, n = line.strip().split("\\t")
-            counts[bin_id] = int(n)
+            counts[bin_id] = math.log2(int(n) + 1)
     return counts
 
 def pearson(d1, d2):
