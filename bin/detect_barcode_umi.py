@@ -91,8 +91,14 @@ import argparse
 import gzip
 import json
 import math
+import os
 import sys
 from collections import Counter
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _common import make_logger, run_main
+
+log_info, log_warning, log_error, log_progress = make_logger("UMI_DETECT")
 
 __version__ = "1.0"
 
@@ -378,7 +384,9 @@ def _self_test():
         status = "PASS" if cond else "FAIL"
         if not cond:
             ok = False
-        print(f"[self-test] {label}: {status}", file=sys.stderr)
+            log_error(f"[self-test] {label}: {status}")
+        else:
+            log_info(f"[self-test] {label}: {status}")
 
     check("R1 5' fixed run == 6 (synthetic constant barcode)",
           p1["5prime"]["fixed_run_len"] == 6)
@@ -416,10 +424,10 @@ def _self_test():
           p5["5prime"]["fixed_run_len"] == 6)
 
     if ok:
-        print("[self-test] ALL CHECKS PASSED", file=sys.stderr)
+        log_info("[self-test] ALL CHECKS PASSED")
         sys.exit(0)
     else:
-        print("[self-test] ONE OR MORE CHECKS FAILED", file=sys.stderr)
+        log_error("[self-test] ONE OR MORE CHECKS FAILED")
         sys.exit(1)
 
 
@@ -490,8 +498,7 @@ def main():
             profile = json.load(fh)
     else:
         if not args.r1:
-            print("error: --r1 is required unless --profile-in is given (or use --self-test)",
-                  file=sys.stderr)
+            log_error("--r1 is required unless --profile-in is given (or use --self-test)")
             sys.exit(2)
         profile = build_profile(
             r1_path=args.r1, r2_path=args.r2, n_reads=args.n_reads, window=args.window,
@@ -523,8 +530,7 @@ def main():
 
     if args.check_kind:
         if not (args.check_read and args.check_location and args.check_length is not None):
-            print("error: --check-kind requires --check-read, --check-location, --check-length",
-                  file=sys.stderr)
+            log_error("--check-kind requires --check-read, --check-location, --check-length")
             sys.exit(2)
         detected_len = run_len_at(profile, args.check_kind, args.check_read, args.check_location)
         diff = abs(detected_len - args.check_length)
@@ -548,4 +554,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(run_main(main, log_error))

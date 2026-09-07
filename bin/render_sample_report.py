@@ -15,6 +15,11 @@ from typing import Optional, Dict, Any, List, Tuple
 import numpy as np
 import pandas as pd
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _common import make_logger, run_main
+
+log_info, log_warning, log_error, log_progress = make_logger("SAMPLE_REPORT")
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -62,7 +67,7 @@ ap.add_argument("--warn-dup", type=float, default=30, help="Max dup %% for WARN 
 
 def main():
     args = ap.parse_args()
-    print(f"[render_py] start ts={datetime.datetime.utcnow().isoformat()}Z", file=sys.stderr)
+    log_info(f"start ts={datetime.datetime.utcnow().isoformat()}Z")
 
     SID, COND, TP, REP = args.sample, args.condition or "", args.timepoint or "", args.replicate or ""
 
@@ -906,8 +911,8 @@ def main():
 
         with open(args.out_plots_html, "w", encoding="utf-8") as fh:
             fh.write(page.getvalue())
-        print(f"[render_py] done ts={datetime.datetime.utcnow().isoformat()}Z", file=sys.stderr)
+        log_info(f"done ts={datetime.datetime.utcnow().isoformat()}Z")
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(run_main(main, log_error))

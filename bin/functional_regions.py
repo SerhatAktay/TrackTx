@@ -46,6 +46,11 @@ from __future__ import annotations
 import argparse, os, sys, shutil, tempfile, subprocess, math, random
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _common import make_logger, run_main
+
+log_info, log_warning, log_error, _log_progress_unused = make_logger("FUNCREGION")
+
 # ---- CLI --------------------------------------------------------------------
 ap = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 ap.add_argument("--sid",        required=True)
@@ -84,7 +89,6 @@ SID    = args.sid
 OUT    = Path(args.outdir).resolve(); OUT.mkdir(parents=True, exist_ok=True)
 DBG    = OUT / "debug";               DBG.mkdir(parents=True, exist_ok=True) if args.debug else None
 
-def log(m: str): print(m, file=sys.stderr, flush=True)
 
 def bt() -> str:
     p = shutil.which("bedtools"); 
@@ -98,16 +102,16 @@ def run(cmd: list[str], out_path: str | None = None, check=True):
         with open(out_path, "w") as o:
             result = subprocess.run(cmd, check=False, text=True, stdout=o, stderr=subprocess.PIPE)
             if result.returncode != 0 and check:
-                log(f"ERROR: Command failed with exit code {result.returncode}")
-                log(f"Command: {' '.join(cmd)}")
-                log(f"Stderr: {result.stderr}")
+                log_error(f"Command failed with exit code {result.returncode}")
+                log_error(f"Command: {' '.join(cmd)}")
+                log_error(f"Stderr: {result.stderr}")
                 raise subprocess.CalledProcessError(result.returncode, cmd, stderr=result.stderr)
     else:
         result = subprocess.run(cmd, check=False, text=True, stderr=subprocess.PIPE)
         if result.returncode != 0 and check:
-            log(f"ERROR: Command failed with exit code {result.returncode}")
-            log(f"Command: {' '.join(cmd)}")
-            log(f"Stderr: {result.stderr}")
+            log_error(f"Command failed with exit code {result.returncode}")
+            log_error(f"Command: {' '.join(cmd)}")
+            log_error(f"Stderr: {result.stderr}")
             raise subprocess.CalledProcessError(result.returncode, cmd, stderr=result.stderr)
 
 def sort_bed(src: str, buffer_size: str = "1G", parallel: int = None):
@@ -328,9 +332,9 @@ def find_active_promoters_and_enhancers(all_genes: list, dt_bed: str) -> tuple[l
     n_dt_at_promoters = wc_effective_lines(str(genes_with_promoters_bed))
     n_enhancers = wc_effective_lines(str(enhancers_bed))
     
-    log(f"INFO  Found {n_dt_at_promoters} genes with DT sites at promoters (TSS ±{pm}bp)")
-    log(f"INFO  Found {n_enhancers} DT sites NOT at promoters (enhancers)")
-    log(f"INFO  Active genes: {len(active_genes)} (out of {len(all_genes)} total)")
+    log_info(f"Found {n_dt_at_promoters} genes with DT sites at promoters (TSS ±{pm}bp)")
+    log_info(f"Found {n_enhancers} DT sites NOT at promoters (enhancers)")
+    log_info(f"Active genes: {len(active_genes)} (out of {len(all_genes)} total)")
     
     # Return: active_genes, path_to_genes_with_promoters, path_to_enhancers
     # Note: We don't return active_promoters_bed anymore - we'll use gene-based regions
@@ -346,7 +350,7 @@ def write_coordinate_files(active_genes: list):
     With improved sequencing quality (reads as short as 12bp), we can now
     accurately map reads to small genes.
     """
-    log(f"INFO  {len(active_genes)} active genes to process")
+    log_info(f"{len(active_genes)} active genes to process")
     
     # Write promoter regions (ppPolII.txt) - TSS-250 to TSS+249 - all active genes
     pp_file = OUT / "ppPolII.txt"
@@ -451,7 +455,7 @@ def bedgraph_to_reads(pos_bg: str, neg_bg: str) -> str:
             q = min(max(args.min_signal_quantile, 0.0), 1.0)
             idx = int(q * (len(reservoir)-1))
             thr = float(reservoir[idx])
-            log(f"INFO  dynamic min_signal (quantile {q:.2f}, sampled {len(reservoir)}/{n_seen} "
+            log_info(f"dynamic min_signal (quantile {q:.2f}, sampled {len(reservoir)}/{n_seen} "
                 f"values from both strands) => {thr:.6g}")
 
     with open(reads_file, "w") as out:
@@ -485,7 +489,7 @@ def bedgraph_to_reads(pos_bg: str, neg_bg: str) -> str:
                                 continue
     
     # CRITICAL: This is sorting the large read file - use increased buffer
-    log(f"INFO  Sorting large read file (this may take a few minutes)...")
+    log_info(f"Sorting large read file (this may take a few minutes)...")
     sort_bed(str(reads_file), buffer_size="2G")  # Use 2G buffer for large file
     return str(reads_file)
 
@@ -522,8 +526,8 @@ def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed
     
     # Step 1: Promoters (gene-based TSS-250..+249, same-strand)
     # OLD SCRIPT EXACT LOGIC: assign with -s, remove UNSTRANDED
-    log("INFO  Step 1: Assigning promoter reads (same-strand from ppPolII)...")
-    log(f"DEBUG Input reads: {wc_effective_lines(current_reads)}, Promoter regions: {wc_effective_lines(coord_files['promoter'])}")
+    log_info("Step 1: Assigning promoter reads (same-strand from ppPolII)...")
+    log_info(f"Input reads: {wc_effective_lines(current_reads)}, Promoter regions: {wc_effective_lines(coord_files['promoter'])}")
     prom_reads = OUT / "PROseq_ppPolII.bed"
     prom_removed = OUT / "ppRemoved.bed"
     run([BT, "intersect", "-s", "-u", "-wa", "-a", current_reads, "-b", coord_files['promoter']], str(prom_reads))
@@ -531,12 +535,12 @@ def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed
     run([BT, "intersect", "-v", "-a", current_reads, "-b", coord_files['promoter']], str(prom_removed))
     assigned_reads['Promoter'] = str(prom_reads)
     current_reads = str(prom_removed)
-    log(f"DEBUG Assigned: {wc_effective_lines(str(prom_reads))}, Remaining: {wc_effective_lines(current_reads)}")
+    log_info(f"Assigned: {wc_effective_lines(str(prom_reads))}, Remaining: {wc_effective_lines(current_reads)}")
     
     # Step 2: Divergent (gene-based TSS-750..-251, opposite-strand)
     # OLD SCRIPT EXACT LOGIC: assign with -S, remove UNSTRANDED
-    log("INFO  Step 2: Assigning divergent reads (opposite-strand from divTx)...")
-    log(f"DEBUG Input reads: {wc_effective_lines(current_reads)}, Divergent regions: {wc_effective_lines(coord_files['divergent'])}")
+    log_info("Step 2: Assigning divergent reads (opposite-strand from divTx)...")
+    log_info(f"Input reads: {wc_effective_lines(current_reads)}, Divergent regions: {wc_effective_lines(coord_files['divergent'])}")
     div_reads = OUT / "PROseq_ppDiv.bed"
     div_removed = OUT / "ppdivRemoved.bed"
     run([BT, "intersect", "-S", "-u", "-wa", "-a", current_reads, "-b", coord_files['divergent']], str(div_reads))
@@ -544,12 +548,12 @@ def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed
     run([BT, "intersect", "-v", "-a", current_reads, "-b", coord_files['divergent']], str(div_removed))
     assigned_reads['DivergentTx'] = str(div_reads)
     current_reads = str(div_removed)
-    log(f"DEBUG Assigned: {wc_effective_lines(str(div_reads))}, Remaining: {wc_effective_lines(current_reads)}")
+    log_info(f"Assigned: {wc_effective_lines(str(div_reads))}, Remaining: {wc_effective_lines(current_reads)}")
 
     
     # Step 3: CPS (same-strand: -s)
     # OLD SCRIPT: assign with -s, remove UNSTRANDED
-    log("INFO  Step 3: Assigning CPS reads...")
+    log_info("Step 3: Assigning CPS reads...")
     cps_reads = OUT / "PROseq_CPS.bed"
     cps_removed = OUT / "ppdivCPSRemoved.bed"
     run([BT, "intersect", "-s", "-u", "-wa", "-a", current_reads, "-b", coord_files['cps']], str(cps_reads))
@@ -559,7 +563,7 @@ def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed
     
     # Step 4: Gene Body (same-strand: -s)
     # OLD SCRIPT: assign with -s, remove UNSTRANDED
-    log("INFO  Step 4: Assigning gene body reads...")
+    log_info("Step 4: Assigning gene body reads...")
     gb_reads = OUT / "PROseq_GB.bed"
     gb_removed = OUT / "ppdivCPSgbRemoved.bed"
     run([BT, "intersect", "-s", "-u", "-wa", "-a", current_reads, "-b", coord_files['gene_body']], str(gb_reads))
@@ -569,7 +573,7 @@ def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed
     
     # Step 5: Enhancers (unstranded)
     # OLD SCRIPT: assign unstranded, remove unstranded
-    log("INFO  Step 5: Assigning enhancer reads...")
+    log_info("Step 5: Assigning enhancer reads...")
     enh_reads = OUT / "PROseq_enhancers.bed"
     enh_removed = OUT / "ppdivCPSgbEnhRemoved.bed"
     run([BT, "intersect", "-u", "-wa", "-a", current_reads, "-b", enhancers_bed], str(enh_reads))
@@ -579,7 +583,7 @@ def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed
     
     # Step 6: Termination Window (same-strand: -s)
     # OLD SCRIPT: assign with -s, remove UNSTRANDED
-    log("INFO  Step 6: Assigning termination window reads...")
+    log_info("Step 6: Assigning termination window reads...")
     tw_reads = OUT / "PROseq_TW.bed"
     tw_removed = OUT / "PROseq_noGene_noEnh.bed"
     run([BT, "intersect", "-s", "-u", "-wa", "-a", current_reads, "-b", coord_files['termination']], str(tw_reads))
@@ -618,7 +622,7 @@ def count_and_summarize(assigned_reads: dict):
             'count': read_count
         }
         
-        log(f"INFO  {category}: {read_count} reads, {signal_sum:.2f} signal")
+        log_info(f"{category}: {read_count} reads, {signal_sum:.2f} signal")
     
     return summary
 
@@ -747,26 +751,26 @@ def write_outputs(summary: dict, coord_files: dict, assigned_reads: dict):
 
 # ---- MAIN -------------------------------------------------------------------
 def main():
-    log(f"INFO  FGR ▶ {SID}  mode=gene-based assignment (v9.1)")
+    log_info(f"FGR ▶ {SID}  mode=gene-based assignment (v9.1)")
 
     # Read gene annotations and build coordinate lists
     tss_map = read_sites(args.tss)
     tes_map = read_sites(args.tes)
     all_genes = build_coordinate_lists(args.genes, tss_map, tes_map)
-    log(f"INFO  Loaded {len(all_genes)} genes from {args.genes}")
+    log_info(f"Loaded {len(all_genes)} genes from {args.genes}")
 
     # Use DT sites to identify active genes and enhancers
     active_genes, genes_with_promoters_bed, enhancers_bed = find_active_promoters_and_enhancers(all_genes, args.divergent)
     
     if not active_genes:
-        log(f"WARNING: No active genes found (DT sites ∩ TSS ±{args.tss_active_pm}bp); continuing with enhancers and non-localized only")
+        log_warning(f"No active genes found (DT sites ∩ TSS ±{args.tss_active_pm}bp); continuing with enhancers and non-localized only")
 
     # Write gene-based coordinate files for ALL functional regions (including promoter)
     coord_files = write_coordinate_files(active_genes)
 
     # Convert bedGraphs to read intervals
     reads_file = bedgraph_to_reads(args.pos, args.neg)
-    log(f"INFO  Converted bedGraphs to {wc_effective_lines(reads_file)} read intervals")
+    log_info(f"Converted bedGraphs to {wc_effective_lines(reads_file)} read intervals")
 
     # Perform sequential read assignment using gene-based regions
     assigned_reads = sequential_read_assignment(reads_file, coord_files, enhancers_bed)
@@ -777,7 +781,7 @@ def main():
     # Write outputs
     write_outputs(summary, coord_files, assigned_reads)
 
-    log("INFO  functional regions ✓ (gene-based v9.1)")
+    log_info("functional regions ✓ (gene-based v9.1)")
 
 if __name__ == "__main__":
-    main()
+    sys.exit(run_main(main, log_error))

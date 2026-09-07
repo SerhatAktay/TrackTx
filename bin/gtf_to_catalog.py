@@ -44,6 +44,11 @@ import sys, os, io, gzip, datetime, argparse
 from collections import defaultdict
 from typing import Dict, Tuple, Iterable, List, Set
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _common import make_logger, run_main
+
+log_info, log_warning, log_error, log_progress = make_logger("GTF_CATALOG")
+
 # ── IO helpers ──────────────────────────────────────────────────────────────
 def open_text(path: str) -> io.TextIOBase:
     """Open plain or gzipped text.
@@ -244,11 +249,11 @@ def _select_primary_locus(gid: str, loci: Dict[str, dict], kind: str) -> Tuple[s
     pool = primary if primary else loci
     chosen = max(pool, key=lambda c: (pool[c]["end"] - pool[c]["start"], c))
     dropped = sorted(c for c in loci if c != chosen)
-    sys.stderr.write(
-        f"[gtf_to_catalog] WARNING: {kind} {gid!r} has rows on multiple contigs "
+    log_warning(
+        f"{kind} {gid!r} has rows on multiple contigs "
         f"{sorted(loci.keys())} -- using {chosen!r}, ignoring {dropped} "
         f"(likely an alt-haplotype/patch/scaffold duplicate; coordinates are "
-        f"NOT pooled across contigs)\n"
+        f"NOT pooled across contigs)"
     )
     return chosen, loci[chosen]
 
@@ -312,15 +317,15 @@ def _resolve_span(
         return s, e
     kept = clusters[0]
     dropped = clusters[1:]
-    sys.stderr.write(
-        f"[gtf_to_catalog] WARNING: {kind} {gid!r} on {chrom!r} has "
+    log_warning(
+        f"{kind} {gid!r} on {chrom!r} has "
         f"{sum(c[2] for c in clusters)} rows split across {len(clusters)} "
         f"clusters more than {MAX_INTRON_GAP_BP:,}bp apart -- likely two "
         f"unrelated loci sharing one gene_id (e.g. a repeat-family/tRNA "
         f"naming collision), not one gene's own intron. Keeping the "
         f"best-supported cluster {kept[0]}-{kept[1]} ({kept[2]} rows); "
         f"dropping {[(d[0], d[1], d[2]) for d in dropped]} (start, end, "
-        f"n_rows). Coordinates are NOT pooled across clusters.\n"
+        f"n_rows). Coordinates are NOT pooled across clusters."
     )
     return kept[0], kept[1]
 
@@ -540,19 +545,19 @@ def main(argv: list[str]) -> int:
     exclude_biotypes: Set[str] = set()
     if args.exclude_biotypes:
         exclude_biotypes = {b.strip().lower() for b in args.exclude_biotypes.split(",") if b.strip()}
-        sys.stderr.write(f"[gtf_to_catalog] Excluding biotypes: {exclude_biotypes}\n")
+        log_info(f"Excluding biotypes: {exclude_biotypes}")
 
     chr_mode: str | None = None
     if args.chr_add_prefix:
         chr_mode = "add"
-        sys.stderr.write("[gtf_to_catalog] Adding chr prefix to chromosome names\n")
+        log_info("Adding chr prefix to chromosome names")
     elif args.chr_remove_prefix:
         chr_mode = "remove"
-        sys.stderr.write("[gtf_to_catalog] Removing chr prefix from chromosome names\n")
+        log_info("Removing chr prefix from chromosome names")
 
-    sys.stderr.write(f"[gtf_to_catalog] start ts={datetime.datetime.utcnow().isoformat()}Z\n")
+    log_info(f"start ts={datetime.datetime.utcnow().isoformat()}Z")
     if not os.path.exists(gtf_in):
-        sys.stderr.write(f"ERROR: input not found: {gtf_in}\n")
+        log_error(f"input not found: {gtf_in}")
         return 2
 
     # Single streaming pass collects genes + hints together (no fragile re-read).
@@ -562,14 +567,14 @@ def main(argv: list[str]) -> int:
     # Filter by biotype if requested
     if exclude_biotypes:
         rows = [r for r in rows if (r[8] or "").strip().lower() not in exclude_biotypes]
-        sys.stderr.write(f"[gtf_to_catalog] After biotype filter: {len(rows)} genes\n")
+        log_info(f"After biotype filter: {len(rows)} genes")
 
     # Fail loud rather than emit a silently-corrupt catalog.
     problems = validate_rows(rows)
     if problems:
         for p in problems:
-            sys.stderr.write(f"ERROR: {p}\n")
-        sys.stderr.write("[gtf_to_catalog] aborting without writing outputs\n")
+            log_error(p)
+        log_error("aborting without writing outputs")
         return 3
 
     # Write (deterministic order already enforced by finalize_rows sort)
@@ -578,13 +583,13 @@ def main(argv: list[str]) -> int:
     write_bed6(tes_bed, rows, "tes", chr_mode)
 
     n_chroms = len({normalize_chrom(r[2], chr_mode) for r in rows})
-    sys.stderr.write(
+    log_info(
         f"✓ Wrote {len(rows)} genes across {n_chroms} sequences to "
-        f"{genes_tsv}, TSS={tss_bed}, TES={tes_bed}\n"
+        f"{genes_tsv}, TSS={tss_bed}, TES={tes_bed}"
     )
-    sys.stderr.write(f"[gtf_to_catalog] done ts={datetime.datetime.utcnow().isoformat()}Z\n")
+    log_info(f"done ts={datetime.datetime.utcnow().isoformat()}Z")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    sys.exit(run_main(lambda: main(sys.argv), log_error))

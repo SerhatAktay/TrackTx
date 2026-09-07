@@ -52,6 +52,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _common import make_logger, run_main
+
 # =============================================================================
 # CONSTANTS
 # =============================================================================
@@ -84,22 +87,12 @@ DEFAULT_MIN_EXPR = 1.0
 # LOGGING UTILITIES
 # =============================================================================
 
+log_info, log_warning, log_error, _log_progress_unused = make_logger("COMPARE")
+
 def log(section: str, message: str):
     """Consistent logging format"""
     timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     print(f"{LOG_PREFIX} {section} | {message} | ts={timestamp}", flush=True)
-
-def log_info(message: str):
-    """Log informational message"""
-    print(f"{LOG_PREFIX} INFO | {message}", flush=True)
-
-def log_error(message: str):
-    """Log error message"""
-    print(f"{LOG_PREFIX} ERROR | {message}", file=sys.stderr, flush=True)
-
-def log_warning(message: str):
-    """Log warning message"""
-    print(f"{LOG_PREFIX} WARNING | {message}", flush=True)
 
 # =============================================================================
 # MANIFEST LOADING AND VALIDATION
@@ -1036,13 +1029,4 @@ def main():
 # =============================================================================
 
 if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except KeyboardInterrupt:
-        log_error("Interrupted by user")
-        sys.exit(130)
-    except Exception as e:
-        log_error(f"Unexpected error: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    sys.exit(run_main(main, log_error))

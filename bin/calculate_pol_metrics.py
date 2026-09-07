@@ -45,6 +45,9 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _common import make_logger, run_main, AtomicFileWriter
+
 # =============================================================================
 # CONSTANTS
 # =============================================================================
@@ -56,28 +59,12 @@ LOG_PREFIX = "[POL_CALC]"
 # LOGGING UTILITIES
 # =============================================================================
 
+log_info, log_warning, log_error, log_progress = make_logger("POL_CALC")
+
 def log(section: str, message: str, flush: bool = True):
     """Consistent logging format: [POL_CALC] SECTION | message"""
     timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     print(f"{LOG_PREFIX} {section} | {message} | ts={timestamp}", flush=flush)
-
-def log_info(message: str):
-    """Log informational message"""
-    print(f"{LOG_PREFIX} INFO | {message}", flush=True)
-
-def log_error(message: str):
-    """Log error message"""
-    print(f"{LOG_PREFIX} ERROR | {message}", file=sys.stderr, flush=True)
-
-def log_warning(message: str):
-    """Log warning message"""
-    print(f"{LOG_PREFIX} WARNING | {message}", flush=True)
-
-def log_progress(section: str, current: int, total: int):
-    """Log progress indicator"""
-    if total > 0:
-        percent = (current / total) * 100
-        print(f"{LOG_PREFIX} {section} | Progress: {current}/{total} ({percent:.1f}%)", flush=True)
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -935,7 +922,7 @@ def write_bed_files(
     tss_count = 0
     body_count = 0
 
-    with open(tss_bed_path, "w") as tss_f, open(body_bed_path, "w") as body_f:
+    with AtomicFileWriter(tss_bed_path) as tss_f, AtomicFileWriter(body_bed_path) as body_f:
         for (gene_id, gene_name, chrom, strand, tss_lo, tss_hi,
              body_lo, body_hi, body_len, gene_length) in genes:
 
@@ -1042,7 +1029,7 @@ def write_output_files(
     # CPM denominator
     cpm_denom = (mapped_reads / 1_000_000.0) if mapped_reads > 0 else 1e-9
     
-    with open(pausing_output, "w") as p_out, open(genes_output, "w") as g_out:
+    with AtomicFileWriter(pausing_output) as p_out, AtomicFileWriter(genes_output) as g_out:
         # Writers
         p_writer = csv.writer(p_out, delimiter="\t", lineterminator="\n")
         g_writer = csv.writer(g_out, delimiter="\t", lineterminator="\n")
@@ -1148,7 +1135,8 @@ def write_qc_json(
         "effective_body_offset_min_bp": int(effective_offset_min),
     }
     
-    Path(output_path).write_text(json.dumps(qc_data, indent=2))
+    with AtomicFileWriter(output_path) as f:
+        f.write(json.dumps(qc_data, indent=2))
     log("QC", f"Wrote QC JSON: {output_path}")
 
 # =============================================================================
@@ -1368,15 +1356,9 @@ def _selftest():
 # ENTRY POINT
 # =============================================================================
 
+def _run():
+    _selftest()
+    return main()
+
 if __name__ == "__main__":
-    try:
-        _selftest()
-        sys.exit(main())
-    except KeyboardInterrupt:
-        log_error("Interrupted by user")
-        sys.exit(130)
-    except Exception as e:
-        log_error(f"Unexpected error: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    sys.exit(run_main(_run, log_error))

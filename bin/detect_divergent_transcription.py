@@ -54,6 +54,9 @@ from typing import Dict, List, Tuple
 import warnings
 warnings.filterwarnings('ignore')
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _common import AtomicFileWriter
+
 __version__ = "1.0"
 
 # Pairing/window defaults, sized for mammalian-scale intergenic spacing. Used
@@ -1075,7 +1078,7 @@ def generate_qc_report(
     empirical: Dict = None
 ):
     """Generate QC report with pipeline statistics."""
-    with open(report_path, 'w') as f:
+    with AtomicFileWriter(report_path) as f:
         f.write("="*70 + "\n")
         f.write("DIVERGENT TRANSCRIPTION DETECTION - QC REPORT\n")
         f.write("="*70 + "\n\n")
@@ -1264,16 +1267,17 @@ def main():
         # aborting the whole pipeline. Mirrors the opt-in-fallback behaviour: a
         # sample with no divergent transcription returns zero sites.
         log("No paired peaks found — writing empty output (0 divergent sites)")
-        open(args.out, 'w').close()
+        with AtomicFileWriter(args.out) as f:
+            pass
         if args.write_summary:
-            with open(args.write_summary, 'w') as f:
+            with AtomicFileWriter(args.write_summary) as f:
                 f.write("sample\tn_pos_pk\tn_neg_pk\tn_pairs_raw\tn_dt\twall_s\n")
                 f.write(f"{args.sample}\t{len(pos_peaks)}\t{len(neg_peaks)}\t0\t0\t"
                         f"{time.time()-start_time:.1f}\n")
         if not args.no_report:
             report_path = args.report if args.report else args.out.replace('.bed', '_qc.txt')
             try:
-                with open(report_path, 'w') as f:
+                with AtomicFileWriter(report_path) as f:
                     f.write("DIVERGENT TRANSCRIPTION — QC REPORT\n")
                     f.write(f"Sample: {args.sample}\n")
                     f.write(f"Positive peaks: {len(pos_peaks)}\n")
@@ -1338,7 +1342,7 @@ def main():
     # pandas' internal CSV formatter layout (which can vary between versions
     # and has caused import issues on some systems). Instead, write the
     # BED5-style output manually from values.
-    with open(args.out, 'w') as out_f:
+    with AtomicFileWriter(args.out) as out_f:
         for row in final[['chr', 'start', 'end', 'total', 'score']].itertuples(index=False):
             chrom, start, end, total, score = row
             # Coerce numeric fields defensively; fall back to raw value if needed
@@ -1390,7 +1394,7 @@ def main():
     # Generate summary TSV (for pipeline integration)
     if args.write_summary:
         elapsed = time.time() - start_time
-        with open(args.write_summary, 'w') as f:
+        with AtomicFileWriter(args.write_summary) as f:
             f.write("sample\tn_pos_pk\tn_neg_pk\tn_pairs_raw\tn_dt\twall_s\n")
             f.write(f"{args.sample}\t{len(pos_peaks)}\t{len(neg_peaks)}\t"
                    f"{len(paired)}\t{len(final)}\t{elapsed:.1f}\n")
