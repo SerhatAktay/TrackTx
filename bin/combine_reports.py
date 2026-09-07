@@ -929,6 +929,9 @@ def generate_html_report(
         <strong>CPM</strong> rescales by sequencing depth (assumes similar global transcription).
         <strong>siCPM</strong> uses an exogenous spike-in to capture global changes in transcription — essential when conditions
         are expected to shift overall output. Within a condition, factors should be consistent across replicates.
+        <strong>A genome-wide attenuation claim requires siCPM</strong> (or another exogenous-scalar method) — CPM renormalizes
+        total signal to a constant by construction, so it cannot show a global decrease. A sample missing siCPM is not usable
+        for that comparison.
       </div>
     </details>
     <div class="chips" id="norm-chips"></div>
@@ -1831,10 +1834,12 @@ pre.cmd { background:var(--panel); border:1px solid var(--line); border-radius:8
   (function () {
     var cpm = rows.map(function (r) { return r.cpm_factor; }).filter(isNum);
     var si = rows.map(function (r) { return r.crpmsi_factor; }).filter(isNum);
+    var siMissing = rows.length - si.length;
     document.getElementById('norm-chips').innerHTML =
       chip('CPM samples', cpm.length) + chip('siCPM samples', si.length) +
       chip('CPM range', cpm.length ? cpm.reduce(mn).toFixed(3) + '–' + cpm.reduce(mx).toFixed(3) : '–') +
-      chip('siCPM range', si.length ? si.reduce(mn).toFixed(3) + '–' + si.reduce(mx).toFixed(3) : '–');
+      chip('siCPM range', si.length ? si.reduce(mn).toFixed(3) + '–' + si.reduce(mx).toFixed(3) : '–') +
+      (siMissing > 0 ? '<div class="chip"><div class="c-label">siCPM missing</div><div class="c-value"><span class="flag warn">' + siMissing + ' sample' + (siMissing === 1 ? '' : 's') + '</span></div></div>' : '');
     drawBars('chart-cpm', function () { return orderedRows().map(function (r) { return { id: r.sample_id, value: isNum(r.cpm_factor) ? r.cpm_factor : null, row: r }; }); }, { tipLabel: 'CPM', tipFmt: function (v) { return v.toFixed(4); }, emptyMsg: 'No CPM factors' });
     drawBars('chart-sicpm', function () { return orderedRows().map(function (r) { return { id: r.sample_id, value: isNum(r.crpmsi_factor) ? r.crpmsi_factor : null, row: r }; }); }, { tipLabel: 'siCPM', tipFmt: function (v) { return v.toFixed(4); }, emptyMsg: 'No spike-in factors' });
     drawScatter('chart-cpm-sicpm', function () { return rows.filter(function (r) { return isNum(r.cpm_factor) && isNum(r.crpmsi_factor); }).map(function (r) { return { id: r.sample_id, x: r.cpm_factor, y: r.crpmsi_factor, row: r }; }); }, 'CPM factor', 'siCPM factor', { emptyMsg: 'No CPM/siCPM pairs' });

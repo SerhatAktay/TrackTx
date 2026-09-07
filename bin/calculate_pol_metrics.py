@@ -353,8 +353,21 @@ def count_reads_pysam(bed_path: Path, bam_path: str, region_type: str) -> Dict[s
                     #   + strand gene → read maps to forward strand (not reverse)
                     #   - strand gene → read maps to reverse strand
                     if strand == "+" and not read.is_reverse:
-                        count += 1
+                        pass
                     elif strand == "-" and read.is_reverse:
+                        pass
+                    else:
+                        continue
+                    # Count by the Pol II active-site (3'-end) position, not
+                    # full-read overlap -- matches the -3 convention used for
+                    # every coverage track/TSN call elsewhere in the pipeline.
+                    # fetch() returns any read whose alignment span overlaps
+                    # [start, end), so a read entering/exiting the window
+                    # without its 3' end inside it must be excluded here,
+                    # otherwise reads are double-counted or misattributed
+                    # across the TSS/body boundary.
+                    three_prime = (read.reference_end - 1) if not read.is_reverse else read.reference_start
+                    if start <= three_prime < end:
                         count += 1
                 counts[gene_id] += count
             except (ValueError, OverflowError) as e:

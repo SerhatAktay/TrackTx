@@ -61,7 +61,7 @@ process download_genome_annotations {
   // that same required value here, sanitized to safe path characters, so
   // this cache key and module 04's genome/index cache key are always
   // derived from the same user-chosen name.
-  storeDir   "${params.assets_dir ?: "${projectDir}/assets"}/annotation/${params.reference_genome == 'other' ? 'other_' + params.custom_genome_id.toString().trim().replaceAll(/[^A-Za-z0-9_.-]/, '_') : params.reference_genome}_${params.annotation_source ?: 'refseq'}_${params.annotation_exclude_biotypes ?: ''}_${params.annotation_chr_naming ?: 'none'}"
+  storeDir   "${params.assets_dir ?: "${projectDir}/assets"}/annotation/${params.reference_genome == 'other' ? 'other_' + GenomeId.sanitize(params.custom_genome_id) : params.reference_genome}_${params.annotation_source ?: 'refseq'}_${params.annotation_exclude_biotypes ?: ''}_${params.annotation_chr_naming ?: 'none'}"
   
   // Use params.publish_mode: 'link' (default) or 'copy' (required for exFAT/USB drives)
   publishDir "${params.output_dir}/00_references/${params.reference_genome}", 
@@ -106,9 +106,16 @@ process download_genome_annotations {
   // for Nextflow to collect must still be literally named "other.*" --
   // only the separate, persistent genome_cache lookup/storage below needs
   // its own unique key.
-  def cacheKey = params.reference_genome == 'other'
-      ? 'other_' + params.custom_genome_id.toString().trim().replaceAll(/[^A-Za-z0-9_.-]/, '_')
+  //
+  // Also suffixed with annotation_source/annotation_exclude_biotypes/
+  // annotation_chr_naming, mirroring storeDir above -- without this, two
+  // runs of the same genome with different annotation config hit the same
+  // CACHE_KEY, and the FAST PATH below would silently serve one config's
+  // cached GTF/gene-catalog files for the other's request.
+  def genomeIdPart = params.reference_genome == 'other'
+      ? 'other_' + GenomeId.sanitize(params.custom_genome_id)
       : params.reference_genome
+  def cacheKey = "${genomeIdPart}_${params.annotation_source ?: 'refseq'}_${params.annotation_exclude_biotypes ?: ''}_${params.annotation_chr_naming ?: 'none'}"
   """
   #!/usr/bin/env bash
   set -euo pipefail

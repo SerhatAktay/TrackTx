@@ -57,7 +57,7 @@ def resolveSamplesheetPath(p, projectDir) {
 // parser v2 fails to resolve closures assigned inside a workflow block when
 // they're later invoked with call syntax (false "not defined" compile error).
 def sanitizeGenomeId(raw) {
-  return raw.toString().trim().replaceAll(/[^A-Za-z0-9_.-]/, '_')
+  return GenomeId.sanitize(raw)
 }
 
 // ============================================================================
