@@ -71,10 +71,10 @@
 //   divergent_calibration_percentile : Percentile for auto threshold (default: 65)
 //   divergent_calibration_sum_multiplier : sum_thr = threshold * N (default: 1.5)
 //   divergent_calibration_background_lower : Use lower 50% bins (default: false)
-//   divergent_merge_gap    : Merge overlapping regions within N bp (default: 500)
-//   divergent_nt_window     : Max edge-to-edge gap for pairing (default: 1000bp)
+//   divergent_merge_gap    : Merge overlapping regions within N bp (default: 'auto' -- organism-aware, 500bp ceiling)
+//   divergent_nt_window     : Max edge-to-edge gap for pairing (default: 'auto' -- organism-aware, 1000bp ceiling)
 //   divergent_balance      : Min balance ratio for initial pairing (default: 0.0)
-//   divergent_bin_gap       : Max gap within peaks (default: 100bp)
+//   divergent_bin_gap       : Max gap within peaks (default: 'auto' -- organism-aware, 100bp ceiling)
 //
 // Dependencies:
 //   • Python 3.7+
@@ -170,13 +170,13 @@ process detect_divergent_transcription {
   THRESHOLD="${threshold}"
   SUM_THR="${sum_thr}"
   FDR=${fdr}
-  NT_WINDOW=${nt_window}
+  NT_WINDOW="${nt_window}"
   BALANCE=${balance}
-  BIN_GAP=${bin_gap}
+  BIN_GAP="${bin_gap}"
   CAL_PERCENTILE=${calibration_percentile}
   CAL_SUM_MULT=${calibration_sum_multiplier}
   CAL_BG_LOWER=${calibration_background_lower}
-  MERGE_GAP=${merge_gap}
+  MERGE_GAP="${merge_gap}"
   FALLBACK_TOP_FRAC=${fallback_top_frac}
 
   # Feature flags
@@ -303,6 +303,17 @@ process detect_divergent_transcription {
     SUM_THR_ARG="--sum-thr \${SUM_THR}"
   fi
 
+  # 'auto' (default) omits the flag entirely so the script's own
+  # organism-aware auto-scaling applies (see auto_scale_window_params).
+  NT_WINDOW_ARG=""
+  [[ "\${NT_WINDOW}" != "auto" ]] && NT_WINDOW_ARG="--nt-window \${NT_WINDOW}"
+
+  BIN_GAP_ARG=""
+  [[ "\${BIN_GAP}" != "auto" ]] && BIN_GAP_ARG="--bin-gap \${BIN_GAP}"
+
+  MERGE_GAP_ARG=""
+  [[ "\${MERGE_GAP}" != "auto" ]] && MERGE_GAP_ARG="--merge-gap \${MERGE_GAP}"
+
   QC_ARG=""
   [[ \${DO_QC} -eq 0 ]] && QC_ARG="--no-report"
 
@@ -318,17 +329,17 @@ process detect_divergent_transcription {
     --neg          "\${NEG_BG}" \\
     --out          "divergent_transcription.bed" \\
     --fdr          "\${FDR}" \\
-    --nt-window    "\${NT_WINDOW}" \\
     --balance      "\${BALANCE}" \\
-    --bin-gap      "\${BIN_GAP}" \\
     --calibration-percentile "\${CAL_PERCENTILE}" \\
     --calibration-sum-multiplier "\${CAL_SUM_MULT}" \\
-    --merge-gap    "\${MERGE_GAP}" \\
     --fallback-top-frac "\${FALLBACK_TOP_FRAC}" \\
     --ncores       "\${THREADS}" \\
     --write-summary "divergent_summary.tsv" \\
     \${THRESHOLD_ARG} \\
     \${SUM_THR_ARG} \\
+    \${NT_WINDOW_ARG} \\
+    \${BIN_GAP_ARG} \\
+    \${MERGE_GAP_ARG} \\
     \${CAL_BG_ARG} \\
     \${QC_ARG}
   

@@ -37,6 +37,14 @@ warnings.filterwarnings('ignore')
 
 __version__ = "1.0"
 
+# Pairing/window defaults, sized for mammalian-scale intergenic spacing. Used
+# as the ceiling in auto_scale_window_params() below -- compact genomes shrink
+# from here, nothing ever scales above these.
+DEFAULT_NT_WINDOW = 1000
+DEFAULT_BIN_GAP = 100
+DEFAULT_MERGE_GAP = 500
+DEFAULT_BG_WINDOW = 5000
+
 
 def parse_args():
     """Parse command-line arguments."""
@@ -97,17 +105,24 @@ Output:
     ap.add_argument("--calibration-background-lower", action="store_true",
                     help="Use lower 50%% of bins for background (avoids inflating threshold from hotspots)")
     
-    # Pairing parameters
-    ap.add_argument("--nt-window", type=int, default=1000,
-                    help="Maximum edge-to-edge gap for pairing peaks (default: 1000bp)")
-    ap.add_argument("--bin-gap", type=int, default=100,
-                    help="Maximum gap within peaks (default: 100bp)")
+    # Pairing parameters. Defaults are None (not the DEFAULT_* constant) so
+    # main() can tell "user explicitly passed this" apart from "use the
+    # organism-aware auto-scaled value" -- see auto_scale_window_params().
+    ap.add_argument("--nt-window", type=int, default=None,
+                    help=f"Maximum edge-to-edge gap for pairing peaks (default: auto, "
+                         f"{DEFAULT_NT_WINDOW}bp ceiling for non-compact genomes)")
+    ap.add_argument("--bin-gap", type=int, default=None,
+                    help=f"Maximum gap within peaks (default: auto, {DEFAULT_BIN_GAP}bp ceiling)")
     ap.add_argument("--balance", type=float, default=0.0,
                     help="Minimum strand balance for initial pairing (default: 0.0, filtering done statistically)")
-    
+
     # Post-processing
-    ap.add_argument("--merge-gap", type=int, default=500,
-                    help="Merge overlapping regions within this gap (bp); 0=disable (default: 500)")
+    ap.add_argument("--merge-gap", type=int, default=None,
+                    help=f"Merge overlapping regions within this gap (bp); 0=disable "
+                         f"(default: auto, {DEFAULT_MERGE_GAP}bp ceiling)")
+    ap.add_argument("--bg-window", type=int, default=None,
+                    help=f"Local background flank for signal-to-background scoring (bp) "
+                         f"(default: auto, {DEFAULT_BG_WINDOW}bp ceiling)")
     
     # Performance
     ap.add_argument("--ncores", type=int, default=1,
@@ -271,7 +286,60 @@ def read_bedgraph(path: str, role: str, quiet: bool = False) -> pd.DataFrame:
     return df
 
 
-def auto_calibrate(pos_df: pd.DataFrame, neg_df: pd.DataFrame, 
+def auto_scale_window_params(
+    pos_df: pd.DataFrame,
+    neg_df: pd.DataFrame,
+    quiet: bool = False
+) -> Dict[str, int]:
+    """
+    Organism-aware pairing/window defaults, derived from apparent genome size.
+
+    Mirrors the median-gated pattern in calculate_pol_metrics.py's
+    auto_body_offset: only SHRINK the mammalian-scale defaults for genuinely
+    compact genomes, never scale above them. This script has no GTF/annotation
+    input to compute gene density from (unlike auto_body_offset), so genome
+    size is approximated from the bedgraph inputs themselves: sum of the max
+    coordinate seen per chromosome. A flat 1000bp pairing window sized for
+    human intergenic space can span multiple adjacent genes in a compact
+    genome (e.g. E. coli), producing spurious "divergent" calls between
+    unrelated promoters -- this scales the window down proportionally instead.
+
+    Returns:
+        Dict with keys: nt_window, bin_gap, merge_gap, bg_window
+    """
+    # Genomes at/above this apparent size keep the mammalian-scale defaults
+    # unchanged. Below it (fly/worm-scale and smaller, including bacteria),
+    # window sizes shrink proportionally to how much smaller the genome is.
+    COMPACT_GENOME_BP = 50_000_000
+
+    spans = pd.concat([pos_df[['chr', 'end']], neg_df[['chr', 'end']]], ignore_index=True)
+    genome_size = int(spans.groupby('chr')['end'].max().sum()) if not spans.empty else 0
+
+    defaults = {
+        'nt_window': DEFAULT_NT_WINDOW,
+        'bin_gap': DEFAULT_BIN_GAP,
+        'merge_gap': DEFAULT_MERGE_GAP,
+        'bg_window': DEFAULT_BG_WINDOW,
+    }
+
+    if genome_size == 0 or genome_size >= COMPACT_GENOME_BP:
+        log(f"Apparent genome size ~{genome_size:,} bp (>= {COMPACT_GENOME_BP:,} bp) → "
+            f"non-compact genome; keeping default window sizes {defaults}", quiet)
+        return defaults
+
+    scale = max(0.1, genome_size / COMPACT_GENOME_BP)
+    scaled = {
+        'nt_window': max(200, int(DEFAULT_NT_WINDOW * scale)),
+        'bin_gap': max(20, int(DEFAULT_BIN_GAP * scale)),
+        'merge_gap': max(50, int(DEFAULT_MERGE_GAP * scale)),
+        'bg_window': max(500, int(DEFAULT_BG_WINDOW * scale)),
+    }
+    log(f"Apparent genome size ~{genome_size:,} bp (< {COMPACT_GENOME_BP:,} bp) → "
+        f"compact genome; auto-scaling windows {defaults} → {scaled}", quiet)
+    return scaled
+
+
+def auto_calibrate(pos_df: pd.DataFrame, neg_df: pd.DataFrame,
                    percentile: float = 75.0,
                    sum_multiplier: float = 3.0,
                    use_lower_background: bool = False,
@@ -321,14 +389,41 @@ def auto_calibrate(pos_df: pd.DataFrame, neg_df: pd.DataFrame,
     
     bg_mean = float(np.mean(all_signals))
     bg_std = float(np.std(all_signals))
-    
+
     threshold = percentile_val
     sum_thr = max(threshold * sum_multiplier, 1.0)
-    
+
     log(f"  Signal mean: {bg_mean:.2f}, std: {bg_std:.2f}", quiet)
     log(f"  Threshold ({percentile}th percentile): {threshold:.2f}", quiet)
     log(f"  Sum threshold ({sum_multiplier}x): {sum_thr:.2f}", quiet)
-    
+
+    # The threshold above is one percentile pooled across the WHOLE genome. An
+    # outlier contig mixed in with the main chromosome set (e.g. a small
+    # high-copy plasmid/mito/chloroplast sequence) can pull that shared
+    # percentile away from what's appropriate for the rest of the genome.
+    # Not stratifying the actual threshold per-chromosome to keep this a
+    # low-risk logging-only addition; just make a skew visible in the run log.
+    per_chrom_pctile = []
+    for chrom, group in pd.concat([pos_df[['chr', 'sig']], neg_df[['chr', 'sig']]]).groupby('chr'):
+        vals = group['sig'].abs().to_numpy()
+        if len(vals) >= 20:
+            per_chrom_pctile.append((str(chrom), float(np.percentile(vals, percentile))))
+    if len(per_chrom_pctile) > 1:
+        lo_chrom, lo_val = min(per_chrom_pctile, key=lambda x: x[1])
+        hi_chrom, hi_val = max(per_chrom_pctile, key=lambda x: x[1])
+        if lo_val == hi_val:
+            # All chromosomes tied at the same percentile value (common for
+            # sparse, low-depth signal) -- naming one chromosome twice would
+            # misleadingly read as a bug, so just report the uniform value.
+            log(f"  Per-chromosome p{int(percentile)}: uniform at {lo_val:.2f} "
+                f"across {len(per_chrom_pctile)} chromosomes", quiet)
+        else:
+            spread = hi_val / max(lo_val, 1e-9)
+            log(f"  Per-chromosome p{int(percentile)} spread: {lo_chrom}={lo_val:.2f} .. "
+                f"{hi_chrom}={hi_val:.2f} ({spread:.1f}x)"
+                + (" — WARNING: large spread, shared genome-wide threshold may be "
+                   "miscalibrated for some contigs" if spread >= 3.0 else ""), quiet)
+
     return {
         'threshold': threshold,
         'sum_thr': sum_thr,
@@ -557,7 +652,8 @@ def extract_features(
     paired_df: pd.DataFrame,
     pos_idx: FastBedGraph,
     neg_idx: FastBedGraph,
-    quiet: bool = False
+    quiet: bool = False,
+    bg_window: int = DEFAULT_BG_WINDOW
 ) -> pd.DataFrame:
     """
     Extract features for statistical scoring.
@@ -597,7 +693,7 @@ def extract_features(
     end = paired_df['end'].to_numpy().astype(np.int64)
     total_from_pairing = paired_df['total'].to_numpy().astype(float)
 
-    window = 5000
+    window = bg_window
     local_start = np.maximum(0, start - window)
     local_end = end + window
 
@@ -648,86 +744,33 @@ def extract_features(
     })
 
 
-def score_with_mixture_model(
-    features_df: pd.DataFrame,
+# ponytail: below this many candidates, a 2-component/3-feature full-covariance
+# GMM has too few points per component to fit reliably and can converge to a
+# degenerate near-0/1-probability posterior with no warning. 25 is a round
+# number giving ~12 points/component minimum for a 3-feature full-covariance
+# fit (roughly one point per free covariance parameter); raise if a specific
+# organism's candidate counts show this still isn't enough.
+MIN_GMM_CANDIDATES = 25
+
+
+def _apply_fdr_cutoff(
+    scores: np.ndarray,
     fdr_threshold: float,
-    quiet: bool = False,
-    fallback_top_frac: float = 0.0
-) -> Tuple[np.ndarray, np.ndarray]:
+    fallback_top_frac: float,
+    quiet: bool
+) -> np.ndarray:
     """
-    Score regions using Gaussian Mixture Model and apply approximate FDR control.
-    
-    Fits 2-component GMM on key features to identify true divergent TX
-    vs noise/artifacts. Computes posterior probabilities and applies
-    FDR-like filtering using cumulative expected FP / cumulative calls.
-    
-    Note: This is an approximate FDR procedure (posterior-based, not p-value BH).
-    The GMM posterior is not a p-value; empirical validation recommended for
-    strict FDR guarantees.
-    
-    Args:
-        features_df: Feature matrix
-        fdr_threshold: FDR cutoff (e.g., 0.05 = 5%)
-        quiet: Suppress logging
-        
-    Returns:
-        Tuple of (passing_mask, scores) where:
-        - passing_mask: Boolean array of regions passing FDR
-        - scores: Posterior probability for each region (0-1)
+    Shared posterior/score -> passing-mask cutoff (approximate FDR, not p-value BH).
+    Used by both the GMM path and the small-N balance_bayesian fallback below,
+    and by the empirical-null check, so cutoff behavior can't drift between them.
     """
-    log("Fitting statistical model...", quiet)
-    
-    # GMM requires at least 2 samples; handle edge case of 0 or 1 candidate pairs
-    n_regions = len(features_df)
-    if n_regions == 0:
-        return np.array([], dtype=bool), np.array([])
-    if n_regions == 1:
-        log("  Only 1 candidate pair — skipping GMM (requires ≥2 samples), outputting with confidence 1.0", quiet)
-        return np.array([True]), np.array([1.0])
-    
-    try:
-        from sklearn.mixture import GaussianMixture
-    except ImportError:
-        log("ERROR: scikit-learn required for statistical scoring")
-        log("Install with: pip install scikit-learn scipy")
-        sys.exit(1)
-    
-    # Select features for model
-    feature_cols = ['log_total', 'balance_bayesian', 'log_snr']
-    
-    X = features_df[feature_cols].copy()
-    X = X.replace([np.inf, -np.inf], np.nan)
-    X = X.fillna(X.median())
-    
-    # Fit 2-component Gaussian mixture
-    gmm = GaussianMixture(
-        n_components=2,
-        covariance_type='full',
-        random_state=42,
-        max_iter=200,
-        n_init=10
-    )
-    gmm.fit(X.values)
-    
-    # Identify positive component (higher mean signal)
-    means = gmm.means_[:, 0]  # log_total means
-    pos_component = int(np.argmax(means))
-    
-    log(f"  Positive component: {pos_component} (mean log_total={gmm.means_[pos_component][0]:.2f})", quiet)
-    log(f"  Negative component: {1-pos_component} (mean log_total={gmm.means_[1-pos_component][0]:.2f})", quiet)
-    
-    # Compute posterior probabilities
-    probs = gmm.predict_proba(X.values)
-    scores = probs[:, pos_component]
-    
-    # FDR control via Benjamini-Hochberg-like procedure
     sorted_idx = np.argsort(-scores)
     sorted_scores = scores[sorted_idx]
-    
+
     cumulative_fp = np.cumsum(1 - sorted_scores)
     cumulative_calls = np.arange(1, len(sorted_scores) + 1)
     fdr = cumulative_fp / cumulative_calls
-    
+
     passing = fdr <= fdr_threshold
 
     if not passing.any():
@@ -742,16 +785,232 @@ def score_with_mixture_model(
             # to emit its noisiest top-10%. Set --fallback-top-frac to override.
             log(f"  No regions pass FDR={fdr_threshold}; returning 0 sites "
                 f"(set --fallback-top-frac > 0 to keep a top fraction instead)", quiet)
-            return np.zeros(len(features_df), dtype=bool), scores
+            return np.zeros(len(scores), dtype=bool)
     else:
         n_pass = np.where(passing)[0][-1] + 1
 
-    mask = np.array([False] * len(features_df))
+    mask = np.zeros(len(scores), dtype=bool)
     mask[sorted_idx[:n_pass]] = True
-    
-    log(f"  → {n_pass:,} / {len(features_df):,} regions pass FDR (retention: {100*n_pass/len(features_df):.1f}%)", quiet)
-    
-    return mask, scores
+
+    log(f"  → {n_pass:,} / {len(scores):,} regions pass FDR (retention: {100*n_pass/len(scores):.1f}%)", quiet)
+
+    return mask
+
+
+def score_features_with_model(
+    features_df: pd.DataFrame,
+    gmm,
+    pos_component,
+    feature_cols
+) -> np.ndarray:
+    """
+    Score a features_df the same way a real run was scored: GMM posterior when
+    a model was fit, or the balance_bayesian fallback when it wasn't (small-N
+    path). Shared by the real scoring call and the empirical-null check so both
+    use identical scoring logic.
+    """
+    if gmm is None:
+        return features_df['balance_bayesian'].to_numpy(dtype=float)
+    X = features_df[feature_cols].copy()
+    X = X.replace([np.inf, -np.inf], np.nan)
+    X = X.fillna(X.median())
+    probs = gmm.predict_proba(X.values)
+    return probs[:, pos_component]
+
+
+def score_with_mixture_model(
+    features_df: pd.DataFrame,
+    fdr_threshold: float,
+    quiet: bool = False,
+    fallback_top_frac: float = 0.0
+) -> Tuple[np.ndarray, np.ndarray, object, object, object]:
+    """
+    Score regions using Gaussian Mixture Model and apply approximate FDR control.
+
+    Fits 2-component GMM on key features to identify true divergent TX
+    vs noise/artifacts. Computes posterior probabilities and applies
+    FDR-like filtering using cumulative expected FP / cumulative calls.
+
+    Note: This is an approximate FDR procedure (posterior-based, not p-value BH).
+    The GMM posterior is not a p-value; see the empirical-null check in main()
+    for a permutation-based estimate alongside this one.
+
+    Args:
+        features_df: Feature matrix
+        fdr_threshold: FDR cutoff (e.g., 0.05 = 5%)
+        quiet: Suppress logging
+
+    Returns:
+        Tuple of (passing_mask, scores, gmm, pos_component, feature_cols).
+        gmm/pos_component/feature_cols are None when n_regions < 2 or the
+        small-N fallback fired (no GMM was fit) — callers that need to score
+        more data the same way should use score_features_with_model, which
+        handles both cases.
+    """
+    log("Fitting statistical model...", quiet)
+
+    # GMM requires at least 2 samples; handle edge case of 0 or 1 candidate pairs
+    n_regions = len(features_df)
+    if n_regions == 0:
+        return np.array([], dtype=bool), np.array([]), None, None, None
+    if n_regions == 1:
+        log("  Only 1 candidate pair — skipping GMM (requires ≥2 samples), outputting with confidence 1.0", quiet)
+        return np.array([True]), np.array([1.0]), None, None, None
+
+    feature_cols = ['log_total', 'balance_bayesian', 'log_snr']
+
+    if n_regions < MIN_GMM_CANDIDATES:
+        log(f"  Only {n_regions} candidate pairs (< {MIN_GMM_CANDIDATES}) — GMM fit is unstable "
+            f"at this N; using balance_bayesian directly as the score instead", quiet)
+        scores = features_df['balance_bayesian'].to_numpy(dtype=float)
+        mask = _apply_fdr_cutoff(scores, fdr_threshold, fallback_top_frac, quiet)
+        return mask, scores, None, None, None
+
+    try:
+        from sklearn.mixture import GaussianMixture
+    except ImportError:
+        log("ERROR: scikit-learn required for statistical scoring")
+        log("Install with: pip install scikit-learn scipy")
+        sys.exit(1)
+
+    X = features_df[feature_cols].copy()
+    X = X.replace([np.inf, -np.inf], np.nan)
+    X = X.fillna(X.median())
+
+    # Fit 2-component Gaussian mixture
+    gmm = GaussianMixture(
+        n_components=2,
+        covariance_type='full',
+        random_state=42,
+        max_iter=200,
+        n_init=10
+    )
+    gmm.fit(X.values)
+
+    # Identify positive component (higher mean signal)
+    means = gmm.means_[:, 0]  # log_total means
+    pos_component = int(np.argmax(means))
+    other_component = 1 - pos_component
+
+    log(f"  Positive component: {pos_component} (mean log_total={gmm.means_[pos_component][0]:.2f})", quiet)
+    log(f"  Negative component: {other_component} (mean log_total={gmm.means_[other_component][0]:.2f})", quiet)
+
+    # Sanity check (not an override): the pick above uses ONLY the log_total
+    # mean, so a component of wide, low-specificity high-signal regions could
+    # outrank a true low-signal-but-well-balanced component. Cross-check
+    # against balance_bayesian and warn with both components' full feature
+    # means when they disagree, so a run can be sanity-checked by hand.
+    bal_idx = feature_cols.index('balance_bayesian')
+    if gmm.means_[pos_component][bal_idx] < gmm.means_[other_component][bal_idx]:
+        log(f"  WARNING: component chosen by log_total ({pos_component}) has LOWER mean "
+            f"balance_bayesian than the other component — possible mis-selection. "
+            f"Component {pos_component} means: {dict(zip(feature_cols, gmm.means_[pos_component]))}; "
+            f"Component {other_component} means: {dict(zip(feature_cols, gmm.means_[other_component]))}",
+            quiet)
+
+    # Compute posterior probabilities
+    probs = gmm.predict_proba(X.values)
+    scores = probs[:, pos_component]
+
+    mask = _apply_fdr_cutoff(scores, fdr_threshold, fallback_top_frac, quiet)
+
+    return mask, scores, gmm, pos_component, feature_cols
+
+
+def empirical_null_fdr_check(
+    pos_df: pd.DataFrame,
+    neg_df: pd.DataFrame,
+    threshold: float,
+    sum_thr: float,
+    bin_gap: int,
+    nt_window: int,
+    balance: float,
+    bg_window: int,
+    fdr_threshold: float,
+    gmm,
+    pos_component,
+    feature_cols,
+    n_real_passing: int,
+    quiet: bool = False,
+    seed: int = 42
+) -> Dict:
+    """
+    Single-shuffle empirical-null estimate of the FDR at fdr_threshold.
+
+    The GMM posterior FDR above is not a real p-value BH FDR (see its own
+    docstring). Rather than depend on an external caller (dREG/PINTS) for
+    validation -- ruled out for this pipeline: dREG depends on an
+    often-unavailable web portal and neither is tunable across genomes from
+    bacteria to mammals -- this gives the custom method its own measured
+    error-rate estimate: shuffle each strand's signal WITHIN each chromosome
+    (destroys real positional/bidirectional structure, preserves the
+    per-bin signal magnitude distribution so peak-calling behaves the same),
+    rerun peak-calling + pairing + feature extraction on that null data, and
+    score the null candidates with the SAME fitted model used on the real
+    data (not a refit) -- i.e. "how many would the real decision rule call
+    positive on pure noise". One shuffle gives an order-of-magnitude answer;
+    this is intentionally not a many-iteration permutation test.
+
+    Returns:
+        Dict with keys: null_candidates, null_passing, empirical_fdr
+    """
+    rng = np.random.default_rng(seed)
+
+    def _shuffle(df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+        out['sig'] = out.groupby('chr')['sig'].transform(
+            lambda s: rng.permutation(s.to_numpy())
+        )
+        return out
+
+    null_pos_df = _shuffle(pos_df)
+    null_neg_df = _shuffle(neg_df)
+    null_pos_idx = FastBedGraph(null_pos_df)
+    null_neg_idx = FastBedGraph(null_neg_df)
+
+    null_pos_peaks = call_peaks(null_pos_df, threshold, sum_thr, bin_gap)
+    null_neg_peaks = call_peaks(null_neg_df, threshold, sum_thr, bin_gap)
+
+    chroms = sorted(
+        set(null_pos_peaks['chr'].unique()) & set(null_neg_peaks['chr'].unique()),
+        key=natural_sort_key
+    )
+    pieces = []
+    for chrom in chroms:
+        result = pair_peaks_on_chromosome(
+            chrom,
+            null_pos_peaks[null_pos_peaks['chr'] == chrom].reset_index(drop=True),
+            null_neg_peaks[null_neg_peaks['chr'] == chrom].reset_index(drop=True),
+            nt_window, balance
+        )
+        if not result.empty:
+            pieces.append(result)
+
+    if not pieces:
+        log("  Empirical-null check: 0 candidate pairs in shuffled data (no false positives possible)", quiet)
+        return {'null_candidates': 0, 'null_passing': 0, 'empirical_fdr': 0.0}
+
+    null_paired = pd.concat(pieces, ignore_index=True)
+    null_features = extract_features(null_paired, null_pos_idx, null_neg_idx, quiet=True, bg_window=bg_window)
+    null_scores = score_features_with_model(null_features, gmm, pos_component, feature_cols)
+    null_mask = _apply_fdr_cutoff(null_scores, fdr_threshold, 0.0, quiet=True)
+    n_null_passing = int(null_mask.sum())
+
+    # Both counts (null and real) come from the SAME decision rule (same
+    # fitted model, same FDR cutoff) applied to shuffled vs. real data, so
+    # this ratio is a direct empirical estimate of "what fraction of calls at
+    # this cutoff would come from noise alone".
+    empirical_fdr = n_null_passing / max(1, n_null_passing + n_real_passing)
+
+    log(f"  Empirical-null check: {len(null_paired):,} candidate pairs in shuffled data, "
+        f"{n_null_passing:,} would pass FDR={fdr_threshold} → empirical FDR ≈ {empirical_fdr:.4f} "
+        f"(nominal GMM-posterior cutoff: {fdr_threshold})", quiet)
+
+    return {
+        'null_candidates': len(null_paired),
+        'null_passing': n_null_passing,
+        'empirical_fdr': empirical_fdr,
+    }
 
 
 def generate_qc_report(
@@ -762,7 +1021,8 @@ def generate_qc_report(
     scores: np.ndarray,
     calibration: Dict,
     actual_threshold: float,
-    actual_sum_thr: float
+    actual_sum_thr: float,
+    empirical: Dict = None
 ):
     """Generate QC report with pipeline statistics."""
     with open(report_path, 'w') as f:
@@ -792,7 +1052,18 @@ def generate_qc_report(
         f.write(f"  FDR threshold:            {stats['fdr']:.4f}\n")
         f.write(f"  Regions passing:          {np.sum(passing_mask):,}\n")
         f.write(f"  Retention rate:           {100*np.sum(passing_mask)/len(passing_mask):.1f}%\n\n")
-        
+
+        if empirical is not None:
+            f.write("Empirical-Null FDR Check (single shuffle)\n")
+            f.write("-"*70 + "\n")
+            f.write(f"  Null candidate pairs:     {empirical['null_candidates']:,}\n")
+            f.write(f"  Null regions passing:     {empirical['null_passing']:,}\n")
+            f.write(f"  Empirical FDR estimate:   {empirical['empirical_fdr']:.4f}\n")
+            f.write("  (Same fitted model/cutoff scored on within-chromosome-shuffled\n")
+            f.write("   signal; a single shuffle, not a many-iteration permutation test.\n")
+            f.write("   Estimates what fraction of real calls could be noise.)\n\n")
+
+
         f.write("Score Distribution\n")
         f.write("-"*70 + "\n")
         f.write(f"  Min:                      {scores.min():.4f}\n")
@@ -825,7 +1096,8 @@ def generate_qc_report(
         f.write("Score Interpretation:\n")
         f.write("  Score = P(true divergent TX | features) from Gaussian mixture model\n")
         f.write("  Higher scores = higher confidence\n")
-        f.write("  FDR control is approximate (posterior-based, not p-value BH)\n")
+        f.write("  FDR control is approximate (posterior-based, not p-value BH) — see the\n")
+        f.write("  Empirical-Null FDR Check section above for a measured estimate\n")
         f.write("="*70 + "\n")
 
 
@@ -862,7 +1134,23 @@ def main():
     pos_idx = FastBedGraph(pos_df)
     neg_idx = FastBedGraph(neg_df)
     log(f"  Indexed {len(pos_idx.by_chrom)} chromosomes", args.quiet)
-    
+
+    # Organism-aware window defaults (only used where the user didn't pass an
+    # explicit override on the command line).
+    auto_windows = auto_scale_window_params(pos_df, neg_df, args.quiet)
+    nt_window = args.nt_window if args.nt_window is not None else auto_windows['nt_window']
+    bin_gap = args.bin_gap if args.bin_gap is not None else auto_windows['bin_gap']
+    merge_gap = args.merge_gap if args.merge_gap is not None else auto_windows['merge_gap']
+    bg_window = args.bg_window if args.bg_window is not None else auto_windows['bg_window']
+    if args.nt_window is not None:
+        log(f"  Using user-specified nt_window: {nt_window}", args.quiet)
+    if args.bin_gap is not None:
+        log(f"  Using user-specified bin_gap: {bin_gap}", args.quiet)
+    if args.merge_gap is not None:
+        log(f"  Using user-specified merge_gap: {merge_gap}", args.quiet)
+    if args.bg_window is not None:
+        log(f"  Using user-specified bg_window: {bg_window}", args.quiet)
+
     # Auto-calibrate thresholds
     log("[3/7] Calibrating thresholds...")
     calibration = auto_calibrate(
@@ -890,8 +1178,8 @@ def main():
     
     # Call peaks on both strands
     log("[4/7] Calling peaks...")
-    pos_peaks = call_peaks(pos_df, threshold, sum_thr, args.bin_gap)
-    neg_peaks = call_peaks(neg_df, threshold, sum_thr, args.bin_gap)
+    pos_peaks = call_peaks(pos_df, threshold, sum_thr, bin_gap)
+    neg_peaks = call_peaks(neg_df, threshold, sum_thr, bin_gap)
     log(f"  Positive: {len(pos_peaks):,} peaks", args.quiet)
     log(f"  Negative: {len(neg_peaks):,} peaks", args.quiet)
     
@@ -909,7 +1197,7 @@ def main():
             chrom,
             pos_peaks[pos_peaks['chr'] == chrom].reset_index(drop=True),
             neg_peaks[neg_peaks['chr'] == chrom].reset_index(drop=True),
-            args.nt_window,
+            nt_window,
             args.balance
         )
         if not result.empty:
@@ -948,11 +1236,11 @@ def main():
     
     # Extract features
     log("[6/7] Extracting features...")
-    features_df = extract_features(paired, pos_idx, neg_idx, args.quiet)
-    
+    features_df = extract_features(paired, pos_idx, neg_idx, args.quiet, bg_window)
+
     # Statistical scoring and FDR filtering
     log("[7/7] Statistical scoring...")
-    passing_mask, scores = score_with_mixture_model(
+    passing_mask, scores, fitted_gmm, pos_component, feature_cols = score_with_mixture_model(
         features_df, args.fdr, args.quiet, args.fallback_top_frac
     )
     
@@ -962,14 +1250,33 @@ def main():
     final = final.sort_values('score', ascending=False).reset_index(drop=True)
     
     # Merge overlapping regions (reduces redundancy from one-to-many pairing)
-    if args.merge_gap > 0 and len(final) > 1:
+    if merge_gap > 0 and len(final) > 1:
         final = merge_overlapping_regions(
-            final, args.merge_gap,
+            final, merge_gap,
             score_col='score', total_col='total',
             quiet=args.quiet
         )
         final = final.sort_values('score', ascending=False).reset_index(drop=True)
-    
+
+    # Recompute total_signal for final regions directly from the bedgraph index
+    # rather than trusting the propagated 'total' column. A single pos peak
+    # paired with N candidate neg peaks (or vice versa) produces N pairing rows
+    # that each carry that peak's own signal; when those rows later land in the
+    # same merged region, summing their 'total' values (see merge_overlapping_
+    # regions above) counts that peak's signal N times. This doesn't affect the
+    # GMM score itself (extract_features already computes its own total_signal
+    # per pre-merge candidate row via a direct bedgraph query, independent of
+    # this column), but it does corrupt the total_signal reported in the output
+    # BED for any region formed by merging >1 candidate pair. Recomputing here
+    # from the same FastBedGraph index used by extract_features is the exact
+    # measured signal in the final region and can't double-count.
+    if len(final) > 0:
+        final_chrom = final['chr'].astype(str).to_numpy()
+        final_start = final['start'].to_numpy().astype(np.int64)
+        final_end = final['end'].to_numpy().astype(np.int64)
+        final['total'] = (pos_idx.query_sum_batch(final_chrom, final_start, final_end)
+                           + neg_idx.query_sum_batch(final_chrom, final_start, final_end))
+
     # Output results
     #
     # NOTE: Avoid using DataFrame.to_csv here to reduce sensitivity to
@@ -1004,17 +1311,24 @@ def main():
     # Generate QC report
     if not args.no_report:
         report_path = args.report if args.report else args.out.replace('.bed', '_qc.txt')
-        
+
         stats = {
             'pos_peaks': len(pos_peaks),
             'neg_peaks': len(neg_peaks),
             'paired': len(paired),
             'fdr': args.fdr
         }
-        
+
+        log("Running empirical-null FDR check (single shuffle)...", args.quiet)
+        empirical = empirical_null_fdr_check(
+            pos_df, neg_df, threshold, sum_thr, bin_gap, nt_window, args.balance, bg_window,
+            args.fdr, fitted_gmm, pos_component, feature_cols,
+            n_real_passing=int(np.sum(passing_mask)), quiet=args.quiet
+        )
+
         generate_qc_report(
-            report_path, stats, features_df, passing_mask, 
-            scores, calibration, threshold, sum_thr
+            report_path, stats, features_df, passing_mask,
+            scores, calibration, threshold, sum_thr, empirical
         )
         log(f"QC report: {report_path}", args.quiet)
     
