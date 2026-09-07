@@ -429,6 +429,13 @@ def _compute_contrast_with_stats(
     joined = num_agg.merge(denom_agg, on=id_cols, how="inner")
     if joined.empty:
         return None
+    dropped = len(num_agg) + len(denom_agg) - 2 * len(joined)
+    if dropped > 0:
+        log_warning(
+            f"{metric} {numerator} vs {denominator}: {dropped:,} gene/level rows present in only "
+            f"one of the two groups were dropped by the inner join ({len(num_agg):,} vs "
+            f"{len(denom_agg):,} rows in, {len(joined):,} matched)"
+        )
 
     # Compute median, log2FC, and pvalue per gene
     def row_stats(row):

@@ -118,8 +118,9 @@ COLUMNS
   replicate     replicate number
   tss_cpm       TSS-window signal, CPM
   body_cpm      gene-body signal, CPM
-  pi_raw        raw pausing index (TSS density / body density)
-  pi_len_norm   length-normalized pausing index
+  pi_raw        raw pausing index (TSS count / body count, NOT length-normalized --
+                use pi_len_norm for cross-gene comparison)
+  pi_len_norm   length-normalized pausing index (TSS density / body density)
 
 SUGGESTED DOWNSTREAM USE (R)
   library(tidyverse)
