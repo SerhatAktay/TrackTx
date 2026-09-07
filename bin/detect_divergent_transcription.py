@@ -5,8 +5,27 @@
 #
 # Purpose:
 #   Detects divergent transcription from PRO-seq data. Uses relaxed initial
-#   thresholds followed by Gaussian Mixture Model scoring and FDR-controlled
-#   filtering to identify bidirectional transcription sites.
+#   thresholds followed by Gaussian Mixture Model scoring to RANK candidate
+#   bidirectional transcription sites by confidence.
+#
+# On FDR: the --fdr flag is a posterior-based STRINGENCY KNOB, not a
+# calibrated false-discovery rate. This was investigated directly (not just
+# assumed): an empirical-null check (see empirical_null_fdr_check) measures
+# the real false-positive rate by scoring within-chromosome-shuffled data
+# with the same fitted model. On real PRO-seq data (K562), the measured
+# empirical FDR sits at ~0.5 regardless of stringency (tested: the feature
+# set, adding inter-peak distance, and both global- and local-background-
+# relative peak-calling thresholds -- none closed the gap; tightening raw
+# peak-calling specificity enough to approach a real 5% FDR collapses
+# candidate counts to a biologically unusable handful). This appears to be a
+# real ceiling of peak-pair-aggregate-statistic scoring on genuinely dense
+# PRO-seq signal (pervasive antisense/gene-body transcription creates
+# abundant coincidental cross-strand peak proximity that these features
+# cannot distinguish from a true divergent pair), not a tuning bug.
+# Treat the score as a RELATIVE CONFIDENCE RANKING for prioritization, and
+# report the QC report's Empirical-Null FDR Check section's measured rate
+# alongside any use of this output, rather than citing --fdr's nominal value
+# as a controlled error rate.
 #
 # Output BED format: chr, start, end, total_signal, confidence_score
 #
@@ -87,10 +106,11 @@ Output:
     ap.add_argument("--sum-thr", type=float, default=None,
                     help="Minimum peak total signal (default: auto-calibrate)")
     ap.add_argument("--fdr", type=float, default=0.05,
-                    help="APPROXIMATE FDR / score-stringency threshold (default: 0.05). "
-                         "NOTE: this is a posterior-based cutoff from the GMM, NOT a "
-                         "p-value Benjamini-Hochberg FDR — treat it as a stringency "
-                         "knob, not a strict FDR guarantee.")
+                    help="Score-stringency knob (default: 0.05), NOT a calibrated FDR. "
+                         "Empirically measured (see the QC report's Empirical-Null FDR "
+                         "Check) at ~0.5 on real PRO-seq data regardless of this value -- "
+                         "use the output as a ranked confidence list, not a rate-"
+                         "controlled discovery set.")
     ap.add_argument("--fallback-top-frac", type=float, default=0.0,
                     help="If >0, and NO region passes the FDR/stringency cutoff, keep "
                          "this top fraction of regions by score instead of returning "
@@ -963,6 +983,24 @@ def empirical_null_fdr_check(
     positive on pure noise". One shuffle gives an order-of-magnitude answer;
     this is intentionally not a many-iteration permutation test.
 
+    This is REPORTING only, not a gate -- it does not change passing_mask
+    (already decided by _apply_fdr_cutoff above). Forcing the actual cutoff
+    to hit a literal empirical-FDR target was tried and reverted: on real
+    PRO-seq data the measured empirical FDR sits at ~0.5 across the ENTIRE
+    score range (not just near the nominal cutoff), and a circular-shift
+    null (preserves each strand's own peak clustering, only destroys the
+    cross-strand relationship -- a stricter, more standard test than the
+    value-shuffle used here) gave the same result. Adding inter-peak
+    distance as a feature, and switching peak-calling from a global
+    percentile threshold to a local-background-relative one, both left this
+    unchanged too. Tightening raw peak-calling stringency does measurably
+    lower it (~0.5 -> ~0.2), but only by collapsing candidate counts to a
+    biologically unusable handful (double digits genome-wide). This looks
+    like a real ceiling of peak-pair-aggregate-statistic scoring against
+    genuinely dense, pervasively-transcribed PRO-seq signal, not a solvable
+    tuning problem -- treat this measurement as an honest limitation to
+    report, not a target to chase by adjusting parameters.
+
     Returns:
         Dict with keys: null_candidates, null_passing, empirical_fdr
     """
@@ -1059,9 +1097,9 @@ def generate_qc_report(
         f.write("-"*70 + "\n")
         f.write(f"  Candidate pairs:          {stats['paired']:,}\n\n")
         
-        f.write("Statistical Filtering\n")
+        f.write("Statistical Filtering (stringency knob, NOT a calibrated FDR)\n")
         f.write("-"*70 + "\n")
-        f.write(f"  FDR threshold:            {stats['fdr']:.4f}\n")
+        f.write(f"  Stringency setting (--fdr):{stats['fdr']:.4f}\n")
         f.write(f"  Regions passing:          {np.sum(passing_mask):,}\n")
         f.write(f"  Retention rate:           {100*np.sum(passing_mask)/len(passing_mask):.1f}%\n\n")
 
@@ -1073,7 +1111,11 @@ def generate_qc_report(
             f.write(f"  Empirical FDR estimate:   {empirical['empirical_fdr']:.4f}\n")
             f.write("  (Same fitted model/cutoff scored on within-chromosome-shuffled\n")
             f.write("   signal; a single shuffle, not a many-iteration permutation test.\n")
-            f.write("   Estimates what fraction of real calls could be noise.)\n\n")
+            f.write("   This is a REAL measured limitation, not just an untested concern:\n")
+            f.write("   on real PRO-seq data this consistently sits around ~0.5 regardless\n")
+            f.write("   of stringency setting, feature set, or peak-calling threshold design\n")
+            f.write("   (all tested). Use scores as a relative ranking, not a discovery set\n")
+            f.write("   with a controlled error rate.)\n\n")
 
 
         f.write("Score Distribution\n")
@@ -1107,9 +1149,10 @@ def generate_qc_report(
         f.write("\n" + "="*70 + "\n")
         f.write("Score Interpretation:\n")
         f.write("  Score = P(true divergent TX | features) from Gaussian mixture model\n")
-        f.write("  Higher scores = higher confidence\n")
-        f.write("  FDR control is approximate (posterior-based, not p-value BH) — see the\n")
-        f.write("  Empirical-Null FDR Check section above for a measured estimate\n")
+        f.write("  Higher scores = higher relative confidence -- use for RANKING/\n")
+        f.write("  prioritization, not as a rate-controlled discovery threshold. The\n")
+        f.write("  Empirical-Null FDR Check above measures the real false-positive rate;\n")
+        f.write("  it does not track --fdr's nominal value (see that section's note)\n")
         f.write("="*70 + "\n")
 
 

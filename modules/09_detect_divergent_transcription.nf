@@ -4,12 +4,25 @@
 //
 // Purpose:
 //   Detects divergent transcription events from strand-specific 3' PRO-seq data
-//   using Gaussian Mixture Model with FDR-controlled statistical filtering
+//   using a Gaussian Mixture Model to RANK candidate regions by confidence.
+//
+// On "FDR": --fdr (params.advanced.divergent_fdr) is a posterior-based
+// STRINGENCY KNOB, not a calibrated false-discovery rate -- it never was
+// Benjamini-Hochberg-like despite earlier wording here. This has been
+// empirically checked (bin/detect_divergent_transcription.py's
+// empirical_null_fdr_check, run every time via the QC report): on real
+// PRO-seq data the measured empirical FDR sits at ~0.5 regardless of this
+// setting, the feature set, or peak-calling threshold design (all tested
+// and documented in that function's docstring) -- a real ceiling of
+// peak-pair-aggregate scoring against pervasively-transcribed PRO-seq
+// signal, not an unvalidated assumption. Use the output as a ranked
+// confidence list; read the QC report's Empirical-Null FDR Check section
+// for the real measured rate before citing any FDR figure.
 //
 // Features:
 //   • Statistical approach with auto-calibrated thresholds
 //   • Gaussian Mixture Model for scoring regions
-//   • FDR-controlled filtering (Benjamini-Hochberg-like)
+//   • Score-based stringency filtering (see "On FDR" above)
 //   • Bayesian balance scoring with Beta-Binomial model
 //   • Local background estimation and signal-to-noise ratios
 //   • Feature extraction for machine learning-like classification
@@ -38,8 +51,8 @@
 // Key Differences from earlier threshold-based approach:
 //   • Uses statistics instead of hard thresholds
 //   • Auto-calibration eliminates manual threshold tuning
-//   • FDR control provides objective quality measure
-//   • Confidence scores enable downstream prioritization
+//   • Confidence scores enable downstream ranking/prioritization
+//     (NOT a calibrated FDR guarantee -- see "On FDR" above)
 //   • More robust to varying coverage depths
 //
 // Track Type Recommendation:
@@ -67,7 +80,7 @@
 // Parameters (params.advanced.*):
 //   divergent_threshold    : Per-bin signal threshold (default: auto)
 //   divergent_sum_thr      : Minimum peak total signal (default: auto)
-//   divergent_fdr          : False discovery rate threshold (default: 0.08)
+//   divergent_fdr          : Score-stringency knob, NOT a calibrated FDR (default: 0.08; see "On FDR" above)
 //   divergent_calibration_percentile : Percentile for auto threshold (default: 65)
 //   divergent_calibration_sum_multiplier : sum_thr = threshold * N (default: 1.5)
 //   divergent_calibration_background_lower : Use lower 50% bins (default: false)
@@ -458,8 +471,10 @@ DIVERGENT TRANSCRIPTION — ${sample_id} (Statistical)
 OVERVIEW
 ────────────────────────────────────────────────────────────────────────────
   Statistical detection of divergent transcription regions from strand-specific
-  3' PRO-seq coverage using Gaussian Mixture Models and FDR control.
-  
+  3' PRO-seq coverage using Gaussian Mixture Models to RANK candidates by
+  confidence. NOTE: the confidence score is NOT a calibrated FDR -- see
+  "FDR Control" below and the QC report's Empirical-Null FDR Check section.
+
   Divergent transcription occurs when RNA Polymerase II initiates in both
   directions from a genomic locus, creating paired transcription on opposite
   strands within close proximity. This is a hallmark of active promoters and
@@ -492,19 +507,28 @@ STATISTICAL APPROACH
      • Computes posterior probabilities (0-1 confidence scores)
      • Machine learning-like approach without manual labels
   
-  4. FDR Control:
-     • Applies Benjamini-Hochberg-like procedure
-     • Controls false discovery rate at specified level (default: 5%)
-     • Provides objective quality threshold
-     • Ranks regions by confidence
-  
+  4. FDR Control (NOT a calibrated FDR -- read this):
+     • The GMM posterior score is used as a stringency knob (--fdr /
+       divergent_fdr), sorted by cumulative expected-FP/cumulative-calls --
+       this is NOT a Benjamini-Hochberg procedure and does NOT control a
+       real false discovery rate
+     • Empirically checked (see the QC report's "Empirical-Null FDR Check"
+       section, generated for this sample): on real PRO-seq data the
+       measured false-positive rate consistently sits around 50%, largely
+       independent of this setting. This has been investigated directly
+       (alternate features, alternate peak-calling designs, stringency
+       sweeps) and looks like a real ceiling of this class of method on
+       genuinely dense, pervasively-transcribed PRO-seq signal, not an
+       unvalidated concern.
+     • Ranks regions by relative confidence -- treat the output as a ranked
+       candidate list for prioritization, not a discovery set with a known
+       error rate
+
   Benefits:
     ✓ More robust to varying coverage depths
-    ✓ Fewer false positives in low-signal regions
-    ✓ Confidence scores enable downstream prioritization
+    ✓ Confidence scores enable downstream ranking/prioritization
     ✓ No manual threshold tuning required
-    ✓ Better balance sensitivity and specificity
-    ✓ Statistically principled quality control
+    ✓ Empirically-measured (not assumed) error-rate reporting every run
 
 ALGORITHM
 ────────────────────────────────────────────────────────────────────────────
@@ -537,13 +561,17 @@ ALGORITHM
   6. Fit Gaussian Mixture Model:
      - Use features: log_total, balance_bayesian, log_snr
      - Fit 2-component GMM with full covariance
-     - Identify positive component (higher mean log_total)
+     - Identify positive component by higher mean balance_bayesian (strand
+       balance is the actual definition of "divergent" -- not signal
+       magnitude; a high-signal but one-sided component should not outrank
+       a lower-signal but well-balanced one)
      - Compute posterior probabilities for all regions
-  
-  7. Apply FDR control:
+
+  7. Apply stringency cutoff (NOT a calibrated FDR -- see above):
      - Sort regions by posterior probability (descending)
-     - Calculate cumulative false positives and FDR
-     - Keep regions passing FDR threshold
+     - Calculate cumulative expected-FP / cumulative-calls as a ranking
+       cutoff (this is the "--fdr" stringency knob, not a real FDR)
+     - Keep regions passing that cutoff
      - Output with confidence scores
 
 INPUT DATA
@@ -622,9 +650,13 @@ Confidence Score Interpretation:
   • Score close to 0.5: Uncertain, borderline case
   • Score close to 0.0: Likely noise/artifact (should not appear in output)
   
-  All output regions collectively pass FDR control, so even lower-scoring
-  regions in the output are expected to be true positives at the specified
-  FDR level.
+  Output regions pass the --fdr stringency cutoff, NOT a calibrated FDR --
+  see divergent_transcription_qc.txt's "Empirical-Null FDR Check" section
+  for this run's actual measured false-positive rate (on real PRO-seq data
+  this consistently sits around ~50%, largely independent of the --fdr
+  setting). Treat scores as a relative ranking for prioritization, not a
+  guarantee that lower-scoring regions in the output are still true
+  positives at some specified rate.
 
 DETECTION RESULTS
 ────────────────────────────────────────────────────────────────────────────
