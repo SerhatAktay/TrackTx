@@ -212,9 +212,13 @@ process check_and_merge_replicates {
 
   bedtools multicov -bams "\${FILTERED_BAMS[@]}" -bed bins.bed > multicov.tsv
 
+  # Keep zero-count bins: with log2(n+1) below, zero is a valid data point,
+  # and dropping bins where one replicate is 0 would discard exactly the
+  # "signal in one replicate, none in the other" bins that most reveal real
+  # discordance, biasing the correlation upward.
   for i in "\${!FILTERED_BAMS[@]}"; do
     col=\$(( i + 4 ))
-    awk -v c="\${col}" '\$c > 0 {print \$1":"\$2"-"\$3"\\t"\$c}' multicov.tsv \\
+    awk -v c="\${col}" '{print \$1":"\$2"-"\$3"\\t"\$c}' multicov.tsv \\
       > "counts_\${i}.tsv"
   done
 
