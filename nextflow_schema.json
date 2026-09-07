@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/serhataktay/tracktx/main/nextflow_schema.json",
+  "title": "tracktx pipeline parameters",
+  "description": "Nextflow pipeline for nascent RNA analysis (PRO-seq, GRO-seq).",
+  "type": "object",
+  "$comment": "Every top-level param nextflow.config sets a default for is listed here (nf-schema's validateParameters() otherwise warns on any it isn't -- confirmed by running with -preview and reading the WARN list it printed, then adding each one). additionalProperties stays true as a safety net for a per-dataset params.yaml flag not covered here (11 dataset configs under results/ each carry their own overrides) -- a genuinely new param degrades to silently passing through rather than a hard failure blocking a real run. The ~25 flags a user actually types (samplesheet, reference_genome, etc.) get real type/enum/required checks; the power-user nested maps (align/norm/qc/pol/replicates/umi/barcode/adapter_trimming/output/advanced/functional_regions/res, ~100+ entries combined) are declared as bare `type: object` so their internal keys stay unconstrained rather than requiring a second schema to track their internal knobs in lockstep. Main.nf's own hand-written checks remain the source of truth for conditional business rules (e.g. reference_genome=other requiring custom_genome_id) that a static schema expresses far less clearly than a plain error message.",
+  "additionalProperties": true,
+  "required": ["samplesheet", "reference_genome", "output_dir"],
+  "properties": {
+    "samplesheet": {
+      "type": "string",
+      "description": "Samplesheet CSV with sample metadata (sample,condition,timepoint,replicate,file1,file2)."
+    },
+    "reference_genome": {
+      "type": "string",
+      "description": "Reference genome ID (e.g. hg38, mm39) or 'other' for a custom genome."
+    },
+    "output_dir": {
+      "type": "string",
+      "default": "./results",
+      "description": "Output directory path."
+    },
+    "paired_end": {
+      "type": "boolean",
+      "default": false,
+      "description": "Enable paired-end mode."
+    },
+    "sample_source": {
+      "type": "string",
+      "enum": ["local", "srr"],
+      "default": "local",
+      "description": "Where input reads come from: local FASTQ files or SRA accessions."
+    },
+    "library_type": {
+      "type": "string",
+      "enum": ["proseq", "groseq"],
+      "default": "proseq",
+      "description": "Assay type; controls R1 strand handling at alignment (see nextflow.config for details)."
+    },
+    "spikein_genome": {
+      "type": "string",
+      "description": "Spike-in genome ID, or 'other' for a custom spike-in genome. Optional."
+    },
+    "genome_fasta": {
+      "type": "string",
+      "description": "Custom genome FASTA path. Required when reference_genome=other."
+    },
+    "spikein_fasta": {
+      "type": "string",
+      "description": "Custom spike-in genome FASTA path. Required when spikein_genome=other."
+    },
+    "custom_genome_id": {
+      "type": "string",
+      "description": "Short, unique name for a custom genome. Required when reference_genome=other; used as the cache/output directory name so distinct custom genomes never collide."
+    },
+    "custom_spikein_id": {
+      "type": "string",
+      "description": "Short, unique name for a custom spike-in genome. Required when spikein_genome=other, same reasoning as custom_genome_id."
+    },
+    "gtf_path": {
+      "type": ["string", "null"],
+      "description": "Local custom GTF annotation path (reference_genome=other)."
+    },
+    "gtf_url": {
+      "type": ["string", "null"],
+      "description": "Remote custom GTF annotation URL (reference_genome=other)."
+    },
+    "annotation_source": {
+      "type": "string",
+      "enum": ["refseq", "ensembl", "gencode"],
+      "default": "refseq",
+      "description": "Annotation source for UCSC-fetched genomes."
+    },
+    "annotation_exclude_biotypes": {
+      "type": "string",
+      "default": "",
+      "description": "Comma-separated gene biotypes to exclude from the gene catalog (e.g. rRNA,tRNA)."
+    },
+    "annotation_chr_naming": {
+      "type": "string",
+      "enum": ["none", "add", "remove"],
+      "default": "none",
+      "description": "Chromosome naming conversion: none, add (Ensembl->UCSC), or remove (UCSC->Ensembl)."
+    },
+    "control_label": {
+      "type": "string",
+      "default": "CTRL",
+      "description": "Condition label used to auto-select the siCPM normalization control (module 08)."
+    },
+    "assets_dir": {
+      "type": "string",
+      "description": "Persistent artifact storage directory (genome/annotation caching across runs)."
+    },
+    "genome_cache": {
+      "type": "string",
+      "description": "Internal download cache directory for genomes/annotations."
+    },
+    "publish_mode": {
+      "type": "string",
+      "enum": ["link", "copy", "symlink", "move", "rellink"],
+      "default": "link",
+      "description": "Nextflow publishDir mode. Use 'copy' for exFAT/USB/NAS drives where hard links fail."
+    },
+    "force_rebuild": {
+      "type": "boolean",
+      "default": false,
+      "description": "Force re-execution of cached download/index-build steps."
+    },
+    "debug": {
+      "type": "boolean",
+      "default": false,
+      "description": "Enable debug logging."
+    },
+    "verbose": {
+      "type": "boolean",
+      "default": false,
+      "description": "Enable step-by-step progress logging."
+    },
+    "help": {
+      "type": "boolean",
+      "default": false,
+      "description": "Print the pipeline's usage message and exit."
+    },
+    "conda_norm": { "type": ["string", "null"], "description": "Override conda env for the normalization module." },
+    "conda_pol": { "type": ["string", "null"], "description": "Override conda env for the polymerase-metrics module." },
+    "conda_divergent": { "type": ["string", "null"], "description": "Override conda env for the divergent-transcription module." },
+    "conda_fgr": { "type": ["string", "null"], "description": "Override conda env for the functional-regions module." },
+    "conda_sra": { "type": ["string", "null"], "description": "Override conda env for the SRA download module." },
+
+    "experiment_name": { "type": "string", "description": "Free-text label for this run, shown in reports." },
+    "revcomp_r1": { "type": ["boolean", "null"], "description": "Override: reverse-complement R1 before alignment. Null = auto-derive from library_type." },
+    "signal_end": { "type": ["string", "null"], "enum": ["3p", "5p", null], "description": "Override: which read end defines downstream signal. Null = auto-derive from library_type." },
+    "reports_plots": { "type": "integer", "default": 0, "description": "Verbosity of extra diagnostic plots in per-sample reports." },
+
+    "fastq_gzip": { "type": "boolean", "default": false, "description": "Compress downloaded SRA FASTQs with pigz." },
+    "sra_tmp": { "type": ["string", "null"], "description": "Temp directory for fasterq-dump. Null = system default." },
+    "sra_max_size": { "type": "string", "default": "200G", "description": "Max prefetch size for SRA downloads." },
+    "sra_download_source": { "type": "string", "default": "auto", "description": "SRA download backend selection." },
+    "sra_cache_dir": { "type": ["string", "null"], "description": "Override: directory for the raw-FASTQ SRA resume cache, kept off the results drive." },
+    "publish_sra_fastq": { "type": "boolean", "default": true, "description": "Publish downloaded SRA FASTQs into results (vs. hidden cache only)." },
+
+    "preprocess_reads_lenient_cache": { "type": "boolean", "default": false, "description": "Use lenient Nextflow cache mode for the preprocess step (set true for NFS/network storage)." },
+    "fastqc_raw": { "type": "boolean", "default": true, "description": "Run FastQC on raw reads." },
+    "force_sort_bedgraph": { "type": "boolean", "default": false, "description": "Force re-sorting of bedGraph files." },
+    "publish_trimmed_fastq": { "type": "boolean", "default": true, "description": "Publish trimmed FASTQs into results (~900MB/sample if enabled)." },
+    "publish_alignments": { "type": "boolean", "default": true, "description": "Publish alignment BAMs into results (~270MB/sample if enabled)." },
+    "publish_references_gtf": { "type": "boolean", "default": true, "description": "Publish the full GTF into references output (~790MB if enabled)." },
+
+    "adapter_trimming": { "type": "object", "description": "Adapter-trimming options (enabled, preset, adapter1, adapter2, minlen)." },
+    "qc": { "type": "object", "description": "QC thresholds/options for module 13 (mapq, dedup, fail_map_rate_below, fail_strand_min, ...)." },
+    "umi": { "type": "object", "description": "UMI handling options (enabled, length, location, dedup_allmap)." },
+    "barcode": { "type": "object", "description": "Barcode handling options (enabled, length, location)." },
+    "output": { "type": "object", "description": "Output track format toggles (cpm, crpmsi, raw_tracks, bigwig, bedgraph)." },
+    "norm": { "type": "object", "description": "Normalization options for module 08 (emit_bw, emit_sicpm, emit_allmap, emit_5p)." },
+    "pol": { "type": "object", "description": "Pol-II metrics options for module 11 (contrasts, top_n, plots, tss_win, body_offset_min, body_offset_frac, min_body_frac, min_body_len)." },
+    "advanced": { "type": "object", "description": "Advanced/expert overrides (cutadapt_extra, bowtie2_extra, divergent-detection tuning, ...)." },
+    "functional_regions": { "type": "object", "description": "Functional-region window sizes for module 10 (tss_active_pm, prom_up/down, tes_down, enhancer_up/down)." },
+    "res": { "type": "object", "description": "Auto-detected CPU/memory allocation map (see nextflow.config); not user-facing." },
+    "align": { "type": "object", "description": "Alignment options for module 05 (multimap_k, pe_signal_mate)." },
+    "replicates": { "type": "object", "description": "Replicate-merging options for module 05b (merge, concordance_min, concordance_method, concordance_bin_size)." },
+    "counts_allow_index_build": { "type": "boolean", "default": true, "description": "Allow module 07 to build a missing BAM index itself." }
+  }
+}

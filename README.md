@@ -255,6 +255,16 @@ Cohort-level signal QC module that runs after all per-sample tracks are ready, a
 
 ## Installation
 
+> **Why one container for every step?** TrackTx ships a single Docker image / conda
+> environment (`envs/Dockerfile`, `envs/tracktx.yaml`) covering all 17 pipeline stages,
+> rather than nf-core's convention of one container per tool. This is deliberate: every
+> run of a given TrackTx version uses the exact same toolchain end to end, so citing one
+> image tag (or conda lockfile) in a paper's Methods section fully specifies every tool
+> version used, with no per-process container matrix to reconcile. The tradeoff is that
+> adding or upgrading one tool rebuilds the whole image — acceptable for a pipeline with
+> a fixed, curated toolchain rather than one that composes many independently-versioned
+> community modules.
+
 ### Prerequisites
 
 You need **Nextflow** (the workflow engine) plus **one** of Docker or Conda (for the tools):

@@ -3,6 +3,7 @@
 // ============================================================================
 //
 // Pipeline Steps:
+//   0.  Record tool versions (provenance manifest)
 //   1.  Download genome annotations (GTF)
 //   2.  Download SRA samples (optional)
 //   3.  Preprocess and quality-filter reads
@@ -65,6 +66,8 @@ def sanitizeGenomeId(raw) {
 // Paths inlined (def MOD = ... was a top-level statement, not allowed in strict)
 // ============================================================================
 
+include { validateParameters; paramsSummaryLog                      } from 'plugin/nf-schema'
+include { capture_tool_versions                                     } from './modules/00_capture_tool_versions.nf'
 include { download_genome_annotations                               } from './modules/01_download_genome_annotations.nf'
 include { download_sra_samples                                      } from './modules/02_download_sra_samples.nf'
 include { preprocess_and_quality_filter_reads                       } from './modules/03_preprocess_and_quality_filter_reads.nf'
@@ -156,6 +159,14 @@ Debug mode:       ${params.debug ?: false}
 """.stripIndent()
 
   // ── Parameter validation ───────────────────────────────────────────────────
+
+  // Schema-level check first (typos/wrong types on the ~25 flags a user
+  // actually types -- see nextflow_schema.json's $comment for why this
+  // deliberately does NOT enumerate every advanced/nested knob). The
+  // hand-written checks below remain the source of truth for conditional
+  // business rules (e.g. reference_genome=other requiring custom_genome_id)
+  // that a static schema expresses far less clearly than a plain error.
+  validateParameters()
 
   if (!params.output_dir) {
     error "PIPELINE | ERROR | Missing required parameter: --output_dir"
@@ -252,6 +263,12 @@ Paths are relative to: ${projectDir}"""
 
   if (params.verbose) log.info "PIPELINE | VALIDATE | Parameter validation complete"
   if (params.verbose) log.info "PIPELINE | IMPORT | All modules loaded successfully"
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // STEP 0: Record Tool Versions (provenance, no upstream dependencies)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  capture_tool_versions()
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP 1: Download Annotations
@@ -829,13 +846,17 @@ Paths are relative to: ${projectDir}"""
     channel.value(params.advanced?.divergent_threshold ?: 'auto'),
     channel.value(params.advanced?.divergent_sum_thr ?: 'auto'),
     channel.value(params.advanced?.divergent_fdr ?: 0.08),
-    channel.value(params.advanced?.divergent_nt_window ?: 1000),
+    // 'auto' (not a flat 1000/100/150 default) lets the script's own
+    // organism-aware auto-scaling apply (see auto_scale_window_params in
+    // detect_divergent_transcription.py) -- a value here still overrides it,
+    // same pattern as divergent_threshold/divergent_sum_thr above.
+    channel.value(params.advanced?.divergent_nt_window ?: 'auto'),
     channel.value(params.advanced?.divergent_balance ?: 0.0),
-    channel.value(params.advanced?.divergent_bin_gap ?: 100),
+    channel.value(params.advanced?.divergent_bin_gap ?: 'auto'),
     channel.value(params.advanced?.divergent_calibration_percentile ?: 65.0),
     channel.value(params.advanced?.divergent_calibration_sum_multiplier ?: 1.5),
     channel.value(params.advanced?.divergent_calibration_background_lower ?: false),
-    channel.value(params.advanced?.divergent_merge_gap ?: 150),
+    channel.value(params.advanced?.divergent_merge_gap ?: 'auto'),
     // Opt-in fallback: when no region passes the (approximate) FDR, keep this
     // top fraction by score instead of returning zero. 0.0 = disabled, so a
     // genuinely empty/noisy sample legitimately yields no divergent sites.

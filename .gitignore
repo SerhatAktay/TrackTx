@@ -4,6 +4,9 @@ work/
 .nextflow*
 .nxf_temp/
 
+# nf-test runtime
+.nf-test/
+
 # Local run outputs
 results*/
 test_PE/test_data/
