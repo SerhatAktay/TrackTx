@@ -603,6 +603,12 @@ check_nextflow() {
 
 check_disk_space() {
     local n_samples="${1:-1}"
+    # Path to check space FOR -- must be the actual work/cache destination, not
+    # always the project dir. In --external-drive mode, work/cache/temp are
+    # redirected to ${HOME}/tmp (see EXTERNAL DRIVE MODE SETUP below); checking
+    # "." there would report the roomy external drive while the real
+    # destination (home dir) could be nearly full. Caller passes the right path.
+    local check_path="${2:-.}"
     local required_gb=$(( 50 + n_samples * 15 ))  # 50 GB base (index etc.) + 15 GB per sample
     local df_out=""
 
@@ -614,7 +620,7 @@ check_disk_space() {
     # can put on PATH). Avoid -g: GNU df rejects it, which under `set -e -o
     # pipefail` silently aborts the whole script. Append `|| true` so a df
     # failure falls through to the 0-fallback instead of killing the run.
-    local df_args="-Pk ."
+    local df_args="-Pk ${check_path}"
 
     if has_command timeout; then
         df_out=$(timeout 5s df $df_args 2>/dev/null | tail -1) || true
@@ -1051,7 +1057,15 @@ main() {
     local N_SAMPLES
     N_SAMPLES=$(check_input_files "$SAMPLESHEET" "$PARAMS_FILE") || exit 1
 
-    check_disk_space "$N_SAMPLES"
+    # In --external-drive mode, work/cache/temp are redirected to ${HOME}/tmp
+    # (see EXTERNAL DRIVE MODE SETUP below) -- check space there, not on the
+    # project dir, which may sit on a roomy external drive while the real
+    # destination (home dir) is nearly full.
+    if [[ $EXTERNAL_DRIVE_MODE -eq 1 ]]; then
+        check_disk_space "$N_SAMPLES" "${HOME}"
+    else
+        check_disk_space "$N_SAMPLES" "."
+    fi
 
     echo ""
 
@@ -1182,20 +1196,6 @@ main() {
     # RESUME DETECTION
     # ═══════════════════════════════════════════════════════════════════════
 
-    local new_extra_args=()
-
-    # Extract -resume from EXTRA_ARGS if passed through (normalize to our RESUME var)
-    if ((${#EXTRA_ARGS[@]} > 0)); then
-        for arg in "${EXTRA_ARGS[@]}"; do
-            if [[ "$arg" == "-resume" ]]; then
-                RESUME="-resume"
-            else
-                new_extra_args+=("$arg")
-            fi
-        done
-        EXTRA_ARGS=("${new_extra_args[@]}")
-    fi
-
     # Auto-detect resume: check for previous run artifacts
     # Only triggers resume if at least one task completed successfully
     if [[ $NO_AUTO_RESUME -eq 0 && -z "$RESUME" ]]; then
@@ -1212,7 +1212,7 @@ main() {
         local has_prior_run=0
         if [[ -f "$trace_path" ]] && grep -q "COMPLETED" "$trace_path" 2>/dev/null; then
             has_prior_run=1
-        elif [[ -d .nextflow ]] && find "${NXF_WORK:-work}" -name ".exitcode" -exec grep -lx "0" {} \; 2>/dev/null | grep -q .; then
+        elif [[ -d .nextflow ]] && find "${NXF_WORK:-work}" -name ".exitcode" -exec grep -lx "0" {} + 2>/dev/null | grep -q .; then
             has_prior_run=1
         fi
 
@@ -1236,6 +1236,41 @@ main() {
 
     # External drive mode: append performance profile (scratch off, publish_mode copy)
     [[ $EXTERNAL_DRIVE_MODE -eq 1 ]] && PROFILE="${PROFILE},performance"
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # PROFILE-CONSISTENCY CHECK (resume safety)
+    # Nextflow's task cache hash includes container/conda directives, which
+    # differ between profiles (docker vs conda vs singularity, etc). Auto-
+    # detection re-runs every invocation, so if the environment changes
+    # between runs (Docker gets installed, an NFS mount appears) and the user
+    # relies on auto-detect rather than pinning -profile, a -resume could
+    # silently run under a different profile than the original run used --
+    # not a clean resume, but either a silent full recompute or inconsistent
+    # per-task state. Persist the profile actually used and check it before
+    # honoring -resume. Lives next to .nextflow/ (project root), same place
+    # Nextflow itself keeps the actual resumable cache.
+    # ═══════════════════════════════════════════════════════════════════════
+    local PROFILE_MARKER=".tracktx_profile"
+    if [[ -n "$RESUME" && -f "$PROFILE_MARKER" ]]; then
+        local prev_profile
+        prev_profile=$(cat "$PROFILE_MARKER" 2>/dev/null || echo "")
+        if [[ -n "$prev_profile" && "$prev_profile" != "$PROFILE" ]]; then
+            warning "Resuming with profile '${PROFILE}', but the previous run used '${prev_profile}'"
+            warning "Nextflow's cache includes container/conda directives -- a profile mismatch on resume can silently trigger a full recompute or inconsistent state instead of a clean resume"
+            if [[ -t 0 ]]; then
+                echo -n "Continue anyway with '${PROFILE}'? [y/N]: "
+                read -r -t 30 ANSWER || ANSWER="n"
+                case "${ANSWER:-n}" in
+                    [Yy]*) ;;
+                    *) error "Aborted. Re-run with -profile ${prev_profile} to match the previous run."; exit 1 ;;
+                esac
+            else
+                error "Non-interactive run with mismatched profile ('${PROFILE}' vs previous '${prev_profile}') -- aborting. Pass -profile ${prev_profile} explicitly to match, or remove ${PROFILE_MARKER} to accept this as the new baseline."
+                exit 1
+            fi
+        fi
+    fi
+    echo "$PROFILE" > "$PROFILE_MARKER" 2>/dev/null || true
 
     local CMD=(
         nextflow run main.nf

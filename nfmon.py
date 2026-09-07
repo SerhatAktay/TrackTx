@@ -307,6 +307,7 @@ class World:
     last_trace_pos: int = 0
     last_trace_ino: Optional[int] = None
     trace_header: Optional[List[str]] = None
+    trace_partial: str = ""  # buffered incomplete trailing line from the last read
     
     # Configuration
     tail_n: int = 20
@@ -705,19 +706,34 @@ def tail_trace(world: World) -> List[Dict[str, str]]:
         world.last_trace_ino = st.st_ino
         world.last_trace_pos = 0
         world.trace_header = None
+        world.trace_partial = ""
     else:
         f = open(p, "rb")
         f.seek(world.last_trace_pos, io.SEEK_SET)
-    
+
     chunk = f.read()
     world.last_trace_pos = f.tell()
     f.close()
-    
+
     if not chunk:
         return []
-    
-    text = chunk.decode("utf-8", "ignore")
-    lines = [ln for ln in text.splitlines() if ln.strip()]
+
+    # Nextflow may still be mid-write on the last line of this chunk. Buffer
+    # any trailing fragment without a terminating \n and prepend it next
+    # poll instead of dropping it -- last_trace_pos above already commits
+    # past these bytes regardless, so a dropped partial line was previously
+    # never retried once the write completed, leaving that task's displayed
+    # status stuck (e.g. "RUNNING") for the rest of the session.
+    text = world.trace_partial + chunk.decode("utf-8", "ignore")
+    if not text:
+        return []
+    if text.endswith("\n"):
+        world.trace_partial = ""
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+    else:
+        parts = text.splitlines()
+        lines = [ln for ln in parts[:-1] if ln.strip()]
+        world.trace_partial = parts[-1]
     out = []
     
     for ln in lines:
@@ -2335,6 +2351,7 @@ def main():
         raise SystemExit
     
     signal.signal(signal.SIGINT, _sig)
+    signal.signal(signal.SIGTERM, _sig)
     
     def loop(stdscr):
         stdscr.nodelay(True)
@@ -2743,8 +2760,14 @@ def main():
                     time.sleep(0.02)
             stop_keys["stop"] = True
             return
-        except Exception as e:
-            if not a.simple and isinstance(e, ImportError):
+        except ImportError:
+            # Rich isn't installed -- fall back to the curses UI below. Any
+            # OTHER exception here is a real bug in the Rich render path and
+            # is deliberately NOT caught: this file has no logging mechanism,
+            # so silently swallowing it and switching UI modes would hide the
+            # bug behind a misleading "still running" facade for a monitoring
+            # tool. Let it crash with a traceback instead.
+            if not a.simple:
                 print("Tip: pip install rich  for enhanced UI", file=sys.stderr)
 
     # Curses fallback

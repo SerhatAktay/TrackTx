@@ -3,6 +3,7 @@
 work/
 .nextflow*
 .nxf_temp/
+.tracktx_profile
 
 # nf-test runtime
 .nf-test/

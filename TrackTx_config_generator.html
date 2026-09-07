@@ -1390,7 +1390,7 @@ nextflow run main.nf -entry TrackTx -profile docker -params-file params.yaml -wi
 /* ====================== Utilities ====================== */
 const $  = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
-const mono = s => s == null ? 'null' : `"${String(s).replace(/"/g,'\\"')}"`;
+const mono = s => s == null ? 'null' : `"${String(s).replace(/\\/g,'\\\\').replace(/"/g,'\\"')}"`;
 const isPE = () => document.querySelector('input[name="read_type"]:checked').value === 'PE';
 const source = () => document.querySelector('input[name="sample_source"]:checked').value;
 const libType = () => (document.querySelector('input[name="library_type"]:checked') || {value:'proseq'}).value;
@@ -1599,6 +1599,13 @@ function rebuildAllReplicateUIs(){
 /* ====================== YAML Builder ====================== */
 function collectAnalysisWarnings(){
   const warnings = [];
+  // Custom genome annotation: main.nf hard-fails immediately if reference_genome
+  // is 'other' with neither gtf_path nor gtf_url set. Route through this same
+  // confirm()-gated array (rather than a standalone alert with no return) so
+  // it actually blocks like every other check here, at both call sites.
+  if($('#ref_genome').value === 'other' && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
+    warnings.push('Custom genome requires a GTF file (gtf_path or gtf_url) -- the pipeline will fail immediately without one.');
+  }
   // FDR sanity
   const fdrVal = parseFloat($('#div_fdr')?.value || '0.08');
   if(isFinite(fdrVal) && fdrVal > 0.2){
@@ -1948,6 +1955,18 @@ function buildYAML(){
 }
 
 /* ====================== CSV Builder ====================== */
+function csvField(v){
+  // RFC 4180: quote (and double any internal quotes) if the field contains
+  // a comma, quote, or newline -- otherwise a comma typed into a free-text
+  // field (sample name/condition/timepoint) silently shifts every later
+  // column, corrupting file1/file2.
+  const s = v == null ? '' : String(v);
+  if(/[",\n\r]/.test(s)){
+    return '"' + s.replace(/"/g,'""') + '"';
+  }
+  return s;
+}
+
 function buildCSV(){
   const pe = isPE();
   const src = source();
@@ -1962,10 +1981,10 @@ function buildCSV(){
       if(src==='local'){
         const f1 = rep.querySelector('.rep-file1')?.value.trim() || '';
         const f2 = pe ? (rep.querySelector('.rep-file2')?.value.trim() || '') : '';
-        csv += `${sname},${treat},${tpt},${repno},${f1},${f2}\n`;
+        csv += [sname,treat,tpt,repno,f1,f2].map(csvField).join(',') + '\n';
       }else{
         const srr = rep.querySelector('.rep-srr')?.value.trim() || '';
-        csv += `${sname},${treat},${tpt},${repno},${srr},\n`;
+        csv += [sname,treat,tpt,repno,srr,''].map(csvField).join(',') + '\n';
       }
     });
   });
@@ -2111,10 +2130,6 @@ async function downloadZip(){
     return;
   }
 
-  if($('#ref_genome').value === 'other' && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
-    alert('⚠️ Custom genome requires a GTF file. Provide gtf_path or gtf_url before running the pipeline.');
-  }
-
   const analysisWarnings = collectAnalysisWarnings();
   if(analysisWarnings.length){
     const msg = 'Some analysis parameters are outside typical ranges:\n- ' + analysisWarnings.join('\n- ') + '\n\nContinue and build ZIP anyway?';
@@ -2148,10 +2163,6 @@ async function saveZipToLocation(){
     return !!b.querySelector('.rep-srr')?.value?.trim();
   });
   if(!hasData && !confirm('No sample data (SRR IDs or file paths) entered. Save anyway?')) return;
-
-  if($('#ref_genome').value === 'other' && !$('#gtf_path').value.trim() && !$('#gtf_url').value.trim()){
-    alert('⚠️ Custom genome requires a GTF file. Provide gtf_path or gtf_url before running the pipeline.');
-  }
 
   const analysisWarnings2 = collectAnalysisWarnings();
   if(analysisWarnings2.length){
