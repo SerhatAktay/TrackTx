@@ -184,6 +184,26 @@ process generate_coverage_tracks {
   readonly FLAG_PRIMARY_MAPPED=260      # Exclude unmapped(4) + secondary(256)
   readonly BIGWIG_TIMEOUT=600           # Seconds for BigWig conversion
 
+  # Cross-sample I/O lock: on this pipeline's typical single USB/HDD-backed
+  # work volume, running several samples' large whole-BAM sequential reads
+  # (index builds, full-file copies) at once doesn't parallelize disk
+  # throughput -- it interleaves them into seek-heavy access. Measured live:
+  # 3 concurrent 5GB allMap-BAM index builds ran at ~7MB/s EACH (12+min for
+  # a file that should take ~1min at a 5400rpm 2.5" HDD's real ~80-130MB/s
+  # single-stream ceiling). flock here serializes just those whole-file
+  # passes across concurrently running samples/tasks; it does NOT touch the
+  # CPU-bound work (chromosome-sharded dedup, genomecov|sort, bigwig) that
+  # was already fixed to use its allotted cpus. Lock lives on the shared
+  # work volume (projectDir, bind-mounted identically into every task's
+  # container) so every concurrent task sees the same lock file. Override
+  # slot-wait timeout with TRACKS_IO_LOCK_TIMEOUT; a timeout fails the task
+  # through the normal ERR trap below rather than silently racing unlocked.
+  IO_LOCK_FILE="${projectDir}/.tracktx_io.lock"
+  IO_LOCK_TIMEOUT=\${TRACKS_IO_LOCK_TIMEOUT:-1800}
+  with_io_lock() {
+    flock -w "\${IO_LOCK_TIMEOUT}" "\${IO_LOCK_FILE}" "\$@"
+  }
+
   echo "TRACKS | CONFIG | Sample ID: \${SAMPLE_ID}"
   echo "TRACKS | CONFIG | Library type: \$([ "\${IS_PE}" == "true" ] && echo "Paired-end" || echo "Single-end")"
   echo "TRACKS | CONFIG | Threads: \${THREADS}"
@@ -233,7 +253,7 @@ process generate_coverage_tracks {
   # Validate allMap BAM index (create if missing)
   if [[ ! -s "\${ALLMAP_BAM}.bai" ]]; then
     echo "TRACKS | VALIDATE | Creating allMap BAM index..."
-    samtools index -@ \${THREADS} "\${ALLMAP_BAM}"
+    with_io_lock samtools index -@ \${THREADS} "\${ALLMAP_BAM}"
   fi
 
   echo "TRACKS | VALIDATE | All checks passed"
@@ -467,7 +487,7 @@ process generate_coverage_tracks {
     rm -rf dedup_shards
     
     # Index deduplicated BAM
-    samtools index -@ \${THREADS} "\${output_bam}"
+    with_io_lock samtools index -@ \${THREADS} "\${output_bam}"
     
     # Report statistics
     local before_reads=\$(samtools view -c -F \${FLAG_PRIMARY_MAPPED} "\${input_bam}")
@@ -506,8 +526,8 @@ process generate_coverage_tracks {
   if [[ "\${UMI_ENABLED}" == "true" && \${UMI_LENGTH} -gt 0 ]]; then
     if command -v umi_tools >/dev/null 2>&1; then
       # Create working copy and index
-      cp "\${MAIN_BAM}" aligned.bam
-      samtools index -@ \${THREADS} aligned.bam
+      with_io_lock cp "\${MAIN_BAM}" aligned.bam
+      with_io_lock samtools index -@ \${THREADS} aligned.bam
       
       # Perform deduplication
       if perform_umi_dedup "aligned.bam" "deduplicated.bam" "\${IS_PE}"; then
@@ -555,8 +575,8 @@ process generate_coverage_tracks {
   if [[ "\${UMI_ENABLED}" == "true" && \${UMI_LENGTH} -gt 0 && "\${DEDUP_ALLMAP}" == "true" ]] \\
      && command -v umi_tools >/dev/null 2>&1; then
     echo "TRACKS | DEDUP | Also UMI-deduplicating allMap BAM (experimental for multimappers)..."
-    cp "\${ALLMAP_BAM}" allmap_in.bam
-    samtools index -@ \${THREADS} allmap_in.bam
+    with_io_lock cp "\${ALLMAP_BAM}" allmap_in.bam
+    with_io_lock samtools index -@ \${THREADS} allmap_in.bam
     if perform_umi_dedup "allmap_in.bam" "allmap_dedup.bam" "\${IS_PE}" "allmap_dedup_stats.txt"; then
       ALLMAP_BAM="allmap_dedup.bam"
       echo "TRACKS | DEDUP | allMap deduplicated"
@@ -631,8 +651,8 @@ process generate_coverage_tracks {
   # keeps gene-level TSS/body counts consistent with the published tracks
   # instead of counting both mates in PE.
   echo "TRACKS | OUTPUT | Copying BAM used for tracks + Pol-II metrics (deduped when UMI on)..."
-  cp "\${BAM_FOR_COVERAGE}" bam_for_downstream.bam
-  samtools index -@ \${THREADS} bam_for_downstream.bam
+  with_io_lock cp "\${BAM_FOR_COVERAGE}" bam_for_downstream.bam
+  with_io_lock samtools index -@ \${THREADS} bam_for_downstream.bam
 
   ###########################################################################
   # 5) PREPARE GENOME SIZES
