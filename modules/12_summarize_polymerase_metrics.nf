@@ -112,6 +112,7 @@ process summarize_polymerase_metrics {
   SAMPLES_TSV_ORIG="samples.tsv"
   SAMPLES_TSV="samples_rewritten.tsv"
   AGGREGATOR_SCRIPT="\$(command -v compare_pol_metrics.py)"
+  THREADS=${task.cpus}
 
   # Parameters
   TOP_N=${params.pol?.top_n ?: 100}
@@ -321,6 +322,7 @@ ${(params.replicates?.merge == true) ? '  echo "AGGREGATE | CONFIG | Contrasts f
     --top-n "\${TOP_N}"
     --prior-count "\${PRIOR_COUNT}"
     --min-expr "\${MIN_EXPR}"
+    --threads "\${THREADS}"
   )
 
   # Add contrasts if specified

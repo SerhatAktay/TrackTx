@@ -681,22 +681,94 @@ PYEOF
       UMI_PATTERN_FLAG="--bc-pattern2=\${UMI_PATTERN}"
     fi
 
-    # Extract UMI
-    if [[ "\${MODE}" == "PE" ]]; then
-      umi_tools extract \\
-        \${UMI_PATTERN_FLAG} \${UMI_END_FLAG} \\
-        -I preumi_R1.fastq -S final_R1.fastq \\
-        --read2-in preumi_R2.fastq --read2-out final_R2.fastq \\
-        --log=umi_extract.log
-    else
-      umi_tools extract \\
-        \${UMI_PATTERN_FLAG} \${UMI_END_FLAG} \\
-        -I preumi_R1.fastq -S final_R1.fastq \\
-        --log=umi_extract.log
+    # Extract UMI, parallelized across read chunks: umi_tools extract is a
+    # stateless per-read regex operation with no cross-read state, and has
+    # no thread flag of its own (same limitation as umi_tools dedup, fixed
+    # the same way in module 06). Splitting preumi_R{1,2}.fastq into N
+    # equal, record-aligned chunks (same line-count boundaries for both
+    # mates, so R1/R2 pairing stays intact), running extract on each chunk
+    # independently, then concatenating outputs back in the same chunk
+    # order produces output identical to one serial call.
+    mkdir -p umi_chunks
+    rm -f umi_chunks/* umi_extract_fail.flag 2>/dev/null || true
 
+    R1_LINES=\$(wc -l < preumi_R1.fastq | tr -d ' ')
+    CHUNK_LINES=\$(( (R1_LINES / THREADS / 4 + 1) * 4 ))
+    [ "\${CHUNK_LINES}" -lt 4 ] && CHUNK_LINES=4
+
+    split -d -a 4 -l "\${CHUNK_LINES}" preumi_R1.fastq umi_chunks/r1_
+    if [[ "\${MODE}" == "PE" ]]; then
+      split -d -a 4 -l "\${CHUNK_LINES}" preumi_R2.fastq umi_chunks/r2_
+    fi
+
+    extract_chunk() {
+      local r1_in="\$1" r1_out="\$2" r2_in="\$3" r2_out="\$4"
+      if [[ -n "\${r2_in}" ]]; then
+        if ! umi_tools extract \${UMI_PATTERN_FLAG} \${UMI_END_FLAG} \\
+             -I "\${r1_in}" -S "\${r1_out}" \\
+             --read2-in "\${r2_in}" --read2-out "\${r2_out}" \\
+             --log="\${r1_out}.log" >>"\${r1_out}.err" 2>&1; then
+          echo "FAIL: \${r1_in}" >> umi_extract_fail.flag
+        fi
+      else
+        if ! umi_tools extract \${UMI_PATTERN_FLAG} \${UMI_END_FLAG} \\
+             -I "\${r1_in}" -S "\${r1_out}" \\
+             --log="\${r1_out}.log" >>"\${r1_out}.err" 2>&1; then
+          echo "FAIL: \${r1_in}" >> umi_extract_fail.flag
+        fi
+      fi
+    }
+
+    EXTRACT_PIDS=()
+    launch_extract() {
+      while :; do
+        local alive=0 p
+        for p in "\${EXTRACT_PIDS[@]:-}"; do
+          [ -n "\${p}" ] && kill -0 "\${p}" 2>/dev/null && alive=\$(( alive + 1 ))
+        done
+        [ "\${alive}" -lt "\${THREADS}" ] && break
+        sleep 0.5
+      done
+      extract_chunk "\$1" "\$2" "\$3" "\$4" &
+      EXTRACT_PIDS+=(\$!)
+    }
+
+    R1_OUT_CHUNKS=()
+    R2_OUT_CHUNKS=()
+    for r1chunk in umi_chunks/r1_*; do
+      suffix="\${r1chunk#umi_chunks/r1_}"
+      r1out="umi_chunks/out_r1_\${suffix}.fastq"
+      if [[ "\${MODE}" == "PE" ]]; then
+        r2chunk="umi_chunks/r2_\${suffix}"
+        r2out="umi_chunks/out_r2_\${suffix}.fastq"
+        launch_extract "\${r1chunk}" "\${r1out}" "\${r2chunk}" "\${r2out}"
+        R2_OUT_CHUNKS+=("\${r2out}")
+      else
+        launch_extract "\${r1chunk}" "\${r1out}" "" ""
+      fi
+      R1_OUT_CHUNKS+=("\${r1out}")
+    done
+
+    for p in "\${EXTRACT_PIDS[@]}"; do
+      wait "\${p}" || true
+    done
+
+    if [[ -s umi_extract_fail.flag ]]; then
+      echo "PREP | ERROR | Failed UMI extract chunk(s):"
+      sed 's/^/PREP | ERROR |   /' umi_extract_fail.flag
+      cat umi_chunks/*.err >&2 2>/dev/null || true
+      tracktx_error "preprocess_and_quality_filter_reads" "umi_tools extraction failed" "Check preprocess_reads.log in work dir"
+    fi
+
+    cat "\${R1_OUT_CHUNKS[@]}" > final_R1.fastq
+    if [[ "\${MODE}" == "PE" ]]; then
+      cat "\${R2_OUT_CHUNKS[@]}" > final_R2.fastq
+    else
       # Create empty R2 for SE (consistent tuple shape)
       : > final_R2.fastq
     fi
+    cat umi_chunks/*.log > umi_extract.log 2>/dev/null || true
+    rm -rf umi_chunks
 
     echo "PREP | UMI | Extraction complete"
 

@@ -563,7 +563,7 @@ PYSCRIPT
       : "\${SORT_MEM:=\$(( ${task.memory.toGiga()} * 70 / 100 ))G}"
       : "\${SORT_TMP:=\${SORT_TMPDIR:-/tmp}}"
       mkdir -p "\${SORT_TMP}" 2>/dev/null || SORT_TMP=/tmp
-      if ! LC_ALL=C sort -S "\${SORT_MEM}" -T "\${SORT_TMP}" -k1,1 -k2,2n "\${bedgraph}" > "\${bedgraph}.sorted"; then
+      if ! LC_ALL=C sort -S "\${SORT_MEM}" -T "\${SORT_TMP}" --parallel="\${THREADS}" -k1,1 -k2,2n "\${bedgraph}" > "\${bedgraph}.sorted"; then
         echo "NORMALIZE | ERROR | sort failed (likely OOM) for: \${bedgraph}"
         rm -f "\${bedgraph}.sorted"
         return 1

@@ -307,6 +307,7 @@ process generate_coverage_tracks {
     # USB-backed work dir). Override with SORT_MEM / SORT_TMPDIR.
     : "\${SORT_MEM:=\$(( ${task.memory.toGiga()} * 50 / 100 / 2 ))G}"
     : "\${SORT_TMP:=\${SORT_TMPDIR:-/tmp}}"
+    : "\${SORT_PARALLEL:=\${THREADS}}"
     mkdir -p "\${SORT_TMP}" 2>/dev/null || SORT_TMP=/tmp
 
     # Positive strand coverage, sorted in a single streamed pass.
@@ -319,7 +320,7 @@ process generate_coverage_tracks {
       -\${end_type} \\
       -strand + \\
       -bg \\
-      | LC_ALL=C sort -S "\${SORT_MEM}" -T "\${SORT_TMP}" -k1,1 -k2,2n \\
+      | LC_ALL=C sort -S "\${SORT_MEM}" -T "\${SORT_TMP}" --parallel="\${SORT_PARALLEL}" -k1,1 -k2,2n \\
       > "\${prefix}.pos.bedgraph"; then
       echo "TRACKS | ERROR | Failed to generate/sort positive strand coverage"
       return 1
@@ -337,7 +338,7 @@ process generate_coverage_tracks {
       -strand - \\
       -bg \\
       -scale -1 \\
-      | LC_ALL=C sort -S "\${SORT_MEM}" -T "\${SORT_TMP}" -k1,1 -k2,2n \\
+      | LC_ALL=C sort -S "\${SORT_MEM}" -T "\${SORT_TMP}" --parallel="\${SORT_PARALLEL}" -k1,1 -k2,2n \\
       > "\${prefix}.neg.bedgraph"; then
       echo "TRACKS | ERROR | Failed to generate/sort negative strand coverage"
       return 1
@@ -367,28 +368,103 @@ process generate_coverage_tracks {
     local input_bam="\$1"
     local output_bam="\$2"
     local is_pe="\$3"
-    
+    local stats_file="\${4:-\${SAMPLE_ID}.dedup_stats.txt}"
+
     echo "TRACKS | DEDUP | Starting UMI deduplication..."
     echo "TRACKS | DEDUP | Mode: \$([ "\${is_pe}" == "true" ] && echo "Paired-end" || echo "Single-end")"
     
+    # Parallelize across chromosomes: umi_tools calls duplicates from
+    # (chromosome, position, UMI[, mate position]) only — it never compares
+    # reads across chromosomes — so per-chromosome dedup is provably
+    # identical to whole-BAM dedup. umi_tools has no thread flag of its own
+    # and was observed pinned at ~95-98% of ONE core for 8-19min on
+    # 91M/155M-read BAMs while the task holds \${THREADS} cpus (3 of 4 idle).
+    # PE mates only land in the same chromosome shard when properly paired
+    # (flag 2); everything else (discordant / mate-unmapped) dedups as ONE
+    # unsplit job so cross-chromosome pairing is never broken. Shards are
+    # extracted with samtools view from a coordinate-sorted BAM, so each
+    # stays internally sorted and samtools merge k-way merges them straight
+    # back into the original order.
+    mkdir -p dedup_shards
+    rm -f dedup_shards/* dedup_fail.flag 2>/dev/null || true
+
+    mapfile -t DEDUP_CHROMS < <(samtools view -H "\${input_bam}" | \\
+      awk -F'\\t' '\$1=="@SQ"{for(i=2;i<=NF;i++) if(\$i ~ /^SN:/){sub(/^SN:/,"",\$i); print \$i}}')
+
+    dedup_shard() {
+      local shard_in="\$1" shard_out="\$2" paired_flag="\$3"
+      if ! umi_tools dedup \${paired_flag} -I "\${shard_in}" -S "\${shard_out}" \\
+           --log="\${shard_out}.log" >>"\${shard_out}.err" 2>&1; then
+        echo "FAIL: \${shard_in}" >> dedup_fail.flag
+      fi
+    }
+
+    DEDUP_PIDS=()
+    launch_dedup_shard() {
+      while :; do
+        local alive=0 p
+        for p in "\${DEDUP_PIDS[@]:-}"; do
+          [ -n "\${p}" ] && kill -0 "\${p}" 2>/dev/null && alive=\$(( alive + 1 ))
+        done
+        [ "\${alive}" -lt "\${THREADS}" ] && break
+        sleep 0.5
+      done
+      dedup_shard "\$1" "\$2" "\$3" &
+      DEDUP_PIDS+=(\$!)
+    }
+
+    SHARD_OUT_BAMS=()
     if [[ "\${is_pe}" == "true" ]]; then
-      if ! umi_tools dedup \\
-        --paired \\
-        -I "\${input_bam}" \\
-        -S "\${output_bam}" \\
-        --log="\${SAMPLE_ID}.dedup_stats.txt"; then
-        echo "TRACKS | ERROR | umi_tools deduplication failed"
-        return 1
+      for chr in "\${DEDUP_CHROMS[@]}"; do
+        safe_chr="\${chr//[^A-Za-z0-9_.-]/_}"
+        shard_in="dedup_shards/pp_\${safe_chr}.bam"
+        samtools view -@ "\${THREADS}" -b -f 2 -F 260 "\${input_bam}" "\${chr}" > "\${shard_in}"
+        if [[ "\$(samtools view -c "\${shard_in}")" -eq 0 ]]; then rm -f "\${shard_in}"; continue; fi
+        samtools index -@ "\${THREADS}" "\${shard_in}"
+        shard_out="dedup_shards/pp_\${safe_chr}.dedup.bam"
+        launch_dedup_shard "\${shard_in}" "\${shard_out}" "--paired"
+        SHARD_OUT_BAMS+=("\${shard_out}")
+      done
+      other_in="dedup_shards/other.bam"
+      samtools view -@ "\${THREADS}" -b -F 262 "\${input_bam}" > "\${other_in}"
+      if [[ "\$(samtools view -c "\${other_in}")" -gt 0 ]]; then
+        samtools index -@ "\${THREADS}" "\${other_in}"
+        other_out="dedup_shards/other.dedup.bam"
+        launch_dedup_shard "\${other_in}" "\${other_out}" "--paired"
+        SHARD_OUT_BAMS+=("\${other_out}")
       fi
     else
-      if ! umi_tools dedup \\
-        -I "\${input_bam}" \\
-        -S "\${output_bam}" \\
-        --log="\${SAMPLE_ID}.dedup_stats.txt"; then
-        echo "TRACKS | ERROR | umi_tools deduplication failed"
-        return 1
-      fi
+      for chr in "\${DEDUP_CHROMS[@]}"; do
+        safe_chr="\${chr//[^A-Za-z0-9_.-]/_}"
+        shard_in="dedup_shards/\${safe_chr}.bam"
+        samtools view -@ "\${THREADS}" -b "\${input_bam}" "\${chr}" > "\${shard_in}"
+        if [[ "\$(samtools view -c "\${shard_in}")" -eq 0 ]]; then rm -f "\${shard_in}"; continue; fi
+        samtools index -@ "\${THREADS}" "\${shard_in}"
+        shard_out="dedup_shards/\${safe_chr}.dedup.bam"
+        launch_dedup_shard "\${shard_in}" "\${shard_out}" ""
+        SHARD_OUT_BAMS+=("\${shard_out}")
+      done
     fi
+
+    for p in "\${DEDUP_PIDS[@]}"; do
+      wait "\${p}" || true
+    done
+
+    if [[ -s dedup_fail.flag ]]; then
+      echo "TRACKS | ERROR | Failed dedup shard(s):"
+      sed 's/^/TRACKS | ERROR |   /' dedup_fail.flag
+      cat dedup_shards/*.err >&2 2>/dev/null || true
+      echo "TRACKS | ERROR | umi_tools deduplication failed"
+      return 1
+    fi
+
+    echo "TRACKS | DEDUP | Merging \${#SHARD_OUT_BAMS[@]} chromosome shard(s)..."
+    if ! samtools merge -f -@ "\${THREADS}" "\${output_bam}" "\${SHARD_OUT_BAMS[@]}"; then
+      echo "TRACKS | ERROR | Failed to merge deduplicated shards"
+      return 1
+    fi
+    cat dedup_shards/*.dedup.bam.log > "\${stats_file}" 2>/dev/null || true
+    rm -rf dedup_shards
     
     # Index deduplicated BAM
     samtools index -@ \${THREADS} "\${output_bam}"
@@ -411,7 +487,7 @@ process generate_coverage_tracks {
       echo "reads_after=\${after_reads}"
       echo "reads_removed=\${removed}"
       echo "percent_removed=\${pct_removed}"
-    } >> "\${SAMPLE_ID}.dedup_stats.txt"
+    } >> "\${stats_file}"
     
     return 0
   }
@@ -481,10 +557,7 @@ process generate_coverage_tracks {
     echo "TRACKS | DEDUP | Also UMI-deduplicating allMap BAM (experimental for multimappers)..."
     cp "\${ALLMAP_BAM}" allmap_in.bam
     samtools index -@ \${THREADS} allmap_in.bam
-    PAIRED_FLAG=""
-    [[ "\${IS_PE}" == "true" ]] && PAIRED_FLAG="--paired"
-    if umi_tools dedup \${PAIRED_FLAG} -I allmap_in.bam -S allmap_dedup.bam --log=allmap_dedup.log; then
-      samtools index -@ \${THREADS} allmap_dedup.bam
+    if perform_umi_dedup "allmap_in.bam" "allmap_dedup.bam" "\${IS_PE}" "allmap_dedup_stats.txt"; then
       ALLMAP_BAM="allmap_dedup.bam"
       echo "TRACKS | DEDUP | allMap deduplicated"
     else
@@ -622,7 +695,18 @@ process generate_coverage_tracks {
   [ "\${SORT_MEM}" -lt 1 ] && SORT_MEM=1
   export SORT_MEM="\${SORT_MEM}G"
   export SORT_TMP="\${SORT_TMPDIR:-/tmp}"
-  echo "TRACKS | 3P | Concurrency: \${MAX_PAR} parallel job(s), SORT_MEM=\${SORT_MEM} each (task mem=\${MEM_GB}G)"
+  # Docker gets --cpus=THREADS (a CFS quota) but NOT --cpuset-cpus, so
+  # /proc/cpuinfo inside the container still reports the HOST's full core
+  # count. GNU sort's --parallel auto-detection reads that and may spawn
+  # threads for all host cores while only actually getting THREADS worth of
+  # scheduling — with MAX_PAR of these sorts running at once, that's
+  # threads-per-sort × MAX_PAR competing for THREADS cpu-shares, i.e.
+  # self-inflicted contention, not speed. Cap each sort's own parallelism at
+  # its fair share of THREADS instead of letting it guess wrong.
+  SORT_PARALLEL=\$(( THREADS / MAX_PAR ))
+  [ "\${SORT_PARALLEL}" -lt 1 ] && SORT_PARALLEL=1
+  export SORT_PARALLEL
+  echo "TRACKS | 3P | Concurrency: \${MAX_PAR} parallel job(s), SORT_MEM=\${SORT_MEM} each, SORT_PARALLEL=\${SORT_PARALLEL} (task mem=\${MEM_GB}G)"
 
   # Throttled fan-out: never let more than MAX_PAR generate_coverage run at once.
   # Each job records its own failure to a flag file so all per-job errors land in

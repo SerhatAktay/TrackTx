@@ -39,6 +39,7 @@ import datetime
 import math
 import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import List, Tuple, Optional
 
@@ -380,6 +381,32 @@ def benjamini_hochberg(pvalues: np.ndarray) -> np.ndarray:
     return padj
 
 
+# Below this row count, ProcessPoolExecutor's per-task IPC overhead (pickling
+# args, dispatching, collecting results) outweighs what it saves — run serially.
+_PARALLEL_ROW_THRESHOLD = 200
+
+
+def _row_stats_values(args: Tuple[list, list, float]) -> Tuple[float, float, float, float]:
+    """Median/log2FC/Mann-Whitney p-value for one gene's two replicate-value lists.
+
+    Module-level (not a nested closure) so it can be pickled and sent to
+    worker processes by ProcessPoolExecutor. Pure function of its inputs —
+    identical result whether called serially or from a worker process.
+    """
+    nv, dv, prior_count = args
+    if not nv or not dv:
+        return (np.nan, np.nan, np.nan, np.nan)
+    med_n = np.median(nv)
+    med_d = np.median(dv)
+    # Prior-count shrinkage: stops near-zero groups from exploding log2FC.
+    log2fc = float(np.log2((med_n + prior_count) / (med_d + prior_count)))
+    try:
+        _, pval = stats.mannwhitneyu(nv, dv, alternative="two-sided")
+    except Exception:
+        pval = np.nan
+    return (float(med_n), float(med_d), log2fc, float(pval))
+
+
 def _compute_contrast_with_stats(
     merged_df: pd.DataFrame,
     variable: str,
@@ -390,6 +417,7 @@ def _compute_contrast_with_stats(
     level_col: str,
     prior_count: float = DEFAULT_PRIOR_COUNT,
     min_expr: float = DEFAULT_MIN_EXPR,
+    executor: Optional[ProcessPoolExecutor] = None,
 ) -> Optional[pd.DataFrame]:
     """
     Compute contrast for one metric using replicate-level data with Mann-Whitney U test.
@@ -430,23 +458,21 @@ def _compute_contrast_with_stats(
             f"{len(denom_agg):,} rows in, {len(joined):,} matched)"
         )
 
-    # Compute median, log2FC, and pvalue per gene
-    def row_stats(row):
-        nv = row["num_vals"]
-        dv = row["denom_vals"]
-        if not nv or not dv:
-            return pd.Series({"numerator": np.nan, "denominator": np.nan, "log2FC": np.nan, "pvalue": np.nan})
-        med_n = np.median(nv)
-        med_d = np.median(dv)
-        # Prior-count shrinkage: stops near-zero groups from exploding log2FC.
-        log2fc = float(np.log2((med_n + prior_count) / (med_d + prior_count)))
-        try:
-            _, pval = stats.mannwhitneyu(nv, dv, alternative="two-sided")
-        except Exception:
-            pval = np.nan
-        return pd.Series({"numerator": med_n, "denominator": med_d, "log2FC": log2fc, "pvalue": pval})
-
-    stats_df = joined.apply(row_stats, axis=1)
+    # Compute median, log2FC, and pvalue per gene. Each row is fully
+    # independent (no shared state), so with enough rows to be worth the IPC
+    # cost, this fans out across worker processes instead of Python's
+    # per-row .apply(axis=1) loop — same _row_stats_values function, same
+    # inputs per row, so results are identical either way.
+    tasks = [(nv, dv, prior_count) for nv, dv in zip(joined["num_vals"], joined["denom_vals"])]
+    if executor is not None and len(tasks) >= _PARALLEL_ROW_THRESHOLD:
+        n_workers = getattr(executor, "_max_workers", 1) or 1
+        chunksize = max(1, len(tasks) // (4 * n_workers))
+        computed = list(executor.map(_row_stats_values, tasks, chunksize=chunksize))
+    else:
+        computed = [_row_stats_values(t) for t in tasks]
+    stats_df = pd.DataFrame(
+        computed, columns=["numerator", "denominator", "log2FC", "pvalue"], index=joined.index
+    )
     result = joined[id_cols].copy()
     result["numerator"] = stats_df["numerator"]
     result["denominator"] = stats_df["denominator"]
@@ -480,6 +506,7 @@ def compute_single_contrast(
     metrics: List[str],
     prior_count: float = DEFAULT_PRIOR_COUNT,
     min_expr: float = DEFAULT_MIN_EXPR,
+    executor: Optional[ProcessPoolExecutor] = None,
 ) -> Optional[pd.DataFrame]:
     """
     Compute a single contrast with replicate-level statistical testing.
@@ -509,19 +536,19 @@ def compute_single_contrast(
             df = _compute_contrast_with_stats(
                 merged_df, variable, numerator, denominator, metric,
                 group_by="timepoint", level_col="timepoint",
-                prior_count=prior_count, min_expr=min_expr,
+                prior_count=prior_count, min_expr=min_expr, executor=executor,
             )
         elif variable == "timepoint":
             df = _compute_contrast_with_stats(
                 merged_df, variable, numerator, denominator, metric,
                 group_by="condition", level_col="condition",
-                prior_count=prior_count, min_expr=min_expr,
+                prior_count=prior_count, min_expr=min_expr, executor=executor,
             )
         else:  # group — direct, unpaired group-vs-group (e.g. treatment vs control)
             df = _compute_contrast_with_stats(
                 merged_df, variable, numerator, denominator, metric,
                 group_by="group", level_col=None,
-                prior_count=prior_count, min_expr=min_expr,
+                prior_count=prior_count, min_expr=min_expr, executor=executor,
             )
         if df is not None and not df.empty:
             results.append(df)
@@ -536,6 +563,7 @@ def compute_all_contrasts(
     metrics: List[str],
     prior_count: float = DEFAULT_PRIOR_COUNT,
     min_expr: float = DEFAULT_MIN_EXPR,
+    threads: int = 1,
 ) -> Optional[pd.DataFrame]:
     """
     Compute all specified contrasts with replicate-level statistical testing.
@@ -546,6 +574,10 @@ def compute_all_contrasts(
         merged_df: Replicate-level merged metrics
         contrast_specs: List of (variable, numerator, denominator) tuples
         metrics: Metrics to contrast (e.g. pi_len_norm, pi_raw, body_cpm, tss_cpm)
+        threads: Worker processes for the per-gene Mann-Whitney U step (see
+            _row_stats_values). One pool is opened here and reused across every
+            contrast/metric combination below, rather than per-call, since
+            process startup cost would otherwise repeat for each of them.
 
     Returns:
         DataFrame with log2FC, pvalue, padj or None
@@ -568,21 +600,30 @@ def compute_all_contrasts(
         )
 
     all_results = []
-    for i, (variable, numerator, denominator) in enumerate(contrast_specs, 1):
-        log_info(f"Computing contrast {i}/{len(contrast_specs)}: {variable}:{numerator} vs {denominator}")
 
-        result = compute_single_contrast(
-            working_df,
-            variable,
-            numerator,
-            denominator,
-            metrics,
-            prior_count=prior_count,
-            min_expr=min_expr,
-        )
+    def _run_contrasts(executor):
+        for i, (variable, numerator, denominator) in enumerate(contrast_specs, 1):
+            log_info(f"Computing contrast {i}/{len(contrast_specs)}: {variable}:{numerator} vs {denominator}")
 
-        if result is not None and not result.empty:
-            all_results.append(result)
+            result = compute_single_contrast(
+                working_df,
+                variable,
+                numerator,
+                denominator,
+                metrics,
+                prior_count=prior_count,
+                min_expr=min_expr,
+                executor=executor,
+            )
+
+            if result is not None and not result.empty:
+                all_results.append(result)
+
+    if threads and threads > 1:
+        with ProcessPoolExecutor(max_workers=threads) as executor:
+            _run_contrasts(executor)
+    else:
+        _run_contrasts(None)
 
     if not all_results:
         log_warning("No contrasts produced")
@@ -927,6 +968,12 @@ def main():
         ),
     )
     parser.add_argument(
+        "--threads",
+        type=int,
+        default=1,
+        help="Worker processes for the per-gene Mann-Whitney U contrast step [default: 1]"
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {VERSION}"
@@ -991,6 +1038,7 @@ def main():
                 contrast_metrics,
                 prior_count=args.prior_count,
                 min_expr=args.min_expr,
+                threads=args.threads,
             )
             
             if contrasts_df is not None and not contrasts_df.empty:
