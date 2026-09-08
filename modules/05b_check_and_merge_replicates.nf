@@ -134,6 +134,22 @@ process check_and_merge_replicates {
   BIN_SIZE="${concordanceBinSize}"
   SAMPLE_IDS=(${sampleIdList})
 
+  # Cross-sample I/O lock (see modules/06_generate_coverage_tracks.nf for the
+  # full writeup): this pipeline's work volume is a single USB/HDD-backed
+  # drive, and running several samples' whole-BAM sequential passes (merge,
+  # index) at once measured at ~7MB/s EACH instead of the drive's real
+  # ~80-130MB/s single-stream ceiling -- concurrent big reads/writes on one
+  # physical disk interleave into seek-thrashing, not parallel throughput.
+  # This module is exactly where the largest merged BAMs get produced
+  # (samtools merge writes N replicate BAMs into one multi-GB file), so it's
+  # a prime contention source. Lock file lives on the shared bind-mounted
+  # work volume so every concurrent task sees the same one.
+  IO_LOCK_FILE="${projectDir}/.tracktx_io.lock"
+  IO_LOCK_TIMEOUT=\${TRACKS_IO_LOCK_TIMEOUT:-1800}
+  with_io_lock() {
+    flock -w "\${IO_LOCK_TIMEOUT}" "\${IO_LOCK_FILE}" "\$@"
+  }
+
   echo "════════════════════════════════════════════════════════════"
   echo "REPLICATE MERGE | \${CONDITION} @ t=\${TIMEPOINT}"
   echo "════════════════════════════════════════════════════════════"
@@ -189,7 +205,7 @@ process check_and_merge_replicates {
 
   # Index BAMs if not already indexed (needed for samtools idxstats)
   for bam in "\${FILTERED_BAMS[@]}"; do
-    [[ -f "\${bam}.bai" ]] || samtools index -@ ${task.cpus} "\$bam"
+    [[ -f "\${bam}.bai" ]] || with_io_lock samtools index -@ ${task.cpus} "\$bam"
   done
 
   # ── Genome-wide binned read counts via bedtools multicov ──────────────────
@@ -315,19 +331,19 @@ PYEOF
     echo "✓ Concordance passed (\${MIN_CORR} >= \${CONCORDANCE_MIN}) — merging replicates."
 
     # Merge filtered BAMs
-    samtools merge \\
+    with_io_lock samtools merge \\
       -f -@ ${task.cpus} \\
       "\${MERGED_PREFIX}.bam" \\
       "\${FILTERED_BAMS[@]}"
-    samtools index -@ ${task.cpus} "\${MERGED_PREFIX}.bam"
+    with_io_lock samtools index -@ ${task.cpus} "\${MERGED_PREFIX}.bam"
 
     # Merge allMap BAMs
     if [[ "\${#ALLMAP_BAMS[@]}" -gt 0 ]]; then
-      samtools merge \\
+      with_io_lock samtools merge \\
         -f -@ ${task.cpus} \\
         "\${MERGED_PREFIX}.allMap.merged.bam" \\
         "\${ALLMAP_BAMS[@]}"
-      samtools index -@ ${task.cpus} "\${MERGED_PREFIX}.allMap.merged.bam"
+      with_io_lock samtools index -@ ${task.cpus} "\${MERGED_PREFIX}.allMap.merged.bam"
     else
       # Create empty placeholder
       touch "\${MERGED_PREFIX}.allMap.merged.bam"
@@ -339,11 +355,11 @@ PYEOF
       [[ -f "\$f" && -s "\$f" ]] && REAL_SPIKE_BAMS+=("\$f")
     done
     if [[ "\${#REAL_SPIKE_BAMS[@]}" -gt 0 ]]; then
-      samtools merge \\
+      with_io_lock samtools merge \\
         -f -@ ${task.cpus} \\
         "\${MERGED_PREFIX}.spikein.merged.bam" \\
         "\${REAL_SPIKE_BAMS[@]}"
-      samtools index -@ ${task.cpus} "\${MERGED_PREFIX}.spikein.merged.bam"
+      with_io_lock samtools index -@ ${task.cpus} "\${MERGED_PREFIX}.spikein.merged.bam"
     else
       touch "\${MERGED_PREFIX}.spikein.merged.bam"
     fi

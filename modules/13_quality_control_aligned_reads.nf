@@ -154,6 +154,17 @@ process quality_control_aligned_reads {
   FAIL_MAP_RATE="${fail_map_rate}"
   FAIL_STRAND="${fail_strand}"
 
+  # Cross-sample I/O lock (see modules/06_generate_coverage_tracks.nf for the
+  # full writeup): serializes the samtools index calls below across
+  # concurrently running samples sharing this pipeline's USB/HDD-backed work
+  # volume, where concurrent big sequential reads interleave into
+  # seek-thrashing instead of parallel throughput.
+  IO_LOCK_FILE="${projectDir}/.tracktx_io.lock"
+  IO_LOCK_TIMEOUT=\${TRACKS_IO_LOCK_TIMEOUT:-1800}
+  with_io_lock() {
+    flock -w "\${IO_LOCK_TIMEOUT}" "\${IO_LOCK_FILE}" "\$@"
+  }
+
   # Uniqueness definition for the "unique read" QC metrics. With bowtie2 -k,
   # MAPQ is 255 (unavailable), so we select uniquely-mapped reads via the NH
   # tag (NH==1) by pre-building a filtered BAM once — samtools stats/coverage
@@ -192,7 +203,7 @@ process quality_control_aligned_reads {
   # Check if BAM is indexed (create if needed)
   if [[ ! -e "\${BAM_FILE}.bai" ]]; then
     echo "QC | VALIDATE | BAM index not found, creating..."
-    samtools index -@ \${THREADS} "\${BAM_FILE}"
+    with_io_lock samtools index -@ \${THREADS} "\${BAM_FILE}"
     echo "QC | VALIDATE | BAM index created"
   else
     echo "QC | VALIDATE | BAM index: present"
@@ -246,7 +257,7 @@ process quality_control_aligned_reads {
   if [[ "\${MULTIMAP_K}" -gt 1 ]]; then
     echo "QC | CONFIG | Uniqueness via NH==1 (bowtie2 -k mode)"
     samtools view -@ \${THREADS} -b -d NH:1 "\${BAM_FILE}" -o qc_unique.bam
-    samtools index -@ \${THREADS} qc_unique.bam
+    with_io_lock samtools index -@ \${THREADS} qc_unique.bam
     QC_BAM="qc_unique.bam"
     MAPQ_ARG=""
   else

@@ -119,6 +119,17 @@ process quantify_reads_per_gene {
   
   ALLOW_INDEX_BUILD="${params.get('counts_allow_index_build', false) ? 'true' : 'false'}"
 
+  # Cross-sample I/O lock (see modules/06_generate_coverage_tracks.nf for the
+  # full writeup): serializes the samtools index call below across
+  # concurrently running samples sharing this pipeline's USB/HDD-backed work
+  # volume, where concurrent big sequential reads interleave into
+  # seek-thrashing instead of parallel throughput.
+  IO_LOCK_FILE="${projectDir}/.tracktx_io.lock"
+  IO_LOCK_TIMEOUT=\${TRACKS_IO_LOCK_TIMEOUT:-1800}
+  with_io_lock() {
+    flock -w "\${IO_LOCK_TIMEOUT}" "\${IO_LOCK_FILE}" "\$@"
+  }
+
   echo "COUNTS | CONFIG | Sample ID: \${SAMPLE_ID}"
   echo "COUNTS | CONFIG | Condition: \${CONDITION}"
   echo "COUNTS | CONFIG | Timepoint: \${TIMEPOINT}"
@@ -191,7 +202,7 @@ process quantify_reads_per_gene {
     
     if [[ "\${ALLOW_INDEX_BUILD}" == "true" ]]; then
       echo "COUNTS | INDEX | Creating index for: \${bam}"
-      samtools index -@ "\${THREADS}" "\${bam}"
+      with_io_lock samtools index -@ "\${THREADS}" "\${bam}"
       
       if [[ -s "\${bai}" ]]; then
         echo "COUNTS | INDEX | Successfully created: \${bai}"

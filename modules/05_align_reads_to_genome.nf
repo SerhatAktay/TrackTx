@@ -135,6 +135,17 @@ process align_reads_to_genome {
   BT2_THREADS="\${THREADS}"
   SAM_THREADS=1
 
+  # Cross-sample I/O lock (see modules/06_generate_coverage_tracks.nf for the
+  # full writeup): serializes only the standalone post-sort samtools index
+  # calls below -- NOT the bowtie2|samtools sort pipes, which are CPU work
+  # streamed to disk and already use their allotted cpus. Lock file lives on
+  # the shared bind-mounted work volume so every concurrent task sees it.
+  IO_LOCK_FILE="${projectDir}/.tracktx_io.lock"
+  IO_LOCK_TIMEOUT=\${TRACKS_IO_LOCK_TIMEOUT:-1800}
+  with_io_lock() {
+    flock -w "\${IO_LOCK_TIMEOUT}" "\${IO_LOCK_FILE}" "\$@"
+  }
+
   # Determine if paired-end from input val and R2 presence
   PAIRED_PARAM='${is_paired_end ? "true" : "false"}'
   IS_PE="false"
@@ -428,7 +439,7 @@ PYEND
 
   # Verify and index primary BAM
   samtools quickcheck -v "\${SAMPLE_ID}.bam"
-  samtools index -@ "\${THREADS}" "\${SAMPLE_ID}.bam"
+  with_io_lock samtools index -@ "\${THREADS}" "\${SAMPLE_ID}.bam"
   
   PRIMARY_SIZE=\$(stat -c%s "\${SAMPLE_ID}.bam" 2>/dev/null || stat -f%z "\${SAMPLE_ID}.bam" 2>/dev/null || echo "unknown")
   echo "ALIGN | FILTER | Primary BAM created: \${PRIMARY_SIZE} bytes"
@@ -481,7 +492,7 @@ PYEND
 
   # Verify and index spike-in BAM
   samtools quickcheck -v "\${SAMPLE_ID}_spikein.bam"
-  samtools index -@ "\${THREADS}" "\${SAMPLE_ID}_spikein.bam"
+  with_io_lock samtools index -@ "\${THREADS}" "\${SAMPLE_ID}_spikein.bam"
   
   echo "ALIGN | SPIKEIN | Generating spike-in QC metrics..."
   samtools flagstat -@ "\${THREADS}" "\${SAMPLE_ID}_spikein.bam" > "\${SAMPLE_ID}_spikein.flagstat"
