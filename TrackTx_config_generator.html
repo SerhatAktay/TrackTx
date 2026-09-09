@@ -1444,8 +1444,15 @@ function setAdapterPreset(){
   const preset = $('#adapterPreset')?.value || '';
   $('#adapter2Field').style.display = isPE() ? 'block' : 'none';
   if(preset==='illumina'){
-    $('#adapter1').value='TGGAATTCTCGGGTGCCAAGG';
-    if(isPE()) $('#adapter2').value='GATCGTCGGACTGTAGAACTCTGAAC';
+    // PE and SE use different R1 adapters here (proseq2.0.bsh ADAPT2 vs ADAPT_SE) --
+    // conflating them silently killed R1 adapter trimming on every PE dataset in the
+    // cohort (0.1% detection rate instead of the ~90%+ R2 gets) until caught 2026-09-09.
+    if(isPE()){
+      $('#adapter1').value='AGATCGGAAGAGCACACGTCTGAACTC';   // proseq2.0.bsh ADAPT2 (R1, PE)
+      $('#adapter2').value='GATCGTCGGACTGTAGAACTCTGAAC';    // proseq2.0.bsh ADAPT1 (R2, PE)
+    }else{
+      $('#adapter1').value='TGGAATTCTCGGGTGCCAAGG';         // proseq2.0.bsh ADAPT_SE
+    }
   }else if(preset==='nextera'){
     $('#adapter1').value='CTGTCTCTTATACACATCT';
     if(isPE()) $('#adapter2').value='CTGTCTCTTATACACATCT';

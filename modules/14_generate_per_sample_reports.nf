@@ -194,8 +194,16 @@ process generate_per_sample_reports {
   validate_file() {
     local label="\$1"
     local file="\$2"
-    
-    if [[ ! -s "\${file}" ]]; then
+    local allow_empty="\${3:-0}"
+
+    if [[ "\${allow_empty}" -eq 1 ]]; then
+      # 0 bytes is a legitimate upstream result here (e.g. detect_divergent_transcription
+      # can correctly call 0 regions for a low-signal replicate), so only a missing file
+      # is an error -- an empty one is not.
+      if [[ ! -e "\${file}" ]]; then
+        tracktx_error "generate_per_sample_reports" "\${label} missing: \${file}" "Check upstream modules"
+      fi
+    elif [[ ! -s "\${file}" ]]; then
       tracktx_error "generate_per_sample_reports" "\${label} missing or empty: \${file}" "Check upstream modules"
     fi
     FILE_SIZE=\$(stat -c%s "\${file}" 2>/dev/null || stat -f%z "\${file}" 2>/dev/null || echo "unknown")
@@ -203,7 +211,7 @@ process generate_per_sample_reports {
     echo "REPORT | VALIDATE | \${label}: \${FILE_SIZE} bytes (\${FILE_LINES} lines)"
   }
 
-  validate_file "Divergent bed" "\${DIV_BED}"
+  validate_file "Divergent bed" "\${DIV_BED}" 1
   validate_file "Functional summary" "\${FUNC_SUM}"
   validate_file "Pol-II density" "\${POL_DENS}"
   validate_file "Pausing index" "\${PAUSING_IDX}"
