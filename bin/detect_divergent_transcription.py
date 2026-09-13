@@ -775,6 +775,12 @@ def extract_features(
 # organism's candidate counts show this still isn't enough.
 MIN_GMM_CANDIDATES = 25
 
+# ponytail: signal floor guarding the balance-based component pick below.
+# 1.0 natural-log units ~= e-fold (2.7x) difference in total_signal between
+# components; raise if a real-signal component still gets overridden, lower
+# if a genuinely weak-but-balanced component still gets rejected.
+BALANCE_LOG_TOTAL_MARGIN = 1.0
+
 
 def _apply_fdr_cutoff(
     scores: np.ndarray,
@@ -922,18 +928,34 @@ def score_with_mixture_model(
     # a strong unidirectional element, an alignment artifact) should not
     # outrank a lower-signal but well-balanced component.
     bal_idx = feature_cols.index('balance_bayesian')
+    total_idx = feature_cols.index('log_total')
     means_bal = gmm.means_[:, bal_idx]
-    pos_component = int(np.argmax(means_bal))
-    other_component = 1 - pos_component
+    means_total = gmm.means_[:, total_idx]
+    balance_pick = int(np.argmax(means_bal))
+    other = 1 - balance_pick
 
-    log(f"  Positive component: {pos_component} (mean balance_bayesian={means_bal[pos_component]:.3f})", quiet)
+    # Balance is the primary definition of divergent here (see rationale
+    # below), but a component with near-zero signal is noise no matter how
+    # symmetric it looks -- if the balance pick's signal trails the other
+    # component's by more than BALANCE_LOG_TOTAL_MARGIN, that's not a
+    # "weak-but-real" call, it's the balance metric keying on a degenerate
+    # near-empty component. Fall back to the higher-signal component instead.
+    if means_total[balance_pick] < means_total[other] - BALANCE_LOG_TOTAL_MARGIN:
+        pos_component = other
+        log(f"  Positive component: {pos_component} (mean log_total={means_total[pos_component]:.3f}) "
+            f"-- overriding balance pick (component {balance_pick}, mean log_total="
+            f"{means_total[balance_pick]:.3f}) because its signal trails by more than "
+            f"{BALANCE_LOG_TOTAL_MARGIN} log units", quiet)
+    else:
+        pos_component = balance_pick
+        log(f"  Positive component: {pos_component} (mean balance_bayesian={means_bal[pos_component]:.3f})", quiet)
+    other_component = 1 - pos_component
     log(f"  Negative component: {other_component} (mean balance_bayesian={means_bal[other_component]:.3f})", quiet)
 
     # Cross-check (not an override) against log_total: a "positive" component
     # with lower mean signal than the "negative" one is unusual -- balance is
     # the primary definition of divergent here, signal magnitude is
     # secondary -- but still worth a visible note to sanity-check by hand.
-    total_idx = feature_cols.index('log_total')
     if gmm.means_[pos_component][total_idx] < gmm.means_[other_component][total_idx]:
         log(f"  NOTE: component chosen by balance_bayesian ({pos_component}) has LOWER mean "
             f"log_total than the other component -- the more-balanced component also has "
