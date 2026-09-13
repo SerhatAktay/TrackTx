@@ -153,7 +153,7 @@ process detect_divergent_transcription {
   
   # Trap SIGPIPE to avoid exit code 141
   trap '' PIPE
-  trap 'tracktx_error "detect_divergent_transcription" "Unexpected process failure" "Check divergent.log in work dir"' ERR
+  trap 'rc=\$?; tracktx_error "detect_divergent_transcription" "Unexpected process failure" "Check divergent.log in work dir" "\$rc"' ERR
 
   # Standardized error reporting (surfaces clearly in Nextflow "Command error")
   # Shared error helper (defined once in bin/tracktx_error_fragment.sh)

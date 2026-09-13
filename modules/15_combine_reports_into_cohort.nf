@@ -98,7 +98,7 @@ process combine_reports_into_cohort {
 
   # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
   source tracktx_error_fragment.sh
-  trap 'tracktx_error \"combine_reports_into_cohort\" \"Unexpected process failure\" \"Check combine.log in work dir\"' ERR
+  trap 'rc=\$?; tracktx_error \"combine_reports_into_cohort\" \"Unexpected process failure\" \"Check combine.log in work dir\" \"\$rc\"' ERR
 
   TIMESTAMP=\$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")
   echo \"════════════════════════════════════════════════════════════════════════\"

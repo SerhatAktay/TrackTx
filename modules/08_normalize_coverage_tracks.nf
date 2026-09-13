@@ -189,7 +189,7 @@ process normalize_coverage_tracks {
 
   # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
   source tracktx_error_fragment.sh
-  trap 'tracktx_error "normalize_coverage_tracks" "Unexpected process failure" "Check normalize_coverage_tracks.log in work dir"' ERR
+  trap 'rc=\$?; tracktx_error "normalize_coverage_tracks" "Unexpected process failure" "Check normalize_coverage_tracks.log in work dir" "\$rc"' ERR
 
   TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"

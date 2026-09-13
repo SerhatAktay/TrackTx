@@ -175,7 +175,7 @@ process preprocess_and_quality_filter_reads {
 
   # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
   source tracktx_error_fragment.sh
-  trap 'tracktx_error "preprocess_and_quality_filter_reads" "Unexpected process failure" "Check preprocess_reads.log in work dir"' ERR
+  trap 'rc=\$?; tracktx_error "preprocess_and_quality_filter_reads" "Unexpected process failure" "Check preprocess_reads.log in work dir" "\$rc"' ERR
 
   TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"

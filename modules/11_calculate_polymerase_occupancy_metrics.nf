@@ -118,7 +118,7 @@ process calculate_polymerase_occupancy_metrics {
 
   # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
   source tracktx_error_fragment.sh
-  trap 'tracktx_error "calculate_polymerase_occupancy_metrics" "Unexpected process failure" "Check pol_metrics.log in work dir"' ERR
+  trap 'rc=\$?; tracktx_error "calculate_polymerase_occupancy_metrics" "Unexpected process failure" "Check pol_metrics.log in work dir" "\$rc"' ERR
 
   TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"

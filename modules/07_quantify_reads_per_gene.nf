@@ -95,7 +95,7 @@ process quantify_reads_per_gene {
 
   # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
   source tracktx_error_fragment.sh
-  trap 'tracktx_error "quantify_reads_per_gene" "Unexpected process failure" "Check quantify_reads_per_gene.log in work dir"' ERR
+  trap 'rc=\$?; tracktx_error "quantify_reads_per_gene" "Unexpected process failure" "Check quantify_reads_per_gene.log in work dir" "\$rc"' ERR
 
   TIMESTAMP=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   echo "════════════════════════════════════════════════════════════════════════"

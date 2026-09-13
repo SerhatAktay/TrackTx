@@ -127,7 +127,7 @@ process cohort_qc_and_viz {
 
   # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
   source tracktx_error_fragment.sh
-  trap 'tracktx_error \"cohort_qc_and_viz\" \"Unexpected process failure\" \"Check cohort_qc.log in work dir\"' ERR
+  trap 'rc=\$?; tracktx_error \"cohort_qc_and_viz\" \"Unexpected process failure\" \"Check cohort_qc.log in work dir\" \"\$rc\"' ERR
 
   TIMESTAMP=\$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")
   echo \"════════════════════════════════════════════════════════════════════════\"
