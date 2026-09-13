@@ -99,6 +99,9 @@ process normalize_coverage_tracks {
   label      'conda'
   cache      'lenient'
 
+  // Persistent storage for cross-run caching
+  storeDir   { "${params.assets_dir ?: "${projectDir}/assets"}/05_normalized_tracks/${sample_id}" }
+
   publishDir { "${params.output_dir}/05_normalized_tracks/${sample_id}" },
              mode: params.publish_mode,
              overwrite: true,

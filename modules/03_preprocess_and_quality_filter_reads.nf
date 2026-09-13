@@ -109,6 +109,9 @@ process preprocess_and_quality_filter_reads {
   label  'conda'
   cache      'lenient'
 
+  // Persistent storage for cross-run caching
+  storeDir   { "${params.assets_dir ?: "${projectDir}/assets"}/01_trimmed_fastq/${sample_id}" }
+
   publishDir { "${params.output_dir}/01_trimmed_fastq/${sample_id}" },
              mode: params.publish_mode,
              overwrite: true,

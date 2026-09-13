@@ -63,6 +63,9 @@ process check_and_merge_replicates {
   label      'conda'
   cache      'lenient'
 
+  // Persistent storage for cross-run caching
+  storeDir   { "${params.assets_dir ?: "${projectDir}/assets"}/02_alignments/_merged/${condition}_${timepoint}" }
+
   publishDir "${params.output_dir}/02_alignments/_merged",
              mode: params.publish_mode,
              overwrite: true,
