@@ -172,10 +172,6 @@ process normalize_coverage_tracks {
     path "tracks_manifest.tsv",      emit: manifest
     path "normalization_factors.tsv"
 
-    // Full directory trees
-    path "3p/**", emit: tree3p
-    path "5p/**", optional: true, emit: tree5p
-
     // Log
     path "normalize_coverage_tracks.log", emit: log
 
