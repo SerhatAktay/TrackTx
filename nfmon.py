@@ -63,7 +63,8 @@ def human_interval(seconds: float) -> str:
 def parse_args():
     ap = argparse.ArgumentParser(
         description="nf-monitor — Nextflow pipeline monitoring with trends & predictions",
-        epilog="Interactive keys: j/k=nav t=trends p=process e=export h=help q=quit"
+        epilog="Curses keys (--simple, or when rich isn't installed): j/k=nav t=trends e=export q=quit. "
+               "Rich keys (default): j/k=nav f=filter s=sort a=all-logs q=quit"
     )
     ap.add_argument("--log", default=".nextflow.log", help="Path to .nextflow.log")
     ap.add_argument("--trace", default="", help="Path to trace file (auto-detect if empty)")
@@ -75,12 +76,11 @@ def parse_args():
     ap.add_argument("--html", default="", help="Export HTML dashboard path")
     ap.add_argument("--csv", default="", help="Export CSV process stats path")
     ap.add_argument("--filter", default="", help="Regex filter for task names")
-    ap.add_argument("--no-alt", action="store_true", help="Disable alternate screen (curses)")
     ap.add_argument("--simple", action="store_true", help="Force simple curses TUI (no Rich)")
     ap.add_argument("--all-logs", action="store_true", help="Show stacked logs for all running tasks")
-    ap.add_argument("--log-rows", type=int, default=24, help="Log panel height for Rich UI")
+    ap.add_argument("--log-rows", type=int, default=0, help="Fixed log panel height for Rich UI (0=auto-size to terminal)")
     ap.add_argument("--resolve-hash", default="", help="Print process info for task hash and exit")
-    ap.add_argument("--from-start", action="store_true", help="Ingest full log history")
+    ap.add_argument("--from-start", action="store_true", help="Replay full log history on startup (default: seek to end, only scan for metadata)")
     ap.add_argument("--retain-sec", type=int, default=900, help="Seconds to retain completed tasks (0=immediate clear)")
     ap.add_argument("--max-tasks", type=int, default=2000, help="Max tasks to keep in memory")
     return ap.parse_args()
@@ -113,7 +113,6 @@ RE_RUN = re.compile(r"(?:Workflow run name:\s*|Run name:\s*|(?:^|\s)runName\s*[:
 RE_SES = re.compile(r"(?:^|\s)(?:session:\s*|sessionId[ :=]+|Session id[ :=]+|Session UUID[ :=]+\s*)(?P<sid>[A-Za-z0-9-]+)")
 RE_WORK = re.compile(r"(?:^|\s)(?:Work-dir|Working (?:dir|directory))\s*:\s*(?P<dir>\S+)")
 RE_WORK_HANDLER = re.compile(r"\bworkDir:\s*(?P<dir>[^\]]+)\]")
-RE_TASKDIR = re.compile(r".*/work/[0-9a-f]{2}/[0-9a-f]+$")
 RE_CONTAINER = re.compile(r"(?:^|\s)container\s*>\s*'?(?P<container>[^'\s]+)'?", re.I)
 # Matches the effective core limit passed to the container runtime, e.g.
 # `docker run ... --cpus=3 ...` / `--cpus 3`. This is where TrackTx's
@@ -304,6 +303,7 @@ class World:
     meta: Meta = field(default_factory=Meta)
     alerts: deque = field(default_factory=lambda: deque(maxlen=50))
     recent_errors: deque = field(default_factory=lambda: deque(maxlen=6))
+    bottlenecks: List[str] = field(default_factory=list)
     start_ts: float = field(default_factory=time.time)
     
     # Log/trace tailing state
@@ -549,13 +549,10 @@ def guess_work_root(log_path: str, cli: str) -> str:
             return abspath(m.group("dir"))
     except Exception:
         pass
-    # Heuristic: prefer ./work with hashed layout
+    # Heuristic: first existing ./work-like directory, nearest first
     for candidate in ("work", "../work", "../../work"):
         c = abspath(candidate)
         if os.path.isdir(c):
-            for root, dirs, files in os.walk(c):
-                if RE_TASKDIR.match(root):
-                    return c
             return c
     return abspath(os.environ.get("NXF_WORK") or "work")
 
@@ -626,15 +623,6 @@ def sys_metrics() -> Tuple[int, int, str]:
         pass
     
     return cpu, mem, load
-
-def du_h(path: str) -> str:
-    """Get human-readable disk usage"""
-    if not os.path.isdir(path):
-        return "--"
-    try:
-        return subprocess.check_output(["du", "-sh", path], text=True, stderr=subprocess.DEVNULL).split()[0]
-    except Exception:
-        return "--"
 
 # ═══════════════════════════════════════════════════════════════
 # ─── Log & Trace I/O ────────────────────────────────────────────
@@ -1002,20 +990,37 @@ def parse_log_timestamp(line: str, ref_now: float) -> Optional[float]:
     except Exception:
         return None
 
-def bootstrap(world: World, log_path: str):
-    """Bootstrap world state from full log.
+def bootstrap(world: World, log_path: str, full: bool = True):
+    """Bootstrap world state from the log.
 
-    Replays the whole log on startup. Each line is timestamped with its own
-    real log time (parsed via parse_log_timestamp), not nfmon's current
-    wall-clock time -- otherwise a task still RUNNING at bootstrap gets
-    first_ts pinned to nfmon's own startup time, and the Age column shows
-    time-since-nfmon-started instead of time-since-task-started for as long
-    as that task keeps running. Lines without a parseable timestamp (e.g.
-    stack-trace continuation lines) reuse the most recent real timestamp
-    seen so far, keeping replay time monotonic; live-tailed lines after
-    bootstrap continue to use time.time() at their own call sites, since
-    those really are happening now.
+    full=True replays the whole log on startup, reconstructing every task's
+    state and history. Each line is timestamped with its own real log time
+    (parsed via parse_log_timestamp), not nfmon's current wall-clock time --
+    otherwise a task still RUNNING at bootstrap gets first_ts pinned to
+    nfmon's own startup time, and the Age column shows time-since-nfmon-
+    started instead of time-since-task-started for as long as that task
+    keeps running. Lines without a parseable timestamp (e.g. stack-trace
+    continuation lines) reuse the most recent real timestamp seen so far,
+    keeping replay time monotonic; live-tailed lines after bootstrap continue
+    to use time.time() at their own call sites, since those really are
+    happening now.
+
+    full=False (the --from-start-less default) only scans for pipeline
+    metadata (run name/session/executor/work root) -- cheap even on huge
+    logs -- and then seeks to end-of-file so live tailing starts fresh
+    without replaying old task history.
     """
+    if not full:
+        for ln in read_all_lines(log_path):
+            update_meta(world, ln)
+        try:
+            st = os.stat(log_path)
+            world.last_log_ino = st.st_ino
+            world.last_log_pos = st.st_size
+        except OSError:
+            pass
+        return
+
     bootstrap_now = time.time()
     last_ts = bootstrap_now
     for ln in read_all_lines(log_path):
@@ -1024,10 +1029,10 @@ def bootstrap(world: World, log_path: str):
         if parsed_ts is not None:
             last_ts = parsed_ts
         parse_line(world, ln, last_ts)
-        
+
         if any(k in ln for k in ("ERROR", "FAILED", "Exception", "Caused by:")) and "collect-file" not in ln:
             world.recent_errors.append(ln.strip())
-    
+
     try:
         st = os.stat(log_path)
         world.last_log_ino = st.st_ino
@@ -1607,6 +1612,10 @@ def classify(world: World):
     # not one-per-container.
     docker_map = docker_containers_map()
     docker_stats = docker_stats_all() if docker_map else {}
+    # Lazily computed, cached for the rest of this classify() call so every
+    # task needing the ps-snapshot fallback shares one subprocess instead of
+    # spawning `ps -Ao` per task per refresh.
+    ps_snap: Optional[List[Tuple[int, int, float, float, str]]] = None
 
     for d in active_dirs:
         tid = "/".join(d.rstrip("/").split("/")[-2:])
@@ -1667,15 +1676,16 @@ def classify(world: World):
         
         # Fallback: try to match process by command line if PID missing
         if t.state == "RUNNING" and (t.pid is None or t.metrics.cpu_pct is None):
-            snap = _ps_snapshot()
+            if ps_snap is None:
+                ps_snap = _ps_snapshot()
             # build children index by ppid
             children = {}
-            for pid, ppid, pcpu, rss_mb, cmd in snap:
+            for pid, ppid, pcpu, rss_mb, cmd in ps_snap:
                 if ppid not in children: children[ppid] = []
                 children[ppid].append((pid, pcpu, rss_mb, cmd))
             
             thash = (t.id or '').split('/')[-1]
-            for pid, ppid, pcpu, rss_mb, cmd in snap:
+            for pid, ppid, pcpu, rss_mb, cmd in ps_snap:
                 hit = False
                 if thash and thash in cmd: hit = True
                 elif t.workdir and t.workdir in cmd: hit = True
@@ -1786,14 +1796,12 @@ def classify(world: World):
         if t.name and t.state == "COMPLETED":
             world.proc_stats[t.name].update(t)
     
-    # Mark slow tasks
-    for t in run:
-        ps = world.proc_stats.get(t.name)
-        if ps and ps.avg_duration:
-            runtime = t.runtime()
-            if runtime and runtime > ps.avg_duration * 1.5:
-                t.slow_flag = True
-    
+    # Mark slow tasks (>1.5x their process average)
+    for t in identify_slow_tasks(world):
+        t.slow_flag = True
+
+    world.bottlenecks = detect_bottlenecks(world)
+
     # Filter
     if world.filt:
         run = [t for t in run if world.filt.search(t.label() or "")]
@@ -1879,6 +1887,7 @@ def export_json(world: World, path: str):
             for a in list(world.alerts)[-20:]
         ],
         "recent_errors": list(world.recent_errors),
+        "bottlenecks": list(world.bottlenecks),
     }
     
     with open(path, "w") as f:
@@ -2243,6 +2252,13 @@ def oneshot(w: World):
         print("  ✓ none")
     print("└─┘")
 
+    # Bottlenecks
+    if w.bottlenecks:
+        print("\n┌─ Bottlenecks ─┐")
+        for b in w.bottlenecks[:5]:
+            print(f"  ⚠ {b}")
+        print("└─┘")
+
 # ═══════════════════════════════════════════════════════════════
 # ─── Main Entry Point ───────────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════
@@ -2276,7 +2292,7 @@ def main():
     
     if os.path.isfile(log):
         w.meta.work_root = guess_work_root(log, a.work)
-        bootstrap(w, log)
+        bootstrap(w, log, full=a.from_start)
     else:
         # Try to infer work root first
         if a.work:
@@ -2288,7 +2304,7 @@ def main():
         if alt_log and os.path.isfile(alt_log):
             log = alt_log
             w.meta.work_root = guess_work_root(log, a.work)
-            bootstrap(w, log)
+            bootstrap(w, log, full=a.from_start)
         else:
             print(f"Warning: log not found, running in trace-first mode (log={a.log})", file=sys.stderr)
     
@@ -2512,6 +2528,28 @@ def main():
                     except Exception:
                         pass
 
+            # Help panel content is static -- build once instead of on every
+            # frame (render() is called at every refresh tick).
+            _help_txt = Text()
+            _help_txt.append("NAVIGATION\n", style="bold cyan")
+            _help_txt.append("  j  or  Down  ", style="yellow")
+            _help_txt.append("Move down to next running task\n", style="dim")
+            _help_txt.append("  k  or  Up    ", style="yellow")
+            _help_txt.append("Move up to previous task\n", style="dim")
+            _help_txt.append("FILTER & SORT\n", style="bold cyan")
+            _help_txt.append("  f  ", style="yellow")
+            _help_txt.append("Filter by process: show only one module at a time (cycle through)\n", style="dim")
+            _help_txt.append("  s  ", style="yellow")
+            _help_txt.append("Sort: default → by CPU% → by memory → by age\n", style="dim")
+            _help_txt.append("VIEW\n", style="bold cyan")
+            _help_txt.append("  a  ", style="yellow")
+            _help_txt.append("Toggle all-logs: show every task's log, or just the focused one\n", style="dim")
+            _help_txt.append("QUIT\n", style="bold cyan")
+            _help_txt.append("  q  or  Esc  ", style="yellow")
+            _help_txt.append("Exit the monitor\n", style="dim")
+            _help_txt.append("Columns: Module=process name, Sample=task tag, CPU%=usage, RSS=memory (MB)", style="dim")
+            help_panel = Panel(_help_txt, title="Help", border_style="bright_black", padding=(0, 1))
+
             def render():
                 import shutil
                 try:
@@ -2559,9 +2597,6 @@ def main():
                 prog=Progress(TextColumn("[bold]Pipeline"), BarColumn(), TextColumn(f" {pct}%"), expand=True)
                 prog.add_task("pipe", total=100, completed=pct)
 
-                # remove per-process summary; show placeholder
-                proc_tbl = Table(title="", expand=True, show_edge=False)
-
                 # running table
                 rt_title = "Running (all logs)" if getattr(a, 'all_logs', False) else "Running (j/k to focus)"
                 rt = Table(title=rt_title, expand=True, padding=(0, 0), show_edge=True)
@@ -2591,12 +2626,13 @@ def main():
                     # Ensure we have proper labels from filesystem
                     ensure_task_label_from_fs(w, t)
                     
-                    cpu=(f"{t.metrics.cpu_pct:.0f}%" if t.metrics.cpu_pct is not None else "--")
-                    # colorize CPU and RSS
-                    cpu_style = ("green" if (t.metrics.cpu_pct or 0) < 50 else ("yellow" if (t.metrics.cpu_pct or 0) < 80 else "red")) if t.metrics.cpu_pct is not None else "dim"
+                    trend_arrow = {"rising": "↑", "falling": "↓"}.get(t.metrics.cpu_trend(), "")
+                    cpu=(f"{t.metrics.cpu_pct:.0f}%{trend_arrow}" if t.metrics.cpu_pct is not None else "--")
+                    # colorize CPU and RSS (shared thresholds with the curses/oneshot views)
+                    cpu_style = colorize_cpu_pct(t.metrics.cpu_pct)[0] if t.metrics.cpu_pct is not None else "dim"
                     cpus = (f"{t.metrics.cpus:.0f}" if t.metrics.cpus is not None else "?")
                     rss=(f"{t.metrics.rss_mb:.0f}MB" if t.metrics.rss_mb is not None else "--")
-                    rss_style = ("green" if (t.metrics.rss_mb or 0) < 2048 else ("yellow" if (t.metrics.rss_mb or 0) < 8192 else "red")) if t.metrics.rss_mb is not None else "dim"
+                    rss_style = colorize_mem_mb(t.metrics.rss_mb)[0] if t.metrics.rss_mb is not None else "dim"
                     
                     # split into module (process name) and sample/tag
                     # If name still looks like hash, try to extract from workdir one more time
@@ -2612,6 +2648,8 @@ def main():
                     lab = Text(module_name, style=_name_style(module_name))
                     if (not getattr(a, 'all_logs', False)) and idx == focused["idx"]:
                         lab.stylize("bold yellow")
+                    if t.slow_flag:
+                        lab.append(" 🐌", style="yellow bold")
                     # sparkline from cpu_hist — each sample is downsampled (see
                     # TaskMetrics.update / _bucket_interval) so the 20-slot buffer
                     # scales with the task's actual runtime instead of showing just
@@ -2636,37 +2674,14 @@ def main():
                 # Calculate how much space we have (will be computed below alongside layout)
                 log_panel = Panel(Text("No running tasks", style="yellow"), title="Log", border_style="blue", padding=(0, 1))
 
-                # queued table
-                # remove queued table
-                qt = Table(title="", expand=True)
-
-                # errors panel
-                err_txt = Text("✓ none", style="green") if not w.recent_errors else Text("\n".join(list(w.recent_errors)[-3:]), style="red")
+                # errors + bottlenecks panel
+                err_lines = list(w.recent_errors)[-3:]
+                err_lines += [f"⚠ {b}" for b in w.bottlenecks[:3]]
+                err_txt = Text("✓ none", style="green") if not err_lines else Text("\n".join(err_lines), style="red")
                 err_panel = Panel(err_txt, title="Errors", border_style="red", padding=(0, 1))
 
-                # help - extensive for novices
-                help_txt = Text()
-                help_txt.append("NAVIGATION\n", style="bold cyan")
-                help_txt.append("  j  or  Down  ", style="yellow")
-                help_txt.append("Move down to next running task\n", style="dim")
-                help_txt.append("  k  or  Up    ", style="yellow")
-                help_txt.append("Move up to previous task\n", style="dim")
-                help_txt.append("FILTER & SORT\n", style="bold cyan")
-                help_txt.append("  f  ", style="yellow")
-                help_txt.append("Filter by process: show only one module at a time (cycle through)\n", style="dim")
-                help_txt.append("  s  ", style="yellow")
-                help_txt.append("Sort: default → by CPU% → by memory → by age\n", style="dim")
-                help_txt.append("VIEW\n", style="bold cyan")
-                help_txt.append("  a  ", style="yellow")
-                help_txt.append("Toggle all-logs: show every task's log, or just the focused one\n", style="dim")
-                help_txt.append("QUIT\n", style="bold cyan")
-                help_txt.append("  q  or  Esc  ", style="yellow")
-                help_txt.append("Exit the monitor\n", style="dim")
-                help_txt.append("Columns: Module=process name, Sample=task tag, CPU%=usage, RSS=memory (MB)", style="dim")
-                help_panel = Panel(help_txt, title="Help", border_style="bright_black", padding=(0, 1))
-
-                # Estimate log lines from terminal
-                available_log_lines = max(5, int((term_height - 8) * 0.55))
+                # Estimate log lines from terminal, unless the user pinned a fixed height
+                available_log_lines = a.log_rows if a.log_rows > 0 else max(5, int((term_height - 8) * 0.55))
                 
                 if run_filtered:
                     if getattr(a, 'all_logs', False):
@@ -2761,6 +2776,10 @@ def main():
                         for row in tail_trace(w):
                             apply_trace_row(w, row, time.time())
                         w.cpu_pct, w.mem_pct, w.load_1 = sys_metrics()
+                        if a.json:
+                            tmp = a.json + ".tmp"
+                            export_json(w, tmp)
+                            os.replace(tmp, a.json)
                         live.update(render())
                         next_tick = now + max(0.2, a.refresh)
                     time.sleep(0.02)

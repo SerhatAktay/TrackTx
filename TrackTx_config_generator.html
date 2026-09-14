@@ -1242,7 +1242,6 @@ optgroup{ color:var(--fg); }
             <p class="help">Optional absolute body-length floor on top of the fraction. 0 = off.</p>
           </div>
         </div>
-        <div class="column"></div>
       </div>
 
         </div>
@@ -1765,13 +1764,13 @@ function buildYAML(){
   const div = {
     threshold:  (divThrVal === 'auto' || divThrVal === '') ? 'auto' : parseFloat(divThrVal),
     sum_thr:    (divSumVal === 'auto' || divSumVal === '') ? 'auto' : parseFloat(divSumVal),
-    fdr:        parseFloat($('#div_fdr').value||'0.05'),
+    fdr:        parseFloat($('#div_fdr').value||'0.08'),
     nt_window:  parseInt($('#div_win').value||'1000',10),
     bin_gap:    parseInt($('#div_bin_gap').value||'100',10),
     balance:    parseFloat($('#div_bal').value||'0') || 0,
-    cal_pct:    parseFloat($('#div_cal_pct').value||'75') || 75,
-    cal_mult:   parseFloat($('#div_cal_mult').value||'3') || 3,
-    merge_gap:  parseInt($('#div_merge_gap').value||'500',10) || 500,
+    cal_pct:    parseFloat($('#div_cal_pct').value||'65') || 65,
+    cal_mult:   parseFloat($('#div_cal_mult').value||'1.5') || 1.5,
+    merge_gap:  parseInt($('#div_merge_gap').value||'150',10) || 150,
     cal_bg_lower: !!$('#div_cal_bg_lower').checked,
     qc:         !!$('#div_qc').checked
   };
@@ -1975,7 +1974,7 @@ function buildYAML(){
   const speciesProfileKey = getSpeciesProfileKey(refGenome);
   const divPreset = $('#div_preset')?.value || '';
   const divergentProfile = `${speciesProfileKey}_${divPreset || 'custom'}`;
-  y += `  divergent_profile: ${mono(divergentProfile)}\n`;
+  y += `  divergent_profile: ${mono(divergentProfile)}  # label only (species_preset), does not affect detection\n`;
   y += `  divergent_threshold: ${div.threshold === 'auto' ? 'auto' : div.threshold}  # auto = ${div.cal_pct}th percentile\n`;
   y += `  divergent_sum_thr: ${div.sum_thr === 'auto' ? 'auto' : div.sum_thr}      # auto = ${div.cal_mult}x threshold\n`;
   y += `  divergent_fdr: ${div.fdr}          # False discovery rate\n`;
@@ -2174,29 +2173,38 @@ function fillPreview(){
   $('#yamlPreview').textContent = y + warn;
 }
 
-async function downloadZip(){
+// Shared pre-build checks for downloadZip()/saveZipToLocation(): missing
+// samples, missing SRR/file data, out-of-range analysis params, JSZip load
+// failure. Returns false (and shows the relevant alert/confirm) if the build
+// should be aborted, true if it's clear to proceed.
+function validateBeforeBuild(verb){
   const boxes = $$('#samplesContainer .sample-box');
   if(boxes.length === 0){
-    alert('⚠️ Add at least one sample before downloading.');
-    return;
+    alert(`⚠️ Add at least one sample before ${verb}.`);
+    return false;
   }
   const hasData = boxes.some(b => {
     const src = source();
     if(src === 'local') return !!b.querySelector('.rep-file1')?.value?.trim();
     return !!b.querySelector('.rep-srr')?.value?.trim();
   });
-  if(!hasData && !confirm('No sample data (SRR IDs or file paths) entered. Download anyway?')) return;
+  if(!hasData && !confirm(`No sample data (SRR IDs or file paths) entered. ${verb === 'downloading' ? 'Download' : 'Save'} anyway?`)) return false;
 
   if(typeof JSZip === 'undefined'){
     alert('The ZIP library (JSZip) failed to load — usually no internet connection.\nUse "Copy YAML to Clipboard" instead, or reconnect and reload the page.');
-    return;
+    return false;
   }
 
   const analysisWarnings = collectAnalysisWarnings();
   if(analysisWarnings.length){
-    const msg = 'Some analysis parameters are outside typical ranges:\n- ' + analysisWarnings.join('\n- ') + '\n\nContinue and build ZIP anyway?';
-    if(!confirm(msg)) return;
+    const msg = 'Some analysis parameters are outside typical ranges:\n- ' + analysisWarnings.join('\n- ') + `\n\nContinue and ${verb === 'downloading' ? 'build' : 'save'} ZIP anyway?`;
+    if(!confirm(msg)) return false;
   }
+  return true;
+}
+
+async function downloadZip(){
+  if(!validateBeforeBuild('downloading')) return;
 
   const zip = new JSZip();
   const yaml = buildYAML();
@@ -2214,28 +2222,7 @@ async function downloadZip(){
 }
 
 async function saveZipToLocation(){
-  const boxes = $$('#samplesContainer .sample-box');
-  if(boxes.length === 0){
-    alert('⚠️ Add at least one sample before saving.');
-    return;
-  }
-  const hasData = boxes.some(b => {
-    const src = source();
-    if(src === 'local') return !!b.querySelector('.rep-file1')?.value?.trim();
-    return !!b.querySelector('.rep-srr')?.value?.trim();
-  });
-  if(!hasData && !confirm('No sample data (SRR IDs or file paths) entered. Save anyway?')) return;
-
-  const analysisWarnings2 = collectAnalysisWarnings();
-  if(analysisWarnings2.length){
-    const msg2 = 'Some analysis parameters are outside typical ranges:\n- ' + analysisWarnings2.join('\n- ') + '\n\nContinue and save ZIP anyway?';
-    if(!confirm(msg2)) return;
-  }
-
-  if(typeof JSZip === 'undefined'){
-    alert('The ZIP library (JSZip) failed to load — usually no internet connection.\nUse "Copy YAML to Clipboard" instead, or reconnect and reload the page.');
-    return;
-  }
+  if(!validateBeforeBuild('saving')) return;
 
   if(!('showSaveFilePicker' in window)){
     alert('Your browser does not support picking a save location. Use "Download ZIP" instead.');
