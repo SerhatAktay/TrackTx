@@ -51,7 +51,7 @@
 // Inputs:
 //   tuple(sample_id, pos3_bg, neg3_bg, pos5_bg, neg5_bg,
 //         allmap3p_pos_bg, allmap3p_neg_bg, allmap5p_pos_bg, allmap5p_neg_bg,
-//         condition, timepoint, replicate, counts_master_tsv, genes_unused)
+//         condition, timepoint, replicate, counts_master_tsv, genes_tsv)
 //   path(genome_fa) : Genome FASTA (for chromosome sizes)
 //
 // Outputs:
@@ -89,6 +89,13 @@
 //                                Selection above) — set control_label
 //                                explicitly for any multi-arm design.
 //   params.norm.timeout_bw    : BigWig timeout seconds (default: 900)
+//   params.norm.gene_end_method   : none | tes_window | gene_body (default: none)
+//                                    Alternative CPM denominator computed from
+//                                    raw 3' signal in a per-gene end region
+//                                    (written to normalization_factors.tsv as
+//                                    gene_end_<method>; no track is scaled by it).
+//   params.norm.gene_end_window   : bp window for tes_window method (default: 500)
+//   params.norm.gene_end_min_reads: min reads/gene to count toward the total (default: 10)
 //
 // ============================================================================
 
@@ -128,7 +135,7 @@ process normalize_coverage_tracks {
           path(am5p_neg_bg),
           val(condition), val(timepoint), val(replicate),
           path(counts_master_tsv),
-          val(genes_unused)
+          path(genes_tsv)
     path genome_fa
 
   // ── Outputs ───────────────────────────────────────────────────────────────
@@ -207,6 +214,13 @@ process normalize_coverage_tracks {
   
   COUNTS_MASTER="${counts_master_tsv}"
   GENOME_FA="${genome_fa}"
+  GENES_TSV="${genes_tsv}"
+
+  # Gene-end normalization (optional alternative CPM denominator; see
+  # params.norm.gene_end_method doc in nextflow.config)
+  GENE_END_METHOD="${params.norm?.gene_end_method ?: 'none'}"
+  GENE_END_WINDOW=${params.norm?.gene_end_window ?: 500}
+  GENE_END_MIN_READS=${params.norm?.gene_end_min_reads ?: 10}
   
   # Input bedGraphs
   POS3="${pos3_bg}"
@@ -501,6 +515,73 @@ PYSCRIPT
   fi
 
   ###########################################################################
+  # 3b) COMPUTE GENE-END NORMALIZATION FACTOR (optional)
+  ###########################################################################
+  #
+  # Alternative CPM denominator: total raw 3' signal inside a per-gene
+  # gene-end region (tes_window: last GENE_END_WINDOW bp of the gene body
+  # ending at the TES, on the gene's own strand; gene_body: the whole gene
+  # footprint), summed only over genes clearing GENE_END_MIN_READS. Written
+  # to normalization_factors.tsv as gene_end_<method> -- not applied to any
+  # bedGraph/BigWig track (CPM/siCPM remain the only scaled track outputs).
+  # Uses POS3/NEG3 (raw, pre-scaling 3' bedGraphs), which module 06 already
+  # writes coordinate-sorted, matching the sortedness assumption the rest of
+  # this script makes for BigWig conversion.
+
+  FAC_GENEEND="0.0000000000"
+  if [[ "\${GENE_END_METHOD}" != "none" ]]; then
+    echo "NORMALIZE | FACTORS | Computing gene-end factor (method=\${GENE_END_METHOD}, window=\${GENE_END_WINDOW}bp, min_reads=\${GENE_END_MIN_READS})..."
+
+    if [[ ! -s "\${GENES_TSV}" ]]; then
+      echo "NORMALIZE | FACTORS | WARNING: gene-end factor disabled (genes.tsv missing/empty)"
+    else
+      # genes.tsv: gene_id  gene_name  chr  strand  start  end  tss  tes  biotype
+      # (start/end/tss/tes are 1-based GTF coords; emit 0-based BED6 here)
+      awk -F'\t' -v OFS='\t' -v method="\${GENE_END_METHOD}" -v win="\${GENE_END_WINDOW}" '
+        NR==1 { next }
+        {
+          chrom=\$3; strand=\$4; start=\$5; end=\$6; tes=\$8
+          if (method == "gene_body") {
+            lo = start - 1; hi = end
+          } else if (strand == "+") {
+            lo = tes - win; if (lo < 0) lo = 0; hi = tes
+          } else {
+            lo = tes - 1; hi = (tes - 1) + win
+          }
+          if (hi <= lo) next
+          print chrom, lo, hi, \$1, 0, strand
+        }
+      ' "\${GENES_TSV}" | LC_ALL=C sort -k1,1 -k2,2n > gene_end_regions.bed
+
+      GENE_END_TOTAL=0
+      if [[ -s gene_end_regions.bed ]]; then
+        awk -F'\t' '\$6=="+"' gene_end_regions.bed > gene_end_regions.pos.bed
+        awk -F'\t' '\$6=="-"' gene_end_regions.bed > gene_end_regions.neg.bed
+
+        if [[ -s gene_end_regions.pos.bed && -s "\${POS3}" ]]; then
+          POS_SUM=\$(bedtools map -a gene_end_regions.pos.bed -b "\${POS3}" -c 4 -o sum -null 0 \\
+            | awk -v minr="\${GENE_END_MIN_READS}" '{v=\$7; if (v<0) v=-v; if (v>=minr) s+=v} END{printf "%.0f", s+0}')
+          GENE_END_TOTAL=\$(awk -v a="\${GENE_END_TOTAL}" -v b="\${POS_SUM:-0}" 'BEGIN{printf "%.0f", a+b}')
+        fi
+        if [[ -s gene_end_regions.neg.bed && -s "\${NEG3}" ]]; then
+          NEG_SUM=\$(bedtools map -a gene_end_regions.neg.bed -b "\${NEG3}" -c 4 -o sum -null 0 \\
+            | awk -v minr="\${GENE_END_MIN_READS}" '{v=\$7; if (v<0) v=-v; if (v>=minr) s+=v} END{printf "%.0f", s+0}')
+          GENE_END_TOTAL=\$(awk -v a="\${GENE_END_TOTAL}" -v b="\${NEG_SUM:-0}" 'BEGIN{printf "%.0f", a+b}')
+        fi
+        rm -f gene_end_regions.pos.bed gene_end_regions.neg.bed
+      fi
+      rm -f gene_end_regions.bed
+
+      if awk -v x="\${GENE_END_TOTAL}" 'BEGIN{exit (x>0?0:1)}'; then
+        FAC_GENEEND=\$(awk -v t="\${GENE_END_TOTAL}" 'BEGIN{printf "%.10f", 1000000.0/t}')
+        echo "NORMALIZE | FACTORS | Gene-end factor: \${FAC_GENEEND} (total=\${GENE_END_TOTAL} reads across qualifying genes)"
+      else
+        echo "NORMALIZE | FACTORS | WARNING: gene-end factor disabled (no gene cleared gene_end_min_reads=\${GENE_END_MIN_READS})"
+      fi
+    fi
+  fi
+
+  ###########################################################################
   # 4) PREPARE GENOME SIZES
   ###########################################################################
 
@@ -762,6 +843,9 @@ method  factor
 CPM \${FAC_CPM}
 siCPM \${FAC_SICPM}
 FACTOREOF
+  if [[ "\${GENE_END_METHOD}" != "none" ]]; then
+    echo -e "gene_end_\${GENE_END_METHOD}\t\${FAC_GENEEND}" >> normalization_factors.tsv
+  fi
 
   echo "NORMALIZE | OUTPUT | Normalization factors written"
 

@@ -75,11 +75,12 @@ ap.add_argument("--tw-length",  type=int, default=10_000)
 ap.add_argument("--min-signal",      type=float, default=0.0)
 ap.add_argument("--min-signal-mode", choices=["absolute","quantile"], default="absolute")
 ap.add_argument("--min-signal-quantile", type=float, default=0.90)
-ap.add_argument("--allow-unstranded",action="store_true")
-ap.add_argument("--count-mode",      choices=["signal","event"], default="signal")
-ap.add_argument("--div-fallback-enable", action="store_true", help="Enable guarded unstranded fallback for divergent assignment")
-ap.add_argument("--div-fallback-threshold", type=float, default=0.30, help="Trigger fallback if DivergentTx < threshold * Promoter")
-ap.add_argument("--div-fallback-max-frac", type=float, default=0.25, help="Cap fallback DivergentTx to this fraction of Promoter")
+# Default True matches the original TrackTx.sh (unstranded removal at every
+# masking step, see sequential_read_assignment()/removal_flags()). Explicit
+# BooleanOptionalAction (not plain store_true) so a direct invocation without
+# the wrapper still defaults correctly, and module 10 passes --no-allow-unstranded
+# explicitly rather than relying on flag absence to mean "off".
+ap.add_argument("--allow-unstranded", action=argparse.BooleanOptionalAction, default=True)
 ap.add_argument("--active-slop", type=int, default=0, help="Slop (bp) for active-gene overlap only; does not change region geometry")
 ap.add_argument("--debug",           action="store_true")
 
@@ -250,7 +251,7 @@ def build_coordinate_lists(genes_tsv: str, tss_map: dict, tes_map: dict):
                 CPSs = CPS - 500
                 CPSe = CPS + 499
                 TWs = CPS + 500
-                TWe = CPS + 10499              # CPS + 10499 (old script exact value)
+                TWe = CPS + 500 + args.tw_length - 1   # default tw_length=10000 -> CPS+10499 (old script exact value)
             else:  # strand == "-"
                 TSS = tss
                 CPS = tes
@@ -262,7 +263,7 @@ def build_coordinate_lists(genes_tsv: str, tss_map: dict, tes_map: dict):
                 GBe = TSS - args.prom_down     # TSS - 250
                 CPSs = CPS - 499
                 CPSe = CPS + 500
-                TWs = CPS - 10499              # CPS - 10499 (old script exact value)
+                TWs = CPS - 500 - args.tw_length + 1   # default tw_length=10000 -> CPS-10499 (old script exact value)
                 TWe = CPS - 500
 
             # Store gene info (use transcript length like old script: |txEnd - txStart|)
@@ -294,7 +295,10 @@ def find_active_promoters_and_enhancers(all_genes: list, dt_bed: str) -> tuple[l
     # not unique (paralogs, readthroughs, _1/_2 duplicates), so matching active genes
     # by symbol let one active gene switch on its namesakes' regions. Matching by
     # gene_id removes that collision.
-    pm = args.tss_active_pm
+    # active_slop pads this detection-only window (does not touch the ppPolII
+    # promoter region written later in write_coordinate_files(), which uses
+    # prom_up/prom_down instead) -- see --active-slop help text.
+    pm = args.tss_active_pm + args.active_slop
     promoter_regions_bed = OUT / f"all_promoter_regions_TSS_pm{pm}.bed"
     with open(promoter_regions_bed, "w") as f:
         for gene in all_genes:
@@ -493,33 +497,53 @@ def bedgraph_to_reads(pos_bg: str, neg_bg: str) -> str:
     sort_bed(str(reads_file), buffer_size="2G")  # Use 2G buffer for large file
     return str(reads_file)
 
+def removal_flags(strand_flag: str) -> list[str]:
+    """
+    Flags for a masking step's removal intersect, on top of the mandatory -v.
+
+    --allow-unstranded (default: on, matches the original TrackTx.sh) strips
+    every overlapping read from the pool regardless of strand -- including a
+    read that overlaps the window on the WRONG strand and was therefore never
+    assigned to this category. That read then never reaches a later category
+    either, and is not reported anywhere (see docstring below for the exact
+    consequence). Passing --no-allow-unstranded (allow_unstranded=False) adds
+    the same strand flag used by this step's assign intersect, so only reads
+    that could plausibly have been assigned here are removed; a wrong-strand
+    read survives to try later categories or "Non-localized polymerase".
+    """
+    return [] if args.allow_unstranded else [strand_flag]
+
 # ---- sequential read assignment (NEW LOGIC) ---------------------------------
 def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed: str):
     """
     Sequential read assignment, replicating the original TrackTx.sh logic.
 
     Assignment order (sequential masking): each step ASSIGNS same/opposite-
-    strand reads (-s/-S) to its category, then REMOVES every overlapping
-    read from the pool regardless of strand (-v, unstranded) before the
-    next step runs.
+    strand reads (-s/-S) to its category, then REMOVES overlapping reads from
+    the pool before the next step runs. By default (--allow-unstranded) that
+    removal is unstranded (-v alone); with --no-allow-unstranded it only
+    removes reads matching the step's own assign strand (-v -s / -v -S) --
+    see removal_flags().
 
-    1. Promoter:     assign -s, remove unstranded
-    2. Divergent:    assign -S, remove unstranded
-    3. CPS:          assign -s, remove unstranded
-    4. Gene body:    assign -s, remove unstranded
-    5. Enhancers:    assign unstranded, remove unstranded
-    6. Termination:  assign -s, remove unstranded
+    1. Promoter:     assign -s, remove per removal_flags("-s")
+    2. Divergent:    assign -S, remove per removal_flags("-S")
+    3. CPS:          assign -s, remove per removal_flags("-s")
+    4. Gene body:    assign -s, remove per removal_flags("-s")
+    5. Enhancers:    assign unstranded, remove unstranded (no strand concept here)
+    6. Termination:  assign -s, remove per removal_flags("-s")
     7. Non-localized: remaining
 
-    Consequence of unstranded removal: a read whose position overlaps a
-    region's window on the strand that does NOT match (e.g. an antisense
-    read sitting inside a gene's promoter window) is removed from the pool
-    at that step -- it is never assigned to that category, never reaches
-    later categories, and never lands in "Non-localized polymerase" either.
-    This is invisible in functional_regions_summary.tsv: total reads summed
-    across every reported category will be less than the number of reads
-    fed into this function, by an amount this function does not track or
-    report. All genes are processed uniformly (no short-gene special case).
+    Consequence of unstranded removal (the default): a read whose position
+    overlaps a region's window on the strand that does NOT match (e.g. an
+    antisense read sitting inside a gene's promoter window) is removed from
+    the pool at that step -- it is never assigned to that category, never
+    reaches later categories, and never lands in "Non-localized polymerase"
+    either. This is invisible in functional_regions_summary.tsv: total reads
+    summed across every reported category will be less than the number of
+    reads fed into this function, by an amount this function does not track
+    or report. --no-allow-unstranded closes that gap (see removal_flags()),
+    at the cost of no longer matching the original TrackTx.sh's numbers.
+    All genes are processed uniformly (no short-gene special case).
     """
     current_reads = reads_file
     assigned_reads = {}
@@ -531,8 +555,7 @@ def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed
     prom_reads = OUT / "PROseq_ppPolII.bed"
     prom_removed = OUT / "ppRemoved.bed"
     run([BT, "intersect", "-s", "-u", "-wa", "-a", current_reads, "-b", coord_files['promoter']], str(prom_reads))
-    # CRITICAL: Remove ALL overlapping reads (no strand flag) like old script
-    run([BT, "intersect", "-v", "-a", current_reads, "-b", coord_files['promoter']], str(prom_removed))
+    run([BT, "intersect", "-v", *removal_flags("-s"), "-a", current_reads, "-b", coord_files['promoter']], str(prom_removed))
     assigned_reads['Promoter'] = str(prom_reads)
     current_reads = str(prom_removed)
     log_info(f"Assigned: {wc_effective_lines(str(prom_reads))}, Remaining: {wc_effective_lines(current_reads)}")
@@ -544,8 +567,7 @@ def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed
     div_reads = OUT / "PROseq_ppDiv.bed"
     div_removed = OUT / "ppdivRemoved.bed"
     run([BT, "intersect", "-S", "-u", "-wa", "-a", current_reads, "-b", coord_files['divergent']], str(div_reads))
-    # CRITICAL: Remove ALL overlapping reads (no strand flag) like old script
-    run([BT, "intersect", "-v", "-a", current_reads, "-b", coord_files['divergent']], str(div_removed))
+    run([BT, "intersect", "-v", *removal_flags("-S"), "-a", current_reads, "-b", coord_files['divergent']], str(div_removed))
     assigned_reads['DivergentTx'] = str(div_reads)
     current_reads = str(div_removed)
     log_info(f"Assigned: {wc_effective_lines(str(div_reads))}, Remaining: {wc_effective_lines(current_reads)}")
@@ -557,7 +579,7 @@ def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed
     cps_reads = OUT / "PROseq_CPS.bed"
     cps_removed = OUT / "ppdivCPSRemoved.bed"
     run([BT, "intersect", "-s", "-u", "-wa", "-a", current_reads, "-b", coord_files['cps']], str(cps_reads))
-    run([BT, "intersect", "-v", "-a", current_reads, "-b", coord_files['cps']], str(cps_removed))
+    run([BT, "intersect", "-v", *removal_flags("-s"), "-a", current_reads, "-b", coord_files['cps']], str(cps_removed))
     assigned_reads['CPS'] = str(cps_reads)
     current_reads = str(cps_removed)
     
@@ -567,7 +589,7 @@ def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed
     gb_reads = OUT / "PROseq_GB.bed"
     gb_removed = OUT / "ppdivCPSgbRemoved.bed"
     run([BT, "intersect", "-s", "-u", "-wa", "-a", current_reads, "-b", coord_files['gene_body']], str(gb_reads))
-    run([BT, "intersect", "-v", "-a", current_reads, "-b", coord_files['gene_body']], str(gb_removed))
+    run([BT, "intersect", "-v", *removal_flags("-s"), "-a", current_reads, "-b", coord_files['gene_body']], str(gb_removed))
     assigned_reads['Gene body'] = str(gb_reads)
     current_reads = str(gb_removed)
     
@@ -587,7 +609,7 @@ def sequential_read_assignment(reads_file: str, coord_files: dict, enhancers_bed
     tw_reads = OUT / "PROseq_TW.bed"
     tw_removed = OUT / "PROseq_noGene_noEnh.bed"
     run([BT, "intersect", "-s", "-u", "-wa", "-a", current_reads, "-b", coord_files['termination']], str(tw_reads))
-    run([BT, "intersect", "-v", "-a", current_reads, "-b", coord_files['termination']], str(tw_removed))
+    run([BT, "intersect", "-v", *removal_flags("-s"), "-a", current_reads, "-b", coord_files['termination']], str(tw_removed))
     assigned_reads['Termination window'] = str(tw_reads)
     assigned_reads['Non-localized polymerase'] = str(tw_removed)
     
@@ -763,7 +785,8 @@ def main():
     active_genes, genes_with_promoters_bed, enhancers_bed = find_active_promoters_and_enhancers(all_genes, args.divergent)
     
     if not active_genes:
-        log_warning(f"No active genes found (DT sites ∩ TSS ±{args.tss_active_pm}bp); continuing with enhancers and non-localized only")
+        active_pm = args.tss_active_pm + args.active_slop
+        log_warning(f"No active genes found (DT sites ∩ TSS ±{active_pm}bp); continuing with enhancers and non-localized only")
 
     # Write gene-based coordinate files for ALL functional regions (including promoter)
     coord_files = write_coordinate_files(active_genes)

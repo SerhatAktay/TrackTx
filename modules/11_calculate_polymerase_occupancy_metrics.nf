@@ -44,9 +44,8 @@
 //     ├── README_pol_metrics.txt  — Documentation
 //     └── pol_metrics.log         — Processing log
 //
-// Parameters (params.pol.*):
-//   mapq               : Minimum MAPQ (default: 10)
-//   dedup              : Remove duplicates (default: true)
+// Parameters (params.pol.*, except mapq/dedup which share params.qc.* with
+// module 13 so one setting controls MAPQ/dedup filtering everywhere):
 //   tss_win            : TSS window ±bp (default: 50)
 //   body_offset_min    : Min body start offset (default: 2000 bp)
 //   body_offset_frac   : Body start as fraction (default: 0.10)
@@ -148,7 +147,7 @@ process calculate_polymerase_occupancy_metrics {
   NEG_SICPM="${neg3_sicpm_bg}"
 
   # Parameters
-  MAPQ=${params.pol?.mapq ?: 10}
+  MAPQ=${params.qc?.mapq ?: 10}
   MULTIMAP_K=${params.align?.multimap_k ?: 0}
   # Uniqueness filter for gene quantification. With bowtie2 -k, MAPQ is set to
   # 255 (unavailable), so uniquely-mapped reads are selected via the NH tag
@@ -161,7 +160,7 @@ process calculate_polymerase_occupancy_metrics {
     UNIQUE_FILTER="-q \${MAPQ}"
     UNIQUE_DESC="MAPQ≥\${MAPQ}"
   fi
-  DEDUP_ENABLED=\$([[ "${params.pol?.dedup ?: true}" == "false" ]] && echo 0 || echo 1)
+  DEDUP_ENABLED=\$([[ "${params.qc?.dedup ?: true}" == "false" ]] && echo 0 || echo 1)
   TSS_WIN=${params.pol?.tss_win ?: 50}
   BODY_OFFSET_MIN=${params.pol?.body_offset_min ?: 2000}
   BODY_OFFSET_FRAC=${params.pol?.body_offset_frac ?: 0.10}

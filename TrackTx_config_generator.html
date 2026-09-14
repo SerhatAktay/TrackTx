@@ -747,7 +747,43 @@ optgroup{ color:var(--fg); }
     <div class="box" id="step6">
       <h2 class="subtitle is-4"><span class="step">6</span> Analysis Parameters</h2>
       <p class="mb-4">Configure computational analysis settings. Default values are optimized for PRO-seq.</p>
-      
+
+      <!-- Replicate Merging -->
+      <div class="section-header"><strong>Replicate Merging</strong></div>
+      <div class="help-box mb-3">
+        <strong>Default is OFF</strong> — each replicate is tracked and reported separately, which keeps
+        per-gene contrasts (p-values) meaningful. Turn merging on only if you want a single pooled
+        track per condition/timepoint; this disables per-gene contrasts (n=1 per group after pooling).
+      </div>
+      <div class="field">
+        <label class="checkbox">
+          <input type="checkbox" id="replicatesMerge" onchange="toggleBlock('replicatesMergeOptions')">
+          Merge replicates after alignment (concordance-checked)
+        </label>
+        <p class="help">Only merges when replicate concordance clears the threshold below; discordant groups are emitted unmerged with a warning.</p>
+      </div>
+      <div id="replicatesMergeOptions" style="display:none" class="columns mt-2">
+        <div class="column">
+          <label class="label">Concordance method</label>
+          <div class="select">
+            <select id="replicatesConcordanceMethod">
+              <option value="pearson" selected>pearson</option>
+              <option value="spearman">spearman</option>
+            </select>
+          </div>
+        </div>
+        <div class="column">
+          <label class="label">Minimum concordance</label>
+          <input class="input small-input" id="replicatesConcordanceMin" type="number" min="0" max="1" step="0.01" value="0.9">
+          <p class="help">Pearson/Spearman correlation floor to allow merging (0-1).</p>
+        </div>
+        <div class="column">
+          <label class="label">Bin size (bp)</label>
+          <input class="input small-input" id="replicatesConcordanceBinSize" type="number" min="100" value="10000">
+          <p class="help">Genome bin size for the concordance check.</p>
+        </div>
+      </div>
+
       <!-- Divergent Transcription -->
       <div class="section-header"><strong>Divergent Transcription Detection</strong> (statistical)</div>
       <div class="help-box mb-3">
@@ -830,37 +866,32 @@ optgroup{ color:var(--fg); }
         <strong>siCPM:</strong> Spike-in CPM - quantitative normalization using spike-in controls. Requires spike-in genome and proper controls.
       </div>
       
+      <p class="help is-dim">CPM-normalized tracks are always generated — every downstream step (pol metrics, functional regions, QC) depends on them, so there's no toggle to turn them off.</p>
+
       <div class="columns">
-        <div class="column">
-          <label class="checkbox">
-            <input type="checkbox" id="outputCPM" checked>
-            <strong>Generate CPM-normalized tracks</strong>
-          </label>
-          <p class="help">Recommended. Normalizes for sequencing depth across samples.</p>
-        </div>
         <div class="column">
           <label class="checkbox">
             <input type="checkbox" id="outputSiCPM" checked>
             <strong>Generate siCPM (spike-in normalized)</strong>
           </label>
-          <p class="help">Only works if you selected a spike-in genome and have proper controls.</p>
+          <p class="help">Only works if you selected a spike-in genome and have proper controls. Skips the siCPM computation entirely when unchecked (not just publishing).</p>
         </div>
       </div>
       <p class="help is-dim">Raw tracks, allMap, 5′: see <strong>Storage / Space</strong> section below.</p>
-      
+
       <div class="section-header mt-4">Track Formats</div>
       <div class="help-box mb-3">
         <strong>BigWig (.bw):</strong> Compressed binary format, fast loading in genome browsers (recommended).<br>
         <strong>BedGraph (.bedgraph):</strong> Text format, larger files but human-readable. Toggle in <strong>Space</strong> section below.
       </div>
-      
+
       <div class="columns">
         <div class="column">
           <label class="checkbox">
             <input type="checkbox" id="trackBigWig" checked>
             <strong>BigWig format</strong> (recommended)
           </label>
-          <p class="help">Compressed, fast loading in UCSC/IGV genome browsers.</p>
+          <p class="help">Compressed, fast loading in UCSC/IGV genome browsers. Unchecking skips BigWig conversion entirely (not just publishing) — BedGraph tracks are still produced.</p>
         </div>
       </div>
     </div>
@@ -911,13 +942,6 @@ optgroup{ color:var(--fg); }
         </div>
       </div>
       
-      <div class="field">
-        <label class="checkbox">
-          <input type="checkbox" id="preprocess_reads_lenient_cache">
-          Use lenient cache for preprocess step (NFS/network storage)
-        </label>
-        <p class="help">Set true when running from NFS, SMB, or cloud-synced storage to avoid cache invalidation from inconsistent timestamps.</p>
-      </div>
       <div class="field">
         <label class="checkbox">
           <input type="checkbox" id="yaml_comments" checked>
@@ -1227,21 +1251,8 @@ optgroup{ color:var(--fg); }
         <summary>Output &amp; storage</summary>
         <div class="adv-body mt-4">
 <div class="section-header mt-4">Advanced Output Options</div>
-      <div class="columns">
-        <div class="column">
-          <label class="checkbox">
-            <input type="checkbox" id="normEmitBW" checked>
-            Emit BigWig from normalizer
-          </label>
-        </div>
-        <div class="column">
-          <label class="checkbox">
-            <input type="checkbox" id="normEmitSiCPM" checked>
-            Emit siCPM (if factors available)
-          </label>
-        </div>
-      </div>
-      
+      <p class="help is-dim">BigWig and siCPM generation are controlled from <strong>Output Preferences</strong> (step 7) — one setting each, not repeated here.</p>
+
       <div class="columns mt-3">
         <div class="column is-half">
           <label class="checkbox">
@@ -1256,6 +1267,29 @@ optgroup{ color:var(--fg); }
             Force sort bedGraphs before BigWig conversion
           </label>
           <p class="help">Enable if UCSC tools complain about sort order. Slower but safer.</p>
+        </div>
+      </div>
+
+      <div class="columns mt-3">
+        <div class="column is-one-third">
+          <label class="label">Gene-end normalization</label>
+          <div class="select">
+            <select id="normGeneEndMethod" onchange="toggleBlock('geneEndOptions', this.value !== 'none'); toggleBlock('geneEndOptions2', this.value !== 'none')">
+              <option value="none" selected>none (library-size CPM only)</option>
+              <option value="tes_window">tes_window</option>
+              <option value="gene_body">gene_body</option>
+            </select>
+          </div>
+          <p class="help">Alternative CPM denominator from raw 3' signal near each gene's end, less sensitive to global pausing shifts than library-size CPM. Written to normalization_factors.tsv only — does not change any bedGraph/BigWig.</p>
+        </div>
+        <div id="geneEndOptions" style="display:none" class="column is-one-third">
+          <label class="label">Window (bp, tes_window only)</label>
+          <input class="input small-input" id="normGeneEndWindow" type="number" min="10" value="500">
+        </div>
+        <div id="geneEndOptions2" style="display:none" class="column is-one-third">
+          <label class="label">Min reads/gene</label>
+          <input class="input small-input" id="normGeneEndMinReads" type="number" min="0" value="10">
+          <p class="help">Genes below this are excluded from the gene-end total.</p>
         </div>
       </div>
 
@@ -1765,20 +1799,29 @@ function buildYAML(){
     min_body_len:     parseInt($('#pol_min_body_len').value||'0',10)
   };
 
-  // Output switches
+  // Output switches. sicpm/bigwig are the single source of truth for
+  // norm.emit_sicpm/norm.emit_bw below (real compute-level toggles); raw/bedgraph
+  // are the single source of truth for output.raw_tracks/output.bedgraph (publish-level
+  // toggles read directly by modules 06/08's saveAs). There is no cpm toggle --
+  // CPM tracks are always generated, every downstream step depends on them.
   const out = {
-    cpm:     $('#outputCPM').checked,
     sicpm:   $('#outputSiCPM').checked,
     raw:     $('#outputRawTracks').checked,
     bigwig:  $('#trackBigWig').checked,
     bedgraph:$('#trackBedGraph').checked
   };
 
-  const normEmitBW     = $('#normEmitBW').checked;
-  const normEmitSiCPM  = $('#normEmitSiCPM').checked;
   const normEmitAllMap = $('#normEmitAllMap').checked;
   const normForce5p    = $('#normForce5p').checked;
   const forceSortBg    = $('#forceSortBg').checked;
+  const geneEndMethod   = $('#normGeneEndMethod').value;
+  const geneEndWindow   = parseInt($('#normGeneEndWindow').value || '500', 10) || 500;
+  const geneEndMinReads = parseInt($('#normGeneEndMinReads').value || '10', 10) || 10;
+
+  const repMerge            = $('#replicatesMerge').checked;
+  const repConcordanceMethod = $('#replicatesConcordanceMethod').value;
+  const repConcordanceMin    = parseFloat($('#replicatesConcordanceMin').value || '0.9') || 0.9;
+  const repConcordanceBinSize = parseInt($('#replicatesConcordanceBinSize').value || '10000', 10) || 10000;
 
   // Build YAML
   let y = '';
@@ -1830,12 +1873,10 @@ function buildYAML(){
   }
   y += `\n`;
 
-  const preprocessLenientCache = !!$('#preprocess_reads_lenient_cache')?.checked;
   y += `# Directories\n`;
   y += `assets_dir: ${mono(assetsDir)}\n`;
   y += `genome_cache: ${mono(genomeCache)}\n`;
-  y += `force_rebuild: false\n`;
-  y += `preprocess_reads_lenient_cache: ${preprocessLenientCache}  # Set true for NFS/network storage\n\n`;
+  y += `force_rebuild: false\n\n`;
 
   if(refGenome==='other'){
     y += `# Custom genome annotation\n`;
@@ -1890,12 +1931,10 @@ function buildYAML(){
   y += `align:\n`;
   y += `  multimap_k: ${multimapK}   # bowtie2 -k N; >1 = allMap keeps all hits, NH-based uniqueness; 1 = single-best\n\n`;
 
-  y += `# Output formats\n`;
+  y += `# Publish-level output controls (files still computed; this only skips the\n`;
+  y += `# copy into results/ -- see the norm: block below for compute-level skips)\n`;
   y += `output:\n`;
-  y += `  cpm: ${out.cpm}\n`;
-  y += `  crpmsi: ${out.sicpm}\n`;
   y += `  raw_tracks: ${out.raw}\n`;
-  y += `  bigwig: ${out.bigwig}\n`;
   y += `  bedgraph: ${out.bedgraph}\n\n`;
 
   y += `# Storage\n`;
@@ -1905,10 +1944,26 @@ function buildYAML(){
 
   y += `# Normalization options\n`;
   y += `norm:\n`;
-  y += `  emit_bw: ${normEmitBW}\n`;
-  y += `  emit_sicpm: ${normEmitSiCPM}\n`;
+  y += `  emit_bw: ${out.bigwig}\n`;
+  y += `  emit_sicpm: ${out.sicpm}\n`;
   y += `  emit_allmap: ${normEmitAllMap}\n`;
-  y += `  emit_5p: ${!$('#emit5pTracks').checked ? 'false' : (normForce5p ? 'true' : 'null')}   # false = skip 5' tracks\n\n`;
+  y += `  emit_5p: ${!$('#emit5pTracks').checked ? 'false' : (normForce5p ? 'true' : 'null')}   # false = skip 5' tracks\n`;
+  y += `  gene_end_method: ${mono(geneEndMethod)}   # none | tes_window | gene_body\n`;
+  if (geneEndMethod !== 'none') {
+    y += `  gene_end_window: ${geneEndWindow}    # bp for tes_window method\n`;
+    y += `  gene_end_min_reads: ${geneEndMinReads}  # min reads/gene to count toward the gene-end total\n`;
+  }
+  y += `\n`;
+
+  y += `# Replicate merging\n`;
+  y += `replicates:\n`;
+  y += `  merge: ${repMerge}   # true = pool replicates after alignment (concordance-checked); false = keep separate\n`;
+  if (repMerge) {
+    y += `  concordance_method: ${mono(repConcordanceMethod)}\n`;
+    y += `  concordance_min: ${repConcordanceMin}\n`;
+    y += `  concordance_bin_size: ${repConcordanceBinSize}\n`;
+  }
+  y += `\n`;
 
   y += `force_sort_bedgraph: ${forceSortBg}\n\n`;
 

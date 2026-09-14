@@ -1181,7 +1181,7 @@ def main():
     parser.add_argument("--out-qc", required=True,
                        help="Output QC JSON")
     parser.add_argument("--threads", type=int, default=1,
-                       help="Number of threads [default: 1]")
+                       help="Number of threads [default: 1, currently unused]")
     parser.add_argument("--fail-if-empty", default="false",
                        help="Fail if no genes parsed [default: false]")
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")

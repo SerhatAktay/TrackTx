@@ -55,10 +55,19 @@
 //   div_outer           : Divergent outer bound (default: 750 bp)
 //   tw_length           : Termination window length (default: 10,000 bp)
 //   min_signal          : Minimum signal threshold (default: 0.0)
-//   allow_unstranded    : Allow unstranded genes (default: true)
-//   count_mode          : "signal" or "event" (default: "signal")
+//   allow_unstranded    : Sequential masking removes every overlapping read
+//                         from the pool regardless of strand at each step
+//                         (default: true, matches original TrackTx.sh); set
+//                         false to only remove reads matching that step's
+//                         assign strand, letting wrong-strand reads survive
+//                         to later categories or Non-localized instead of
+//                         silently vanishing (see removal_flags() in
+//                         functional_regions.py). Changes reported read
+//                         totals when disabled.
 //   tss_active_pm       : TSS active window ±bp (default: 500 bp)
-//   div_fallback_enable : Enable fallback for active genes (default: false)
+//   active_slop         : Extra bp padding on tss_active_pm for active-gene
+//                         detection only (default: 0; does not move any
+//                         reported region boundary)
 //
 // ============================================================================
 
@@ -127,7 +136,11 @@ process assign_signal_to_functional_regions {
   CONDITION="${condition}"
   TIMEPOINT="${timepoint}"
   REPLICATE="${replicate}"
-  THREADS=${task.cpus}
+  # exported: functional_regions.py's sort_bed() reads THREADS from the
+  # environment for `sort --parallel` (no --threads CLI flag exists for this
+  # script); a plain (non-exported) shell var here left GNU sort at parallel=1
+  # regardless of the cpus allocated to this process.
+  export THREADS=${task.cpus}
 
   # Input files
   DIV_BED="${divergent_bed}"
@@ -151,12 +164,6 @@ process assign_signal_to_functional_regions {
   MIN_SIGNAL=${params.functional_regions?.min_signal ?: 0.0}
   MIN_SIGNAL_MODE="${params.functional_regions?.min_signal_mode ?: 'absolute'}"
   MIN_SIGNAL_QUANTILE=${params.functional_regions?.min_signal_quantile ?: 0.90}
-  COUNT_MODE="${params.functional_regions?.count_mode ?: 'signal'}"
-
-  # Divergent fallback parameters
-  DIV_FALLBACK_ENABLE=\$([[ "${params.functional_regions?.div_fallback_enable}" == "true" ]] && echo 1 || echo 0)
-  DIV_FALLBACK_THRESHOLD=${params.functional_regions?.div_fallback_threshold ?: 0.30}
-  DIV_FALLBACK_MAX_FRAC=${params.functional_regions?.div_fallback_max_frac ?: 0.25}
 
   # Feature flags
   ALLOW_UNSTRANDED=\$([[ "${params.functional_regions?.allow_unstranded}" == "false" ]] && echo 0 || echo 1)
@@ -184,7 +191,6 @@ process assign_signal_to_functional_regions {
   echo "FUNCREGION | CONFIG |   Active slop: \${ACTIVE_SLOP} bp"
   echo ""
   echo "FUNCREGION | CONFIG | Signal Parameters:"
-  echo "FUNCREGION | CONFIG |   Count mode: \${COUNT_MODE}"
   echo "FUNCREGION | CONFIG |   Min signal: \${MIN_SIGNAL} (\${MIN_SIGNAL_MODE})"
   if [[ "\${MIN_SIGNAL_MODE}" == "quantile" ]]; then
     echo "FUNCREGION | CONFIG |   Min signal quantile: \${MIN_SIGNAL_QUANTILE}"
@@ -192,11 +198,6 @@ process assign_signal_to_functional_regions {
   echo ""
   echo "FUNCREGION | CONFIG | Feature Flags:"
   echo "FUNCREGION | CONFIG |   Allow unstranded: \$([ \${ALLOW_UNSTRANDED} -eq 1 ] && echo "yes" || echo "no")"
-  echo "FUNCREGION | CONFIG |   Divergent fallback: \$([ \${DIV_FALLBACK_ENABLE} -eq 1 ] && echo "enabled" || echo "disabled")"
-  if [[ \${DIV_FALLBACK_ENABLE} -eq 1 ]]; then
-    echo "FUNCREGION | CONFIG |   Fallback threshold: \${DIV_FALLBACK_THRESHOLD}"
-    echo "FUNCREGION | CONFIG |   Fallback max fraction: \${DIV_FALLBACK_MAX_FRAC}"
-  fi
 
   ###########################################################################
   # 2) VALIDATE INPUTS
@@ -271,8 +272,7 @@ process assign_signal_to_functional_regions {
   CALL_START=\$(date +%s)
   
   EXTRA_ARGS=""
-  [[ \${ALLOW_UNSTRANDED} -eq 1 ]] && EXTRA_ARGS="\${EXTRA_ARGS} --allow-unstranded"
-  [[ \${DIV_FALLBACK_ENABLE} -eq 1 ]] && EXTRA_ARGS="\${EXTRA_ARGS} --div-fallback-enable"
+  [[ \${ALLOW_UNSTRANDED} -eq 1 ]] && EXTRA_ARGS="\${EXTRA_ARGS} --allow-unstranded" || EXTRA_ARGS="\${EXTRA_ARGS} --no-allow-unstranded"
 
   set +e
   \${PYTHON_CMD} "\${FGR_SCRIPT}" \\
@@ -292,10 +292,7 @@ process assign_signal_to_functional_regions {
     --min-signal "\${MIN_SIGNAL}" \\
     --min-signal-mode "\${MIN_SIGNAL_MODE}" \\
     --min-signal-quantile "\${MIN_SIGNAL_QUANTILE}" \\
-    --div-fallback-threshold "\${DIV_FALLBACK_THRESHOLD}" \\
-    --div-fallback-max-frac "\${DIV_FALLBACK_MAX_FRAC}" \\
     --active-slop "\${ACTIVE_SLOP}" \\
-    --count-mode "\${COUNT_MODE}" \\
     --outdir "." \\
     \${EXTRA_ARGS}
   
@@ -393,16 +390,8 @@ METHOD
 
 ACTIVE GENE DEFINITION
 ────────────────────────────────────────────────────────────────────────────
-  A gene is considered "active" if its promoter region (TSS ±\${TSS_ACTIVE_PM} bp)
-  intersects at least one divergent transcription region.
-  
-  Divergent fallback: \$([ \${DIV_FALLBACK_ENABLE} -eq 1 ] && echo "Enabled" || echo "Disabled")
-  \$([ \${DIV_FALLBACK_ENABLE} -eq 1 ] && cat <<FALLBACK
-  When enabled, genes with promoter signal ≥ \${DIV_FALLBACK_THRESHOLD} × max
-  and representing ≤ \${DIV_FALLBACK_MAX_FRAC} of genes are marked active
-  even without divergent transcription overlap.
-FALLBACK
-)
+  A gene is considered "active" if its promoter region (TSS ±\${TSS_ACTIVE_PM} bp,
+  plus \${ACTIVE_SLOP} bp slop) intersects at least one divergent transcription region.
 
 INPUT DATA
 ────────────────────────────────────────────────────────────────────────────
@@ -467,17 +456,9 @@ REGION DEFINITIONS
 
 SIGNAL QUANTIFICATION
 ────────────────────────────────────────────────────────────────────────────
-  Count Mode: \${COUNT_MODE}
-  
-  signal mode (default):
-    • Sum of all signal values overlapping region
-    • Accounts for signal strength
-    • bedtools map -o sum
-  
-  event mode (legacy):
-    • Count of discrete 1bp events in region
-    • Binary presence/absence
-    • bedtools map -o count
+  Each region's value is the sum of all signal overlapping it (bedtools
+  map -o sum) -- one PRO-seq 3' read = one polymerase, so signal is always
+  summed rather than counted as discrete events.
 
   Minimum Signal: \${MIN_SIGNAL} (\${MIN_SIGNAL_MODE})
   \$([ "\${MIN_SIGNAL_MODE}" == "quantile" ] && echo "  Quantile threshold: \${MIN_SIGNAL_QUANTILE}")
@@ -576,12 +557,10 @@ PARAMETER TUNING
 
 More sensitive active gene detection:
   • Increase tss_active_pm (e.g., 600 or 1000)
-  • Enable div_fallback_enable
-  • Increase div_fallback_threshold (e.g., 0.5)
+  • Increase active_slop
 
 More specific active gene detection:
   • Decrease tss_active_pm (e.g., 300 or 400)
-  • Disable div_fallback_enable
   • Increase min_signal
 
 Adjust region sizes:
@@ -597,10 +576,8 @@ PARAMETERS USED
   Termination window:   \${TW_LENGTH} bp
   TSS active window:    ±\${TSS_ACTIVE_PM} bp
   Active slop:          \${ACTIVE_SLOP} bp
-  Count mode:           \${COUNT_MODE}
   Min signal:           \${MIN_SIGNAL} (\${MIN_SIGNAL_MODE})
   Allow unstranded:     \$([ \${ALLOW_UNSTRANDED} -eq 1 ] && echo "yes" || echo "no")
-  Divergent fallback:   \$([ \${DIV_FALLBACK_ENABLE} -eq 1 ] && echo "enabled" || echo "disabled")
 
 TECHNICAL NOTES
 ────────────────────────────────────────────────────────────────────────────
