@@ -80,7 +80,6 @@ def parse_args():
     ap.add_argument("--all-logs", action="store_true", help="Show stacked logs for all running tasks")
     ap.add_argument("--log-rows", type=int, default=0, help="Fixed log panel height for Rich UI (0=auto-size to terminal)")
     ap.add_argument("--resolve-hash", default="", help="Print process info for task hash and exit")
-    ap.add_argument("--from-start", action="store_true", help="Replay full log history on startup (default: seek to end, only scan for metadata)")
     ap.add_argument("--retain-sec", type=int, default=900, help="Seconds to retain completed tasks (0=immediate clear)")
     ap.add_argument("--max-tasks", type=int, default=2000, help="Max tasks to keep in memory")
     return ap.parse_args()
@@ -990,37 +989,29 @@ def parse_log_timestamp(line: str, ref_now: float) -> Optional[float]:
     except Exception:
         return None
 
-def bootstrap(world: World, log_path: str, full: bool = True):
+def bootstrap(world: World, log_path: str):
     """Bootstrap world state from the log.
 
-    full=True replays the whole log on startup, reconstructing every task's
-    state and history. Each line is timestamped with its own real log time
-    (parsed via parse_log_timestamp), not nfmon's current wall-clock time --
-    otherwise a task still RUNNING at bootstrap gets first_ts pinned to
-    nfmon's own startup time, and the Age column shows time-since-nfmon-
-    started instead of time-since-task-started for as long as that task
-    keeps running. Lines without a parseable timestamp (e.g. stack-trace
-    continuation lines) reuse the most recent real timestamp seen so far,
-    keeping replay time monotonic; live-tailed lines after bootstrap continue
-    to use time.time() at their own call sites, since those really are
-    happening now.
+    Replays the whole log on startup, reconstructing every task's state and
+    history. This is required, not optional: nfmon is normally attached to a
+    pipeline that's already been running for a while, and a task's real
+    name/tag only ever appears in the log line that submitted it (the
+    filesystem fallback in label_from_dir() can't recover it for every
+    executor/log format) -- skipping replay leaves already-running tasks
+    stuck showing their raw hash, and leaves the completed/cached/failed
+    counts feeding the progress bar at zero for everything that finished
+    before nfmon started.
 
-    full=False (the --from-start-less default) only scans for pipeline
-    metadata (run name/session/executor/work root) -- cheap even on huge
-    logs -- and then seeks to end-of-file so live tailing starts fresh
-    without replaying old task history.
+    Each line is timestamped with its own real log time (parsed via
+    parse_log_timestamp), not nfmon's current wall-clock time -- otherwise a
+    task still RUNNING at bootstrap gets first_ts pinned to nfmon's own
+    startup time, and the Age column shows time-since-nfmon-started instead
+    of time-since-task-started for as long as that task keeps running. Lines
+    without a parseable timestamp (e.g. stack-trace continuation lines)
+    reuse the most recent real timestamp seen so far, keeping replay time
+    monotonic; live-tailed lines after bootstrap continue to use time.time()
+    at their own call sites, since those really are happening now.
     """
-    if not full:
-        for ln in read_all_lines(log_path):
-            update_meta(world, ln)
-        try:
-            st = os.stat(log_path)
-            world.last_log_ino = st.st_ino
-            world.last_log_pos = st.st_size
-        except OSError:
-            pass
-        return
-
     bootstrap_now = time.time()
     last_ts = bootstrap_now
     for ln in read_all_lines(log_path):
@@ -2210,7 +2201,7 @@ def oneshot(w: World):
     pct = C.get("progress_pct", 0)
 
     container = getattr(w.meta, "container_engine", "") or "none"
-    print(f"nf-monitor  {time.strftime('%H:%M:%S')}  (run:{w.meta.run_name}  session:{w.meta.session}  exec:{w.meta.executor}  container:{container})")
+    print(f"nf-monitor  {time.strftime('%H:%M:%S')}  (run:{w.meta.run_name}  exec:{w.meta.executor}  container:{container})")
     print(f" Root: {os.getcwd()}")
     print(f" Uptime {sec2hms(int(time.time() - w.start_ts))} | CPU:{w.cpu_pct}% | MEM:{w.mem_pct}% | LOAD:{w.load_1}")
     print()
@@ -2292,7 +2283,7 @@ def main():
     
     if os.path.isfile(log):
         w.meta.work_root = guess_work_root(log, a.work)
-        bootstrap(w, log, full=a.from_start)
+        bootstrap(w, log)
     else:
         # Try to infer work root first
         if a.work:
@@ -2304,7 +2295,7 @@ def main():
         if alt_log and os.path.isfile(alt_log):
             log = alt_log
             w.meta.work_root = guess_work_root(log, a.work)
-            bootstrap(w, log, full=a.from_start)
+            bootstrap(w, log)
         else:
             print(f"Warning: log not found, running in trace-first mode (log={a.log})", file=sys.stderr)
     
@@ -2558,13 +2549,11 @@ def main():
                     term_height = 40
                 run,que,C=classify(w)
 
-                # header with run/session and system stats
+                # header with run and system stats
                 hdr = Text()
-                # hide placeholders for run/session when unknown
+                # hide placeholder for run name when unknown
                 rn = (w.meta.run_name or "?")
-                ss = (w.meta.session or "?")
                 hdr.append(f"Run: {rn if rn!='?' else 'n/a'} ")
-                hdr.append(f"Session: {ss if ss!='?' else 'n/a'} ")
                 container = getattr(w.meta, "container_engine", "") or "none"
                 hdr.append(f"Exec: {w.meta.executor}  Container: {container}\n")
                 mode = getattr(w, "mode", "")
