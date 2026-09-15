@@ -836,6 +836,18 @@ def _prekey(name: str, tag: str) -> str:
 def _ensure(world: World, key: str, name: str, tag: str, now: float, provisional: bool) -> Task:
     """Get or create task"""
     t = world.tasks.get(key)
+    # A provisional key is only name|tag (no hash), unlike a real tid which
+    # always identifies one specific task instance. So a provisional key can
+    # be reused by a later, genuinely different instance of the same
+    # name+tag once the earlier one reached a terminal state (e.g. a no-hash
+    # "Retrying"/status line for a resubmitted task with the same tag).
+    # Reusing that same Task object would pin first_ts at the very first
+    # time this name+tag ever ran instead of this instance's own start --
+    # treat it as a new task instead of resurrecting the old one. A real tid
+    # can't reappear as a new instance (the hash is unique per run), so a
+    # repeated terminal line there is just a duplicate and must stay a no-op.
+    if provisional and t and t.state in ("COMPLETED", "FAILED", "CACHED", "KILLED"):
+        t = None
     if not t:
         t = Task(id=key, name=name or "", tag=tag or "", first_ts=now, last_ts=now)
         t.state = "SUBMITTED" if provisional else t.state
@@ -877,6 +889,19 @@ def _apply(world: World, name: str, tag: str, tid: str, token: str, now: float):
                 world.add_alert("ERROR", f"Task failed: {t.label()}", task_id=t.id, process=t.name)
             elif st == "KILLED" and old_state != "KILLED":
                 world.add_alert("WARNING", f"Task killed: {t.label()}", task_id=t.id, process=t.name)
+
+            # True cumulative counts (transition-based, not a snapshot count)
+            # so progress survives terminal tasks being pruned from
+            # world.tasks after retain_sec.
+            if old_state != st:
+                if st == "COMPLETED":
+                    world.cum_done += 1
+                elif st == "CACHED":
+                    world.cum_cached += 1
+                elif st == "FAILED":
+                    world.cum_failed += 1
+                elif st == "KILLED":
+                    world.cum_killed += 1
         
         # Merge provisional task if exists
         pk = _prekey(name, tag)
@@ -1801,16 +1826,13 @@ def classify(world: World):
     run.sort(key=lambda x: x.first_ts)
     queued.sort(key=lambda x: x.first_ts)
     
-    # Update cumulative counters
-    world.cum_done = max(world.cum_done, done)
-    world.cum_cached = max(world.cum_cached, cache)
-    world.cum_failed = max(world.cum_failed, fail)
-    world.cum_killed = max(world.cum_killed, killed)
-    
-    # Snapshot totals for intuitive progress %
-    total = len(run) + len(queued) + done + fail + cache + killed
-    completed_like = done + cache
-    progress_pct = int((completed_like * 100 / max(1, total))) if total else 0
+    # Progress % from true cumulative counts, not the live snapshot -- the
+    # snapshot's done/cache buckets empty out as terminal tasks age past
+    # retain_sec, while queued/running keep refilling, which pinned this
+    # near 0% for long runs. cum_seen/cum_done/cum_cached never shrink.
+    completed_like = world.cum_done + world.cum_cached
+    total = max(world.cum_seen, completed_like + world.cum_failed + world.cum_killed + len(run) + len(queued))
+    progress_pct = int((completed_like * 100 / total)) if total else 0
     
     return run, queued, dict(
         done=done, failed=fail, cached=cache, killed=killed,
