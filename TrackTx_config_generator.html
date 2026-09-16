@@ -313,7 +313,22 @@ optgroup{ color:var(--fg); }
       <div id="localOptions" style="display:none" class="mt-4">
         <div class="section-header">Local FASTQ Files</div>
         <div class="help-box">
-          Enter the path to each FASTQ file. <strong>Absolute path</strong> recommended (e.g. <code>/Users/you/data/sample_R1.fastq.gz</code>) — copy from your file manager (right‑click → Copy path) and paste. Relative paths work too (relative to where you run the pipeline).
+          <strong>Running the pipeline yourself?</strong> Enter the <strong>absolute path</strong> to each FASTQ file (e.g. <code>/Users/you/data/sample_R1.fastq.gz</code>) — copy from your file manager (right‑click → Copy path) and paste. Relative paths work too (relative to where you run the pipeline).<br><br>
+          <strong>Filling this out for someone else to run?</strong> You won't know the final path — just type the <strong>exact filename</strong> instead (e.g. <code>sample_R1.fastq.gz</code>), send the actual files separately (cloud link, transfer service, etc.), and fill in your contact info below so whoever runs it can match files to rows.
+        </div>
+        <div class="columns mt-2">
+          <div class="column is-4">
+            <label class="label">Your name <span class="is-dim">(optional)</span></label>
+            <input class="input" id="submitter_name" placeholder="e.g. Jane Doe">
+          </div>
+          <div class="column is-4">
+            <label class="label">Your email <span class="is-dim">(optional)</span></label>
+            <input class="input" id="submitter_email" placeholder="e.g. jane@example.com">
+          </div>
+          <div class="column is-4">
+            <label class="label">Notes for whoever runs this <span class="is-dim">(optional)</span></label>
+            <input class="input" id="submitter_notes" placeholder="e.g. files uploaded to shared Drive folder">
+          </div>
         </div>
       </div>
       
@@ -1511,12 +1526,12 @@ function replicateHTML(){
         <strong>Replicate</strong>
         <div class="columns mt-2">
           <div class="column">
-            <input class="input rep-file1" placeholder="/Users/you/data/sample_R1.fastq.gz">
-            <p class="help">Full path to R1 FASTQ file (gzipped OK)</p>
+            <input class="input rep-file1" placeholder="/Users/you/data/sample_R1.fastq.gz or just sample_R1.fastq.gz">
+            <p class="help">Full path to R1 FASTQ file (gzipped OK) — or exact filename if someone else will fill in the real path</p>
           </div>
           ${pe?`<div class="column">
-            <input class="input rep-file2" placeholder="/Users/you/data/sample_R2.fastq.gz">
-            <p class="help">Full path to R2 FASTQ file</p>
+            <input class="input rep-file2" placeholder="/Users/you/data/sample_R2.fastq.gz or just sample_R2.fastq.gz">
+            <p class="help">Full path to R2 FASTQ file — or exact filename if someone else will fill in the real path</p>
           </div>`:''}
         </div>
       </div>`;
@@ -2052,6 +2067,38 @@ function buildCSV(){
   return csv;
 }
 
+/* ====================== Submitter Info (local mode only) ====================== */
+// When someone fills this out to hand off to a bioinformatician (rather than
+// running the pipeline themselves), file1/file2 in the CSV are just filenames,
+// not real paths. This plain-text sheet maps each row to its expected filename
+// plus submitter contact/notes, so the person editing samplesheet.csv doesn't
+// have to reverse-engineer which file goes where.
+function buildSubmitterInfo(){
+  const name  = $('#submitter_name')?.value.trim() || '';
+  const email = $('#submitter_email')?.value.trim() || '';
+  const notes = $('#submitter_notes')?.value.trim() || '';
+  const pe = isPE();
+  let txt = 'TrackTx submission info\n';
+  txt += '========================\n\n';
+  txt += `Submitted by: ${name || '(not given)'}\n`;
+  txt += `Email: ${email || '(not given)'}\n`;
+  if(notes) txt += `Notes: ${notes}\n`;
+  txt += `\nThe "file1"/"file2" columns in samplesheet.csv may be bare filenames,\n`;
+  txt += `not real paths -- match them against the files sent by the submitter,\n`;
+  txt += `then edit samplesheet.csv to the real absolute paths before running.\n\n`;
+  txt += 'Row -> expected file(s):\n';
+  $$('#samplesContainer .sample-box').forEach((box,si)=>{
+    const sname = box.querySelector('.sample-name').value || `Sample_${si+1}`;
+    const reps  = box.querySelectorAll('.replicate');
+    reps.forEach((rep,ri)=>{
+      const f1 = rep.querySelector('.rep-file1')?.value.trim() || '(empty)';
+      const f2 = pe ? (rep.querySelector('.rep-file2')?.value.trim() || '(empty)') : null;
+      txt += `  ${sname} rep${ri+1}: ${f1}${f2 !== null ? '  /  ' + f2 : ''}\n`;
+    });
+  });
+  return txt;
+}
+
 /* ============ Differential pausing contrasts (auto from samples) ========== */
 function naturalTpKey(tp){
   // Order timepoints by real elapsed time, unit-aware, so the earliest-baseline
@@ -2212,6 +2259,7 @@ async function downloadZip(){
 
   zip.file("params.yaml", yaml);
   zip.file($("#samplesheet_name").value || "samplesheet.csv", csv);
+  if(source() === 'local') zip.file("SUBMITTER_INFO.txt", buildSubmitterInfo());
 
   const blob = await zip.generateAsync({type:"blob"});
   const url = URL.createObjectURL(blob);
@@ -2237,6 +2285,7 @@ async function saveZipToLocation(){
     const zip = new JSZip();
     zip.file('params.yaml', buildYAML());
     zip.file($('#samplesheet_name').value || 'samplesheet.csv', buildCSV());
+    if(source() === 'local') zip.file('SUBMITTER_INFO.txt', buildSubmitterInfo());
     const blob = await zip.generateAsync({ type: 'blob' });
     const writable = await handle.createWritable();
     await writable.write(blob);

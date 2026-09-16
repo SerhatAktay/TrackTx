@@ -41,7 +41,7 @@ process align_reads_to_genome {
   cache      'lenient'  // name+size hashing: stable across USB copies, cheap on -resume
 
   // Persistent storage for cross-run caching
-  storeDir   { "${params.assets_dir ?: "${projectDir}/assets"}/02_alignments/${sample_id}" }
+  storeDir   { "${params.assets_dir ?: "${projectDir}/assets"}/02_alignments/${file(params.output_dir).name}/${sample_id}" }
 
   publishDir { "${params.output_dir}/02_alignments/${sample_id}" },
              mode: params.publish_mode,
