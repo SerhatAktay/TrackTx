@@ -1,0 +1,4 @@
+sample_id	condition	timepoint	replicate	file
+sample1	TREAT	0	1	metric_1
+sample2	TREAT	0	2	metric_2
+sample3	TREAT	0	3	metric_3

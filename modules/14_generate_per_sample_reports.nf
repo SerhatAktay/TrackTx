@@ -175,14 +175,9 @@ process generate_per_sample_reports {
 
   echo "REPORT | VALIDATE | Checking required input files..."
 
-  # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
-  if command -v micromamba >/dev/null 2>&1; then
-    PYTHON_CMD="micromamba run -n base python3"
-  elif [[ -x /opt/conda/bin/python3 ]]; then
-    PYTHON_CMD="/opt/conda/bin/python3"
-  else
-    PYTHON_CMD="python3"
-  fi
+  # Shared resolver (bin/tracktx_error_fragment.sh): micromamba (container) ->
+  # /opt/conda (container fallback) -> bare python3 (conda profile/local)
+  tracktx_resolve_python
 
   # Check renderer script
   if [[ ! -e "\${RENDER_SCRIPT}" ]]; then
@@ -206,7 +201,7 @@ process generate_per_sample_reports {
     elif [[ ! -s "\${file}" ]]; then
       tracktx_error "generate_per_sample_reports" "\${label} missing or empty: \${file}" "Check upstream modules"
     fi
-    FILE_SIZE=\$(stat -c%s "\${file}" 2>/dev/null || stat -f%z "\${file}" 2>/dev/null || echo "unknown")
+    FILE_SIZE=\$(tracktx_size "\${file}")
     FILE_LINES=\$(wc -l < "\${file}" 2>/dev/null | tr -d ' ' || echo 0)
     echo "REPORT | VALIDATE | \${label}: \${FILE_SIZE} bytes (\${FILE_LINES} lines)"
   }
@@ -220,7 +215,7 @@ process generate_per_sample_reports {
 
   # Dedup stats is optional
   if [[ -s "\${DEDUP_STATS}" ]]; then
-    DEDUP_SIZE=\$(stat -c%s "\${DEDUP_STATS}" 2>/dev/null || stat -f%z "\${DEDUP_STATS}" 2>/dev/null || echo "unknown")
+    DEDUP_SIZE=\$(tracktx_size "\${DEDUP_STATS}")
     echo "REPORT | VALIDATE | Dedup stats: \${DEDUP_SIZE} bytes"
   else
     echo "REPORT | VALIDATE | Dedup stats: not available"
@@ -415,14 +410,14 @@ process generate_per_sample_reports {
     if [[ ! -s "\${OUTPUT}" ]]; then
       tracktx_error "generate_per_sample_reports" "Expected output missing or empty: \${OUTPUT}" "Check report.log in work dir"
     fi
-    OUTPUT_SIZE=\$(stat -c%s "\${OUTPUT}" 2>/dev/null || stat -f%z "\${OUTPUT}" 2>/dev/null || echo "unknown")
+    OUTPUT_SIZE=\$(tracktx_size "\${OUTPUT}")
     echo "REPORT | VALIDATE | \$(basename \${OUTPUT}): \${OUTPUT_SIZE} bytes"
   done
 
   # Check plots file
   if [[ \${ENABLE_PLOTS} -eq 1 ]]; then
     if [[ -s "\${OUT_PLOTS}" ]]; then
-      PLOTS_SIZE=\$(stat -c%s "\${OUT_PLOTS}" 2>/dev/null || stat -f%z "\${OUT_PLOTS}" 2>/dev/null || echo "unknown")
+      PLOTS_SIZE=\$(tracktx_size "\${OUT_PLOTS}")
       echo "REPORT | VALIDATE | Plots HTML: \${PLOTS_SIZE} bytes"
     else
       echo "REPORT | WARNING | Plots enabled but file missing"
@@ -460,250 +455,18 @@ PLACEHOLDER
   echo "REPORT | README | Creating documentation..."
 
   cat > "\${OUT_README}" <<DOCEOF
-================================================================================
 PER-SAMPLE REPORT — ${sample_id}
-================================================================================
-
-OVERVIEW
 ────────────────────────────────────────────────────────────────────────────
-  Comprehensive report integrating all analysis results for a single sample.
+  \${OUT_HTML}   — QC, divergent-TX, functional regions, Pol-II density,
+                   pausing index, normalization factors, track links
+  \${OUT_TSV}    — same metrics, one row each (metric_name, value, unit, category)
+  \${OUT_JSON}   — same data, versioned schema (schema_version key)
+  \${OUT_PLOTS}  — \$([ \${ENABLE_PLOTS} -eq 1 ] && echo "region pie chart + pausing-index histogram (inline base64 PNGs)" || echo "placeholder (plots disabled)")
 
-SAMPLE INFORMATION
-────────────────────────────────────────────────────────────────────────────
-  Sample ID:    \${SAMPLE_ID}
-  Condition:    \${CONDITION}
-  Timepoint:    \${TIMEPOINT}
-  Replicate:    \${REPLICATE}
-
-REPORT FILES
-────────────────────────────────────────────────────────────────────────────
-  \${OUT_HTML}
-    Interactive HTML report with:
-      • Sample metadata and experimental design
-      • Quality control summary
-      • Divergent transcription statistics
-      • Functional region composition
-      • Pol-II density distribution
-      • Pausing index summary
-      • Normalization factors
-      • Track file links for genome browsers
-    
-    View in web browser for best experience.
-  
-  \${OUT_TSV}
-    Tab-separated summary table with key metrics:
-      • One row per metric
-      • Columns: metric_name, value, unit, category
-      • Easy to parse programmatically
-      • Compatible with R, Python, Excel
-  
-  \${OUT_JSON}
-    Structured JSON with complete data:
-      • Versioned schema (current: 1.0)
-      • Nested structure by category
-      • All numerical values and lists
-      • Suitable for API integration
-      • JSON Schema compliant
-  
-  \${OUT_PLOTS}
-    \$([ \${ENABLE_PLOTS} -eq 1 ] && echo "Supplementary plots page with:
-      • Functional region composition pie chart
-      • Pausing index distribution histogram
-      • QC metrics summary plots
-      • Base64-encoded inline images
-      • No external dependencies" || echo "Placeholder (plots disabled)")
-  
-  \${OUT_README}
-    This documentation file
-  
-  \${SAMPLE_ID}.report.log
-    Processing log with timestamps
-
-INPUT DATA FILES
-────────────────────────────────────────────────────────────────────────────
-  Core Inputs:
-    • Divergent bed:          \${DIV_BED} (\${DIV_COUNT} loci)
-    • Functional summary:     \${FUNC_SUM}
-    • Pol-II density:         \${POL_DENS}
-    • Pausing index:          \${PAUSING_IDX} (\${PAUSING_GENES} genes)
-    • Normalization factors:  \${NORM_FACTORS}
-    • QC JSON:                \${QC_JSON}
-    • Dedup stats:            \${DEDUP_STATS}
-
-TRACK FILE LINKS
-────────────────────────────────────────────────────────────────────────────
-  Raw Coverage (unnormalized bedGraph):
-    • AllMap 3' pos:  \$([ \${HAVE_ALLMAP_POS_RAW} -eq 1 ] && echo "\${ALLMAP3P_POS_RAW}" || echo "Not available")
-    • AllMap 3' neg:  \$([ \${HAVE_ALLMAP_NEG_RAW} -eq 1 ] && echo "\${ALLMAP3P_NEG_RAW}" || echo "Not available")
-  
-  Normalized BigWig (CPM):
-    • 3' pos:         \$([ \${HAVE_POS_CPM_BW} -eq 1 ] && echo "\${POS3_CPM_BW}" || echo "Not available")
-    • 3' neg:         \$([ \${HAVE_NEG_CPM_BW} -eq 1 ] && echo "\${NEG3_CPM_BW}" || echo "Not available")
-  
-  AllMap Normalized BigWig (CPM):
-    • 3' pos:         \$([ \${HAVE_ALLMAP_POS_CPM_BW} -eq 1 ] && echo "\${ALLMAP3P_POS_CPM_BW}" || echo "Not available")
-    • 3' neg:         \$([ \${HAVE_ALLMAP_NEG_CPM_BW} -eq 1 ] && echo "\${ALLMAP3P_NEG_CPM_BW}" || echo "Not available")
-  
-  Total tracks:       \${TOTAL_TRACKS}/6
-
-USING THE REPORTS
-────────────────────────────────────────────────────────────────────────────
-  HTML Report:
-    1. Open \${OUT_HTML} in web browser
-    2. Navigate sections using table of contents
-    3. Click track links to view in UCSC/IGV
-    4. Review QC metrics for data quality
-  
-  TSV Summary:
-    # In R
-    data <- read.delim("\${OUT_TSV}")
-    
-    # In Python
-    import pandas as pd
-    data = pd.read_csv("\${OUT_TSV}", sep="\\t")
-  
-  JSON Data:
-    # In Python
-    import json
-    with open("\${OUT_JSON}") as f:
-        data = json.load(f)
-    
-    # Check schema version
-    version = data.get("schema_version", "unknown")
-    
-    # Access metrics
-    qc_metrics = data.get("qc", {})
-    pausing = data.get("pausing", {})
-
-TRACK LOADING IN GENOME BROWSERS
-────────────────────────────────────────────────────────────────────────────
-  UCSC Genome Browser:
-    1. Open UCSC browser for your genome
-    2. Click "add custom tracks"
-    3. Paste track URLs from HTML report
-    4. Click "submit"
-  
-  IGV (Integrative Genomics Viewer):
-    1. Open IGV
-    2. File → Load from URL
-    3. Paste track URL or file path
-    4. Or: File → Load from File (for local files)
-
-REPORT CONTENTS DETAILS
-────────────────────────────────────────────────────────────────────────────
-
-1. Sample Metadata
-   • Sample identification
-   • Experimental conditions
-   • Processing date
-   • Pipeline version
-
-2. Quality Control
-   • Total reads: \${TOTAL_READS:-NA}
-   • Unique/MAPQ-pass rate: \${MAP_RATE:-NA}%   (genuine overall alignment rate is in
-     02_alignments/alignment_rates_summary.tsv, not in this per-sample report)
-   • Duplicate rate: \${DUP_RATE:-NA}%
-   • Strand balance
-   • Coverage depth
-   • UMI deduplication (if applicable)
-
-3. Divergent Transcription
-   • Number of loci: \${DIV_COUNT}
-   • Genomic distribution
-   • Signal characteristics
-   • Annotation overlap
-
-4. Functional Regions
-   • Promoter signal
-   • Gene body signal
-   • CPS (Cleavage/Polyadenylation Site) signal
-   • Enhancer signal
-   • Termination window signal
-   • Non-localized signal
-
-5. Pol-II Density
-   • Signal per functional region type
-   • Normalization method (CPM or siCPM)
-   • Total signal quantification
-
-6. Pausing Index
-   • Per-gene pausing indices (strand-specific: only sense-strand reads counted)
-   • Distribution statistics
-   • Top paused genes
-   • Length-normalized (pi_len_norm, recommended) vs raw (pi_raw)
-   • Body offset auto-calibrated from gene-length distribution
-     (works correctly for compact genomes: Drosophila, C. elegans, etc.)
-
-7. Normalization
-   • CPM factors
-   • siCPM factors (if spike-in used)
-   • Read counts per BAM type
-
-QUALITY METRICS
-────────────────────────────────────────────────────────────────────────────
-  Check the HTML report for:
-    ✓ Mapping rate >70%
-    ✓ Duplicate rate <30%
-    ✓ Strand balance 40-60%
-    ✓ Mean depth >10×
-    ✓ Expected pausing index distribution
-
-  Red flags:
-    ✗ Very low mapping rate
-    ✗ Extreme strand bias
-    ✗ Very high duplicate rate
-    ✗ Insufficient coverage
-
-DOWNSTREAM USAGE
-────────────────────────────────────────────────────────────────────────────
-  1. Quality Assessment:
-     - Review QC metrics
-     - Identify failed samples
-     - Compare across batch
-  
-  2. Data Export:
-     - Load tracks in genome browser
-     - Export TSV for further analysis
-     - Parse JSON for custom scripts
-  
-  3. Publication:
-     - Include QC metrics in methods
-     - Reference track URLs in data availability
-     - Share JSON for reproducibility
-
-PROCESSING DETAILS
-────────────────────────────────────────────────────────────────────────────
-  Renderer:         \${RENDER_SCRIPT}
-  Python version:   \${PYTHON_VERSION}
-  Processing time:  \${RENDER_TIME}s
-  Plots enabled:    \$([ \${ENABLE_PLOTS} -eq 1 ] && echo "Yes" || echo "No")
-
-TROUBLESHOOTING
-────────────────────────────────────────────────────────────────────────────
-  HTML not displaying correctly:
-    → Use modern browser (Chrome, Firefox, Safari)
-    → Enable JavaScript
-    → Check file isn't corrupted
-  
-  Track links not working:
-    → Verify files exist at specified paths
-    → Check file permissions
-    → Use absolute paths or URLs
-    → Verify genome browser compatibility
-  
-  JSON parsing errors:
-    → Check schema version compatibility
-    → Validate JSON syntax
-    → Check for special characters in strings
-
-GENERATED
-────────────────────────────────────────────────────────────────────────────
-  Pipeline: TrackTx PRO-seq
-  Date: \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Sample: \${SAMPLE_ID}
-  Module: 14_generate_per_sample_reports
-
-================================================================================
+  This sample: \${DIV_COUNT} divergent loci, \${PAUSING_GENES} genes with pausing
+  index, \${TOTAL_TRACKS}/6 track links available. Note: total_reads/map_rate
+  above are unique/MAPQ-pass stats -- the genuine overall alignment rate is in
+  02_alignments/alignment_rates_summary.tsv, not in this report.
 DOCEOF
 
   echo "REPORT | README | Documentation created"

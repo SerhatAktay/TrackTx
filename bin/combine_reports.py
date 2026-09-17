@@ -1193,10 +1193,12 @@ def main():
     # Embedded Assets
     CSS = r'''
 <style>
+/* Palette from bin/_common.py TRACKTX_THEME -- keep in sync (see that
+   module's docstring for the other files sharing this palette). */
 :root {
   --bg:#ffffff; --fg:#1a1d23; --muted:#6b7280; --faint:#9aa1ab;
-  --card:#ffffff; --panel:#f7f8fa; --line:#e6e8ec; --line-strong:#d4d8de;
-  --accent:#2f6df6; --accent-soft:#eaf0fe;
+  --card:#f8fafc; --panel:#eef1f6; --line:#e2e5ec; --line-strong:#d4d8de;
+  --accent:#4a6cf0; --accent-soft:#eaf0fe;
   --ok:#1f9d57; --warn:#d98a00; --fail:#dc3a3a;
   --grid:#eceef1;
   --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
@@ -1204,9 +1206,9 @@ def main():
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg:#0e1116; --fg:#e6e8ec; --muted:#9aa1ab; --faint:#6b7280;
-    --card:#161a21; --panel:#12161c; --line:#262c35; --line-strong:#333b46;
-    --accent:#5b8cff; --accent-soft:#1a2230;
+    --bg:#0f1117; --fg:#e8eaf0; --muted:#7b82a0; --faint:#6b7280;
+    --card:#1a1d27; --panel:#232636; --line:#2e3248; --line-strong:#333b46;
+    --accent:#6c8ef5; --accent-soft:#1a2230;
     --ok:#37c172; --warn:#e0a032; --fail:#ef5e5e;
     --grid:#1d222a;
   }

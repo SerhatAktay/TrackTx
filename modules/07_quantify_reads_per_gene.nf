@@ -124,11 +124,9 @@ process quantify_reads_per_gene {
   # concurrently running samples sharing this pipeline's USB/HDD-backed work
   # volume, where concurrent big sequential reads interleave into
   # seek-thrashing instead of parallel throughput.
-  IO_LOCK_FILE="${projectDir}/.tracktx_io.lock"
-  IO_LOCK_TIMEOUT=\${TRACKS_IO_LOCK_TIMEOUT:-1800}
-  with_io_lock() {
-    flock -w "\${IO_LOCK_TIMEOUT}" "\${IO_LOCK_FILE}" "\$@"
-  }
+  # Shared with_io_lock()/init (bin/tracktx_error_fragment.sh); override the
+  # slot-wait timeout with TRACKS_IO_LOCK_TIMEOUT (default 1800s).
+  tracktx_io_lock_init "${projectDir}/.tracktx_io.lock"
 
   echo "COUNTS | CONFIG | Sample ID: \${SAMPLE_ID}"
   echo "COUNTS | CONFIG | Condition: \${CONDITION}"
@@ -163,12 +161,12 @@ process quantify_reads_per_gene {
     tracktx_error "quantify_reads_per_gene" "Main BAM missing or empty: \${MAIN_BAM}" "Check align_reads_to_genome produced sample.bam"
   fi
 
-  MAIN_SIZE=\$(stat -c%s "\${MAIN_BAM}" 2>/dev/null || stat -f%z "\${MAIN_BAM}" 2>/dev/null || echo "unknown")
+  MAIN_SIZE=\$(tracktx_size "\${MAIN_BAM}")
   echo "COUNTS | VALIDATE | Main BAM: \${MAIN_SIZE} bytes"
 
   # AllMap BAM (optional but should exist)
   if [[ -s "\${ALLMAP_BAM}" ]]; then
-    ALLMAP_SIZE=\$(stat -c%s "\${ALLMAP_BAM}" 2>/dev/null || stat -f%z "\${ALLMAP_BAM}" 2>/dev/null || echo "unknown")
+    ALLMAP_SIZE=\$(tracktx_size "\${ALLMAP_BAM}")
     echo "COUNTS | VALIDATE | AllMap BAM: \${ALLMAP_SIZE} bytes"
   else
     echo "COUNTS | VALIDATE | WARNING: AllMap BAM missing or empty (will report 0 reads)"
@@ -176,7 +174,7 @@ process quantify_reads_per_gene {
 
   # Spike-in BAM (optional)
   if [[ "\${SPIKE_IN}" != "-" && -s "\${SPIKE_IN}" ]]; then
-    SPIKE_SIZE=\$(stat -c%s "\${SPIKE_IN}" 2>/dev/null || stat -f%z "\${SPIKE_IN}" 2>/dev/null || echo "unknown")
+    SPIKE_SIZE=\$(tracktx_size "\${SPIKE_IN}")
     echo "COUNTS | VALIDATE | Spike-in BAM: \${SPIKE_SIZE} bytes"
   else
     echo "COUNTS | VALIDATE | No spike-in BAM (will report 0 reads)"
@@ -286,7 +284,7 @@ process quantify_reads_per_gene {
   printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" "\${SAMPLE_ID}" "\${MAIN_READS}" "\${ALLMAP_READS}" "\${SPIKE_READS}" "\${REPLICATE}" "\${CONDITION}" "\${TIMEPOINT}" >> "\${SAMPLE_ID}.counts.tsv"
 
   if [[ -s "\${SAMPLE_ID}.counts.tsv" ]]; then
-    TSV_SIZE=\$(stat -c%s "\${SAMPLE_ID}.counts.tsv" 2>/dev/null || stat -f%z "\${SAMPLE_ID}.counts.tsv" 2>/dev/null || echo "unknown")
+    TSV_SIZE=\$(tracktx_size "\${SAMPLE_ID}.counts.tsv")
     echo "COUNTS | OUTPUT | Created: \${SAMPLE_ID}.counts.tsv (\${TSV_SIZE} bytes)"
   else
     tracktx_error "quantify_reads_per_gene" "Failed to create counts TSV" "Check quantify_reads_per_gene.log in work dir"
@@ -299,155 +297,18 @@ process quantify_reads_per_gene {
   echo "COUNTS | README | Creating documentation..."
 
   cat > README_counts.txt <<DOCEOF
-================================================================================
 READ COUNTS — ${sid}
-================================================================================
-
-OVERVIEW
 ────────────────────────────────────────────────────────────────────────────
-  Mapped read counts from alignment BAM files for normalization purposes.
-  
-  Counts are collected using samtools idxstats for efficiency and accuracy.
+  ${sid}.counts.tsv (samtools idxstats, summed across contigs, '*' excluded):
+    sample  main_reads  allmap_reads  spike_reads  replicate  condition  timepoint
 
-FILES
-────────────────────────────────────────────────────────────────────────────
-  ${sid}.counts.tsv       — Read counts in TSV format
-  README_counts.txt       — This documentation
-  quantify_reads_per_gene.log — Processing log
+  main_reads   — sample.bam (primary only, -F 260); denominator for CPM
+  allmap_reads — sample_allMap.bam (primary + secondary); multimapper-aware CPM
+  spike_reads  — spikein.bam, 0 if no spike-in; denominator for siCPM
 
-OUTPUT FORMAT
-────────────────────────────────────────────────────────────────────────────
-  Tab-separated values (TSV) with header:
-  
-  Column 1: sample       — Sample identifier
-  Column 2: main_reads   — Mapped reads in primary alignments BAM
-  Column 3: allmap_reads — Mapped reads in all alignments BAM
-  Column 4: spike_reads  — Mapped reads in spike-in BAM (0 if none)
-  Column 5: replicate    — Biological replicate number
-  Column 6: condition    — Experimental condition
-  Column 7: timepoint    — Time point
+  This sample: main=\${MAIN_READS}  allmap=\${ALLMAP_READS}  spike=\${SPIKE_READS}
 
-COUNTING METHOD
-────────────────────────────────────────────────────────────────────────────
-  Method: samtools idxstats
-  
-  Advantages:
-    • Fast: O(n_chromosomes) not O(n_reads)
-    • Accurate: Uses BAM index statistics
-    • Lightweight: Minimal memory and I/O
-  
-  Process:
-    1. Ensure BAM file has .bai index
-    2. Run samtools idxstats
-    3. Sum mapped reads across all chromosomes
-    4. Exclude unmapped reads (contig = '*')
-
-READ COUNT DEFINITIONS
-────────────────────────────────────────────────────────────────────────────
-
-Main Reads (main_reads):
-  • From sample.bam (primary alignments only)
-  • Excludes secondary alignments (-F 256)
-  • Excludes unmapped reads (-F 4)
-  • Includes duplicates (not marked/removed at alignment)
-  • Use for: Standard normalization (CPM)
-
-AllMap Reads (allmap_reads):
-  • From sample_allMap.bam
-  • Includes primary + secondary alignments
-  • Higher count than main_reads
-  • Use for: Multimapper-aware normalization
-
-Spike-in Reads (spike_reads):
-  • From spikein.bam
-  • Optional (0 if no spike-in used)
-  • Use for: Spike-in normalization (siCPM)
-
-SAMPLE METADATA
-────────────────────────────────────────────────────────────────────────────
-  Sample:     ${sid}
-  Condition:  ${cond}
-  Timepoint:  ${tp}
-  Replicate:  ${rep}
-
-CURRENT COUNTS
-────────────────────────────────────────────────────────────────────────────
-  Main reads:   \${MAIN_READS}
-  AllMap reads: \${ALLMAP_READS}
-  Spike reads:  \${SPIKE_READS}
-
-DOWNSTREAM USAGE
-────────────────────────────────────────────────────────────────────────────
-  These counts are used for:
-  
-  1. CPM Normalization:
-     CPM = (count / main_reads) × 1,000,000
-  
-  2. Spike-in CPM (siCPM):
-     siCPM = (count / spike_reads) × 1,000,000
-     Only if spike_reads > 0
-  
-  3. Quality Control:
-     • Check mapping rates
-     • Compare replicates
-     • Identify outliers
-  
-  4. Differential Analysis:
-     • Library size normalization
-     • Between-sample comparisons
-
-INDEXING STRATEGY
-────────────────────────────────────────────────────────────────────────────
-  Auto-index: ${params.get('counts_allow_index_build', false) ? 'Enabled' : 'Disabled'}
-  
-  If disabled (default):
-    • Requires .bai files to exist
-    • Fails fast if missing
-    • Recommended for production runs
-  
-  If enabled:
-    • Automatically creates missing .bai files
-    • Slower (indexing takes time)
-    • Useful for development/testing
-
-QUALITY CHECKS
-────────────────────────────────────────────────────────────────────────────
-
-Expected Values:
-  • Main reads: Typically 1-100 million for PRO-seq
-  • AllMap ≥ Main: Should be equal or higher
-  • Spike reads: 1-10% of main if spike-in used
-
-Troubleshooting:
-  • Zero main reads: Check alignment success
-  • AllMap < Main: Data corruption (impossible)
-  • Very low spike reads: Check spike-in protocol
-  • Missing index error: Set params.counts_allow_index_build=true
-
-TECHNICAL NOTES
-────────────────────────────────────────────────────────────────────────────
-  • Counts are based on BAM index (not full BAM scan)
-  • Unmapped reads (contig '*') are excluded
-  • Duplicate reads are included (not filtered)
-  • Secondary alignments included in AllMap only
-  • Works with both SE and PE data
-
-FILE FORMAT COMPATIBILITY
-────────────────────────────────────────────────────────────────────────────
-  Output TSV can be:
-  • Imported into R/Python for analysis
-  • Combined across samples for cohort-level QC
-  • Used by downstream normalization modules
-  • Opened in Excel/spreadsheet programs
-
-GENERATED
-────────────────────────────────────────────────────────────────────────────
-  Pipeline: TrackTx PRO-seq
-  Date: \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Sample: ${sid}
-  Module: 07_quantify_reads_per_gene
-
-================================================================================
+  Auto-index (params.counts_allow_index_build): ${params.get('counts_allow_index_build', false) ? 'enabled' : 'disabled -- missing .bai fails fast'}
 DOCEOF
 
   echo "COUNTS | README | Documentation created"

@@ -205,18 +205,13 @@ process assign_signal_to_functional_regions {
 
   echo "FUNCREGION | VALIDATE | Checking input files..."
 
-  # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
-  if command -v micromamba >/dev/null 2>&1; then
-    PYTHON_CMD="micromamba run -n base python3"
-  elif [[ -x /opt/conda/bin/python3 ]]; then
-    PYTHON_CMD="/opt/conda/bin/python3"
-  else
-    PYTHON_CMD="python3"
-  fi
+  # Shared resolver (bin/tracktx_error_fragment.sh): micromamba (container) ->
+  # /opt/conda (container fallback) -> bare python3 (conda profile/local)
+  tracktx_resolve_python
 
   # Check Python script
   if [[ ! -f "\${FGR_SCRIPT}" ]]; then
-    tracktx_error "assign_signal_to_functional_regions" "Python script not found: \${FGR_SCRIPT}" "Ensure bin/call_functional_regions.py exists"
+    tracktx_error "assign_signal_to_functional_regions" "Python script not found: \${FGR_SCRIPT}" "Ensure bin/functional_regions.py exists"
   fi
   echo "FUNCREGION | VALIDATE | Python script: \${FGR_SCRIPT}"
 
@@ -230,7 +225,7 @@ process assign_signal_to_functional_regions {
     if [[ ! -s "\${FILE}" ]]; then
       tracktx_error "assign_signal_to_functional_regions" "Missing or empty input: \${FILE}" "Check upstream modules (normalize_coverage_tracks, download_genome_annotations)"
     fi
-    FILE_SIZE=\$(stat -c%s "\${FILE}" 2>/dev/null || stat -f%z "\${FILE}" 2>/dev/null || echo "unknown")
+    FILE_SIZE=\$(tracktx_size "\${FILE}")
     echo "FUNCREGION | VALIDATE | \$(basename \${FILE}): \${FILE_SIZE} bytes"
   done
 
@@ -239,7 +234,7 @@ process assign_signal_to_functional_regions {
   elif [[ ! -s "\${DIV_BED}" ]]; then
     echo "FUNCREGION | VALIDATE | WARNING: divergent BED is empty — 0 divergent sites; all signal will fall to non-localized (no active genes)."
   else
-    DIV_BED_SIZE=\$(stat -c%s "\${DIV_BED}" 2>/dev/null || stat -f%z "\${DIV_BED}" 2>/dev/null || echo "unknown")
+    DIV_BED_SIZE=\$(tracktx_size "\${DIV_BED}")
     echo "FUNCREGION | VALIDATE | \$(basename \${DIV_BED}): \${DIV_BED_SIZE} bytes"
   fi
 
@@ -332,7 +327,7 @@ SUMMARYEOF
 
   # Count regions
   REGION_COUNT=\$(grep -v '^#' functional_regions.bed 2>/dev/null | wc -l | tr -d ' ' || echo 0)
-  BED_SIZE=\$(stat -c%s functional_regions.bed 2>/dev/null || stat -f%z functional_regions.bed 2>/dev/null || echo "unknown")
+  BED_SIZE=\$(tracktx_size functional_regions.bed)
 
   echo "FUNCREGION | RESULTS | Total regions: \${REGION_COUNT}"
   echo "FUNCREGION | RESULTS | Output BED size: \${BED_SIZE} bytes"
@@ -361,241 +356,34 @@ SUMMARYEOF
   echo "FUNCREGION | README | Creating documentation..."
 
   cat > README_functional_regions.txt <<DOCEOF
-================================================================================
 FUNCTIONAL REGIONS — ${sample_id}
-================================================================================
-
-OVERVIEW
 ────────────────────────────────────────────────────────────────────────────
-  Assignment of 3' signal to functional genomic regions using hierarchical
-  masking to ensure mutually exclusive categories.
-  
-  Each signal unit is assigned to exactly ONE functional category based on
-  sequential priority: Promoter → Gene Body → CPS → Enhancers
-  → Termination Window → Non-localized
+  Hierarchical masking assigns each signal unit to exactly ONE category, in
+  priority order: Promoter -> Gene Body -> CPS -> Enhancers -> Termination
+  Window -> Non-localized (remaining signal). A gene is "active" (eligible for
+  promoter/body/CPS/termination assignment) if its promoter (TSS +/-\${TSS_ACTIVE_PM}bp,
+  +\${ACTIVE_SLOP}bp slop) intersects a divergent-transcription region.
+  Enhancers = divergent-TX regions NOT overlapping any promoter.
 
-METHOD
-────────────────────────────────────────────────────────────────────────────
-  1. Define active genes (promoter intersects divergent transcription)
-  2. Define functional regions for active genes
-  3. Sequentially mask and assign signal:
-     a. Promoter regions
-     b. Gene body regions
-     c. CPS (Cleavage/Polyadenylation Site) regions
-     d. Enhancer regions (from divergent transcription)
-     e. Termination windows
-     f. Remaining signal → Non-localized
-  4. Quantify signal per region using bedtools map
-  5. Summarize by category
+  Region geometry: promoter=TSS -\${PROM_UP}/+\${PROM_DOWN}bp, divergent window
+  (active-gene detection only)=TSS -\${DIV_OUTER}/-\${DIV_INNER}bp opposite strand,
+  gene body=promoter end to CPS start, CPS=TES +/-500bp (fixed),
+  termination window=\${TW_LENGTH}bp past CPS. Signal is bedtools map -o sum
+  (one 3'/5' read = one polymerase) with min_signal=\${MIN_SIGNAL} (\${MIN_SIGNAL_MODE}),
+  allow_unstranded=\$([ \${ALLOW_UNSTRANDED} -eq 1 ] && echo "yes" || echo "no").
 
-ACTIVE GENE DEFINITION
-────────────────────────────────────────────────────────────────────────────
-  A gene is considered "active" if its promoter region (TSS ±\${TSS_ACTIVE_PM} bp,
-  plus \${ACTIVE_SLOP} bp slop) intersects at least one divergent transcription region.
+  Input tracks: RAW (unnormalized), on whichever end params.signal_end selects
+  (3' for PRO-seq, 5' for GRO-seq) -- absolute values keep thresholds
+  consistent across depths; normalization would distort them.
+  Annotations this run: \${DIV_COUNT} divergent regions, \${GENE_COUNT} genes,
+  \${TSS_COUNT} TSS, \${TES_COUNT} TES.
 
-INPUT DATA
-────────────────────────────────────────────────────────────────────────────
-  Signal Tracks: RAW (unnormalized) 3' bedGraphs
-    • Positive strand: \$(basename \${POS_BG})
-    • Negative strand: \$(basename \${NEG_BG})
-  
-  Why RAW tracks?
-    • Matches original bash script logic
-    • Absolute signal values for consistent thresholds
-    • Signal-based counting via bedtools map -o sum
-  
-  Annotations:
-    • Divergent transcription: \${DIV_COUNT} regions
-    • Genes: \${GENE_COUNT} annotations
-    • TSS sites: \${TSS_COUNT}
-    • TES sites: \${TES_COUNT}
+  functional_regions.bed (BED9: chrom,start,end,region_name,signal,strand,...)
+  functional_regions_summary.tsv (region, signal, region_count)
 
-SAMPLE INFORMATION
-────────────────────────────────────────────────────────────────────────────
-  Sample:     ${sample_id}
-  Condition:  ${condition}
-  Timepoint:  ${timepoint}
-  Replicate:  ${replicate}
-
-REGION DEFINITIONS
-────────────────────────────────────────────────────────────────────────────
-
-1. Promoter:
-   Location: TSS -\${PROM_UP} to +\${PROM_DOWN} bp
-   Strand: Gene strand
-   Purpose: Transcription initiation region
-
-2. Divergent:
-   Location: TSS -\${DIV_OUTER} to -\${DIV_INNER} bp
-   Strand: OPPOSITE of gene strand
-   Purpose: Divergent transcription detection
-   Note: Used for active gene definition, not signal assignment
-
-3. Gene Body:
-   Location: End of promoter to start of CPS
-   Strand: Gene strand
-   Purpose: Elongation and productive transcription
-
-4. CPS (Cleavage/Polyadenylation Site):
-   Location: TES -500 to +500 bp (fixed)
-   Strand: Gene strand
-   Purpose: Transcription termination signal
-
-5. Enhancers:
-   Source: Divergent transcription regions not overlapping promoters
-   Purpose: Putative enhancer elements
-
-6. Termination Window:
-   Location: \${TW_LENGTH} bp downstream of CPS end
-   Strand: Gene strand
-   Purpose: Readthrough and termination region
-
-7. Non-localized:
-   Definition: Signal not assigned to any category above
-   Purpose: Intergenic, intronic, or unannotated transcription
-
-SIGNAL QUANTIFICATION
-────────────────────────────────────────────────────────────────────────────
-  Each region's value is the sum of all signal overlapping it (bedtools
-  map -o sum) -- one PRO-seq 3' read = one polymerase, so signal is always
-  summed rather than counted as discrete events.
-
-  Minimum Signal: \${MIN_SIGNAL} (\${MIN_SIGNAL_MODE})
-  \$([ "\${MIN_SIGNAL_MODE}" == "quantile" ] && echo "  Quantile threshold: \${MIN_SIGNAL_QUANTILE}")
-
-HIERARCHICAL MASKING
-────────────────────────────────────────────────────────────────────────────
-  Signal is assigned sequentially with masking to prevent double-counting:
-  
-  Step 1: Assign promoter signal → mask promoters
-  Step 2: Assign gene body signal → mask gene bodies
-  Step 3: Assign CPS signal → mask CPS regions
-  Step 4: Assign enhancer signal → mask enhancers
-  Step 5: Assign termination window signal → mask TW
-  Step 6: Assign remaining signal → non-localized
-  
-  Result: Each signal unit counted exactly once
-
-FILES
-────────────────────────────────────────────────────────────────────────────
-  functional_regions.bed          — BED9 format with per-region assignments
-  functional_regions_summary.tsv  — Category totals (region, signal, count)
-  README_functional_regions.txt   — This documentation
-  functional_regions.log          — Processing log
-
-OUTPUT FORMAT
-────────────────────────────────────────────────────────────────────────────
-
-BED9 Format (functional_regions.bed):
-  Column 1: chromosome
-  Column 2: start
-  Column 3: end
-  Column 4: region_name (e.g., "promoter", "gene_body")
-  Column 5: signal (quantified value)
-  Column 6: strand
-  Column 7-9: BED9 fields (RGB color, thickStart, thickEnd)
-
-Summary TSV (functional_regions_summary.tsv):
-  Column 1: region      — Category name
-  Column 2: signal      — Total signal in category
-  Column 3: region_count— Number of regions in category
-
-RESULTS SUMMARY
-────────────────────────────────────────────────────────────────────────────
-  Total regions: \${REGION_COUNT}
-  Processing time: \${CALL_TIME}s
-  
-  Signal distribution:
+  Total regions: \${REGION_COUNT}  |  Processing time: \${CALL_TIME}s
 \$([ -s functional_regions_summary.tsv ] && tail -n +2 functional_regions_summary.tsv | \\
   awk -F'\\t' '{printf "    %-20s signal=%-12s regions=%s\\n", \$1":", \$2, \$3}' || echo "    (empty)")
-
-QUALITY CONTROL
-────────────────────────────────────────────────────────────────────────────
-
-Expected Results:
-  • Promoter signal: 10-30% of total (active transcription)
-  • Gene body signal: 40-60% of total (elongation)
-  • CPS signal: 5-15% of total (termination)
-  • Non-localized: 10-30% of total (background)
-
-Interpretation:
-  • High promoter signal: Paused Pol-II, initiation activity
-  • High gene body signal: Productive elongation
-  • High non-localized: Intergenic transcription, enhancers
-  • Low CPS signal: Efficient termination
-
-Troubleshooting:
-  • Zero regions: Check active gene definition, divergent transcription
-  • All signal non-localized: Check gene annotations, strand matching
-  • Low promoter signal: Check TSS coordinates, prom_up/prom_down
-  • Unexpected distribution: Check min_signal threshold
-
-DOWNSTREAM USAGE
-────────────────────────────────────────────────────────────────────────────
-  These functional region assignments are used for:
-  
-  1. Pol-II Metrics Calculation:
-     - Pausing Index (promoter/gene body ratio)
-     - Termination Index (CPS/gene body ratio)
-     - Region-specific coverage
-  
-  2. Quality Control:
-     - Signal distribution patterns
-     - Active gene counts
-     - Coverage uniformity
-  
-  3. Differential Analysis:
-     - Compare functional region changes
-     - Region-specific differential expression
-  
-  4. Genome Annotation:
-     - Validate gene boundaries
-     - Identify novel elements
-
-PARAMETER TUNING
-────────────────────────────────────────────────────────────────────────────
-
-More sensitive active gene detection:
-  • Increase tss_active_pm (e.g., 600 or 1000)
-  • Increase active_slop
-
-More specific active gene detection:
-  • Decrease tss_active_pm (e.g., 300 or 400)
-  • Increase min_signal
-
-Adjust region sizes:
-  • Promoter: prom_up, prom_down
-  • Gene body: Automatic (promoter to CPS)
-  • Termination: tw_length
-
-PARAMETERS USED
-────────────────────────────────────────────────────────────────────────────
-  Promoter:             TSS -\${PROM_UP} to +\${PROM_DOWN} bp
-  Divergent:            TSS -\${DIV_OUTER} to -\${DIV_INNER} bp
-  CPS:                  TES ±500 bp (fixed)
-  Termination window:   \${TW_LENGTH} bp
-  TSS active window:    ±\${TSS_ACTIVE_PM} bp
-  Active slop:          \${ACTIVE_SLOP} bp
-  Min signal:           \${MIN_SIGNAL} (\${MIN_SIGNAL_MODE})
-  Allow unstranded:     \$([ \${ALLOW_UNSTRANDED} -eq 1 ] && echo "yes" || echo "no")
-
-TECHNICAL NOTES
-────────────────────────────────────────────────────────────────────────────
-  • Uses bedtools for interval operations
-  • Sequential masking ensures no double-counting
-  • Strand-specific signal assignment
-  • Active genes determined by divergent transcription overlap
-  • All genes processed uniformly (v10.0: removed short gene special handling)
-  • Python driver handles all region logic and masking
-
-GENERATED
-────────────────────────────────────────────────────────────────────────────
-  Pipeline: TrackTx PRO-seq
-  Date: \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Sample: ${sample_id}
-  Module: 10_assign_signal_to_functional_regions
-
-================================================================================
 DOCEOF
 
   echo "FUNCREGION | README | Documentation created"

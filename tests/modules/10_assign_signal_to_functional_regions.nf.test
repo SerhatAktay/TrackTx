@@ -1,0 +1,51 @@
+nextflow_process {
+
+    name "Test Process assign_signal_to_functional_regions"
+    script "modules/10_assign_signal_to_functional_regions.nf"
+    process "assign_signal_to_functional_regions"
+
+    // Regression test for the bedgraph_to_reads()/wc_effective_lines() rewrite
+    // in bin/functional_regions.py (Python per-line loops -> awk/grep, since
+    // the old code ran single-threaded and ignored THREADS despite being the
+    // heaviest per-base-pair pass in this module). Same filter/output
+    // semantics as before: |signal| > min_signal (default 0.0) and end>start.
+    // func_test_pos3.bedgraph has 3 rows (signals 5, 3, 0) and
+    // func_test_neg3.bedgraph has 2 rows (signals -4, -2); the 0-signal row
+    // must be filtered out, so exactly 4 of the 5 input rows should survive
+    // as read intervals -- pinned via the script's own
+    // "Converted bedGraphs to N read intervals" log line.
+    test("bedgraph-to-reads conversion filters zero-signal rows correctly") {
+
+        when {
+            process {
+                """
+                input[0] = Channel.of(
+                    tuple(
+                        'sampleF',
+                        file("\${baseDir}/tests/fixtures/func_test_divergent.bed"),
+                        file("\${baseDir}/tests/fixtures/func_test_pos3.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/func_test_neg3.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/func_test_sicpm_pos.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/func_test_sicpm_neg.bedgraph"),
+                        'cond1', 'tp1', 'rep1'
+                    )
+                )
+                input[1] = file("\${baseDir}/tests/fixtures/func_test_gtf.gtf")
+                input[2] = file("\${baseDir}/bin/functional_regions.py")
+                input[3] = file("\${baseDir}/tests/fixtures/pe_mate_test_genes.tsv")
+                input[4] = file("\${baseDir}/tests/fixtures/func_test_tss.bed")
+                input[5] = file("\${baseDir}/tests/fixtures/func_test_tes.bed")
+                """
+            }
+        }
+
+        then {
+            assert process.success
+
+            def logText = path(process.out.log.get(0)).text
+            assert logText.contains("Converted bedGraphs to 4 read intervals")
+        }
+
+    }
+
+}

@@ -140,11 +140,9 @@ process align_reads_to_genome {
   # calls below -- NOT the bowtie2|samtools sort pipes, which are CPU work
   # streamed to disk and already use their allotted cpus. Lock file lives on
   # the shared bind-mounted work volume so every concurrent task sees it.
-  IO_LOCK_FILE="${projectDir}/.tracktx_io.lock"
-  IO_LOCK_TIMEOUT=\${TRACKS_IO_LOCK_TIMEOUT:-1800}
-  with_io_lock() {
-    flock -w "\${IO_LOCK_TIMEOUT}" "\${IO_LOCK_FILE}" "\$@"
-  }
+  # Shared with_io_lock()/init (bin/tracktx_error_fragment.sh); override the
+  # slot-wait timeout with TRACKS_IO_LOCK_TIMEOUT (default 1800s).
+  tracktx_io_lock_init "${projectDir}/.tracktx_io.lock"
 
   # Determine if paired-end from input val and R2 presence
   PAIRED_PARAM='${is_paired_end ? "true" : "false"}'
@@ -190,7 +188,7 @@ process align_reads_to_genome {
       tracktx_error "align_reads_to_genome" "Read file missing or empty: \${file}" "Check samplesheet file1 paths"
     fi
       # NOTE: GNU stat reports symlink length unless -L is used; try dereference first
-      FILE_SIZE=\$(stat -Lc%s "\${file}" 2>/dev/null || stat -c%s "\${file}" 2>/dev/null || stat -f%z "\${file}" 2>/dev/null || echo "unknown")
+      FILE_SIZE=\$(stat -Lc%s "\${file}" 2>/dev/null || tracktx_size "\${file}")
     echo "ALIGN | VALIDATE | R1 size: \${FILE_SIZE} bytes"
   done
 
@@ -198,7 +196,7 @@ process align_reads_to_genome {
     tracktx_error "align_reads_to_genome" "R2 file missing or empty: \${R2}" "Check samplesheet file2 paths for paired-end samples"
   fi
   if [[ "\${IS_PE}" == "true" ]]; then
-    FILE_SIZE=\$(stat -Lc%s "\${R2}" 2>/dev/null || stat -c%s "\${R2}" 2>/dev/null || stat -f%z "\${R2}" 2>/dev/null || echo "unknown")
+    FILE_SIZE=\$(stat -Lc%s "\${R2}" 2>/dev/null || tracktx_size "\${R2}")
     echo "ALIGN | VALIDATE | R2 size: \${FILE_SIZE} bytes"
   fi
 
@@ -216,14 +214,9 @@ process align_reads_to_genome {
   # 3) HELPER FUNCTIONS
   ###########################################################################
 
-  # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
-  if command -v micromamba >/dev/null 2>&1; then
-    PYTHON_CMD="micromamba run -n base python3"
-  elif [[ -x /opt/conda/bin/python3 ]]; then
-    PYTHON_CMD="/opt/conda/bin/python3"
-  else
-    PYTHON_CMD="python3"
-  fi
+  # Shared resolver (bin/tracktx_error_fragment.sh): micromamba (container) ->
+  # /opt/conda (container fallback) -> bare python3 (conda profile/local)
+  tracktx_resolve_python
 
   # Decompress input files (handles .gz and uncompressed)
   decompress() {
@@ -423,7 +416,7 @@ PYEND
 
   # Verify allMap BAM
   samtools quickcheck -v "\${SAMPLE_ID}_allMap.bam"
-  ALLMAP_SIZE=\$(stat -c%s "\${SAMPLE_ID}_allMap.bam" 2>/dev/null || stat -f%z "\${SAMPLE_ID}_allMap.bam" 2>/dev/null || echo "unknown")
+  ALLMAP_SIZE=\$(tracktx_size "\${SAMPLE_ID}_allMap.bam")
   echo "ALIGN | PRIMARY | allMap BAM created: \${ALLMAP_SIZE} bytes"
 
   ###########################################################################
@@ -433,15 +426,18 @@ PYEND
   echo "ALIGN | FILTER | Extracting primary alignments only..."
   echo "ALIGN | FILTER | Filtering: -F 260 (unmapped=4, secondary=256)"
 
-  # Extract primary mapped reads (exclude unmapped=4 and secondary=256)
+  # Extract primary mapped reads (exclude unmapped=4 and secondary=256).
+  # Uses full THREADS for the sort here (unlike the SAM_THREADS=1 cap used
+  # while bowtie2 is concurrently running above) -- bowtie2 has already
+  # finished by this point, so no competing CPU work to leave headroom for.
   samtools view -@ "\${THREADS}" -h -b -F 260 "\${SAMPLE_ID}_allMap.bam" \\
-  | samtools sort -@ "\${SAM_THREADS}" -o "\${SAMPLE_ID}.bam"
+  | samtools sort -@ "\${THREADS}" -o "\${SAMPLE_ID}.bam"
 
   # Verify and index primary BAM
   samtools quickcheck -v "\${SAMPLE_ID}.bam"
   with_io_lock samtools index -@ "\${THREADS}" "\${SAMPLE_ID}.bam"
   
-  PRIMARY_SIZE=\$(stat -c%s "\${SAMPLE_ID}.bam" 2>/dev/null || stat -f%z "\${SAMPLE_ID}.bam" 2>/dev/null || echo "unknown")
+  PRIMARY_SIZE=\$(tracktx_size "\${SAMPLE_ID}.bam")
   echo "ALIGN | FILTER | Primary BAM created: \${PRIMARY_SIZE} bytes"
   echo "ALIGN | FILTER | BAM indexed successfully"
 
@@ -474,7 +470,7 @@ PYEND
       tracktx_error "align_reads_to_genome" "Spike-in alignment failed" "Check bowtie2_spikein.log in work dir"
     fi
     
-    SPIKEIN_SIZE=\$(stat -c%s "\${SAMPLE_ID}_spikein.bam" 2>/dev/null || stat -f%z "\${SAMPLE_ID}_spikein.bam" 2>/dev/null || echo "unknown")
+    SPIKEIN_SIZE=\$(tracktx_size "\${SAMPLE_ID}_spikein.bam")
     echo "ALIGN | SPIKEIN | Spike-in BAM created: \${SPIKEIN_SIZE} bytes"
     
   else
@@ -619,154 +615,30 @@ PYEND
   echo "ALIGN | README | Creating documentation..."
 
   cat > README_alignment.txt <<DOCEOF
-================================================================================
-ALIGNMENT ARTIFACTS — PRO-seq Pipeline
-================================================================================
-
-SAMPLE INFORMATION
+ALIGNMENT ARTIFACTS — ${sample_id}
 ────────────────────────────────────────────────────────────────────────────
-  Sample ID:     ${sample_id}
-  Genome:        ${genome_id}
-  Spike-in:      ${spike_id}
-  Library type:  ${is_paired_end ? "Paired-end" : "Single-end"}
+  Genome: ${genome_id}  |  Spike-in: ${spike_id}  |  Mode: ${is_paired_end ? "Paired-end" : "Single-end"}
 
-OUTPUT FILES
-────────────────────────────────────────────────────────────────────────────
+  ${sample_id}_allMap.bam(.bai)    — all mapped reads (primary + secondary)
+  ${sample_id}.bam(.bai)           — primary alignments only (-F 260; duplicates
+                                      RETAINED here, removed later at dedup)
+  ${sample_id}_spikein.bam(.bai)   — spike-in alignments (always SE; empty BAM
+                                      if no spike-in index or no unmapped reads)
+  *.flagstat / *.idxstats          — per-BAM alignment stats
+  bowtie2_primary.log, bowtie2_spikein.log
+  aligner_summary.tsv              — key metrics (see column names in the TSV
+                                      header); genome_map_rate_pct is measured
+                                      AFTER filtering (~100%) -- the real
+                                      alignment rate is genome_overall_aln_rate_pct
+  insert_size.tsv                  — PE only
 
-Primary Alignments:
-  ${sample_id}_allMap.bam          — All mapped reads (primary + secondary)
-  ${sample_id}.bam                 — Primary alignments only (-F 260)
-  ${sample_id}.bam.bai             — BAM index
+  PRO-seq: R1 reverse-complemented before alignment (captures nascent RNA 3'
+  end = Pol II position). PE uses --ff with -1 original_R2 -2 RC(R1); reads
+  unaligned to the primary genome (both mates, PE) feed spike-in alignment.
 
-Spike-in Alignments:
-  ${sample_id}_spikein.bam         — Spike-in alignments (SE mode)
-  ${sample_id}_spikein.bam.bai     — BAM index
-
-Quality Control:
-  ${sample_id}.flagstat            — Primary BAM statistics
-  ${sample_id}.idxstats            — Per-chromosome alignment counts
-  ${sample_id}_spikein.flagstat    — Spike-in BAM statistics
-  ${sample_id}_spikein.idxstats    — Spike-in per-chromosome counts
-
-Alignment Logs:
-  bowtie2_primary.log              — Bowtie2 primary alignment log
-  bowtie2_spikein.log              — Bowtie2 spike-in alignment log
-
-Summary Reports:
-  aligner_summary.tsv              — Key alignment metrics (TSV format)
-  insert_size.tsv                  — Insert size distribution (PE only)
-
-Documentation:
-  README_alignment.txt             — This file
-  align_reads.log                  — Complete processing log (stdout + stderr)
-
-PROCESSING DETAILS
-────────────────────────────────────────────────────────────────────────────
-
-PRO-seq Convention:
-  • R1 is reverse-complemented before alignment
-  • This captures the 3' end of nascent RNA at polymerase position
-  • R2 (if PE) is aligned as-is
-
-Paired-End Alignment:
-  • Uses --ff orientation flag (both mates on forward strand)
-  • Effective mate configuration: -1 original_R2, -2 RC(R1)
-  • Unaligned read pairs combined for spike-in alignment
-
-Single-End Alignment:
-  • Aligns RC(R1) to genome
-  • Unaligned reads saved for spike-in alignment
-
-Spike-in Alignment:
-  • Always performed in single-end mode
-  • Uses reads that failed to map to primary genome
-  • Empty BAM created if no spike-in index or no unmapped reads
-
-Filtering Strategy:
-  • sample_allMap.bam: Contains ALL alignments (primary + secondary)
-  • sample.bam: Primary alignments only (excludes unmapped=4, secondary=256)
-  • Duplicates are RETAINED at this stage (removed in deduplication step)
-
-ALIGNMENT METRICS
-────────────────────────────────────────────────────────────────────────────
-
-aligner_summary.tsv contains:
-  • genome_total_reads        : Total reads processed
-  • genome_mapped_reads       : Successfully mapped reads
-  • genome_map_rate_pct       : Mapping percentage
-  • genome_secondary_reads    : Secondary/multimapper reads
-  • genome_duplicate_reads    : PCR/optical duplicates
-  • spike_total_reads         : Reads attempted for spike-in
-  • spike_mapped_reads        : Spike-in mapped reads
-  • spike_map_rate_pct        : Spike-in mapping percentage
-
-Paired-end additional metrics:
-  • pe_concordant_0          : Pairs aligned 0 times concordantly
-  • pe_concordant_1          : Pairs aligned exactly 1 time concordantly
-  • pe_concordant_gt1        : Pairs aligned >1 times concordantly
-  • pe_discordant_1          : Pairs aligned discordantly
-
-DOWNSTREAM USAGE
-────────────────────────────────────────────────────────────────────────────
-
-These BAM files are used by subsequent pipeline modules:
-  1. generate_coverage_tracks.nf — Creates bedGraph/BigWig coverage tracks
-  2. normalize_coverage_tracks.nf — CPM and siCPM normalization
-  3. detect_divergent.nf    — Divergent transcription detection
-  4. call_regions.nf        — Functional region calling
-
-BAM File Selection Guide:
-  • Use sample.bam for most analyses (cleaner signal)
-  • Use sample_allMap.bam for multimapper-aware analyses
-  • Use sample_spikein.bam for spike-in normalization calculations
-
-QUALITY CHECKS
-────────────────────────────────────────────────────────────────────────────
-
-Expected Metrics:
-  • Mapping rate >70% for well-prepared libraries
-  • Secondary reads <10% (genome-dependent)
-  • Spike-in mapping rate variable (depends on spike-in abundance)
-
-Troubleshooting:
-  • Low mapping rate: Check library quality, adapter contamination
-  • High secondary rate: May indicate repetitive regions or multimappers
-  • Empty spike-in BAM: Normal if no spike-in index provided
-  • Missing insert_size.tsv: Normal for single-end data
-
-TECHNICAL NOTES
-────────────────────────────────────────────────────────────────────────────
-
-Bowtie2 Parameters:
-  • --end-to-end : Align entire read (no soft clipping)
-  • --no-unal    : Suppress unaligned reads in output
-  • --ff         : PE orientation (both mates forward strand)
-
-SAM Flags:
-  • 4   : Read unmapped
-  • 256 : Secondary alignment (multimapper)
-  • -F 260 : Exclude both unmapped and secondary reads
-
-File Naming:
-  • _allMap : Contains all mappings (primary + secondary)
-  • No suffix: Primary alignments only
-  • _spikein : Spike-in genome alignments
-
-PARAMETERS USED
-────────────────────────────────────────────────────────────────────────────
-  Genome index:       ${genome_id}
-  Spike-in index:     ${spike_id}
-  Paired-end mode:    ${is_paired_end}
-  CPU threads:        ${task.cpus}
-
-GENERATED
-────────────────────────────────────────────────────────────────────────────
-  Pipeline: TrackTx PRO-seq
-  Module:   05_align_reads_to_genome
-  Date:     \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Sample:   ${sample_id}
-
-================================================================================
+DOWNSTREAM: generate_coverage_tracks -> normalize_coverage_tracks ->
+detect_divergent_transcription -> assign_signal_to_functional_regions.
+Use ${sample_id}.bam for most analyses; _allMap.bam for multimapper-aware ones.
 DOCEOF
 
   echo "ALIGN | README | Documentation complete"
@@ -793,7 +665,7 @@ DOCEOF
     if [[ ! -s "\${file}" ]]; then
       tracktx_error "align_reads_to_genome" "Missing or empty output file: \${file}" "Check align_reads.log in work dir"
     else
-      SIZE=\$(stat -c%s "\${file}" 2>/dev/null || stat -f%z "\${file}" 2>/dev/null || echo "unknown")
+      SIZE=\$(tracktx_size "\${file}")
       echo "ALIGN | VALIDATE | \${file}: \${SIZE} bytes"
     fi
   done

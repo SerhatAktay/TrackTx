@@ -193,10 +193,8 @@ def load_sample_metrics(
         missing_cols = [col for col in required_cols if col not in present_cols]
         
         if missing_cols:
-            log_warning(f"Sample {sample_row['sample_id']}: missing columns {', '.join(missing_cols)}")
-            # Add missing columns as NaN
-            for col in missing_cols:
-                df[col] = np.nan
+            log_error(f"Sample {sample_row['sample_id']}: missing columns {', '.join(missing_cols)} -- skipping sample")
+            return None
         
         # Ensure column order
         df = df[required_cols]
@@ -631,24 +629,28 @@ def compute_all_contrasts(
 
     contrasts_df = pd.concat(all_results, ignore_index=True)
 
-    # Benjamini-Hochberg correction per (contrast, metric), with independent
-    # filtering (Bourgon et al. 2010; same convention DESeq2 uses): genes
-    # failing the expression filter (passes_filter == False, i.e. ~0 in both
-    # groups) are excluded from the correction rather than just flagged.
-    # They carry little power to reject the null, so including them in BH's
-    # p*n/rank formula inflates n and makes it harder for genuinely
-    # differential genes elsewhere in the same contrast+metric group to
-    # reach significance -- the correction was previously computed but not
+    # Benjamini-Hochberg correction per (contrast, metric, level), with
+    # independent filtering (Bourgon et al. 2010; same convention DESeq2
+    # uses): genes failing the expression filter (passes_filter == False,
+    # i.e. ~0 in both groups) are excluded from the correction rather than
+    # just flagged. They carry little power to reject the null, so including
+    # them in BH's p*n/rank formula inflates n and makes it harder for
+    # genuinely differential genes elsewhere in the same group to reach
+    # significance -- the correction was previously computed but not
     # applied, i.e. always conservative relative to independent filtering.
     # Filtered-out genes get padj = NaN, matching DESeq2's own reporting for
     # independently-filtered rows.
-    log("CONTRAST", "Applying Benjamini-Hochberg FDR correction (with independent filtering)...")
+    # `level` is included in the grouping key: each level (e.g. a timepoint)
+    # is its own pairing/hypothesis family upstream in compute_single_contrast,
+    # so pooling p-values across levels here would let one level's results
+    # dilute or inflate another's padj.
+    log("CONTRAST", "Applying Benjamini-Hochberg FDR correction per contrast+metric+level (with independent filtering)...")
     padj_arr = np.full(len(contrasts_df), np.nan, dtype=float)
     if "passes_filter" in contrasts_df.columns:
         passes = contrasts_df["passes_filter"].to_numpy(dtype=bool)
     else:
         passes = np.ones(len(contrasts_df), dtype=bool)
-    for (_, _), grp in contrasts_df.groupby(["contrast", "metric"]):
+    for _, grp in contrasts_df.groupby(["contrast", "metric", "level"]):
         idx = grp.index
         pvals = grp["pvalue"].to_numpy(dtype=float).copy()
         pvals[~passes[idx]] = np.nan

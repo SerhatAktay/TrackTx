@@ -224,9 +224,12 @@ def scan_end(seqs, window, bulk, bulk_entropy, thresholds, from_three_prime=Fals
     position 1.
     """
     positions = []
-    read_len_min = min((len(s) for s in seqs), default=0)
-    usable_window = min(window, max(read_len_min, 0))
-    for i in range(usable_window):
+    # composition()/_composition_from_end() already skip reads shorter than
+    # position i individually, so the window isn't capped by the shortest
+    # read (a single adapter-dimer/empty read must not shrink the scan for
+    # the whole sample) -- the frac is None break below stops us once no
+    # read has coverage left at all.
+    for i in range(window):
         if from_three_prime:
             # position i (0-based from the end) maps to len(s)-1-i for each read;
             # composition() takes a fixed 0-based index, so build the slice manually.
@@ -422,6 +425,18 @@ def _self_test():
     p5 = profile_read(r5, window=20, bulk_skip=20, bulk_window=40, thresholds=thresholds)
     check("Stacked tags: fixed run == 6 (barcode, not bleeding into UMI)",
           p5["5prime"]["fixed_run_len"] == 6)
+
+    # Regression: a single adapter-dimer/empty read must not collapse the
+    # scan window for the whole sample. scan_end() used to derive
+    # usable_window from read_len_min across the subsample, so one 1nt
+    # outlier among 5000 normal reads capped the window at 1 and made a real
+    # 6bp constant barcode undetectable. composition()/_composition_from_end()
+    # already skip reads shorter than the position being scanned
+    # individually, so the fix is to size the window off `window` alone.
+    r6 = [make_read("AAAAAA") for _ in range(n)] + ["A"]
+    p6 = profile_read(r6, window=20, bulk_skip=15, bulk_window=40, thresholds=thresholds)
+    check("Outlier short read: fixed run still == 6 (window not collapsed)",
+          p6["5prime"]["fixed_run_len"] == 6)
 
     if ok:
         log_info("[self-test] ALL CHECKS PASSED")

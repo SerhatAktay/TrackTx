@@ -61,7 +61,7 @@ process download_genome_annotations {
   // that same required value here, sanitized to safe path characters, so
   // this cache key and module 04's genome/index cache key are always
   // derived from the same user-chosen name.
-  storeDir   "${params.assets_dir ?: "${projectDir}/assets"}/annotation/${params.reference_genome == 'other' ? 'other_' + GenomeId.sanitize(params.custom_genome_id) : params.reference_genome}_${params.annotation_source ?: 'refseq'}_${params.annotation_exclude_biotypes ?: ''}_${params.annotation_chr_naming ?: 'none'}"
+  storeDir   "${params.assets_dir ?: "${projectDir}/assets"}/annotation/${params.reference_genome == 'other' ? 'custom_' + GenomeId.sanitize(params.custom_genome_id) : params.reference_genome}_${params.annotation_source ?: 'refseq'}_${params.annotation_exclude_biotypes ?: ''}_${params.annotation_chr_naming ?: 'none'}"
   
   // Use params.publish_mode: 'link' (default) or 'copy' (required for exFAT/USB drives)
   publishDir "${params.output_dir}/00_references/${params.reference_genome}", 
@@ -113,7 +113,7 @@ process download_genome_annotations {
   // CACHE_KEY, and the FAST PATH below would silently serve one config's
   // cached GTF/gene-catalog files for the other's request.
   def genomeIdPart = params.reference_genome == 'other'
-      ? 'other_' + GenomeId.sanitize(params.custom_genome_id)
+      ? 'custom_' + GenomeId.sanitize(params.custom_genome_id)
       : params.reference_genome
   def cacheKey = "${genomeIdPart}_${params.annotation_source ?: 'refseq'}_${params.annotation_exclude_biotypes ?: ''}_${params.annotation_chr_naming ?: 'none'}"
   """
@@ -310,14 +310,9 @@ process download_genome_annotations {
   echo "GTF | CONFIG | Custom path: \${CUSTOM_PATH:-none}"
   echo "GTF | CONFIG | Custom URL: \${CUSTOM_URL:-none}"
 
-  # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
-  if command -v micromamba >/dev/null 2>&1; then
-    PYTHON_CMD="micromamba run -n base python3"
-  elif [[ -x /opt/conda/bin/python3 ]]; then
-    PYTHON_CMD="/opt/conda/bin/python3"
-  else
-    PYTHON_CMD="python3"
-  fi
+  # Shared resolver (bin/tracktx_error_fragment.sh): micromamba (container) ->
+  # /opt/conda (container fallback) -> bare python3 (conda profile/local)
+  tracktx_resolve_python
 
   # Validate dependencies
   if ! \${PYTHON_CMD} --version >/dev/null 2>&1; then
@@ -489,7 +484,7 @@ process download_genome_annotations {
     fi
 
     # Get file size for reporting
-    GTF_SIZE=\$(stat -f%z "\${GTF_TEMP}" 2>/dev/null || stat -c%s "\${GTF_TEMP}" 2>/dev/null || echo "unknown")
+    GTF_SIZE=\$(tracktx_size "\${GTF_TEMP}")
     echo "GTF | FETCH | Downloaded GTF size: \${GTF_SIZE} bytes"
 
     # Move to cache
@@ -578,10 +573,10 @@ process download_genome_annotations {
 
   # Report final file sizes
   echo "────────────────────────────────────────────────────────────────────────"
-  echo "GTF | OUTPUT | \${OUT_GTF}: \$(stat -f%z "\${OUT_GTF}" 2>/dev/null || stat -c%s "\${OUT_GTF}" 2>/dev/null) bytes"
-  echo "GTF | OUTPUT | \${OUT_GENES}: \$(stat -f%z "\${OUT_GENES}" 2>/dev/null || stat -c%s "\${OUT_GENES}" 2>/dev/null) bytes"
-  echo "GTF | OUTPUT | \${OUT_TSS}: \$(stat -f%z "\${OUT_TSS}" 2>/dev/null || stat -c%s "\${OUT_TSS}" 2>/dev/null) bytes"
-  echo "GTF | OUTPUT | \${OUT_TES}: \$(stat -f%z "\${OUT_TES}" 2>/dev/null || stat -c%s "\${OUT_TES}" 2>/dev/null) bytes"
+  echo "GTF | OUTPUT | \${OUT_GTF}: \$(tracktx_size "\${OUT_GTF}") bytes"
+  echo "GTF | OUTPUT | \${OUT_GENES}: \$(tracktx_size "\${OUT_GENES}") bytes"
+  echo "GTF | OUTPUT | \${OUT_TSS}: \$(tracktx_size "\${OUT_TSS}") bytes"
+  echo "GTF | OUTPUT | \${OUT_TES}: \$(tracktx_size "\${OUT_TES}") bytes"
   echo "────────────────────────────────────────────────────────────────────────"
 
   TIMESTAMP_END=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")

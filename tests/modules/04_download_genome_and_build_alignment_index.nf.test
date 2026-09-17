@@ -1,0 +1,46 @@
+nextflow_process {
+
+    name "Test Process download_genome_and_build_alignment_index"
+    script "modules/04_download_genome_and_build_alignment_index.nf"
+    process "download_genome_and_build_alignment_index"
+
+    // Regression test for the genome_sizes emit added today: this output was
+    // previously an unnamed path (only accessible positionally), which
+    // main.nf now consumes by name (build_index.out.genome_sizes) to wire
+    // real chromosome sizes into module 09's window auto-scaling (see
+    // tests/modules/09_detect_divergent_transcription.nf.test). This test
+    // confirms the named emit exists and the sizes file it produces from a
+    // provided FASTA is correct.
+    test("Should build an index from a provided FASTA and emit genome_sizes") {
+
+        when {
+            params {
+                genome_cache = "${baseDir}/.nf-test/tmp_genome_cache_04"
+                assets_dir   = "${baseDir}/.nf-test/tmp_assets_04"
+            }
+            process {
+                """
+                new File(params.genome_cache).deleteDir()
+                new File(params.assets_dir).deleteDir()
+                input[0] = Channel.of(
+                    tuple('nftest04', 'local', file("${baseDir}/tests/fixtures/norm_test_genome.fa"))
+                )
+                """
+            }
+        }
+
+        then {
+            assert process.success
+
+            def sizesLines = path(process.out.genome_sizes.get(0)).text.readLines().findAll { it }
+            assert sizesLines.size() == 1
+
+            def f = sizesLines[0].split('\t')
+            assert f[0] == 'chr1'
+            // norm_test_genome.fa: 4 lines x 80bp = 320bp
+            assert (f[1] as int) == 320
+        }
+
+    }
+
+}

@@ -102,40 +102,21 @@ process collect_pol_metrics_per_replicate {
   echo "PER-REPLICATE | DONE | Wrote \${N_LINES} gene-rows to \${OUT}"
 
   cat > README_per_replicate.txt <<'DOCEOF'
-================================================================================
 PER-REPLICATE POLYMERASE GENE METRICS — pol_gene_metrics_per_replicate.tsv
-================================================================================
+────────────────────────────────────────────────────────────────────────────
+  One row per (gene, replicate) -- the differential-testing hand-off. The
+  merged cohort outputs (09_pol_aggregate/) pool replicates to n=1 per
+  condition and can't support per-gene statistics; use THIS table for p-values.
 
-PURPOSE
-  One row per (gene, replicate). This is the analytical hand-off for differential
-  testing. The merged cohort outputs (09_pol_aggregate/) pool replicates to n=1
-  per condition and therefore cannot support per-gene statistics; use THIS table
-  instead when you want p-values.
+  gene_id, gene_name, sample_id (pre-merge), condition, timepoint, replicate,
+  tss_cpm, body_cpm, pi_raw (TSS count / body count, not length-normalized),
+  pi_len_norm (TSS density / body density -- use for cross-gene comparison)
 
-COLUMNS
-  gene_id       Ensembl/RefSeq gene id
-  gene_name     gene symbol
-  sample_id     individual replicate sample id (pre-merge)
-  condition     experimental condition
-  timepoint     timepoint label
-  replicate     replicate number
-  tss_cpm       TSS-window signal, CPM
-  body_cpm      gene-body signal, CPM
-  pi_raw        raw pausing index (TSS count / body count, NOT length-normalized --
-                use pi_len_norm for cross-gene comparison)
-  pi_len_norm   length-normalized pausing index (TSS density / body density)
+  R: d <- readr::read_tsv("pol_gene_metrics_per_replicate.tsv")
+     # build a body_cpm matrix, run DESeq2/edgeR with ~ condition (+ replicate)
 
-SUGGESTED DOWNSTREAM USE (R)
-  library(tidyverse)
-  d <- read_tsv("pol_gene_metrics_per_replicate.tsv")
-  # e.g. build a counts-like matrix from body_cpm and run a paired comparison in
-  # DESeq2/edgeR with ~ condition (+ replicate), with >=2 replicates per group.
-
-NOTE
-  Metrics are computed with the SAME calculate_pol_metrics.py call used for the
-  merged tracks, run on each individual replicate BAM, so values are directly
-  comparable to 08_pol_metrics/ (which are the merged equivalents).
-================================================================================
+  Computed with the SAME calculate_pol_metrics.py call as the merged tracks,
+  run per individual replicate BAM -- directly comparable to 08_pol_metrics/.
 DOCEOF
 
   echo "PER-REPLICATE | END"

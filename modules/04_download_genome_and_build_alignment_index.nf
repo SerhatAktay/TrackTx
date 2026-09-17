@@ -76,7 +76,7 @@ process download_genome_and_build_alignment_index {
   output:
     tuple val(genome_id), val(source), path("${genome_id}.fa"), emit: ref_meta
     path "${genome_id}.fa.fai"
-    path "${genome_id}.genome.sizes"
+    path "${genome_id}.genome.sizes", emit: genome_sizes
     path "${genome_id}.*.bt2*",    emit: index_files
     path "README_index.txt"
 
@@ -383,7 +383,7 @@ process download_genome_and_build_alignment_index {
     echo "INDEX | FASTA | Preparing genome FASTA..."
 
     if [[ -s "\${FASTA_CACHE}" && "\${FORCE_REBUILD}" != "true" ]]; then
-      FASTA_SIZE=\$(stat -c%s "\${FASTA_CACHE}" 2>/dev/null || stat -f%z "\${FASTA_CACHE}" 2>/dev/null || echo "unknown")
+      FASTA_SIZE=\$(tracktx_size "\${FASTA_CACHE}")
       echo "INDEX | FASTA | Using cached FASTA (\${FASTA_SIZE} bytes)"
     else
       # Check if FASTA provided as input
@@ -461,8 +461,7 @@ process download_genome_and_build_alignment_index {
       echo "INDEX | FASTA | Validation passed: \${SEQ_COUNT} sequences"
 
       # Get file size
-      FASTA_SIZE=\$(stat -c%s "\${TEMP_DIR}/\${GENOME_ID}.fa" 2>/dev/null || \\
-                   stat -f%z "\${TEMP_DIR}/\${GENOME_ID}.fa" 2>/dev/null || echo "unknown")
+      FASTA_SIZE=\$(tracktx_size "\${TEMP_DIR}/\${GENOME_ID}.fa")
       echo "INDEX | FASTA | FASTA size: \${FASTA_SIZE} bytes"
 
       # Move to cache and create digest
@@ -506,8 +505,7 @@ process download_genome_and_build_alignment_index {
     echo "INDEX | BUILD | Building Bowtie2 index..."
 
     # Determine if large index is needed (>4GB)
-    FASTA_SIZE_BYTES=\$(stat -c%s "\${FASTA_CACHE}" 2>/dev/null || \\
-                       stat -f%z "\${FASTA_CACHE}" 2>/dev/null || echo 0)
+    FASTA_SIZE_BYTES=\$(tracktx_size "\${FASTA_CACHE}" 0)
     
     LARGE_FLAG=""
     if [[ \${FASTA_SIZE_BYTES} -ge \$((4 * 1024 * 1024 * 1024)) ]]; then
@@ -594,73 +592,26 @@ process download_genome_and_build_alignment_index {
   fi
 
   # Get final file sizes
-  FA_SIZE=\$(stat -c%s "\${GENOME_ID}.fa" 2>/dev/null || \\
-            stat -f%z "\${GENOME_ID}.fa" 2>/dev/null || echo "unknown")
-  FAI_SIZE=\$(stat -c%s "\${GENOME_ID}.fa.fai" 2>/dev/null || \\
-             stat -f%z "\${GENOME_ID}.fa.fai" 2>/dev/null || echo "unknown")
-  SIZES_SIZE=\$(stat -c%s "\${GENOME_ID}.genome.sizes" 2>/dev/null || \\
-               stat -f%z "\${GENOME_ID}.genome.sizes" 2>/dev/null || echo "unknown")
+  FA_SIZE=\$(tracktx_size "\${GENOME_ID}.fa")
+  FAI_SIZE=\$(tracktx_size "\${GENOME_ID}.fa.fai")
+  SIZES_SIZE=\$(tracktx_size "\${GENOME_ID}.genome.sizes")
 
   cat > README_index.txt <<DOCEOF
-================================================================================
 GENOME REFERENCE AND INDEX — \${GENOME_ID}
-================================================================================
-
-REFERENCE INFORMATION
 ────────────────────────────────────────────────────────────────────────────
-  Genome ID:        \${GENOME_ID}
-  Source:           \${SOURCE}
-  Generated:        \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  
-FILES
-────────────────────────────────────────────────────────────────────────────
-  \${GENOME_ID}.fa              — Genome FASTA (\${FA_SIZE} bytes)
-  \${GENOME_ID}.fa.fai          — FASTA index (\${FAI_SIZE} bytes)
-  \${GENOME_ID}.genome.sizes    — Chromosome sizes (\${SIZES_SIZE} bytes)
-  \${GENOME_ID}.*.bt2*          — Bowtie2 index shards (\${INDEX_COUNT} files)
+  Source: \${SOURCE}  |  Generated: \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
 
-INDEX DETAILS
-────────────────────────────────────────────────────────────────────────────
-  Index Type:       \${INDEX_TYPE}
-  Build Threads:    \${THREADS}
-  Large Index:      \$([ -n "\${LARGE_FLAG}" ] && echo "Yes (>4GB genome)" || echo "No")
-  Force Rebuild:    \${FORCE_REBUILD}
+  \${GENOME_ID}.fa            — genome FASTA (\${FA_SIZE} bytes)
+  \${GENOME_ID}.fa.fai        — FASTA index (\${FAI_SIZE} bytes)
+  \${GENOME_ID}.genome.sizes  — chromosome sizes (\${SIZES_SIZE} bytes)
+  \${GENOME_ID}.*.bt2*        — Bowtie2 index shards (\${INDEX_COUNT} files, \${INDEX_TYPE})
 
-CACHING
-────────────────────────────────────────────────────────────────────────────
-  Cache Directory:  \${CACHE_DIR}
-  Local Genomes:    \${GENOMES_DIR}
-  
-  The pipeline automatically caches and reuses indices across runs.
-  To force a rebuild, use: --force_rebuild true
+  Build threads: \${THREADS}  |  Large index (>4GB): \$([ -n "\${LARGE_FLAG}" ] && echo "yes" || echo "no")  |  Force rebuild: \${FORCE_REBUILD}
 
-LOCAL INDEX REUSE
-────────────────────────────────────────────────────────────────────────────
-  The pipeline searches for existing indices in:
-    1. \${CACHE_DIR}
-    2. \${GENOMES_DIR}/\${GENOME_ID}/
-    3. \${GENOMES_DIR}/
-  
-  Place pre-built indices in any of these locations for automatic detection.
-
-BOWTIE2 INDEX STRUCTURE
-────────────────────────────────────────────────────────────────────────────
-  Standard index (.bt2):  For genomes <4GB
-    • \${GENOME_ID}.1.bt2, .2.bt2, .3.bt2, .4.bt2
-    • \${GENOME_ID}.rev.1.bt2, .rev.2.bt2
-  
-  Large index (.bt2l):    For genomes ≥4GB
-    • \${GENOME_ID}.1.bt2l, .2.bt2l, .3.bt2l, .4.bt2l
-    • \${GENOME_ID}.rev.1.bt2l, .rev.2.bt2l
-
-NOTES
-────────────────────────────────────────────────────────────────────────────
-  • Index files are stored in assets directory for cross-run persistence
-  • Only lightweight reference files (FASTA, .fai, .sizes) are linked to results
-  • Heavy index shards remain in assets to save disk space
-  • SHA256 digest maintained in cache for integrity checking
-
-================================================================================
+  Heavy index shards live in the assets cache (\${CACHE_DIR}), not results/ --
+  reused across runs automatically; --force_rebuild true forces a fresh build.
+  Drop a pre-built index into \${CACHE_DIR}, \${GENOMES_DIR}/\${GENOME_ID}/, or
+  \${GENOMES_DIR}/ to have it auto-detected instead of rebuilt.
 DOCEOF
 
   echo "INDEX | README | Documentation created"

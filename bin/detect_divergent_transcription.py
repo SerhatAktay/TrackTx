@@ -52,7 +52,6 @@ import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Tuple
 import warnings
-warnings.filterwarnings('ignore')
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _common import AtomicFileWriter
@@ -98,6 +97,15 @@ Output:
                     help="Sample identifier")
     ap.add_argument("--pos", required=True, 
                     help="Positive strand bedGraph file (.gz supported)")
+    ap.add_argument("--assay-type", default="proseq", choices=["proseq", "groseq"],
+                    help="Library type (default: proseq); calibration (percentile/sum-multiplier "
+                         "thresholds, target site-count range) was validated on PRO-seq only -- "
+                         "groseq logs a one-time warning that these thresholds are unverified "
+                         "for its 5'-end-only signal profile")
+    ap.add_argument("--genome-sizes", default=None,
+                    help="Chromosome-sizes TSV (chrom, length); used for organism-aware "
+                         "window auto-scaling instead of approximating genome size from "
+                         "observed bedgraph coordinates")
     ap.add_argument("--neg", required=True,
                     help="Negative strand bedGraph file (.gz supported)")
     ap.add_argument("--out", required=True,
@@ -312,20 +320,25 @@ def read_bedgraph(path: str, role: str, quiet: bool = False) -> pd.DataFrame:
 def auto_scale_window_params(
     pos_df: pd.DataFrame,
     neg_df: pd.DataFrame,
-    quiet: bool = False
+    quiet: bool = False,
+    genome_sizes_path: str = None,
 ) -> Dict[str, int]:
     """
-    Organism-aware pairing/window defaults, derived from apparent genome size.
+    Organism-aware pairing/window defaults, derived from real genome size.
 
     Mirrors the median-gated pattern in calculate_pol_metrics.py's
     auto_body_offset: only SHRINK the mammalian-scale defaults for genuinely
-    compact genomes, never scale above them. This script has no GTF/annotation
-    input to compute gene density from (unlike auto_body_offset), so genome
-    size is approximated from the bedgraph inputs themselves: sum of the max
-    coordinate seen per chromosome. A flat 1000bp pairing window sized for
-    human intergenic space can span multiple adjacent genes in a compact
-    genome (e.g. E. coli), producing spurious "divergent" calls between
-    unrelated promoters -- this scales the window down proportionally instead.
+    compact genomes, never scale above them. A flat 1000bp pairing window
+    sized for human intergenic space can span multiple adjacent genes in a
+    compact genome (e.g. E. coli), producing spurious "divergent" calls
+    between unrelated promoters -- this scales the window down
+    proportionally instead.
+
+    When genome_sizes_path (chrom-sizes TSV) is given, genome size is the sum
+    of real chromosome lengths. Otherwise it falls back to approximating from
+    the bedgraph inputs (sum of the max coordinate seen per chromosome),
+    which underestimates on sparse/low-coverage samples -- pass
+    genome_sizes_path whenever a chrom-sizes file is available.
 
     Returns:
         Dict with keys: nt_window, bin_gap, merge_gap, bg_window
@@ -335,8 +348,19 @@ def auto_scale_window_params(
     # window sizes shrink proportionally to how much smaller the genome is.
     COMPACT_GENOME_BP = 50_000_000
 
-    spans = pd.concat([pos_df[['chr', 'end']], neg_df[['chr', 'end']]], ignore_index=True)
-    genome_size = int(spans.groupby('chr')['end'].max().sum()) if not spans.empty else 0
+    genome_size = 0
+    if genome_sizes_path:
+        try:
+            sizes_df = pd.read_csv(genome_sizes_path, sep="\t", header=None,
+                                    names=["chr", "length"], usecols=[0, 1])
+            genome_size = int(sizes_df["length"].sum())
+        except (OSError, ValueError) as e:
+            log(f"WARNING: could not read --genome-sizes {genome_sizes_path} ({e}); "
+                f"falling back to bedgraph-coordinate approximation", quiet)
+
+    if genome_size == 0:
+        spans = pd.concat([pos_df[['chr', 'end']], neg_df[['chr', 'end']]], ignore_index=True)
+        genome_size = int(spans.groupby('chr')['end'].max().sum()) if not spans.empty else 0
 
     defaults = {
         'nt_window': DEFAULT_NT_WINDOW,
@@ -549,8 +573,16 @@ def pair_peaks_on_chromosome(
     ng = neg_peaks["signal"].to_numpy()
     nh = neg_peaks["height"].to_numpy()
     
-    pairs = []
-    
+    # Per-candidate results are accumulated as arrays (one array per positive
+    # peak's matches) and concatenated once at the end, instead of unpacking
+    # each match into a Python tuple via a per-pair zip loop -- the binary
+    # search below already bounds candidates per peak, so the remaining cost
+    # was this redundant element-by-element conversion of already-vectorized
+    # numpy results.
+    starts_out: list = []
+    ends_out: list = []
+    totals_out: list = []
+
     # For each positive peak, find compatible negative peaks
     for i in range(len(ps)):
         # Binary search for candidates
@@ -594,14 +626,20 @@ def pair_peaks_on_chromosome(
         start = np.minimum(ps[i], ns_slice)
         end = np.maximum(pe[i], ne_slice)
         total = pg[i] + ng_slice
-        
-        for s, e, t in zip(start, end, total):
-            pairs.append((chrom, int(s), int(e), float(t)))
-    
-    if not pairs:
+
+        starts_out.append(start)
+        ends_out.append(end)
+        totals_out.append(total)
+
+    if not starts_out:
         return pd.DataFrame(columns=["chr", "start", "end", "total"])
-    
-    return pd.DataFrame(pairs, columns=["chr", "start", "end", "total"])
+
+    return pd.DataFrame({
+        "chr": chrom,
+        "start": np.concatenate(starts_out).astype(int),
+        "end": np.concatenate(ends_out).astype(int),
+        "total": np.concatenate(totals_out).astype(float),
+    })
 
 
 def merge_overlapping_regions(
@@ -914,7 +952,12 @@ def score_with_mixture_model(
         max_iter=200,
         n_init=10
     )
-    gmm.fit(X.values)
+    # ConvergenceWarning here is routine (n_init restarts some inits that
+    # don't converge in max_iter, the best one is kept) -- genuine numeric
+    # warnings elsewhere in the script (div-by-zero, etc.) are left visible.
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
+        gmm.fit(X.values)
 
     # Identify positive component by mean BALANCE, not mean signal magnitude.
     # This script finds DIVERGENT transcription -- promoters and enhancers
@@ -1204,6 +1247,13 @@ def main():
         print("Install with: pip install scikit-learn scipy")
         sys.exit(1)
     
+    if args.assay_type == "groseq":
+        log("WARNING: peak-calling calibration (threshold percentile, sum multiplier, "
+            "target site-count range) was tuned and validated on PRO-seq data only. "
+            "GRO-seq's 5'-end-only signal has a different peak width/density profile; "
+            "treat outputs as unverified until checked against known GRO-seq divergent "
+            "sites.", args.quiet)
+
     # Load bedGraphs
     log("[1/7] Loading bedGraphs...")
     pos_df = read_bedgraph(args.pos, "pos", args.quiet)
@@ -1217,7 +1267,7 @@ def main():
 
     # Organism-aware window defaults (only used where the user didn't pass an
     # explicit override on the command line).
-    auto_windows = auto_scale_window_params(pos_df, neg_df, args.quiet)
+    auto_windows = auto_scale_window_params(pos_df, neg_df, args.quiet, args.genome_sizes)
     nt_window = args.nt_window if args.nt_window is not None else auto_windows['nt_window']
     bin_gap = args.bin_gap if args.bin_gap is not None else auto_windows['bin_gap']
     merge_gap = args.merge_gap if args.merge_gap is not None else auto_windows['merge_gap']
@@ -1400,12 +1450,19 @@ def main():
             'fdr': args.fdr
         }
 
-        log("Running empirical-null FDR check (single shuffle)...", args.quiet)
+        # Reruns the full shuffle/peak-call/pair/score pipeline once more --
+        # roughly doubles this sample's wall time. On by default because the
+        # measured empirical FDR (not args.fdr, see module docstring's "On
+        # FDR" section) is needed to correctly interpret the output; pass
+        # --no-report (params.advanced.divergent_qc=false) to skip it.
+        _qc_start = time.time()
+        log("Running empirical-null FDR check (single shuffle, ~doubles this sample's runtime)...", args.quiet)
         empirical = empirical_null_fdr_check(
             pos_df, neg_df, threshold, sum_thr, bin_gap, nt_window, args.balance, bg_window,
             args.fdr, fitted_gmm, pos_component, feature_cols,
             n_real_passing=int(np.sum(passing_mask)), quiet=args.quiet
         )
+        log(f"Empirical-null FDR check took {time.time() - _qc_start:.1f}s", args.quiet)
 
         generate_qc_report(
             report_path, stats, features_df, passing_mask,

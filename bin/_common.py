@@ -30,6 +30,39 @@ import sys
 import tempfile
 
 
+# =============================================================================
+# TRACKTX_THEME — canonical color tokens for every TrackTx-generated report
+# =============================================================================
+# Single source of truth for the palette shared by all five report/UI
+# surfaces: the per-sample report (render_sample_report.py), the cohort
+# report (combine_reports.py), the run landing page (inline Python in
+# modules/15_combine_reports_into_cohort.nf), TrackTx_config_generator.html,
+# and the per-sample plots page (also render_sample_report.py).
+#
+# Before this existed, each of those hand-rolled its own `:root{...}` colour
+# block independently and drifted to four different palettes (confirmed by
+# diffing them) even though three shared the same CSS variable NAMES
+# (--bg/--fg/--accent/...). This module does not inject CSS into any of
+# them (they're independently generated -- three different Python files plus
+# one static HTML file, no shared build/import step) -- it's the value each
+# of those `:root` blocks is kept manually in sync with. When changing the
+# palette, edit here first, then update the four `:root` blocks (grep for
+# "TRACKTX_THEME" in render_sample_report.py, combine_reports.py,
+# modules/15_combine_reports_into_cohort.nf, and TrackTx_config_generator.html).
+TRACKTX_THEME = {
+    "dark": {
+        "bg": "#0f1117", "surface": "#1a1d27", "surface2": "#232636",
+        "border": "#2e3248", "accent": "#6c8ef5", "accent2": "#4ecdc4",
+        "text": "#e8eaf0", "muted": "#7b82a0",
+    },
+    "light": {
+        "bg": "#ffffff", "surface": "#f8fafc", "surface2": "#eef1f6",
+        "border": "#e2e5ec", "accent": "#4a6cf0", "accent2": "#2bb3a8",
+        "text": "#1a1d23", "muted": "#6b7280",
+    },
+}
+
+
 def make_logger(prefix: str):
     """
     Returns (log_info, log_warning, log_error, log_progress) bound to

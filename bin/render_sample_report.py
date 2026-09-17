@@ -773,12 +773,14 @@ def main():
     html.write(f"""<!doctype html><meta charset="utf-8">
     <title>{SID} — TrackTx sample</title>
     <style>
+    /* Palette from bin/_common.py TRACKTX_THEME -- keep in sync (see that
+       module's docstring for the other files sharing this palette). */
     :root {{
-      --bg:#fff; --fg:#111; --muted:#667085; --card:#f8fafc; --line:#ececec;
+      --bg:#ffffff; --fg:#1a1d23; --muted:#6b7280; --card:#f8fafc; --line:#e2e5ec;
       --ok:#10b981; --warn:#f59e0b; --fail:#ef4444; --chip:#e5e7eb;
     }}
     @media (prefers-color-scheme: dark) {{
-      :root {{ --bg:#0b0d10; --fg:#e5e7eb; --muted:#9aa4b2; --card:#11161c; --line:#1f2937; --chip:#374151; }}
+      :root {{ --bg:#0f1117; --fg:#e8eaf0; --muted:#7b82a0; --card:#1a1d27; --line:#2e3248; --chip:#374151; }}
     }}
     html,body{{background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0}}
     .wrap{{max-width:1040px;margin:0 auto;padding:24px}}
@@ -912,10 +914,11 @@ def main():
         page.write(f"""<!doctype html><meta charset='utf-8'>
     <title>{SID} plots</title>
     <style>
-    body{{font-family:system-ui,sans-serif;max-width:1200px;margin:0 auto;padding:20px;background:#f9fafb}}
-    h1{{color:#1f2937;border-bottom:3px solid #3b82f6;padding-bottom:10px}}
+    /* Palette from bin/_common.py TRACKTX_THEME -- keep in sync. */
+    body{{font-family:system-ui,sans-serif;max-width:1200px;margin:0 auto;padding:20px;background:#f8fafc;color:#1a1d23}}
+    h1{{color:#1a1d23;border-bottom:3px solid #4a6cf0;padding-bottom:10px}}
     h3{{color:#374151;margin-top:40px}}
-    .plot-container{{background:white;padding:20px;margin:20px 0;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.1)}}
+    .plot-container{{background:#ffffff;padding:20px;margin:20px 0;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.1)}}
     </style>
     <h1>{SID} — Detailed Plots</h1>""")
 

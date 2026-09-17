@@ -144,11 +144,9 @@ process check_and_merge_replicates {
   # (samtools merge writes N replicate BAMs into one multi-GB file), so it's
   # a prime contention source. Lock file lives on the shared bind-mounted
   # work volume so every concurrent task sees the same one.
-  IO_LOCK_FILE="${projectDir}/.tracktx_io.lock"
-  IO_LOCK_TIMEOUT=\${TRACKS_IO_LOCK_TIMEOUT:-1800}
-  with_io_lock() {
-    flock -w "\${IO_LOCK_TIMEOUT}" "\${IO_LOCK_FILE}" "\$@"
-  }
+  # Shared with_io_lock()/init (bin/tracktx_error_fragment.sh); override the
+  # slot-wait timeout with TRACKS_IO_LOCK_TIMEOUT (default 1800s).
+  tracktx_io_lock_init "${projectDir}/.tracktx_io.lock"
 
   echo "════════════════════════════════════════════════════════════"
   echo "REPLICATE MERGE | \${CONDITION} @ t=\${TIMEPOINT}"

@@ -155,7 +155,7 @@ process summarize_polymerase_metrics {
     
     if [[ -n "\${ACTUAL_FILE}" && -e "\${ACTUAL_FILE}" ]]; then
       ln -sf "\${ACTUAL_FILE}" "\${TARGET_NAME}"
-      SIZE=\$(stat -c%s "\${ACTUAL_FILE}" 2>/dev/null || stat -f%z "\${ACTUAL_FILE}" 2>/dev/null || echo "unknown")
+      SIZE=\$(tracktx_size "\${ACTUAL_FILE}")
       echo "AGGREGATE | STAGE | ✓ \${ACTUAL_FILE} -> \${TARGET_NAME} (\${SIZE} bytes)"
     else
       echo "AGGREGATE | WARNING | ✗ \${STAGED_NAME} not found (tried \${STAGED_NAME} and metric_)"
@@ -219,14 +219,9 @@ ${(params.replicates?.merge == true) ? '  echo "AGGREGATE | CONFIG | Contrasts f
 
   echo "AGGREGATE | VALIDATE | Checking inputs..."
 
-  # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
-  if command -v micromamba >/dev/null 2>&1; then
-    PYTHON_CMD="micromamba run -n base python3"
-  elif [[ -x /opt/conda/bin/python3 ]]; then
-    PYTHON_CMD="/opt/conda/bin/python3"
-  else
-    PYTHON_CMD="python3"
-  fi
+  # Shared resolver (bin/tracktx_error_fragment.sh): micromamba (container) ->
+  # /opt/conda (container fallback) -> bare python3 (conda profile/local)
+  tracktx_resolve_python
 
   # Check Python script
   if [[ ! -f "\${AGGREGATOR_SCRIPT}" ]]; then
@@ -238,7 +233,7 @@ ${(params.replicates?.merge == true) ? '  echo "AGGREGATE | CONFIG | Contrasts f
   if [[ ! -s "\${SAMPLES_TSV}" ]]; then
     tracktx_error "summarize_polymerase_metrics" "Samples manifest missing or empty: \${SAMPLES_TSV}" "Check samples manifest input"
   fi
-  SAMPLES_SIZE=\$(stat -c%s "\${SAMPLES_TSV}" 2>/dev/null || stat -f%z "\${SAMPLES_TSV}" 2>/dev/null || echo "unknown")
+  SAMPLES_SIZE=\$(tracktx_size "\${SAMPLES_TSV}")
   SAMPLES_LINES=\$(wc -l < "\${SAMPLES_TSV}" | tr -d ' ')
   echo "AGGREGATE | VALIDATE | Samples manifest: \${SAMPLES_SIZE} bytes (\${SAMPLES_LINES} lines)"
 
@@ -384,7 +379,7 @@ ${(params.replicates?.merge == true) ? '  echo "AGGREGATE | CONFIG | Contrasts f
   if [[ ! -s pol_gene_metrics_merged.tsv ]]; then
     tracktx_error "summarize_polymerase_metrics" "Merged table missing or empty" "Check aggregate.log in work dir"
   fi
-  MERGED_SIZE=\$(stat -c%s pol_gene_metrics_merged.tsv 2>/dev/null || stat -f%z pol_gene_metrics_merged.tsv 2>/dev/null || echo "unknown")
+  MERGED_SIZE=\$(tracktx_size pol_gene_metrics_merged.tsv)
   MERGED_LINES=\$(wc -l < pol_gene_metrics_merged.tsv | tr -d ' ')
   MERGED_GENES=\$((MERGED_LINES - 1))  # Exclude header
   echo "AGGREGATE | VALIDATE | Merged table: \${MERGED_SIZE} bytes (\${MERGED_GENES} genes)"
@@ -392,7 +387,7 @@ ${(params.replicates?.merge == true) ? '  echo "AGGREGATE | CONFIG | Contrasts f
   # Check contrasts table if expected
   if [[ \${CONTRAST_COUNT} -gt 0 ]]; then
     if [[ -s pol_gene_metrics_contrasts.tsv ]]; then
-      CONTRAST_SIZE=\$(stat -c%s pol_gene_metrics_contrasts.tsv 2>/dev/null || stat -f%z pol_gene_metrics_contrasts.tsv 2>/dev/null || echo "unknown")
+      CONTRAST_SIZE=\$(tracktx_size pol_gene_metrics_contrasts.tsv)
       CONTRAST_LINES=\$(wc -l < pol_gene_metrics_contrasts.tsv | tr -d ' ')
       echo "AGGREGATE | VALIDATE | Contrasts table: \${CONTRAST_SIZE} bytes (\${CONTRAST_LINES} lines)"
     else
@@ -455,233 +450,29 @@ ${(params.replicates?.merge == true) ? '  echo "AGGREGATE | CONFIG | Contrasts f
   echo "AGGREGATE | README | Creating documentation..."
 
   cat > README_aggregate.txt <<DOCEOF
-================================================================================
 POL-II METRICS AGGREGATION — COHORT ANALYSIS
-================================================================================
-
-OVERVIEW
 ────────────────────────────────────────────────────────────────────────────
-  Cohort-level aggregation of per-sample Pol-II metrics into unified tables
-  for comparative analysis across conditions, timepoints, and replicates.
+  \${SAMPLE_COUNT} samples, \${MERGED_GENES} genes, \${CONTRAST_COUNT} contrasts, \${AGG_TIME}s.
 
-PROCESSING SUMMARY
-────────────────────────────────────────────────────────────────────────────
-  Samples processed:    \${SAMPLE_COUNT}
-  Genes analyzed:       \${MERGED_GENES}
-  Contrasts performed:  \${CONTRAST_COUNT}
-  Processing time:      \${AGG_TIME}s
+  pol_gene_metrics_merged.tsv (\${MERGED_LINES} lines): one row per gene-sample --
+    gene_id, gene_name, sample_id, condition, timepoint, replicate, pi_len_norm,
+    pi_raw, tss_cpm, body_cpm, tss_density, body_density
 
-AGGREGATION METHOD
-────────────────────────────────────────────────────────────────────────────
-  1. Load per-sample metric files from manifest
-  2. Extract key columns: gene_id, gene_name, pi_len_norm, pi_raw, 
-     body_cpm, tss_cpm, tss_density, body_density
-  3. Merge into tidy long-format table
-  4. Calculate summary statistics per gene
-  5. Identify top variable genes (CV, variance)
-  6. Optional: Perform differential contrasts
-  7. Optional: Generate visualizations
-
-METRICS AGGREGATED
-────────────────────────────────────────────────────────────────────────────
-  Primary Metrics:
-    • Pausing Index (pi_len_norm, pi_raw)
-    • TSS Coverage (tss_cpm, tss_density_per_bp)
-    • Body Coverage (body_cpm, body_density_per_bp)
-  
-  Derived Statistics:
-    • Mean across replicates
-    • Standard deviation
-    • Coefficient of variation (CV)
-    • Min/Max values
-
-FILES
-────────────────────────────────────────────────────────────────────────────
-
-pol_gene_metrics_merged.tsv:
-  Combined tidy table with all samples
-  
-  Format: One row per gene-sample combination
-  Columns:
-    • gene_id         — Gene identifier
-    • gene_name       — Gene symbol
-    • sample_id       — Sample identifier
-    • condition       — Experimental condition
-    • timepoint       — Time point
-    • replicate       — Biological replicate
-    • pi_len_norm     — Length-normalized pausing index
-    • pi_raw          — Raw pausing index
-    • tss_cpm         — TSS coverage (CPM)
-    • body_cpm        — Body coverage (CPM)
-    • tss_density     — TSS density (reads/bp)
-    • body_density    — Body density (reads/bp)
-  
-  Lines: \${MERGED_LINES} (\${MERGED_GENES} genes × samples)
-  Size: \${MERGED_SIZE} bytes
-
-pol_gene_metrics_contrasts.tsv (optional):
-  Differential analysis results
-  
-  Generated when: params.pol.contrasts specified
-  Contrasts analyzed: \${CONTRAST_COUNT}
-  
-  Format: One row per gene-contrast combination
-  Columns:
-    • gene_id         — Gene identifier
-    • gene_name       — Gene symbol
-    • contrast        — Contrast specification
-    • mean_numerator  — Mean in numerator group
-    • mean_denominator— Mean in denominator group
-    • log2_fold_change— Log2(numerator/denominator)
-    • pvalue          — Statistical p-value
-    • padj            — Adjusted p-value (FDR)
-  
-  \$([ -s pol_gene_metrics_contrasts.tsv ] && cat <<STATS
-  Lines: \${CONTRAST_LINES}
-  Significant genes: \${SIG_COUNT} (|log2FC|>1, padj<0.05)
+  pol_gene_metrics_contrasts.tsv (if params.pol.contrasts set; FORCE-DISABLED
+    when params.replicates.merge=true -- merged tracks are n=1/condition, so
+    contrasts have zero residual degrees of freedom; use
+    08b_pol_metrics_per_replicate/ for real differential testing instead):
+    gene_id, gene_name, contrast, mean_numerator, mean_denominator,
+    log2_fold_change, pvalue, padj (Benjamini-Hochberg)
+    \$([ -s pol_gene_metrics_contrasts.tsv ] && cat <<STATS
+    This run: \${CONTRAST_LINES} lines, \${SIG_COUNT} significant (|log2FC|>1, padj<0.05)
 STATS
 )
+  Contrast spec: "variable:numerator,denominator" e.g. "condition:treatment,control".
+  Used: \$([ \${CONTRAST_COUNT} -gt 0 ] && cat contrasts.txt | grep -v '^\$' | tr '\\n' ';' || echo "(none)")
 
-plots/ directory (optional):
-  Visualization files
-  
-  Generated when: params.pol.plots = true
-  File format: PNG (Matplotlib)
-  
-  Types of plots:
-    • Heatmaps: Top N variable genes per metric
-    • MA plots: log2FC vs mean expression per contrast
-    • Distribution plots: Metric distributions per group
-  
-  \$([ -d plots ] && echo "  Plot count: \${PLOT_COUNT}" || echo "  No plots generated")
-
-README_aggregate.txt:
-  This documentation file
-
-aggregate.log:
-  Complete processing log with timestamps
-
-CONTRAST SPECIFICATION
-────────────────────────────────────────────────────────────────────────────
-  Format: "grouping_variable:numerator,denominator"
-  
-  Examples:
-    condition:treatment,control
-      → Compare treatment vs control condition
-    
-    timepoint:24h,0h
-      → Compare 24h vs 0h timepoint
-  
-  Multiple contrasts supported:
-    params.pol.contrasts = [
-      "condition:KO,WT",
-      "timepoint:late,early"
-    ]
-
-  Contrasts used:
-\$([ \${CONTRAST_COUNT} -gt 0 ] && cat contrasts.txt | grep -v '^\$' | sed 's/^/    • /' || echo "    (none)")
-
-TOP VARIABLE GENES
-────────────────────────────────────────────────────────────────────────────
-  Selection Method:
-    • Calculate coefficient of variation (CV = SD/mean) per gene
-    • Rank genes by CV
-    • Select top N (default: \${TOP_N})
-  
-  Use cases:
-    • Identify most dynamic genes
-    • Focus on responsive genes
-    • Reduce visualization complexity
-
-STATISTICAL METHODS
-────────────────────────────────────────────────────────────────────────────
-  Differential Analysis:
-    • Test: Two-sample t-test (default)
-    • Multiple testing correction: Benjamini-Hochberg (FDR)
-    • Significance threshold: padj < 0.05, |log2FC| > 1
-  
-  Missing Data:
-    • Genes with zero coverage excluded from ratios
-    • NA values propagated through calculations
-    • Minimum sample size checked per contrast
-
-QUALITY CONTROL
-────────────────────────────────────────────────────────────────────────────
-
-Expected Results:
-  • All samples successfully merged
-  • Gene count matches input annotations
-  • Replicates cluster by condition
-  • Contrasts show expected directionality
-
-Red Flags:
-  • Very few genes in merged table
-  • High proportion of NA values
-  • Replicates don't cluster
-  • No significant genes in expected contrasts
-
-Troubleshooting:
-  • Missing samples: Check file paths in manifest
-  • Low gene count: Check per-sample metric quality
-  • NA values: Check for zero coverage samples
-  • Clustering issues: Check sample labeling
-
-DOWNSTREAM USAGE
-────────────────────────────────────────────────────────────────────────────
-  These aggregated metrics can be used for:
-  
-  1. Comparative Analysis:
-     - Compare Pol-II dynamics across conditions
-     - Identify condition-specific pausing
-     - Track changes over time courses
-  
-  2. Integration:
-     - Correlate with gene expression (RNA-seq)
-     - Compare with ChIP-seq (NELF, DSIF, Pol-II)
-     - Integrate with epigenetic marks
-  
-  3. Functional Analysis:
-     - Gene set enrichment on paused genes
-     - Pathway analysis of differentially paused genes
-     - Transcription factor target analysis
-  
-  4. Visualization:
-     - Custom heatmaps and clustering
-     - Time series analysis
-     - Principal component analysis (PCA)
-
-PARAMETERS USED
-────────────────────────────────────────────────────────────────────────────
-  Top N genes:      \${TOP_N}
-  Generate plots:   \$([ \${ENABLE_PLOTS} -eq 1 ] && echo "Yes" || echo "No")
-  Contrasts:        \${CONTRAST_COUNT}
-
-TECHNICAL NOTES
-────────────────────────────────────────────────────────────────────────────
-  • Efficient column selection (usecols) for large files
-  • TSV format for universal compatibility
-  • Memory-efficient processing
-  • Pandas-based data handling
-  • Matplotlib visualizations
-  • FDR correction via statsmodels
-
-DATA FORMAT COMPATIBILITY
-────────────────────────────────────────────────────────────────────────────
-  Output tables can be imported into:
-  • R (read.delim, readr::read_tsv)
-  • Python (pandas.read_csv)
-  • Excel/LibreOffice Calc
-  • GraphPad Prism
-  • DESeq2 (for further analysis)
-
-GENERATED
-────────────────────────────────────────────────────────────────────────────
-  Pipeline: TrackTx PRO-seq
-  Date: \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Module: 12_summarize_polymerase_metrics
-  Samples: \${SAMPLE_COUNT}
-
-================================================================================
+  plots/ (if params.pol.plots=true): heatmaps of top \${TOP_N} CV-ranked genes,
+    MA plots per contrast. \$([ -d plots ] && echo "\${PLOT_COUNT} generated" || echo "none generated this run").
 DOCEOF
 
   echo "AGGREGATE | README | Documentation created"

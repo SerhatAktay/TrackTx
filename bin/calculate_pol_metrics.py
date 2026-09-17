@@ -228,7 +228,7 @@ def get_mapped_read_count(bam_path: str) -> int:
         log_info(f"Total mapped reads: {total:,}")
         return total
 
-def count_reads_pysam_multi(bed_paths: Dict[str, Path], bam_path: str) -> Dict[str, Dict[str, int]]:
+def count_reads_pysam_multi(bed_paths: Dict[str, Path], bam_path: str, pe_mate_flag: int = 128) -> Dict[str, Dict[str, int]]:
     """
     Count strand-specific reads for multiple BED files (e.g. TSS and body)
     against one BAM, opening the BAM and resolving contigs only once instead
@@ -242,9 +242,17 @@ def count_reads_pysam_multi(bed_paths: Dict[str, Path], bam_path: str) -> Dict[s
       Gene +  →  count reads that are NOT reverse (forward-strand reads)
       Gene -  →  count reads that ARE  reverse  (reverse-strand reads)
 
+    For paired-end BAMs, only the mate matching pe_mate_flag (SAM flag 64 =
+    read1, 128 = read2) is counted -- the other mate doesn't carry the Pol II
+    3'-end signal and would add one noise hit per fragment alongside the real
+    one, exactly like module 06's PE mate filtering for coverage tracks
+    (params.align.pe_signal_mate). Single-end reads (not paired) are never
+    filtered by this flag.
+
     Args:
         bed_paths: mapping of region_type -> BED path (region_type used for logging)
         bam_path: Path to BAM file
+        pe_mate_flag: SAM flag bit of the signal-carrying mate for PE BAMs
 
     Returns:
         Mapping of region_type -> {gene_id: read count}
@@ -254,14 +262,14 @@ def count_reads_pysam_multi(bed_paths: Dict[str, Path], bam_path: str) -> Dict[s
         import pysam
     except ImportError:
         log_warning("pysam not available, using bedtools intersect")
-        return {rt: count_reads_bedtools(p, bam_path, rt) for rt, p in bed_paths.items()}
+        return {rt: count_reads_bedtools(p, bam_path, rt, pe_mate_flag) for rt, p in bed_paths.items()}
 
     # Verify BAM index exists — pysam.fetch() needs an index; without it every
     # region returns 0 with no error raised.
     bam_p = Path(bam_path)
     if not (bam_p.with_suffix(".bai").exists() or Path(bam_path + ".bai").exists()):
         log_warning(f"BAM index (.bai) not found for {bam_path} — falling back to bedtools")
-        return {rt: count_reads_bedtools(p, bam_path, rt) for rt, p in bed_paths.items()}
+        return {rt: count_reads_bedtools(p, bam_path, rt, pe_mate_flag) for rt, p in bed_paths.items()}
 
     try:
         bamfile = pysam.AlignmentFile(bam_path, "rb")
@@ -286,7 +294,7 @@ def count_reads_pysam_multi(bed_paths: Dict[str, Path], bam_path: str) -> Dict[s
 
         results: Dict[str, Dict[str, int]] = {}
         for region_type, bed_path in bed_paths.items():
-            results[region_type] = _count_reads_from_open_bam(bamfile, _resolve_contig, bed_path, region_type)
+            results[region_type] = _count_reads_from_open_bam(bamfile, _resolve_contig, bed_path, region_type, pe_mate_flag)
 
         bamfile.close()
         return results
@@ -294,10 +302,10 @@ def count_reads_pysam_multi(bed_paths: Dict[str, Path], bam_path: str) -> Dict[s
     except Exception as e:
         log_error(f"pysam counting failed: {e}")
         log_info("Falling back to bedtools intersect")
-        return {rt: count_reads_bedtools(p, bam_path, rt) for rt, p in bed_paths.items()}
+        return {rt: count_reads_bedtools(p, bam_path, rt, pe_mate_flag) for rt, p in bed_paths.items()}
 
 
-def _count_reads_from_open_bam(bamfile, _resolve_contig, bed_path: Path, region_type: str) -> Dict[str, int]:
+def _count_reads_from_open_bam(bamfile, _resolve_contig, bed_path: Path, region_type: str, pe_mate_flag: int = 128) -> Dict[str, int]:
     """Count strand-specific, 3'-end-based reads for one BED file against an already-open BAM."""
     if not bed_path.exists() or bed_path.stat().st_size == 0:
         log_warning(f"Empty {region_type} BED file")
@@ -353,6 +361,11 @@ def _count_reads_from_open_bam(bamfile, _resolve_contig, bed_path: Path, region_
                 # Skip unmapped, secondary, and supplementary
                 if read.is_unmapped or read.is_secondary or read.is_supplementary:
                     continue
+                # PE: only the signal-carrying mate counts (see docstring);
+                # the other mate would otherwise add one noise hit per
+                # fragment. SE reads (is_paired False) are never filtered.
+                if read.is_paired and not (read.flag & pe_mate_flag):
+                    continue
                 # Strand match: PRO-seq RC(R1) alignment
                 #   + strand gene → read maps to forward strand (not reverse)
                 #   - strand gene → read maps to reverse strand
@@ -396,7 +409,7 @@ def _count_reads_from_open_bam(bamfile, _resolve_contig, bed_path: Path, region_
         )
     return counts
 
-def count_reads_bedtools(bed_path: Path, bam_path: str, region_type: str) -> Dict[str, int]:
+def count_reads_bedtools(bed_path: Path, bam_path: str, region_type: str, pe_mate_flag: int = 128) -> Dict[str, int]:
     """
     Count strand-specific reads using bedtools intersect (fallback method,
     only reached when pysam is unavailable or the BAM lacks a .bai index).
@@ -405,10 +418,14 @@ def count_reads_bedtools(bed_path: Path, bam_path: str, region_type: str) -> Dic
     pysam path above -- not full-read overlap, which would double-count or
     misattribute reads spanning a region boundary (e.g. the TSS/body split).
 
+    For paired-end BAMs, only the mate matching pe_mate_flag is counted, same
+    as count_reads_pysam_multi -- see that function's docstring.
+
     Args:
         bed_path: Path to BED file (must include strand col 6)
         bam_path: Path to BAM file
         region_type: Description of regions
+        pe_mate_flag: SAM flag bit of the signal-carrying mate for PE BAMs
 
     Returns:
         Dictionary mapping gene_id to read count
@@ -426,8 +443,16 @@ def count_reads_bedtools(bed_path: Path, bam_path: str, region_type: str) -> Dic
         r"""awk -v OFS='\t' '{ if ($6 == "+") print $1, $3-1, $3, $4, $5, $6; """
         r"""else print $1, $2, $2+1, $4, $5, $6 }'"""
     )
+    # -f 1 -f <pe_mate_flag>: for reads that ARE paired, keep only the signal
+    # mate. Reads without the paired bit (SE) never carry flag 64/128 either,
+    # so -F 0x1 catches them separately and passes them through unfiltered.
+    is_paired = int(run_command(
+        ["samtools", "view", "-c", "-f", "1", bam_path],
+        "Checking whether BAM is paired-end"
+    ).stdout.strip() or "0") > 0
+    mate_filter = f"-f {pe_mate_flag}" if is_paired else ""
     cmd = (
-        f"samtools view -b -F 0x904 '{bam_path}' | "
+        f"samtools view -b -F 0x904 {mate_filter} '{bam_path}' | "
         f"bedtools bamtobed -i stdin | "
         f"{awk_3prime} > '{threeprime_bed}'"
     )
@@ -785,7 +810,7 @@ def parse_catalog_file(
     rows: List[Tuple] = []
     with open_text_file(catalog_path) as f:
         header = f.readline()
-        cols = [c.strip().lstrip("﻿").lower() for c in header.rstrip("\n").split("\t")]
+        cols = [c.strip().lstrip("").lower() for c in header.rstrip("\n").split("\t")]
 
         def cidx(*names):
             for n in names:
@@ -1026,8 +1051,10 @@ def write_output_files(
     """
     log("OUTPUT", "Writing output tables...")
     
-    # CPM denominator
-    cpm_denom = (mapped_reads / 1_000_000.0) if mapped_reads > 0 else 1e-9
+    # CPM denominator; None when mapped_reads==0 so CPM comes out NaN instead
+    # of count/1e-9 (billions) -- a zero-mapped-read sample must not corrupt
+    # downstream cross-sample CPM averages with a bogus outlier.
+    cpm_denom = (mapped_reads / 1_000_000.0) if mapped_reads > 0 else None
     
     with AtomicFileWriter(pausing_output) as p_out, AtomicFileWriter(genes_output) as g_out:
         # Writers
@@ -1079,8 +1106,8 @@ def write_output_files(
             is_truncated = int(body_count == 0 or not body_ok)
             
             # CPM and densities
-            tss_cpm = tss_count / cpm_denom
-            body_cpm = body_count / cpm_denom
+            tss_cpm = (tss_count / cpm_denom) if cpm_denom is not None else float("nan")
+            body_cpm = (body_count / cpm_denom) if cpm_denom is not None else float("nan")
             tss_density = tss_count / max(1, tss_width)
             body_density = (body_count / body_len) if body_len > 0 else float("nan")
             
@@ -1184,6 +1211,12 @@ def main():
                        help="Number of threads [default: 1, currently unused]")
     parser.add_argument("--fail-if-empty", default="false",
                        help="Fail if no genes parsed [default: false]")
+    parser.add_argument("--pe-signal-mate", default="read2", choices=["read1", "read2"],
+                       help="For paired-end BAMs, which mate carries the Pol II 3'-end "
+                            "signal (default: read2 = RC(R1), matching module 06's "
+                            "pe_signal_mate default and module 05's alignment layout). "
+                            "The other mate is excluded from counting to match module "
+                            "06's coverage tracks -- ignored for single-end BAMs.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     
     args = parser.parse_args()
@@ -1275,7 +1308,8 @@ def main():
         
         # Count reads (TSS and body share one BAM open + one contig resolution)
         log("═" * 70, "")
-        counts = count_reads_pysam_multi({"TSS": tss_bed, "body": body_bed}, args.bam)
+        pe_mate_flag = 64 if args.pe_signal_mate == "read1" else 128
+        counts = count_reads_pysam_multi({"TSS": tss_bed, "body": body_bed}, args.bam, pe_mate_flag)
         tss_counts = counts["TSS"]
         body_counts = counts["body"]
 

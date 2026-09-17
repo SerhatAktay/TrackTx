@@ -114,7 +114,9 @@ process detect_divergent_transcription {
     tuple val(sample_id),
           path(pos_bg), path(neg_bg),
           val(condition), val(timepoint), val(replicate)
-    
+    path(genome_sizes)
+    val library_type
+
     // Explicit parameter inputs for better cache control
     val threshold
     val sum_thr
@@ -176,7 +178,9 @@ process detect_divergent_transcription {
 
   POS_BG="${pos_bg}"
   NEG_BG="${neg_bg}"
-  
+  GENOME_SIZES="${genome_sizes}"
+  ASSAY_TYPE="${library_type == 'groseq' ? 'groseq' : 'proseq'}"
+
   DETECTOR_SCRIPT="\$(command -v detect_divergent_transcription.py)"
 
   # Detection parameters (passed as process inputs for cache control)
@@ -259,8 +263,8 @@ process detect_divergent_transcription {
     tracktx_error "detect_divergent_transcription" "Negative bedGraph missing or empty: \${NEG_BG}" "Check that generate_coverage_tracks produced 3p.neg.bedgraph for this sample"
   fi
 
-  POS_SIZE=\$(stat -c%s "\${POS_BG}" 2>/dev/null || stat -f%z "\${POS_BG}" 2>/dev/null || echo "unknown")
-  NEG_SIZE=\$(stat -c%s "\${NEG_BG}" 2>/dev/null || stat -f%z "\${NEG_BG}" 2>/dev/null || echo "unknown")
+  POS_SIZE=\$(tracktx_size "\${POS_BG}")
+  NEG_SIZE=\$(tracktx_size "\${NEG_BG}")
   POS_LINES=\$(wc -l < "\${POS_BG}" | tr -d ' ')
   NEG_LINES=\$(wc -l < "\${NEG_BG}" | tr -d ' ')
 
@@ -340,6 +344,8 @@ process detect_divergent_transcription {
     --sample       "\${SAMPLE_ID}" \\
     --pos          "\${POS_BG}" \\
     --neg          "\${NEG_BG}" \\
+    --genome-sizes "\${GENOME_SIZES}" \\
+    --assay-type   "\${ASSAY_TYPE}" \\
     --out          "divergent_transcription.bed" \\
     --fdr          "\${FDR}" \\
     --balance      "\${BALANCE}" \\
@@ -396,7 +402,7 @@ SUMMARYEOF
 
   # Count detected regions
   DT_COUNT=\$(grep -v '^#' divergent_transcription.bed 2>/dev/null | wc -l | tr -d ' ' || echo 0)
-  BED_SIZE=\$(stat -c%s divergent_transcription.bed 2>/dev/null || stat -f%z divergent_transcription.bed 2>/dev/null || echo "unknown")
+  BED_SIZE=\$(tracktx_size divergent_transcription.bed)
 
   echo "DIVERGENT | RESULTS | Detected regions: \${DT_COUNT}"
   echo "DIVERGENT | RESULTS | Output BED size: \${BED_SIZE} bytes"
@@ -449,7 +455,7 @@ SUMMARYEOF
 
   if [[ \${DO_QC} -eq 1 ]]; then
     if [[ -s divergent_transcription_qc.txt ]]; then
-      QC_SIZE=\$(stat -c%s divergent_transcription_qc.txt 2>/dev/null || stat -f%z divergent_transcription_qc.txt 2>/dev/null || echo "unknown")
+      QC_SIZE=\$(tracktx_size divergent_transcription_qc.txt)
       echo "DIVERGENT | QC | QC report generated: \${QC_SIZE} bytes"
       echo "DIVERGENT | QC | Report includes: thresholds, peak counts, score distributions, feature summaries"
     else
@@ -464,288 +470,34 @@ SUMMARYEOF
   echo "DIVERGENT | README | Creating documentation..."
 
   cat > README_divergent.txt <<DOCEOF
-================================================================================
-DIVERGENT TRANSCRIPTION — ${sample_id} (Statistical)
-================================================================================
-
-OVERVIEW
+DIVERGENT TRANSCRIPTION — ${sample_id} (statistical, GMM-ranked)
 ────────────────────────────────────────────────────────────────────────────
-  Statistical detection of divergent transcription regions from strand-specific
-  3' PRO-seq coverage using Gaussian Mixture Models to RANK candidates by
-  confidence. NOTE: the confidence score is NOT a calibrated FDR -- see
-  "FDR Control" below and the QC report's Empirical-Null FDR Check section.
+  Pairs strand-specific 3' peaks within nt_window, extracts Bayesian-balance +
+  signal-to-background features per pair, fits a 2-component GMM, and ranks
+  regions by posterior probability. Uses RAW (unnormalized) tracks from
+  primary/unique alignments -- auto-calibration needs absolute signal levels,
+  and normalization would distort them.
 
-  Divergent transcription occurs when RNA Polymerase II initiates in both
-  directions from a genomic locus, creating paired transcription on opposite
-  strands within close proximity. This is a hallmark of active promoters and
-  enhancers.
+  IMPORTANT -- "--fdr"/divergent_fdr is a STRINGENCY KNOB, not a calibrated
+  FDR: it is not Benjamini-Hochberg and does not bound a real false-discovery
+  rate. Measured empirically on real PRO-seq data, the actual false-positive
+  rate sits around ~50% regardless of this setting -- a real ceiling of
+  peak-pair scoring against pervasive PRO-seq signal, not an unvalidated
+  assumption. See this run's divergent_transcription_qc.txt "Empirical-Null
+  FDR Check" section for the measured rate; treat the output as a ranked
+  candidate list, not a discovery set with a known error rate.
 
-STATISTICAL APPROACH
-────────────────────────────────────────────────────────────────────────────
-  Major algorithmic upgrade from threshold-based to statistical detection:
-  
-  1. Auto-Calibration:
-     • Automatically determines thresholds from the background distribution
-     • threshold = configurable percentile of background signal
-       (pipeline default ≈ 65th; script default 75th — both more permissive
-       than the older 95th-percentile setting)
-     • sum_thr = threshold × configurable multiplier (pipeline default ≈ 1.5×;
-       script default 3×)
-     • Eliminates need for manual parameter tuning
-     • Adapts to varying sequencing depths
-  
-  2. Feature Extraction:
-     • Total signal and strand-specific sums
-     • Bayesian balance score using Beta-Binomial model
-     • Local background estimation (±5kb windows)
-     • Signal-to-background ratios
-     • Region width and signal density
-  
-  3. Gaussian Mixture Model:
-     • Fits 2-component GMM on extracted features
-     • Identifies "positive" (true divergent TX) and "negative" (noise) components
-     • Computes posterior probabilities (0-1 confidence scores)
-     • Machine learning-like approach without manual labels
-  
-  4. FDR Control (NOT a calibrated FDR -- read this):
-     • The GMM posterior score is used as a stringency knob (--fdr /
-       divergent_fdr), sorted by cumulative expected-FP/cumulative-calls --
-       this is NOT a Benjamini-Hochberg procedure and does NOT control a
-       real false discovery rate
-     • Empirically checked (see the QC report's "Empirical-Null FDR Check"
-       section, generated for this sample): on real PRO-seq data the
-       measured false-positive rate consistently sits around 50%, largely
-       independent of this setting. This has been investigated directly
-       (alternate features, alternate peak-calling designs, stringency
-       sweeps) and looks like a real ceiling of this class of method on
-       genuinely dense, pervasively-transcribed PRO-seq signal, not an
-       unvalidated concern.
-     • Ranks regions by relative confidence -- treat the output as a ranked
-       candidate list for prioritization, not a discovery set with a known
-       error rate
+  divergent_transcription.bed (BED5: chrom,start,end,total_signal,confidence)
+  divergent_transcription_qc.txt, divergent_summary.tsv, divergent.log
 
-  Benefits:
-    ✓ More robust to varying coverage depths
-    ✓ Confidence scores enable downstream ranking/prioritization
-    ✓ No manual threshold tuning required
-    ✓ Empirically-measured (not assumed) error-rate reporting every run
-
-ALGORITHM
-────────────────────────────────────────────────────────────────────────────
-  1. Load strand-specific 3' bedGraphs (positive and negative strands)
-  
-  2. Auto-calibrate detection thresholds:
-     - Sample up to 100K random bins to estimate background
-     - Calculate mean, std, and percentiles
-     - Set threshold = configured percentile (pipeline default ≈ 65th)
-     - Set sum_thr = threshold × configured multiplier (pipeline default ≈ 1.5×)
-  
-  3. Call peak blocks on each strand:
-     - Filter bins by threshold
-     - Merge consecutive bins within bin_gap
-     - Keep blocks with total signal ≥ sum_thr
-  
-  4. Pair peaks with relaxed initial criteria:
-     - For each positive peak, find negative peaks within nt_window
-     - Calculate overlap and gap between peaks
-     - Apply optional balance filter (default: disabled for max sensitivity)
-     - Result: candidate paired regions
-  
-  5. Extract features for each paired region:
-     - Query strand-specific signals in region
-     - Calculate Bayesian balance score (Beta-Binomial model)
-     - Estimate local background (±5kb excluding peak)
-     - Compute signal-to-background ratio
-     - Calculate region width and signal density
-  
-  6. Fit Gaussian Mixture Model:
-     - Use features: log_total, balance_bayesian, log_snr
-     - Fit 2-component GMM with full covariance
-     - Identify positive component by higher mean balance_bayesian (strand
-       balance is the actual definition of "divergent" -- not signal
-       magnitude; a high-signal but one-sided component should not outrank
-       a lower-signal but well-balanced one)
-     - Compute posterior probabilities for all regions
-
-  7. Apply stringency cutoff (NOT a calibrated FDR -- see above):
-     - Sort regions by posterior probability (descending)
-     - Calculate cumulative expected-FP / cumulative-calls as a ranking
-       cutoff (this is the "--fdr" stringency knob, not a real FDR)
-     - Keep regions passing that cutoff
-     - Output with confidence scores
-
-INPUT DATA
-────────────────────────────────────────────────────────────────────────────
-  Uses: Strand-specific 3' bedGraphs (unnormalized/raw recommended)
-  
-  Track Type:
-    • Primary/Unique mappers (filtered BAM) for clean detection
-    • Avoids multimapper inflation in repetitive regions
-  
-  Why RAW (unnormalized)?
-    • Auto-calibration adapts to absolute signal levels
-    • Consistent thresholds across varying depths
-    • Normalization can distort statistical properties
-  
-  Strand Convention:
-    • Positive strand: Values ≥ 0
-    • Negative strand: Values ≤ 0 (negative values)
-
-SAMPLE INFORMATION
-────────────────────────────────────────────────────────────────────────────
-  Sample:     ${sample_id}
-  Condition:  ${condition}
-  Timepoint:  ${timepoint}
-  Replicate:  ${replicate}
-
-DETECTION PARAMETERS
-────────────────────────────────────────────────────────────────────────────
-  Threshold:            \${THRESHOLD}
-    Per-bin signal minimum (auto = configured percentile of background,
-    pipeline default ≈ 65th)
-
-  Sum Threshold:        \${SUM_THR}
-    Minimum total signal for peak blocks (auto = threshold × configured
-    multiplier, pipeline default ≈ 1.5×)
-
-  FDR Threshold:        \${FDR}
-    APPROXIMATE false discovery rate (posterior-based, NOT a p-value
-    Benjamini-Hochberg FDR). Treat as a score-stringency knob, not a strict
-    FDR guarantee. When no region passes, the detector returns ZERO sites
-    unless divergent_fallback_top_frac > 0 (opt-in top-fraction fallback).
-  
-  Pairing Window:       \${NT_WINDOW} bp
-    Maximum distance for initial pairing (edge-to-edge or overlapping)
-  
-  Balance Filter:       \${BALANCE}
-    Minimum balance for initial pairing (0.0 = disabled for max sensitivity)
-    Note: Final filtering done statistically via GMM
-  
-  Bin Gap:              \${BIN_GAP} bp
-    Maximum gap to merge bins into peak blocks
-
-PROCESSING OPTIONS
-────────────────────────────────────────────────────────────────────────────
-  Threads:              \${THREADS}
-  QC Report:            \$([ \${DO_QC} -eq 1 ] && echo "Generated" || echo "Disabled")
-
-FILES
-────────────────────────────────────────────────────────────────────────────
-  divergent_transcription.bed     — Detected regions (BED5 format)
-  divergent_transcription_qc.txt  — QC report with detailed statistics
-  divergent_summary.tsv           — Detection summary (TSV)
-  README_divergent.txt            — This documentation
-  divergent.log                   — Complete processing log
-
-OUTPUT FORMAT (BED5)
-────────────────────────────────────────────────────────────────────────────
-  Column 1: chromosome       — Chromosome name
-  Column 2: start            — Region start (0-based)
-  Column 3: end              — Region end (exclusive)
-  Column 4: total_signal     — Combined signal from both strands
-  Column 5: confidence_score — Posterior probability from GMM (0-1)
-
-Confidence Score Interpretation:
-  • Score close to 1.0: High confidence true divergent transcription
-  • Score close to 0.5: Uncertain, borderline case
-  • Score close to 0.0: Likely noise/artifact (should not appear in output)
-  
-  Output regions pass the --fdr stringency cutoff, NOT a calibrated FDR --
-  see divergent_transcription_qc.txt's "Empirical-Null FDR Check" section
-  for this run's actual measured false-positive rate (on real PRO-seq data
-  this consistently sits around ~50%, largely independent of the --fdr
-  setting). Treat scores as a relative ranking for prioritization, not a
-  guarantee that lower-scoring regions in the output are still true
-  positives at some specified rate.
-
-DETECTION RESULTS
-────────────────────────────────────────────────────────────────────────────
+  This run: threshold=\${THRESHOLD}  sum_thr=\${SUM_THR}  fdr=\${FDR}
+            nt_window=\${NT_WINDOW}bp  balance=\${BALANCE}  bin_gap=\${BIN_GAP}bp
   Detected regions: \${DT_COUNT}
   \$([ -s divergent_summary.tsv ] && [ \${DT_COUNT} -gt 0 ] && cat <<STATS
-  Positive peaks:   \${N_POS_PK:-unknown}
-  Negative peaks:   \${N_NEG_PK:-unknown}
-  Raw pairs:        \${N_PAIRS_RAW:-unknown}
-  Final (filtered): \${DT_COUNT}
-  Retention rate:   \$(awk "BEGIN {printf \\"%.1f%%\\", (\${DT_COUNT}/\${N_PAIRS_RAW:-1})*100}" 2>/dev/null || echo "N/A")
-  Processing time:  \${WALL_TIME:-unknown}s
+  Positive peaks: \${N_POS_PK:-unknown}  Negative peaks: \${N_NEG_PK:-unknown}  Raw pairs: \${N_PAIRS_RAW:-unknown}
+  Retention rate: \$(awk "BEGIN {printf \\"%.1f%%\\", (\${DT_COUNT}/\${N_PAIRS_RAW:-1})*100}" 2>/dev/null || echo "N/A")  Processing time: \${WALL_TIME:-unknown}s
 STATS
 )
-
-QUALITY CONTROL
-────────────────────────────────────────────────────────────────────────────
-
-Expected Results:
-  • Typical range: 100-10,000 divergent regions per sample
-  • Regions cluster near active promoters and enhancers
-  • Width typically 200-2000 bp
-  • Confidence scores should be well-distributed (avoid all near 1.0)
-
-Interpretation:
-  • High count: Active transcription, many promoters/enhancers
-  • Low count: Inactive sample, low coverage, or stringent FDR
-  • Very high count (>50,000): Check for artifacts or very deep sequencing
-  
-  Confidence Score Distribution:
-    • Mean score ~0.7-0.9: Good separation between signal and noise
-    • Mean score >0.95: Possible overfitting or very clean data
-    • Mean score <0.6: Possible underfitting or noisy data
-
-Troubleshooting:
-  • Zero regions: Lower FDR (e.g., 0.1) or threshold
-  • Too many regions: Increase FDR stringency (e.g., 0.01)
-  • Low confidence scores: Check input quality, may need more coverage
-  • Model convergence issues: Try manual thresholds instead of auto
-
-Parameter Tuning:
-  
-  More Sensitive (detect more):
-    • Increase FDR (e.g., 0.1)
-    • Decrease threshold (if not using auto)
-    • Decrease sum_thr (if not using auto)
-  
-  More Specific (higher confidence):
-    • Decrease FDR (e.g., 0.01)
-    • Use manual thresholds (increase both)
-  
-  For most applications, auto-calibration with FDR=0.05 works well.
-
-DOWNSTREAM USAGE
-────────────────────────────────────────────────────────────────────────────
-  These divergent transcription regions can be used for:
-  
-  1. Promoter Annotation:
-     - Identify active promoters via divergent transcription signatures
-     - Prioritize by confidence score
-  
-  2. Enhancer Discovery:
-     - Enhancers show divergent transcription
-     - Filter for distal regions (not overlapping promoters)
-  
-  3. Differential Analysis:
-     - Compare region counts and scores across conditions
-     - Use confidence scores to weight importance
-  
-  4. Prioritization:
-     - Rank regions by confidence_score for follow-up experiments
-     - High-score regions more likely to be true functional elements
-
-TECHNICAL NOTES
-────────────────────────────────────────────────────────────────────────────
-  • Requires: numpy, pandas, scikit-learn, scipy
-  • Uses vectorized operations for speed
-  • Chromosome-by-chromosome processing
-  • Memory-efficient streaming I/O
-  • Supports gzipped input bedGraphs
-
-GENERATED
-────────────────────────────────────────────────────────────────────────────
-  Pipeline: TrackTx PRO-seq
-  Date: \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Sample: ${sample_id}
-  Module: detect_divergent_transcription (Statistical)
-  Detector: detect_divergent_transcription.py v1.0
-
-================================================================================
 DOCEOF
 
   echo "DIVERGENT | README | Documentation created"

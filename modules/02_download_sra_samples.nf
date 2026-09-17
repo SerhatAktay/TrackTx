@@ -182,7 +182,7 @@ process download_sra_samples {
           continue
         fi
       fi
-      FILE_SIZE=\$(stat -c%s "\${CACHED}" 2>/dev/null || stat -f%z "\${CACHED}" 2>/dev/null || echo "unknown")
+      FILE_SIZE=\$(tracktx_size "\${CACHED}")
       echo "SRR | CACHE | Found: \$(basename "\${CACHED}") (\${FILE_SIZE} bytes)"
       ln -sf "\${CACHED}" .
       CACHE_FOUND=1
@@ -371,7 +371,7 @@ process download_sra_samples {
     tracktx_error "download_sra_samples" "R1 FASTQ file missing or empty" "Check fasterq-dump output"
   fi
 
-  R1_SIZE=\$(stat -c%s "\${R1_FILE}" 2>/dev/null || stat -f%z "\${R1_FILE}" 2>/dev/null || echo "unknown")
+  R1_SIZE=\$(tracktx_size "\${R1_FILE}")
   echo "SRR | VALIDATE | R1 file: \${R1_FILE} (\${R1_SIZE} bytes)"
 
   # Quick header check for uncompressed files
@@ -389,7 +389,7 @@ process download_sra_samples {
       tracktx_error "download_sra_samples" "Paired-end mode but R2 FASTQ missing or empty" "Check SRA layout and fasterq-dump"
     fi
 
-    R2_SIZE=\$(stat -c%s "\${R2_FILE}" 2>/dev/null || stat -f%z "\${R2_FILE}" 2>/dev/null || echo "unknown")
+    R2_SIZE=\$(tracktx_size "\${R2_FILE}")
     echo "SRR | VALIDATE | R2 file: \${R2_FILE} (\${R2_SIZE} bytes)"
 
     # Quick header check for uncompressed R2
@@ -441,46 +441,20 @@ process download_sra_samples {
   echo "SRR | README | Creating provenance documentation..."
 
   cat > README_fastq.txt <<DOCEOF
-================================================================================
 SRA FASTQ DOWNLOAD — ${sra_id}
-================================================================================
-
-SAMPLE INFORMATION
 ────────────────────────────────────────────────────────────────────────────
-  Sample ID:    ${sample_id}
-  SRA Accession: ${sra_id}
-  Condition:    ${condition}
-  Timepoint:    ${timepoint}
-  Replicate:    ${replicate}
-  Layout:       ${paired_end == "true" ? "Paired-end" : "Single-end"}
-  Compression:  ${(params.fastq_gzip == null) ? "false" : (params.fastq_gzip as boolean ? "true" : "false")}
-  Downloaded:   \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+  Sample:      ${sample_id}  (condition=${condition}, timepoint=${timepoint}, replicate=${replicate})
+  Layout:      ${paired_end == "true" ? "Paired-end" : "Single-end"}
+  Compression: ${(params.fastq_gzip == null) ? "false" : (params.fastq_gzip as boolean ? "true" : "false")}
+  Downloaded:  \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
 
-PIPELINE INFORMATION
-────────────────────────────────────────────────────────────────────────────
-  Pipeline:     TrackTx PRO-seq Analysis
-  Module:       02_download_sra_samples
-  Threads:      ${task.cpus}
-
-FILES
-────────────────────────────────────────────────────────────────────────────
   R1: ${sra_id}_R1.fastq${(params.fastq_gzip == null) ? "" : (params.fastq_gzip as boolean ? ".gz" : "")}
   R2: ${paired_end == "true" ? sra_id + "_R2.fastq" + ((params.fastq_gzip == null) ? "" : (params.fastq_gzip as boolean ? ".gz" : "")) : "N/A (single-end)"}
 
-CACHING
-────────────────────────────────────────────────────────────────────────────
-  Files remain in Nextflow work/ directory. Use -resume to reuse cached outputs
-  and skip re-download on reruns.
-
-NOTES
-────────────────────────────────────────────────────────────────────────────
-  • Files downloaded using SRA Toolkit (fasterq-dump)
-  • Checksums (MD5 or SHA256) generated for data integrity
-  • For access-controlled data (dbGaP), ensure SRA Toolkit is properly configured:
-      vdb-config --interactive
-      vdb-config --import <project.krt>
-
-================================================================================
+  Downloaded via SRA Toolkit (fasterq-dump); MD5/SHA256 checksums alongside each
+  file. Cached in the storeDir above main.nf's STEP 3 comment -- reruns skip
+  re-download automatically. Access-controlled (dbGaP) data needs
+  \`vdb-config --interactive\` / \`--import <project.krt>\` configured first.
 DOCEOF
 
   echo "SRR | README | Documentation created"

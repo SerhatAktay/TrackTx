@@ -539,11 +539,11 @@ PYEOF
   fi
 
   # Check file sizes
-  R1_SIZE=\$(stat -c%s "\${R1}" 2>/dev/null || stat -f%z "\${R1}" 2>/dev/null || echo "unknown")
+  R1_SIZE=\$(tracktx_size "\${R1}")
   echo "PREP | VALIDATE | R1 size: \${R1_SIZE} bytes"
   
   if [[ "\${MODE}" == "PE" ]]; then
-    R2_SIZE=\$(stat -c%s "\${R2}" 2>/dev/null || stat -f%z "\${R2}" 2>/dev/null || echo "unknown")
+    R2_SIZE=\$(tracktx_size "\${R2}")
     echo "PREP | VALIDATE | R2 size: \${R2_SIZE} bytes"
   fi
 
@@ -872,75 +872,26 @@ PYEOF
   echo "PREP | README | Creating documentation..."
 
   cat > README_01_trimmed_fastq.txt <<'DOCEOF'
-================================================================================
 FASTQ PREPROCESSING — ${sample_id}
-================================================================================
-
-OVERVIEW
 ────────────────────────────────────────────────────────────────────────────
-  This directory contains preprocessed FASTQ files ready for alignment.
-  
-  Processing Pipeline:
-    Raw FASTQ → Cutadapt (adapters + barcodes + length) → UMI extraction → Final
+  Raw FASTQ → cutadapt (adapters + barcodes + length) → UMI extraction → final_R*.fastq
 
-FILES
-────────────────────────────────────────────────────────────────────────────
-  final_R1.fastq              — Cleaned R1 reads (ready for alignment)
-  final_R2.fastq              — Cleaned R2 reads (or empty stub for SE)
-  
-  fastqc_raw/                 — Quality control reports on raw reads
-  fastqc_final/               — Quality control reports on final reads
-  
-  trim_stats.tsv              — Read counts through trimming stages
-  umi_stats.tsv               — UMI extraction statistics (if enabled)
-  
-  cutadapt_report.txt         — Detailed cutadapt trimming report
-  umi_extract.log             — UMI extraction log (if enabled)
-  preprocess_reads.log        — Complete processing log
+  final_R1.fastq / final_R2.fastq  — cleaned reads, ready for alignment
+                                      (final_R2.fastq is an empty stub for SE)
+  fastqc_raw/ , fastqc_final/       — FastQC before/after
+  trim_stats.tsv, umi_stats.tsv     — read counts through each stage
+  cutadapt_report.txt, umi_extract.log, preprocess_reads.log
 
-PARAMETERS
-────────────────────────────────────────────────────────────────────────────
-  Sample ID:                  ${sample_id}
-  Mode:                       ${(data_type ?: "SE").toString()}
-  Threads:                    ${task.cpus}
-  
-  Adapter Trimming:           ${params.adapter_trimming?.enabled == true ? "enabled" : "disabled"}
-  Barcode 1:                  ${params.barcode?.enabled == true ? "enabled (as configured: " + (params.barcode?.read ?: "R1") + " " + (params.barcode?.location ?: "5") + "', mode=" + (params.barcode?.detect_mode ?: "trust") + ")" : "disabled"}
-  Barcode 2:                  ${params.barcode?.enabled2 == true ? "enabled (as configured: " + (params.barcode?.read2 ?: "R2") + " " + (params.barcode?.location2 ?: "5") + "', mode=" + (params.barcode?.detect_mode2 ?: "trust") + ")" : "disabled"}
-  UMI Extraction:             ${params.umi?.enabled == true ? "enabled (as configured: " + (params.umi?.read ?: "R1") + " " + (params.umi?.location ?: "5") + "', mode=" + (params.umi?.detect_mode ?: "trust") + ")" : "disabled"}
-  QC Tool:                    FastQC
-  QC Enabled:                 ${(params.qc?.enabled == null ? true : params.qc?.enabled) ? "yes" : "no"}
+  Mode: ${(data_type ?: "SE").toString()}  |  Threads: ${task.cpus}
+  Adapter trimming: ${params.adapter_trimming?.enabled == true ? "enabled" : "disabled"}
+  Barcode 1: ${params.barcode?.enabled == true ? (params.barcode?.read ?: "R1") + " " + (params.barcode?.location ?: "5") + "', mode=" + (params.barcode?.detect_mode ?: "trust") : "disabled"}
+  Barcode 2: ${params.barcode?.enabled2 == true ? (params.barcode?.read2 ?: "R2") + " " + (params.barcode?.location2 ?: "5") + "', mode=" + (params.barcode?.detect_mode2 ?: "trust") : "disabled"}
+  UMI: ${params.umi?.enabled == true ? (params.umi?.read ?: "R1") + " " + (params.umi?.location ?: "5") + "', mode=" + (params.umi?.detect_mode ?: "trust") : "disabled"}
 
-  NOTE: "as configured" above reflects params.yaml, evaluated at pipeline
-  submission time. If detect_mode is "auto" or "verify" for any slot, the
-  VALUES ACTUALLY USED for trimming may have been overridden by the QC
-  scan at run time -- see barcode_umi_profile.json and
-  barcode_umi_detect.log (present in this folder when that happened) and
-  the "PREP | DETECT |" lines in preprocess_reads.log for what was
-  actually applied to these reads.
-
-QUALITY METRICS
-────────────────────────────────────────────────────────────────────────────
-  See trim_stats.tsv for detailed read retention rates through each step.
-  QC reports (HTML/JSON) are available in fastqc_raw/ and fastqc_final/.
-
-DOWNSTREAM USAGE
-────────────────────────────────────────────────────────────────────────────
-  Use final_R1.fastq (and final_R2.fastq for PE) for alignment.
-  These files have been:
-    ✓ Adapter trimmed (if enabled)
-    ✓ Barcode removed (if enabled)
-    ✓ UMI extracted and appended to read names (if enabled)
-    ✓ Length filtered (minimum insert length enforced)
-    ✓ Quality checked
-
-NOTES
-────────────────────────────────────────────────────────────────────────────
-  • Single-pass processing: Faster than traditional multi-step approaches
-  • UMI information (if extracted) is embedded in FASTQ read names
-  • Empty final_R2.fastq for SE samples maintains consistent file structure
-
-================================================================================
+  Values above reflect params.yaml at submission time. If any detect_mode is
+  "auto"/"verify", the values ACTUALLY applied may differ -- see
+  barcode_umi_profile.json, barcode_umi_detect.log, and the "PREP | DETECT |"
+  lines in preprocess_reads.log for what really ran on these reads.
 DOCEOF
 
   echo "PREP | README | Documentation created"
@@ -950,8 +901,8 @@ DOCEOF
   ###########################################################################
 
   # Get final file sizes
-  FINAL_R1_SIZE=\$(stat -c%s final_R1.fastq 2>/dev/null || stat -f%z final_R1.fastq 2>/dev/null || echo "unknown")
-  FINAL_R2_SIZE=\$(stat -c%s final_R2.fastq 2>/dev/null || stat -f%z final_R2.fastq 2>/dev/null || echo "unknown")
+  FINAL_R1_SIZE=\$(tracktx_size final_R1.fastq)
+  FINAL_R2_SIZE=\$(tracktx_size final_R2.fastq)
 
   echo "────────────────────────────────────────────────────────────────────────"
   echo "PREP | SUMMARY | Processing complete for \${SAMPLE_ID}"

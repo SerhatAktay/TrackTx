@@ -1,0 +1,87 @@
+nextflow_process {
+
+    name "Test Process normalize_coverage_tracks"
+    script "modules/08_normalize_coverage_tracks.nf"
+    process "normalize_coverage_tracks"
+
+    // Regression test for two bugs fixed together in this module:
+    //
+    // 1. Scientific-notation CPM: normalize_bedgraph's awk used the default
+    //    OFMT ("%.6g"), so a tiny CPM factor (deep library / large spike-in
+    //    imbalance) printed values like "1e-06" -- which bedGraphToBigWig
+    //    rejects, silently producing an EMPTY BigWig via make_bigwig's own
+    //    fallback. norm_test_counts_master.tsv gives sampleZ main_reads =
+    //    1e12, so FAC_CPM = 1e-6 and the pos3 bedgraph's signal (1) yields
+    //    exactly the failure-triggering value. Fixed via BEGIN{OFMT="%.10f"}.
+    //
+    // 2. The 8 main/allMap x 3p/5p x pos/neg normalize_bedgraph calls used to
+    //    run sequentially; they now run in a throttled parallel fan-out
+    //    (mirroring module 06's launch_cov), writing per-job manifest
+    //    fragments that get merged after all jobs finish instead of
+    //    appending to tracks_manifest.tsv directly from concurrent
+    //    background jobs. This test forces emit_5p and emit_allmap on so
+    //    all 8 jobs run, and asserts none of their manifest fragments were
+    //    lost or corrupted by the concurrency.
+    test("parallel fan-out produces all manifest entries with no scientific notation") {
+
+        when {
+            params {
+                norm = [emit_5p: true, emit_allmap: true, emit_bw: true]
+                control_label = 'CTRL'
+            }
+            process {
+                """
+                input[0] = Channel.of(
+                    tuple(
+                        'sampleZ',
+                        file("\${baseDir}/tests/fixtures/norm_test_pos3.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/norm_test_neg3.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/norm_test_pos5.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/norm_test_neg5.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/norm_test_am3p_pos.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/norm_test_am3p_neg.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/norm_test_am5p_pos.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/norm_test_am5p_neg.bedgraph"),
+                        'TREAT', '0', '1',
+                        file("\${baseDir}/tests/fixtures/norm_test_counts_master.tsv"),
+                        file("\${baseDir}/tests/fixtures/norm_test_genes_empty.tsv")
+                    )
+                )
+                input[1] = file("\${baseDir}/tests/fixtures/norm_test_genome.fa")
+                """
+            }
+        }
+
+        then {
+            assert process.success
+
+            // 8 jobs (main/allMap x 3p/5p x pos/neg), no siCPM (spike_reads=0
+            // in the counts master -> no control candidate -> CPM-only, one
+            // manifest line per job) -> exactly 8 lines, one per job.
+            def manifestLines = path(process.out.manifest.get(0)).text.readLines().findAll { it }
+            assert manifestLines.size() == 8
+
+            def combos = manifestLines.collect { line ->
+                def f = line.split('\t')
+                [f[1], f[2], f[3]]  // end_label, set_label, strand
+            }.toSet()
+            def expected = [
+                ['3p','main','pos'], ['3p','main','neg'],
+                ['5p','main','pos'], ['5p','main','neg'],
+                ['3p','allMap','pos'], ['3p','allMap','neg'],
+                ['5p','allMap','pos'], ['5p','allMap','neg'],
+            ].collect { it }.toSet()
+            assert combos == expected
+
+            // FAC_CPM = 1e6 / 1e12 = 1e-6; pos3 signal is 1 -> cpm value is
+            // exactly 1e-6. Must be plain decimal, not scientific notation.
+            def cpmText = path(process.out.pos3_cpm_bg.get(0)).text.trim()
+            assert !cpmText.contains('e')
+            assert !cpmText.contains('E')
+            def cpmVal = cpmText.split('\t')[3] as double
+            assert Math.abs(cpmVal - 1.0e-6) < 1.0e-9
+        }
+
+    }
+
+}

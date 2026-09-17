@@ -159,11 +159,9 @@ process quality_control_aligned_reads {
   # concurrently running samples sharing this pipeline's USB/HDD-backed work
   # volume, where concurrent big sequential reads interleave into
   # seek-thrashing instead of parallel throughput.
-  IO_LOCK_FILE="${projectDir}/.tracktx_io.lock"
-  IO_LOCK_TIMEOUT=\${TRACKS_IO_LOCK_TIMEOUT:-1800}
-  with_io_lock() {
-    flock -w "\${IO_LOCK_TIMEOUT}" "\${IO_LOCK_FILE}" "\$@"
-  }
+  # Shared with_io_lock()/init (bin/tracktx_error_fragment.sh); override the
+  # slot-wait timeout with TRACKS_IO_LOCK_TIMEOUT (default 1800s).
+  tracktx_io_lock_init "${projectDir}/.tracktx_io.lock"
 
   # Uniqueness definition for the "unique read" QC metrics. With bowtie2 -k,
   # MAPQ is 255 (unavailable), so we select uniquely-mapped reads via the NH
@@ -197,7 +195,7 @@ process quality_control_aligned_reads {
   if [[ ! -s "\${BAM_FILE}" ]]; then
     tracktx_error "quality_control_aligned_reads" "BAM file missing or empty: \${BAM_FILE}" "Check align_reads_to_genome module"
   fi
-  BAM_SIZE=\$(stat -c%s "\${BAM_FILE}" 2>/dev/null || stat -f%z "\${BAM_FILE}" 2>/dev/null || echo "unknown")
+  BAM_SIZE=\$(tracktx_size "\${BAM_FILE}")
   echo "QC | VALIDATE | BAM: \${BAM_SIZE} bytes"
 
   # Check if BAM is indexed (create if needed)
@@ -211,7 +209,7 @@ process quality_control_aligned_reads {
 
   # Check dedup stats (optional)
   if [[ -s "\${DEDUP_STATS}" ]]; then
-    DEDUP_SIZE=\$(stat -c%s "\${DEDUP_STATS}" 2>/dev/null || stat -f%z "\${DEDUP_STATS}" 2>/dev/null || echo "unknown")
+    DEDUP_SIZE=\$(tracktx_size "\${DEDUP_STATS}")
     echo "QC | VALIDATE | Dedup stats: \${DEDUP_SIZE} bytes"
   else
     echo "QC | VALIDATE | Dedup stats: not available"
@@ -620,7 +618,7 @@ process quality_control_aligned_reads {
 }
 JSONEOF
 
-  JSON_SIZE=\$(stat -c%s qc_pol.json 2>/dev/null || stat -f%z qc_pol.json 2>/dev/null || echo "unknown")
+  JSON_SIZE=\$(tracktx_size qc_pol.json)
   echo "QC | OUTPUT | JSON summary: \${JSON_SIZE} bytes"
 
   ###########################################################################
@@ -630,239 +628,32 @@ JSONEOF
   echo "QC | README | Creating documentation..."
 
   cat > README_qc.txt <<DOCEOF
-================================================================================
-QUALITY CONTROL REPORT — \${SAMPLE_ID}
-================================================================================
-
-OVERVIEW
+QUALITY CONTROL — \${SAMPLE_ID} (\${CONDITION}, t=\${TIMEPOINT}, rep=\${REPLICATE}, \$([ \${IS_PAIRED} -eq 1 ] && echo "PE" || echo "SE"))
 ────────────────────────────────────────────────────────────────────────────
-  Comprehensive quality control analysis for PRO-seq aligned reads.
-  
-  Sample Information:
-    • Sample ID:  \${SAMPLE_ID}
-    • Condition:  \${CONDITION}
-    • Timepoint:  \${TIMEPOINT}
-    • Replicate:  \${REPLICATE}
-    • Mode:       \$([ \${IS_PAIRED} -eq 1 ] && echo "Paired-end" || echo "Single-end")
+  Filters: -F 0x904 (unmapped+secondary+supplementary)\$([ "\${DEDUP_ENABLED}" == "true" ] && echo " +0x400 duplicate"), MAPQ>=\${MAPQ_THRESHOLD}
 
-FILTERING CRITERIA
-────────────────────────────────────────────────────────────────────────────
-  Flags Excluded:
-    • 0x100 (secondary alignment)
-    • 0x800 (supplementary alignment)
-    • 0x4   (unmapped)
-    \$([ "\${DEDUP_ENABLED}" == "true" ] && echo "  • 0x400 (duplicate)" || echo "")
-  
-  Quality Threshold:
-    • MAPQ ≥ \${MAPQ_THRESHOLD}
+  Total \${TOTAL_READS}  |  Mapped \${MAPPED_READS} (\${MAP_PERCENT}%)  |  Dup \${DUP_READS} (\${DUP_PERCENT}%)  |  MAPQ-pass \${MAPQ_READS} (\${MAPQ_PERCENT}%)
+    \$(if awk -v m=\${MAP_PERCENT%.*} 'BEGIN{exit (m>=70)?0:1}'; then echo "✓ mapping rate ≥70%"; elif awk -v m=\${MAP_PERCENT%.*} 'BEGIN{exit (m>=50)?0:1}'; then echo "⚠ moderate mapping rate (50-70%)"; else echo "✗ low mapping rate (<50%)"; fi)
+    \$(if awk -v d=\${DUP_PERCENT%.*} 'BEGIN{exit (d<=30)?0:1}'; then echo "✓ duplicate rate ≤30%"; else echo "⚠ high duplicate rate (>30%)"; fi)
 
-ALIGNMENT STATISTICS
-────────────────────────────────────────────────────────────────────────────
-  Total Reads:              \${TOTAL_READS}
-  Mapped Reads:             \${MAPPED_READS} (\${MAP_PERCENT}%)
-  Duplicate Reads:          \${DUP_READS} (\${DUP_PERCENT}%)
-  MAPQ≥\${MAPQ_THRESHOLD} Reads:         \${MAPQ_READS} (\${MAPQ_PERCENT}%)
-  MAPQ≥\${MAPQ_THRESHOLD} (no dup):      \${MAPQ_NODUP_READS}
-  
-  Quality Assessment:
-    \$(if awk -v m=\${MAP_PERCENT%.*} 'BEGIN{exit (m>=70)?0:1}'; then
-      echo "✓ Good mapping rate (≥70%)"
-    elif awk -v m=\${MAP_PERCENT%.*} 'BEGIN{exit (m>=50)?0:1}'; then
-      echo "⚠ Moderate mapping rate (50-70%)"
-    else
-      echo "✗ Low mapping rate (<50%)"
-    fi)
-    
-    \$(if awk -v d=\${DUP_PERCENT%.*} 'BEGIN{exit (d<=30)?0:1}'; then
-      echo "✓ Acceptable duplicate rate (≤30%)"
-    else
-      echo "⚠ High duplicate rate (>30%)"
-    fi)
+  Strand: + \${PLUS_READS} (\${PLUS_PERCENT}%)  - \${MINUS_READS} (\${MINUS_PERCENT}%)  [expect ~50/50]
+    \$(if awk -v p=\${PLUS_PERCENT%.*} 'BEGIN{exit (p>=40 && p<=60)?0:1}'; then echo "✓ good strand balance"; elif awk -v p=\${PLUS_PERCENT%.*} 'BEGIN{exit (p>=30 && p<=70)?0:1}'; then echo "⚠ moderate strand bias"; else echo "✗ severe strand bias"; fi)
 
-STRAND BIAS ANALYSIS
-────────────────────────────────────────────────────────────────────────────
-  Plus Strand (+):          \${PLUS_READS} (\${PLUS_PERCENT}%)
-  Minus Strand (−):         \${MINUS_READS} (\${MINUS_PERCENT}%)
-  
-  Expected Balance:         ~50/50 (biology may cause slight imbalance)
-  
-  Quality Assessment:
-    \$(if awk -v p=\${PLUS_PERCENT%.*} 'BEGIN{exit (p>=40 && p<=60)?0:1}'; then
-      echo "✓ Good strand balance (40-60%)"
-    elif awk -v p=\${PLUS_PERCENT%.*} 'BEGIN{exit (p>=30 && p<=70)?0:1}'; then
-      echo "⚠ Moderate strand bias (30-70%)"
-    else
-      echo "✗ Severe strand bias (<30% or >70%)"
-    fi)
-  
-  Note: PRO-seq libraries should show roughly equal strand distribution.
-        Severe bias may indicate technical issues.
-
-COVERAGE STATISTICS
-────────────────────────────────────────────────────────────────────────────
-  Mean Depth:               \${MEAN_DEPTH}×
-  
-  Expected Depth:           >10× (adequate), >30× (good)
-  
-  Quality Assessment:
-    \$(if awk -v d=\${MEAN_DEPTH%.*} 'BEGIN{exit (d>=30)?0:1}'; then
-      echo "✓ Good coverage (≥30×)"
-    elif awk -v d=\${MEAN_DEPTH%.*} 'BEGIN{exit (d>=10)?0:1}'; then
-      echo "✓ Adequate coverage (10-30×)"
-    else
-      echo "✗ Low coverage (<10×)"
-    fi)
+  Coverage: \${MEAN_DEPTH}x mean depth [expect >10x adequate, >30x good]
+    \$(if awk -v d=\${MEAN_DEPTH%.*} 'BEGIN{exit (d>=30)?0:1}'; then echo "✓ good coverage"; elif awk -v d=\${MEAN_DEPTH%.*} 'BEGIN{exit (d>=10)?0:1}'; then echo "✓ adequate coverage"; else echo "✗ low coverage (<10x)"; fi)
 
 \$([ \${IS_PAIRED} -eq 1 ] && cat <<FRAGEOF
-FRAGMENT LENGTH DISTRIBUTION (Paired-End)
-────────────────────────────────────────────────────────────────────────────
-  Median Insert Size:       \${MEDIAN_FRAG:-NA} bp
-  
-  Expected Range:           150-250 bp (nucleosome-sized)
-  
-  Quality Assessment:
-    \$(if [[ "\${MEDIAN_FRAG}" != "NA" ]]; then
-      MEDIAN_INT=\${MEDIAN_FRAG%.*}
-      if [[ \${MEDIAN_INT} -ge 150 && \${MEDIAN_INT} -le 250 ]]; then
-        echo "✓ Fragment size in expected range"
-      else
-        echo "⚠ Fragment size outside typical range"
-      fi
-    else
-      echo "− Not available"
-    fi)
-  
-  Note: PRO-seq typically shows enrichment for ~200 bp fragments
-        corresponding to nucleosome-protected DNA.
+  Fragment size (PE): median \${MEDIAN_FRAG:-NA} bp [expect 150-250bp nucleosome-sized]
+    \$(if [[ "\${MEDIAN_FRAG}" != "NA" ]]; then MEDIAN_INT=\${MEDIAN_FRAG%.*}; if [[ \${MEDIAN_INT} -ge 150 && \${MEDIAN_INT} -le 250 ]]; then echo "✓ in expected range"; else echo "⚠ outside typical range"; fi; else echo "- not available"; fi)
 FRAGEOF
 )
-
 \$([ "\${UMI_ENABLED}" == "true" ] && cat <<UMIEOF
-UMI DEDUPLICATION STATISTICS
-────────────────────────────────────────────────────────────────────────────
-  UMI Status:               Enabled
-  
-  Input Reads:              \${UMI_INPUT_READS}
-  Output Reads:             \${UMI_OUTPUT_READS}
-  Duplicates Removed:       \${UMI_DUPLICATES_REMOVED} (\${UMI_DEDUP_PERCENT}%)
-  
-  Quality Assessment:
-    \$(if awk -v d=\${UMI_DEDUP_PERCENT%.*} 'BEGIN{exit (d<=50)?0:1}'; then
-      echo "✓ Reasonable duplication rate (≤50%)"
-    elif awk -v d=\${UMI_DEDUP_PERCENT%.*} 'BEGIN{exit (d<=70)?0:1}'; then
-      echo "⚠ High duplication rate (50-70%)"
-    else
-      echo "✗ Very high duplication rate (>70%)"
-    fi)
-  
-  Note: UMI-based deduplication is more accurate than coordinate-based
-        deduplication and can distinguish true duplicates from PCR copies.
+  UMI dedup: \${UMI_INPUT_READS} -> \${UMI_OUTPUT_READS} (\${UMI_DUPLICATES_REMOVED} removed, \${UMI_DEDUP_PERCENT}%)
+    \$(if awk -v d=\${UMI_DEDUP_PERCENT%.*} 'BEGIN{exit (d<=50)?0:1}'; then echo "✓ reasonable duplication"; elif awk -v d=\${UMI_DEDUP_PERCENT%.*} 'BEGIN{exit (d<=70)?0:1}'; then echo "⚠ high duplication (50-70%)"; else echo "✗ very high duplication (>70%)"; fi)
 UMIEOF
 )
 
-FILES GENERATED
-────────────────────────────────────────────────────────────────────────────
-  qc_strand_bias.tsv:
-    Two-column TSV with strand (+/−) and read counts
-    Used for: Assessing strand balance
-  
-  qc_fragment_length.tsv:
-    Two-column TSV with fragment length and count
-    Used for: Insert size distribution (PE only)
-    Empty for single-end data
-  
-  qc_coverage.tsv:
-    Two-column TSV with metric and value
-    Currently contains: mean_coverage_depth
-  
-  qc_pol.json:
-    JSON summary with all QC metrics
-    Used for: Downstream aggregation and reporting
-    Fields: 20+ metrics including alignment, strand, coverage stats
-  
-  README_qc.txt:
-    This documentation file
-  
-  qc.log:
-    Processing log with timestamps
-
-INTERPRETATION GUIDE
-────────────────────────────────────────────────────────────────────────────
-
-Good Quality Sample:
-  ✓ Mapping rate >70%
-  ✓ Duplicate rate <30%
-  ✓ Strand balance 40-60%
-  ✓ Mean depth >10×
-  ✓ Fragment size 150-250 bp (PE)
-
-Potential Issues:
-  ⚠ Low mapping rate (<70%):
-    → Check adapter contamination
-    → Verify genome reference
-    → Check read quality
-  
-  ⚠ High duplicate rate (>30%):
-    → May indicate low complexity library
-    → Consider UMI-based deduplication
-    → Check PCR cycles
-  
-  ⚠ Strand bias (<40% or >60%):
-    → Check library preparation protocol
-    → Verify PRO-seq specific steps
-    → May indicate degradation
-  
-  ⚠ Low coverage (<10×):
-    → Increase sequencing depth
-    → Check library complexity
-    → Verify enrichment efficiency
-
-DOWNSTREAM USAGE
-────────────────────────────────────────────────────────────────────────────
-  These QC metrics are used for:
-  
-  1. Sample QC:
-     - Identify failed libraries
-     - Detect technical issues
-     - Compare across batches
-  
-  2. Filtering:
-     - Exclude low-quality samples
-     - Identify outliers
-     - Batch effect assessment
-  
-  3. Normalization:
-     - Inform normalization strategy
-     - Account for depth differences
-     - Consider duplicate rates
-
-PROCESSING DETAILS
-────────────────────────────────────────────────────────────────────────────
-  Tools Used:
-    • samtools: Read counting, filtering, coverage
-    • awk: Text processing and calculations
-  
-  Processing Times:
-    • Alignment stats: \${STATS_TIME}s
-    • Strand analysis: \${STRAND_TIME}s
-    • Fragment analysis: \${FRAG_TIME}s
-    • Coverage stats: \${COV_TIME}s
-    • Total: \$((STATS_TIME + STRAND_TIME + FRAG_TIME + COV_TIME))s
-  
-  Samtools Flags Used:
-    -F 0x900: Exclude secondary (0x100) and supplementary (0x800)
-    -F 0x904: Above + exclude unmapped (0x4)
-    -F 0xD04: Above + exclude duplicate (0x400) and unmapped (0x4)
-    -q ${mapq_thr}: Minimum MAPQ threshold
-
-GENERATED
-────────────────────────────────────────────────────────────────────────────
-  Pipeline: TrackTx PRO-seq
-  Date: \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Sample: \${SAMPLE_ID}
-  Module: 13_quality_control_aligned_reads
-
-================================================================================
+  qc_strand_bias.tsv, qc_fragment_length.tsv (PE only), qc_coverage.tsv, qc_pol.json
 DOCEOF
 
   echo "QC | README | Documentation created"

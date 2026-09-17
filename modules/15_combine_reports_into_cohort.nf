@@ -165,7 +165,7 @@ process combine_reports_into_cohort {
       tracktx_error \"combine_reports_into_cohort\" \"Missing file: \${JSON_FILE}\" \"Check generate_per_sample_reports module outputs\"
     fi
     
-    FILE_SIZE=\$(stat -c%s \"\${JSON_FILE}\" 2>/dev/null || stat -f%z \"\${JSON_FILE}\" 2>/dev/null || echo 0)
+    FILE_SIZE=\$(tracktx_size \"\${JSON_FILE}\" 0)
     
     if [[ \${FILE_SIZE} -eq 0 ]]; then
       tracktx_error \"combine_reports_into_cohort\" \"Empty file: \${JSON_FILE}\" \"Check generate_per_sample_reports module outputs\"
@@ -250,13 +250,13 @@ process combine_reports_into_cohort {
     if [[ ! -s \"\${OUTPUT}\" ]]; then
       tracktx_error \"combine_reports_into_cohort\" \"Missing or empty output: \${OUTPUT}\" \"Check combine.log in work dir\"
     fi
-    OUTPUT_SIZE=\$(stat -c%s \"\${OUTPUT}\" 2>/dev/null || stat -f%z \"\${OUTPUT}\" 2>/dev/null || echo \"unknown\")
+    OUTPUT_SIZE=\$(tracktx_size \"\${OUTPUT}\")
     echo \"COHORT | VALIDATE | \$(basename \${OUTPUT}): \${OUTPUT_SIZE} bytes\"
   done
 
   # Check optional regions file
   if [[ -s \"\${OUT_REGIONS}\" ]]; then
-    REGIONS_SIZE=\$(stat -c%s \"\${OUT_REGIONS}\" 2>/dev/null || stat -f%z \"\${OUT_REGIONS}\" 2>/dev/null || echo \"unknown\")
+    REGIONS_SIZE=\$(tracktx_size \"\${OUT_REGIONS}\")
     REGIONS_LINES=\$(wc -l < \"\${OUT_REGIONS}\" | tr -d ' ')
     echo \"COHORT | VALIDATE | Region totals: \${REGIONS_SIZE} bytes (\${REGIONS_LINES} lines)\"
   else
@@ -362,7 +362,7 @@ if os.path.isfile(cj):
         if div_v:
             kpis[\"median_div\"] = f\"{div_v[len(div_v)//2]:,}\"
         pi_v = sorted(x for s in samples
-                      for x in [s.get(\"pi_median_len_norm\", s.get(\"pi_median\"))]
+                      for x in [s.get(\"median_pausing_index\")]
                       if x is not None)
         if pi_v:
             kpis[\"median_pi\"] = f\"{pi_v[len(pi_v)//2]:.2f}\"
@@ -433,6 +433,8 @@ html = f\"\"\"<!DOCTYPE html>
   <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
   <title>TrackTx &middot; {RUN_NAME}</title>
   <style>
+    /* Palette from bin/_common.py TRACKTX_THEME -- keep in sync (see that
+       module's docstring for the other files sharing this palette). */
     :root{{--bg:#0f1117;--surface:#1a1d27;--surface2:#232636;--border:#2e3248;
           --accent:#6c8ef5;--accent2:#4ecdc4;--text:#e8eaf0;--muted:#7b82a0;}}
     *{{margin:0;padding:0;box-sizing:border-box;}}
@@ -686,298 +688,25 @@ PYEOF
   echo \"COHORT | README | Creating documentation...\"
 
   cat > \"\${OUT_README}\" <<DOCEOF
-================================================================================
 COHORT-LEVEL REPORT AGGREGATION
-================================================================================
-
-OVERVIEW
 ────────────────────────────────────────────────────────────────────────────
-  Aggregates per-sample reports into unified cohort-level summaries with
-  interactive visualizations and comprehensive data exports.
+  \${TOTAL_JSON} samples  |  \${COMBINE_TIME}s  |  v\${PIPELINE_VERSION}  |  run=\${RUN_NAME}  |  profile=\${PROFILE}
 
-PROCESSING SUMMARY
-────────────────────────────────────────────────────────────────────────────
-  Samples processed:    \${TOTAL_JSON}
-  Processing time:      \${COMBINE_TIME}s
-  Pipeline version:     \${PIPELINE_VERSION}
-  Run name:             \${RUN_NAME}
-  Duration:             \${DURATION}
-  Profile:              \${PROFILE}
+  global_summary.html — cohort SPA: overview, per-sample sortable table, QC
+    summary, divergent-TX + functional-region + pausing-index distributions,
+    pipeline execution metadata. Offline, no external dependencies. For
+    n<=5 samples, treat cohort-level distributions as qualitative and rely on
+    the small-cohort summary card + per-sample QC plots instead.
+  global_summary.tsv  — same per-sample metrics, one row each
+  global_summary.json — same data, versioned schema (samples[], aggregate{})
+  global_region_totals.tsv — functional-region totals across samples (optional)
 
-COHORT REPORT FILES
-────────────────────────────────────────────────────────────────────────────
+  Quick access, written to \${ROOT_DIR}/: index.html (landing page linking
+  cohort/per-sample/execution reports) and a copy of global_summary.html.
 
-global_summary.html:
-  Single-page application (SPA) with:
-    • Cohort overview and statistics
-    • Per-sample metrics table (interactive, sortable, filterable)
-    • Quality control summary across all samples
-    • Aggregate divergent transcription statistics
-    • Functional region composition
-    • Pausing index distributions
-    • Pipeline execution metadata
-  
-  Features:
-    - Works offline (no external dependencies)
-    - All CSS and JavaScript embedded
-    - Interactive tables with search/sort
-    - Responsive design for mobile/desktop
-    - Print-friendly formatting
-  
-  View in web browser for best experience.
-
-global_summary.tsv:
-  Tab-separated table with per-sample metrics:
-    Columns vary based on available data:
-      • Sample identification (sample_id, condition, timepoint, replicate)
-      • QC metrics (total_reads, map_rate, duplicate_rate, etc.)
-      • Divergent transcription (loci_count)
-      • Functional regions (promoter_signal, body_signal, etc.)
-      • Pausing indices (median_pi, mean_pi)
-      • Normalization factors
-  
-  Compatible with:
-    - R: read.delim(\"global_summary.tsv\")
-    - Python: pandas.read_csv(\"global_summary.tsv\", sep=\"\\\\t\")
-    - Excel/LibreOffice Calc
-    - Command-line tools (awk, cut, grep)
-
-global_summary.json:
-  Structured JSON with complete cohort data:
-    Schema includes:
-      • schema_version: JSON schema version
-      • pipeline: Pipeline metadata
-      • samples: Array of per-sample data
-      • aggregate: Cohort-wide statistics
-      • qc_summary: Aggregate QC metrics
-  
-  Use cases:
-    - API integration
-    - Custom analysis scripts
-    - Database import
-    - Reproducibility records
-
-global_region_totals.tsv (optional):
-  Aggregated functional region counts:
-    Columns:
-      • region: Region name (promoter, body, CPS, etc.)
-      • total_signal: Sum across all samples
-      • sample_count: Number of samples contributing
-      • mean_signal: Average per sample
-      • std_signal: Standard deviation
-  
-  Generated if functional region data available.
-
-QUICK ACCESS FILES
-────────────────────────────────────────────────────────────────────────────
-  Created in output root for convenience:
-  
-  global_summary.html:
-    Copy of cohort report for quick access
-    Location: ${params.output_dir}/global_summary.html
-  
-  index.html:
-    Landing page with links to all reports:
-      • Cohort summary
-      • Per-sample reports
-      • Nextflow execution reports
-      • Pipeline metadata
-    
-    Location: ${params.output_dir}/index.html
-    
-    Features:
-      - Clean, modern design
-      - Responsive layout
-      - Quick navigation
-      - Pipeline information display
-
-INPUT FILES
-────────────────────────────────────────────────────────────────────────────
-  Expected per-sample JSON files:
-    • *.summary.json
-    • *.report.json
-    • *.json
-  
-  Total files processed: \${TOTAL_JSON}
-  
-  JSON Discovery:
-    - Case-insensitive matching
-    - Accepts files or directories
-    - Validates existence and size
-    - Robust to missing fields
-
-COHORT REPORT CONTENTS
-────────────────────────────────────────────────────────────────────────────
-
-1. Cohort Overview
-   • Total samples analyzed
-   • Experimental design summary
-   • Conditions and timepoints
-   • Replicates per group
-
-2. Quality Control Summary
-   • Aggregate mapping statistics
-   • Duplicate rates across cohort
-   • Strand balance distribution
-   • Coverage depth summary
-   • Sample outlier detection
-   • Small-cohort summary card (n ≤ 5) with QC and design verdicts
-
-3. Divergent Transcription
-   • Total loci across cohort
-   • Distribution per sample (histograms for larger cohorts; dot/text summaries for n < 6)
-   • Genomic characteristics
-   • Summary statistics
-
-4. Functional Region Composition
-   • Promoter signal distribution
-   • Gene body signal
-   • CPS signal
-   • Enhancer signal
-   • Other regions
-   • Comparative analysis
-
-5. Pausing Index Analysis
-   • Distribution across samples (histograms for larger cohorts; dot/text summaries for n < 6)
-   • Mean/median pausing indices
-   • Top paused genes
-   • Condition comparisons
-
-6. Per-Sample Metrics Table
-   • Interactive, sortable table
-   • All key metrics per sample
-   • Search and filter capabilities
-   • Export functionality
-
-7. Pipeline Execution
-   • Runtime information
-   • Resource utilization
-   • Software versions
-   • Configuration parameters
-
-USING THE COHORT REPORT
-────────────────────────────────────────────────────────────────────────────
-
-HTML Report:
-  1. Open global_summary.html or index.html in web browser
-  2. Navigate using table of contents
-  3. Use interactive table features:
-     - Click column headers to sort
-     - Type in search box to filter
-     - Export data if needed
-  4. Review QC summary for outliers
-  5. For small cohorts (≤5 samples), focus on per-sample QC plots and the small-cohort summary card.
-  6. Compare metrics across conditions
-
-TSV Export:
-  # Load in R
-  cohort <- read.delim(\"global_summary.tsv\")
-  
-  # Filter by condition
-  treatment <- subset(cohort, condition == \"treatment\")
-  
-  # Calculate statistics
-  mean(cohort\\\$map_rate_percent)
-  
-  # Load in Python
-  import pandas as pd
-  cohort = pd.read_csv(\"global_summary.tsv\", sep=\"\\\\t\")
-  
-  # Group by condition
-  cohort.groupby(\"condition\").mean()
-
-JSON Data:
-  # Python
-  import json
-  with open(\"global_summary.json\") as f:
-      cohort = json.load(f)
-  
-  samples = cohort[\"samples\"]
-  aggregate = cohort[\"aggregate\"]
-  
-  # R
-  library(jsonlite)
-  cohort <- fromJSON(\"global_summary.json\")
-
-QUALITY ASSESSMENT
-────────────────────────────────────────────────────────────────────────────
-
-Expected Cohort Metrics:
-  ✓ All samples have mapping rate >70%
-  ✓ Duplicate rates relatively consistent
-  ✓ Strand balance similar across samples
-  ✓ Coverage depths adequate (>10×)
-  ✓ Replicates cluster by condition
-
-Red Flags:
-  ✗ Individual samples with very low mapping
-  ✗ Extreme outliers in duplicate rates
-  ✗ Inconsistent strand bias across samples
-  ✗ Large variability within replicates
-  ✗ Batch effects visible in QC metrics
-
-Troubleshooting:
-  - Outlier samples: Review per-sample reports
-  - Batch effects: Check processing dates, reagent lots
-  - Low quality: Consider excluding samples
-  - Inconsistent metrics: Verify library prep protocol
-  - Very small cohorts (≤5 samples): Treat cohort-level distributions as qualitative; rely on per-sample QC and the small-cohort summary card for decisions
-
-DOWNSTREAM ANALYSIS
-────────────────────────────────────────────────────────────────────────────
-  
-  1. Comparative Analysis:
-     - Compare pausing indices and divergent transcription across conditions
-     - Identify condition-specific transcription patterns
-     - Assess replicate consistency (especially via per-condition QC summaries)
-  
-  2. Quality Control:
-     - Identify failed or low-quality samples
-     - Detect batch effects
-     - Plan additional sequencing if needed
-  
-  3. Data Integration:
-     - Export TSV for statistical analysis (R, Python)
-     - Load JSON for programmatic access
-     - Share HTML for collaborators
-  
-  4. Publication:
-     - QC summary for methods section
-     - Cohort statistics for results
-     - Data availability statement
-
-TECHNICAL NOTES
-────────────────────────────────────────────────────────────────────────────
-  • Robust to missing fields in per-sample JSONs
-  • Single-file HTML works offline
-  • No external dependencies required
-  • TSV uses standard tab-separated format
-  • JSON follows versioned schema
-  • Handles large cohorts (100+ samples)
-
-FILE FORMATS
-────────────────────────────────────────────────────────────────────────────
-  HTML: UTF-8 encoded, HTML5 standard
-  TSV:  UTF-8 encoded, tab-separated (\\\\t), newline-terminated (\\\\n)
-  JSON: UTF-8 encoded, RFC 8259 compliant
-
-PROCESSING DETAILS
-────────────────────────────────────────────────────────────────────────────
-  Combiner script:  \${COMBINER_SCRIPT}
-  Python version:   \${PYTHON_VERSION}
-  Processing time:  \${COMBINE_TIME}s
-  Samples:          \${TOTAL_JSON}
-  Output size:      \$(stat -c%s global_summary.html 2>/dev/null || echo \"unknown\") bytes (HTML)
-
-GENERATED
-────────────────────────────────────────────────────────────────────────────
-  Pipeline: TrackTx PRO-seq
-  Version:  \${PIPELINE_VERSION}
-  Date:     \$(date -u +\"%Y-%m-%d %H:%M:%S UTC\")
-  Run:      \${RUN_NAME}
-  Module:   15_combine_reports_into_cohort
-
-================================================================================
+  Input JSON discovery: *.summary.json / *.report.json / *.json, case-
+  insensitive, robust to missing fields.
+DOCEOF
 DOCEOF
 
   echo \"COHORT | README | Documentation created\"

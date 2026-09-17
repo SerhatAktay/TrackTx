@@ -1,0 +1,68 @@
+nextflow_process {
+
+    name "Test Process calculate_polymerase_occupancy_metrics"
+    script "modules/11_calculate_polymerase_occupancy_metrics.nf"
+    process "calculate_polymerase_occupancy_metrics"
+
+    // Regression test for the PE-mate-double-counting bug fixed alongside the
+    // pipeline's pre-multi-day-run review: this module counted BOTH mates of
+    // every paired-end fragment (no read1/read2 filtering at all), even
+    // though module 06's coverage tracks already special-case PE data --
+    // under this pipeline's --ff bowtie2 layout (module 05) BOTH mates of a
+    // "+"-strand fragment map forward, so the existing strand filter alone
+    // can't separate them. tests/fixtures/pe_mate_test.bam has 3 fragments,
+    // each with a flag-64 mate (R2, NOT the Pol II signal) and a flag-128
+    // mate (RC(R1), the signal) landing well inside geneX's body window.
+    // Before the fix: gene_body_count would be 6 (both mates counted). After
+    // the fix (default params.align.pe_signal_mate = 'read2' = flag 128):
+    // gene_body_count must be exactly 3.
+    test("PE mate filtering: only the signal mate is counted, not both mates of a fragment") {
+
+        when {
+            params {
+                pol = [
+                    tss_win: 50,
+                    body_offset_min: 100,
+                    body_offset_frac: 0.0,
+                    min_body_frac: 0.0,
+                    min_body_len: 1
+                ]
+                qc    = [dedup: false, mapq: 10]
+                align = [multimap_k: 0, pe_signal_mate: 'read2']
+            }
+            process {
+                """
+                input[0] = Channel.of(
+                    tuple(
+                        'sampleX',
+                        file("\${baseDir}/tests/fixtures/pe_mate_test.bam"),
+                        file("\${baseDir}/tests/fixtures/pe_mate_test_empty.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/pe_mate_test_empty.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/pe_mate_test_empty.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/pe_mate_test_empty.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/pe_mate_test_empty.bedgraph"),
+                        'cond1', 'tp1', 'rep1'
+                    )
+                )
+                input[1] = file("\${baseDir}/tests/fixtures/pe_mate_test_genes.tsv")
+                """
+            }
+        }
+
+        then {
+            assert process.success
+
+            def lines = path(process.out.pausing.get(0)[1]).text.readLines()
+            // header + 1 gene row (see pausing_index.tsv columns in
+            // bin/calculate_pol_metrics.py: gene_id, chrom, strand,
+            // tss_count, gene_body_count, pi_raw, pi_len_norm, is_truncated)
+            assert lines.size() == 2
+
+            def f = lines[1].split('\t')
+            assert f[0] == 'geneX'
+            assert (f[4] as int) == 3
+        }
+
+    }
+
+}

@@ -145,7 +145,10 @@ def clean_gid(gid: str | None) -> str | None:
 
 
 # Attribute key search orders, shared by both passes for consistency.
-GID_KEYS   = ["gene_id", "geneID", "gene", "ID", "Parent"]
+# Parent before ID: a GFF3 child row (ID=transcript:X;Parent=gene:Y) must
+# resolve to its parent gene, not its own transcript ID. Gene rows have no
+# Parent attribute, so this doesn't change their own ID-based resolution.
+GID_KEYS   = ["gene_id", "geneID", "gene", "Parent", "ID"]
 GNAME_KEYS = ["gene_name", "Name", "gene"]
 GTYPE_KEYS = ["gene_type", "gene_biotype", "biotype"]
 

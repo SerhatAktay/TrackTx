@@ -40,7 +40,9 @@
 //     ├── pol_gene_metrics.tsv    — Per-gene TSS and body metrics
 //     ├── pausing_index.tsv        — Per-gene pausing indices
 //     ├── pol_density.tsv         — Signal per functional region
-//     ├── pol_qc.json             — QC summary (optional)
+//     ├── pol_qc.json             — QC summary (optional; standalone diagnostic
+//     │                             file only -- not read by any downstream
+//     │                             module or report, browse it directly)
 //     ├── README_pol_metrics.txt  — Documentation
 //     └── pol_metrics.log         — Processing log
 //
@@ -140,6 +142,12 @@ process calculate_polymerase_occupancy_metrics {
   GENES_CAT="${genes_cat}"
   CALC_SCRIPT="\$(command -v calculate_pol_metrics.py)"
 
+  # Which mate carries the Pol II 3'-end signal for PE BAMs -- same knob and
+  # default as module 06's coverage tracks (params.align.pe_signal_mate), so
+  # pausing-index counting stays consistent with the tracks it's compared
+  # against. Ignored by the script for single-end BAMs.
+  PE_SIGNAL_MATE="${params.align?.pe_signal_mate ?: 'read2'}"
+
   # Coverage tracks
   POS_CPM="${pos3_cpm_bg}"
   NEG_CPM="${neg3_cpm_bg}"
@@ -201,14 +209,9 @@ process calculate_polymerase_occupancy_metrics {
 
   echo "POL | VALIDATE | Checking input files..."
 
-  # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
-  if command -v micromamba >/dev/null 2>&1; then
-    PYTHON_CMD="micromamba run -n base python3"
-  elif [[ -x /opt/conda/bin/python3 ]]; then
-    PYTHON_CMD="/opt/conda/bin/python3"
-  else
-    PYTHON_CMD="python3"
-  fi
+  # Shared resolver (bin/tracktx_error_fragment.sh): micromamba (container) ->
+  # /opt/conda (container fallback) -> bare python3 (conda profile/local)
+  tracktx_resolve_python
 
   # Check Python script
   if [[ ! -f "\${CALC_SCRIPT}" ]]; then
@@ -220,14 +223,14 @@ process calculate_polymerase_occupancy_metrics {
   if [[ ! -s "\${IN_BAM}" ]]; then
     tracktx_error "calculate_polymerase_occupancy_metrics" "BAM file missing or empty: \${IN_BAM}" "Check upstream alignment module"
   fi
-  BAM_SIZE=\$(stat -c%s "\${IN_BAM}" 2>/dev/null || stat -f%z "\${IN_BAM}" 2>/dev/null || echo "unknown")
+  BAM_SIZE=\$(tracktx_size "\${IN_BAM}")
   echo "POL | VALIDATE | BAM: \${BAM_SIZE} bytes"
 
   # Check gene catalog
   if [[ ! -s "\${GENES_CAT}" ]]; then
     tracktx_error "calculate_polymerase_occupancy_metrics" "Gene catalog missing or empty: \${GENES_CAT}" "Check download_genome_annotations (genes.tsv) module"
   fi
-  GENES_SIZE=\$(stat -c%s "\${GENES_CAT}" 2>/dev/null || stat -f%z "\${GENES_CAT}" 2>/dev/null || echo "unknown")
+  GENES_SIZE=\$(tracktx_size "\${GENES_CAT}")
   GENES_LINES=\$(wc -l < "\${GENES_CAT}" 2>/dev/null | tr -d ' ' || echo 0)
   echo "POL | VALIDATE | Gene catalog: \${GENES_SIZE} bytes (\${GENES_LINES} lines)"
 
@@ -236,13 +239,13 @@ process calculate_polymerase_occupancy_metrics {
     if [[ ! -e "\${TRACK}" ]]; then
       tracktx_error "calculate_polymerase_occupancy_metrics" "Required CPM track missing: \${TRACK}" "Check normalize_coverage_tracks module"
     fi
-    TRACK_SIZE=\$(stat -c%s "\${TRACK}" 2>/dev/null || stat -f%z "\${TRACK}" 2>/dev/null || echo "unknown")
+    TRACK_SIZE=\$(tracktx_size "\${TRACK}")
     echo "POL | VALIDATE | \$(basename \${TRACK}): \${TRACK_SIZE} bytes"
   done
 
   # Check siCPM tracks (optional)
   if [[ -s "\${POS_SICPM}" && -s "\${NEG_SICPM}" ]]; then
-    SICPM_SIZE=\$(stat -c%s "\${POS_SICPM}" 2>/dev/null || stat -f%z "\${POS_SICPM}" 2>/dev/null || echo "unknown")
+    SICPM_SIZE=\$(tracktx_size "\${POS_SICPM}")
     echo "POL | VALIDATE | siCPM tracks available: \${SICPM_SIZE} bytes"
     SICPM_AVAILABLE=1
   else
@@ -252,7 +255,7 @@ process calculate_polymerase_occupancy_metrics {
 
   # Check functional regions (optional but expected)
   if [[ "\${FUNC_BED}" != "-" && -s "\${FUNC_BED}" ]]; then
-    FUNC_SIZE=\$(stat -c%s "\${FUNC_BED}" 2>/dev/null || stat -f%z "\${FUNC_BED}" 2>/dev/null || echo "unknown")
+    FUNC_SIZE=\$(tracktx_size "\${FUNC_BED}")
     FUNC_COUNT=\$(grep -v '^#' "\${FUNC_BED}" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
     echo "POL | VALIDATE | Functional regions: \${FUNC_COUNT} regions (\${FUNC_SIZE} bytes)"
   else
@@ -359,7 +362,7 @@ process calculate_polymerase_occupancy_metrics {
     : > combined.norm.bedgraph
 
   COMBINED_LINES=\$(wc -l < combined.norm.bedgraph | tr -d ' ')
-  COMBINED_SIZE=\$(stat -c%s combined.norm.bedgraph 2>/dev/null || stat -f%z combined.norm.bedgraph 2>/dev/null || echo "unknown")
+  COMBINED_SIZE=\$(tracktx_size combined.norm.bedgraph)
   echo "POL | DENSITY | Combined track: \${COMBINED_LINES} intervals (\${COMBINED_SIZE} bytes)"
 
   # Map signal to functional regions
@@ -454,7 +457,7 @@ process calculate_polymerase_occupancy_metrics {
   echo "POL | BAM | Indexing filtered BAM..."
   samtools index -@ \${THREADS} filtered.bam
 
-  FILT_SIZE=\$(stat -c%s filtered.bam 2>/dev/null || stat -f%z filtered.bam 2>/dev/null || echo "unknown")
+  FILT_SIZE=\$(tracktx_size filtered.bam)
   FILT_READS=\$(samtools view -c filtered.bam)
   
   echo "POL | BAM | Filtered BAM: \${FILT_SIZE} bytes (\${FILT_READS} reads)"
@@ -477,6 +480,7 @@ process calculate_polymerase_occupancy_metrics {
   \${PYTHON_CMD} "\${CALC_SCRIPT}" \\
     --bam filtered.bam \\
     --genes "\${GENES_CAT}" \\
+    --pe-signal-mate "\${PE_SIGNAL_MATE}" \\
     --tss-win \${TSS_WIN} \\
     --body-offset-min \${BODY_OFFSET_MIN} \\
     --body-offset-frac \${BODY_OFFSET_FRAC} \\
@@ -533,243 +537,25 @@ PAUSINGEOF
   echo "POL | README | Creating documentation..."
 
   cat > README_pol_metrics.txt <<DOCEOF
-================================================================================
 POL-II METRICS — ${sid}
-================================================================================
-
-OVERVIEW
 ────────────────────────────────────────────────────────────────────────────
-  RNA Polymerase II metrics quantifying transcription at multiple levels:
-  
-  1. Density Metrics: Signal per functional region (promoter, gene body, etc.)
-  2. Gene Metrics: Per-gene TSS and body coverage
-  3. Pausing Index: Ratio indicating promoter-proximal pausing
+  Three views of transcription:
+    1. Density: |pos|+|neg| signal (\${NORM_METHOD}, siCPM preferred over CPM
+       when available) mapped to functional regions -> pol_density.tsv
+       (\$([ -s pol_density.tsv ] && echo "\$(tail -n +2 pol_density.tsv | wc -l) regions" || echo "no data") this run)
+    2. Gene metrics: read counts in TSS (+/-\${TSS_WIN}bp) and gene-body windows
+       from the BAM (MAPQ>=\${MAPQ}, duplicates \$([ \${DEDUP_ENABLED} -eq 1 ] && echo "removed" || echo "retained"),
+       \${FILT_READS} filtered reads) -> pol_gene_metrics.tsv (\${GENE_COUNT} genes).
+       Body start = max(\${BODY_OFFSET_MIN}bp, \${BODY_OFFSET_FRAC} x gene_length).
+    3. Pausing index: PI = (TSS_density/TSS_width) / (Body_density/Body_width).
+       PI>1.5 = strong promoter-proximal pausing; PI<1.0 = productive elongation.
+       pi_len_norm is length-normalized (use for cross-gene comparison); pi_raw
+       is the direct ratio. is_truncated flags genes whose body window couldn't
+       be properly defined. -> pausing_index.tsv (\${PAUSING_COUNT} genes)
 
-SAMPLE INFORMATION
-────────────────────────────────────────────────────────────────────────────
-  Sample:     ${sid}
-  Condition:  ${cond}
-  Timepoint:  ${tp}
-  Replicate:  ${rep}
+  pol_qc.json — standalone diagnostic (not read by any downstream report)
 
-DENSITY METRICS (from normalized tracks)
-────────────────────────────────────────────────────────────────────────────
-  Method: Signal quantification from normalized 3' coverage
-  
-  Normalization: \${NORM_METHOD}
-    • siCPM: Spike-in normalized (preferred when available)
-    • CPM: Standard library size normalization (fallback)
-  
-  Processing:
-    1. Take absolute values: |positive| and |negative| tracks
-    2. Merge strands: combined signal = |pos| + |neg|
-    3. Map to regions: bedtools map -o sum
-    4. Quantify per functional region
-  
-  Output: pol_density.tsv
-    Columns: chr, start, end, name, signal, norm_method
-  
-  Results: \$([ -s pol_density.tsv ] && echo "\$(tail -n +2 pol_density.tsv | wc -l) regions" || echo "No data")
-
-GENE METRICS (from BAM alignments)
-────────────────────────────────────────────────────────────────────────────
-  Method: Read counting in TSS and gene body windows
-  
-  BAM Filtering:
-    • MAPQ threshold: ≥\${MAPQ}
-    • Duplicates: \$([ \${DEDUP_ENABLED} -eq 1 ] && echo "Removed" || echo "Retained")
-    • Unmapped reads: Excluded
-    • Filtered reads: \${FILT_READS}
-  
-  TSS Window:
-    • Definition: ±\${TSS_WIN} bp around transcription start site
-    • Purpose: Measures promoter occupancy
-    • Total width: \$((TSS_WIN * 2)) bp
-  
-  Gene Body:
-    • Start: max(\${BODY_OFFSET_MIN} bp, \${BODY_OFFSET_FRAC} × gene_length)
-    • End: Gene end (TES or last exon)
-    • Purpose: Measures productive elongation
-    • Excludes promoter-proximal region
-  
-  Metrics Calculated:
-    • TSS count: Reads in TSS window
-    • TSS CPM: Normalized TSS count
-    • TSS density: Reads per base pair in TSS
-    • Body count: Reads in gene body
-    • Body CPM: Normalized body count
-    • Body density: Reads per base pair in body
-  
-  Output: pol_gene_metrics.tsv
-    Contains per-gene coverage and density values
-  
-  Results: \${GENE_COUNT} genes analyzed
-
-PAUSING INDEX
-────────────────────────────────────────────────────────────────────────────
-  Definition:
-    PI = (TSS_density / TSS_width) / (Body_density / Body_width)
-    
-    Or equivalently:
-    PI = (TSS_count / TSS_width) / (Body_count / Body_length)
-  
-  Interpretation:
-    • PI > 1.5:  Strong promoter-proximal pausing
-                 Pol-II accumulates at TSS, limited elongation
-                 Common in developmental/stress-response genes
-    
-    • PI ≈ 1.0:  Balanced distribution
-                 Normal transcription dynamics
-    
-    • PI < 1.0:  Productive elongation
-                 Efficient transition to elongation
-                 Common in housekeeping genes
-  
-  Two Variants:
-    • pi_raw: Direct ratio (more interpretable)
-    • pi_len_norm: Length-normalized (accounts for window sizes)
-  
-  Truncation:
-    Genes marked "is_truncated" if body region couldn't be
-    properly defined (e.g., overlapping regions)
-  
-  Output: pausing_index.tsv
-    Contains per-gene pausing indices
-  
-  Results: \${PAUSING_COUNT} genes with pausing indices
-
-FILES
-────────────────────────────────────────────────────────────────────────────
-  pol_gene_metrics.tsv     — Per-gene TSS and body metrics
-  pausing_index.tsv         — Per-gene pausing indices
-  pol_density.tsv          — Signal per functional region
-  pol_qc.json              — Quality control summary (optional)
-  README_pol_metrics.txt   — This documentation
-  pol_metrics.log          — Processing log
-
-FILE FORMATS
-────────────────────────────────────────────────────────────────────────────
-
-pol_gene_metrics.tsv:
-  gene_id              — Gene identifier
-  gene_name            — Gene symbol/name
-  chrom                — Chromosome
-  strand               — Strand (+/-)
-  tss_bp               — TSS coordinate
-  tss_lo, tss_hi       — TSS window bounds
-  tss_width            — TSS window width
-  body_lo, body_hi     — Gene body bounds
-  body_len             — Gene body length
-  tss_count            — Reads in TSS
-  tss_cpm              — TSS CPM
-  tss_density_per_bp   — TSS reads per bp
-  body_count           — Reads in body
-  body_cpm             — Body CPM
-  body_density_per_bp  — Body reads per bp
-  pi_raw               — Raw pausing index
-  pi_len_norm          — Length-normalized PI
-  is_truncated         — Boolean flag
-
-pausing_index.tsv:
-  gene_id              — Gene identifier
-  chrom                — Chromosome
-  strand               — Strand
-  tss_count            — TSS read count
-  gene_body_count      — Body read count
-  pausing_index        — Calculated PI
-  is_truncated         — Boolean flag
-
-pol_density.tsv:
-  chr                  — Chromosome
-  start                — Region start
-  end                  — Region end
-  name                 — Region name/category
-  signal               — Quantified signal
-  norm_method          — Normalization (CPM or siCPM)
-
-pol_qc.json:
-  JSON format with:
-    • Total genes processed
-    • Genes with data
-    • Mean pausing index
-    • Median pausing index
-    • Coverage statistics
-
-QUALITY CONTROL
-────────────────────────────────────────────────────────────────────────────
-
-Expected Values:
-  • Pausing Index: 0.5 - 3.0 for most genes
-  • TSS density: > 0 for active genes
-  • Body density: > 0 for transcribed genes
-  • Filtered reads: >1M for good coverage
-
-Red Flags:
-  • Very low gene count: Check GTF compatibility, feature types
-  • All PI = 0 or NaN: Check BAM quality, TSS coordinates
-  • Extreme PI values (>10): Check gene annotations
-  • Most genes truncated: Body offset too large
-
-Troubleshooting:
-  • Zero genes: Check feature_types parameter, GTF format
-  • Low coverage: Increase sequencing depth, check alignment
-  • High truncation: Reduce body_offset_min or body_offset_frac
-  • Missing density: Check functional regions availability
-
-DOWNSTREAM USAGE
-────────────────────────────────────────────────────────────────────────────
-  These metrics are used for:
-  
-  1. Differential Analysis:
-     - Compare pausing indices across conditions
-     - Identify genes with changed Pol-II dynamics
-  
-  2. Quality Control:
-     - Assess library quality
-     - Validate expected expression patterns
-  
-  3. Mechanistic Studies:
-     - Identify paused promoters
-     - Study elongation regulation
-     - Compare promoter vs. elongation changes
-  
-  4. Integration:
-     - Correlate with ChIP-seq (Pol-II, NELF, DSIF)
-     - Compare with nascent RNA-seq
-     - Integrate with gene expression data
-
-PARAMETERS USED
-────────────────────────────────────────────────────────────────────────────
-  MAPQ threshold:      \${MAPQ}
-  Remove duplicates:   \$([ \${DEDUP_ENABLED} -eq 1 ] && echo "Yes" || echo "No")
-  TSS window:          ±\${TSS_WIN} bp
-  Body offset min:     \${BODY_OFFSET_MIN} bp
-  Body offset frac:    \${BODY_OFFSET_FRAC}
-  Feature types:       \${FEATURE_TYPES}
-  Normalization:       \${NORM_METHOD}
-  
-PROCESSING TIMES
-────────────────────────────────────────────────────────────────────────────
-  BAM filtering:       \${BAM_TIME}s
-  Gene metrics:        \${GENES_TIME}s
-  Total:               \$((BAM_TIME + GENES_TIME))s
-
-TECHNICAL NOTES
-────────────────────────────────────────────────────────────────────────────
-  • Uses bedtools coverage for efficient counting
-  • Coordinate-sorted BAMs processed faster
-  • Linear algebra threading limited to prevent oversubscription
-  • Handles both standard GTF and GFF3 formats
-  • Gene body offset prevents TSS/body overlap
-
-GENERATED
-────────────────────────────────────────────────────────────────────────────
-  Pipeline: TrackTx PRO-seq
-  Date: \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Sample: ${sid}
-  Module: 11_calculate_polymerase_occupancy_metrics
-
-================================================================================
+  Feature types: \${FEATURE_TYPES}  |  BAM filter+gene-metric time: \$((BAM_TIME + GENES_TIME))s
 DOCEOF
 
   echo "POL | README | Documentation created"

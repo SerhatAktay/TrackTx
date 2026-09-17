@@ -145,12 +145,18 @@ def split_fields(ln: str):  # tolerate spaces/tabs
     return ln.rstrip("\n").split("\t") if "\t" in ln else ln.strip().split()
 
 def wc_effective_lines(p: str) -> int:
+    # grep -c (native) instead of a Python per-line loop -- called ~14x
+    # across this module's sequential assignment steps, on files that can
+    # run to tens of millions of lines for a deep PRO-seq library.
     if not (Path(p).exists() and Path(p).stat().st_size>0): return 0
-    n=0
     with open(p) as fh:
-        for ln in fh:
-            if ln.strip() and not ln.startswith(("track","browser","#")): n+=1
-    return n
+        result = subprocess.run(
+            ["grep", "-c", "-v", "-E", r"^[[:space:]]*$|^(track|browser|#)"],
+            stdin=fh, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, check=False,
+        )
+    # grep exits 1 (not an error here) when every line is excluded/empty
+    return int(result.stdout.strip() or 0)
 
 def clamp(a: int, b: int) -> tuple[int,int]:
     """Ensure valid BED coordinates: a <= b and both >= 0, with minimum 1bp length"""
@@ -462,35 +468,22 @@ def bedgraph_to_reads(pos_bg: str, neg_bg: str) -> str:
             log_info(f"dynamic min_signal (quantile {q:.2f}, sampled {len(reservoir)}/{n_seen} "
                 f"values from both strands) => {thr:.6g}")
 
-    with open(reads_file, "w") as out:
-        # Process positive strand
-        if Path(pos_bg).exists() and Path(pos_bg).stat().st_size > 0:
-            with open(pos_bg) as f:
-                for ln in f:
-                    if ln.strip() and not ln.startswith(("track", "browser", "#")):
-                        fields = split_fields(ln)
-                        if len(fields) >= 4:
-                            try:
-                                chrom, start, end, signal = fields[0], int(fields[1]), int(fields[2]), float(fields[3])
-                                if abs(signal) > thr and end > start:
-                                    out.write(f"{chrom}\t{start}\t{end}\t{signal}\t{signal}\t+\n")
-                            except (ValueError, IndexError):
-                                continue
-        
-        # Process negative strand (keep original signal values like old script)
-        if Path(neg_bg).exists() and Path(neg_bg).stat().st_size > 0:
-            with open(neg_bg) as f:
-                for ln in f:
-                    if ln.strip() and not ln.startswith(("track", "browser", "#")):
-                        fields = split_fields(ln)
-                        if len(fields) >= 4:
-                            try:
-                                chrom, start, end, signal = fields[0], int(fields[1]), int(fields[2]), float(fields[3])
-                                if abs(signal) > thr and end > start:
-                                    # Keep original signal (negative values) like old script
-                                    out.write(f"{chrom}\t{start}\t{end}\t{signal}\t{signal}\t-\n")
-                            except (ValueError, IndexError):
-                                continue
+    # Filter+format via awk (native, single-threaded but ~C-speed) instead of
+    # a per-line Python loop -- this ran unvectorized and ignored THREADS
+    # entirely despite being the heaviest per-base-pair pass in this module,
+    # unlike modules 05/06/08 which budget -@/--parallel for their own
+    # heavy passes. Same filter/output semantics as before: skip
+    # track/browser/#, need >=4 fields, |signal| > thr and end > start.
+    open(reads_file, "w").close()
+    awk_prog = (
+        r'!/^(track|browser|#)/ && NF>=4 && $3>$2 {'
+        r'a=($4<0?-$4:$4); if (a>thr) print $1"\t"$2"\t"$3"\t"$4"\t"$4"\t"strand'
+        r'}'
+    )
+    for bg, strand in ((pos_bg, "+"), (neg_bg, "-")):
+        if Path(bg).exists() and Path(bg).stat().st_size > 0:
+            run(["bash", "-c",
+                 f"awk -v thr={thr!r} -v strand='{strand}' '{awk_prog}' '{bg}' >> '{reads_file}'"], None)
     
     # CRITICAL: This is sorting the large read file - use increased buffer
     log_info(f"Sorting large read file (this may take a few minutes)...")

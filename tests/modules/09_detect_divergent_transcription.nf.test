@@ -1,0 +1,80 @@
+nextflow_process {
+
+    name "Test Process detect_divergent_transcription"
+    script "modules/09_detect_divergent_transcription.nf"
+    process "detect_divergent_transcription"
+
+    // Regression test for the genome-size auto-scaling bug: before this fix,
+    // window auto-scaling approximated genome size from the bedgraph's own
+    // observed coordinates (sum of max coordinate per chromosome), so a
+    // sparse/low-coverage sample -- or, as here, a tiny fixture -- gets
+    // misclassified as a "compact genome" (< 50Mb) and silently shrinks the
+    // pairing/merge windows, even for a real mammalian genome. The fix wires
+    // real chromosome sizes (module 04's genome.sizes) through main.nf into
+    // this process and the detector script's --genome-sizes flag. Verified
+    // locally (see bin/detect_divergent_transcription.py) that this exact
+    // 2-bin-per-strand fixture logs "compact genome" WITHOUT --genome-sizes
+    // and "non-compact genome" WITH it -- this test pins the latter.
+    test("genome-sizes wiring keeps mammalian-scale windows for a sparse sample") {
+
+        when {
+            params {
+                advanced = [
+                    divergent_threshold: 'auto',
+                    divergent_sum_thr: 'auto',
+                    divergent_fdr: 0.08,
+                    divergent_nt_window: 'auto',
+                    divergent_balance: 0.0,
+                    divergent_bin_gap: 'auto',
+                    divergent_calibration_percentile: 65.0,
+                    divergent_calibration_sum_multiplier: 1.5,
+                    divergent_calibration_background_lower: false,
+                    divergent_merge_gap: 'auto',
+                    divergent_fallback_top_frac: 0.0
+                ]
+            }
+            process {
+                """
+                input[0] = Channel.of(
+                    tuple(
+                        'sampleY',
+                        file("\${baseDir}/tests/fixtures/divergent_test_pos.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/divergent_test_neg.bedgraph"),
+                        'cond1', 'tp1', 'rep1'
+                    )
+                )
+                input[1] = file("\${baseDir}/tests/fixtures/divergent_test.genome.sizes")
+                input[2] = 'proseq'
+                input[3] = 'auto'
+                input[4] = 'auto'
+                input[5] = 0.08
+                input[6] = 'auto'
+                input[7] = 0.0
+                input[8] = 'auto'
+                input[9] = 65.0
+                input[10] = 1.5
+                input[11] = false
+                input[12] = 'auto'
+                input[13] = 0.0
+                """
+            }
+        }
+
+        then {
+            assert process.success
+
+            def logText = path(process.out.log.get(0)).text
+            assert logText.contains("non-compact genome; keeping default window sizes")
+            assert !logText.contains("compact genome; auto-scaling windows")
+
+            def bedLines = path(process.out.bed.get(0)[1]).text.readLines()
+            assert bedLines.size() == 1
+            def f = bedLines[0].split('\t')
+            assert f[0] == 'chr1'
+            assert (f[1] as int) == 980
+            assert (f[2] as int) == 1020
+        }
+
+    }
+
+}

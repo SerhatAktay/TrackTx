@@ -276,8 +276,7 @@ Paths are relative to: ${projectDir}"""
 
   // Fail fast if a custom GTF path was supplied but does not exist. (Module 01
   // consumes params.gtf_path internally when reference_genome='other'; checking
-  // here is cheaper than failing deep inside a task. The previous NO_GTF sentinel
-  // + _customAnnotationFile variable were never used downstream and were removed.)
+  // here is cheaper than failing deep inside a task.)
   if (params.gtf_path?.trim()) {
     file(params.gtf_path, checkIfExists: true)
   }
@@ -524,6 +523,7 @@ Paths are relative to: ${projectDir}"""
 
   def ref_meta_ch = build_index.out.ref_meta
   def ref_idx_ch  = build_index.out.index_files
+  def genome_sizes_ch = build_index.out.genome_sizes
 
   if (params.verbose) log.info "STEP 5 | INDEX | Primary genome index built"
 
@@ -663,9 +663,14 @@ Paths are relative to: ${projectDir}"""
 
     def merged_aligned_ch = check_and_merge_replicates.out.merged_bams
       .map { cond, tpt, filt_bam, all_bam, spike_bam ->
+        // spike_bam is always a real, existing BAM here (a genuine merge, or
+        // the empty-but-valid placeholder module 05b touches when no sample
+        // in the group had spike-in reads) -- never null. generate_coverage_tracks
+        // declares this as a required `path` input it never even reads, so a
+        // null here would break every merged-replicate run at that module;
+        // keep this uniform with passthrough_aligned_ch below, which never nulls it.
         def merged_sid = "${cond}_${tpt}_merged".toString().replaceAll(/[^a-zA-Z0-9_-]/, '_')
-        def spike_f = (spike_bam.name != 'NO_SPIKE' && spike_bam.size() > 0) ? spike_bam : null
-        tuple(merged_sid, filt_bam, all_bam, spike_f, cond, tpt, 0)
+        tuple(merged_sid, filt_bam, all_bam, spike_bam, cond, tpt, 0)
       }
 
     def passthrough_aligned_ch = check_and_merge_replicates.out.passthrough_bams
@@ -843,6 +848,8 @@ Paths are relative to: ${projectDir}"""
 
   detect_divergent_transcription(
     divergent_input_ch,
+    genome_sizes_ch,
+    channel.value(params.library_type ?: 'proseq'),
     channel.value(params.advanced?.divergent_threshold ?: 'auto'),
     channel.value(params.advanced?.divergent_sum_thr ?: 'auto'),
     channel.value(params.advanced?.divergent_fdr ?: 0.08),
@@ -883,19 +890,26 @@ Paths are relative to: ${projectDir}"""
     log.info "-".multiply(80)
   }
 
+  // Route the same signal_end used for divergent-TX calling (STEP 10) into
+  // functional-region signal assignment: PRO-seq's Pol II position is the 3'
+  // end, GRO-seq's is the 5' end (see nextflow.config's signal_end doc).
+  // Previously this always used the 3' raw tracks regardless of signalEnd,
+  // so a GRO-seq run's promoter/gene-body/CPS/enhancer signal was quantified
+  // from the wrong end even though divergent-TX calling used the right one.
   def func_input_ch = divergent_tx_ch
     .map { sid, div_bed, c, t, r ->
       tuple(sid, tuple(div_bed, c, t, r))
     }
     .join(
-      tracks_ch.map { sid, _bam, _spk, pos3_raw, neg3_raw, _p5, _n5, c, t, r ->
-        tuple(sid, tuple(pos3_raw, neg3_raw, c, t, r))
+      tracks_ch.map { sid, _bam, _spk, pos3_raw, neg3_raw, pos5_raw, neg5_raw, c, t, r ->
+        def (pos_raw, neg_raw) = (signalEnd == '5p') ? [pos5_raw, neg5_raw] : [pos3_raw, neg3_raw]
+        tuple(sid, tuple(pos_raw, neg_raw, c, t, r))
       }
     )
     .map { sid, div_data, track_data ->
       def (div_bed, c, t, r) = div_data
-      def (pos3_raw, neg3_raw, _c2, _t2, _r2) = track_data
-      tuple(sid, div_bed, pos3_raw, neg3_raw, file(noBGPosPath), file(noBGNegPath), c, t, r)
+      def (pos_raw, neg_raw, _c2, _t2, _r2) = track_data
+      tuple(sid, div_bed, pos_raw, neg_raw, file(noBGPosPath), file(noBGNegPath), c, t, r)
     }
 
   assign_signal_to_functional_regions(
@@ -935,24 +949,32 @@ Paths are relative to: ${projectDir}"""
     log.info "-".multiply(80)
   }
 
+  // Same signal_end routing as STEP 11: pick the 3' or 5' CPM/siCPM pair
+  // (module 08's cpm5p_bg/sicpm5p_bg for GRO-seq, pos3_cpm_bg/sicpm3p_bg for
+  // PRO-seq) so Pol-II density is computed from the assay's real Pol II
+  // position, not always 3'.
+  def norm_cpm_end_ch = (signalEnd == '5p')
+    ? normalize_coverage_tracks.out.cpm5p_bg
+    : norm_tracks_ch.map { sid, pos3_cpm, neg3_cpm, _factors, _c, _t, _r -> tuple(sid, pos3_cpm, neg3_cpm) }
+  def norm_sicpm_end_ch = (signalEnd == '5p')
+    ? normalize_coverage_tracks.out.sicpm5p_bg
+    : normalize_coverage_tracks.out.sicpm3p_bg
+
   def pol_input_ch = generate_coverage_tracks.out.bam_for_tracks
     .map { sid, bam, c, t, r ->
       tuple(sid, tuple(bam, c, t, r))
     }
     .join(functional_regions_bed_ch)
     .join(
-      // CPM + siCPM 3' bedGraphs, both taken from Nextflow channels (work dir).
+      // CPM + siCPM bedGraphs, both taken from Nextflow channels (work dir).
       // Previously the siCPM tracks were read from the publish dir at a wrong path
       // (sicpm/3p/ — never existed; real layout is 3p/), so siCPM silently fell back
-      // to CPM. Joining the module-08 sicpm3p_bg channel fixes that AND removes the
+      // to CPM. Joining the module-08 sicpm*_bg channel fixes that AND removes the
       // dependency on bedGraphs being published, so output.bedgraph=false is safe.
-      norm_tracks_ch
-        .map { sid, pos3_cpm, neg3_cpm, _factors, _c, _t, _r ->
-          tuple(sid, pos3_cpm, neg3_cpm)
-        }
-        .join(normalize_coverage_tracks.out.sicpm3p_bg)
-        .map { sid, pos3_cpm, neg3_cpm, pos3_sicpm, neg3_sicpm ->
-          tuple(sid, tuple(pos3_cpm, neg3_cpm, pos3_sicpm, neg3_sicpm))
+      norm_cpm_end_ch
+        .join(norm_sicpm_end_ch)
+        .map { sid, pos_cpm, neg_cpm, pos_sicpm, neg_sicpm ->
+          tuple(sid, tuple(pos_cpm, neg_cpm, pos_sicpm, neg_sicpm))
         }
     )
     .map { sid, bam_data, bed, norm_data ->

@@ -148,6 +148,8 @@ process generate_coverage_tracks {
   """
   #!/usr/bin/env bash
   set -euo pipefail
+  # Ensure ERR trap propagates into functions/subshells (Bash)
+  set -o errtrace
   export LC_ALL=C
   # umi_tools imports matplotlib; avoid font-cache stall when UMI dedup is enabled
   export MPLCONFIGDIR="\${TMPDIR:-/tmp}/matplotlib"
@@ -198,11 +200,9 @@ process generate_coverage_tracks {
   # container) so every concurrent task sees the same lock file. Override
   # slot-wait timeout with TRACKS_IO_LOCK_TIMEOUT; a timeout fails the task
   # through the normal ERR trap below rather than silently racing unlocked.
-  IO_LOCK_FILE="${projectDir}/.tracktx_io.lock"
-  IO_LOCK_TIMEOUT=\${TRACKS_IO_LOCK_TIMEOUT:-1800}
-  with_io_lock() {
-    flock -w "\${IO_LOCK_TIMEOUT}" "\${IO_LOCK_FILE}" "\$@"
-  }
+  # Shared with_io_lock()/init (bin/tracktx_error_fragment.sh); override the
+  # slot-wait timeout with TRACKS_IO_LOCK_TIMEOUT (default 1800s).
+  tracktx_io_lock_init "${projectDir}/.tracktx_io.lock"
 
   echo "TRACKS | CONFIG | Sample ID: \${SAMPLE_ID}"
   echo "TRACKS | CONFIG | Library type: \$([ "\${IS_PE}" == "true" ] && echo "Paired-end" || echo "Single-end")"
@@ -224,13 +224,13 @@ process generate_coverage_tracks {
   if [[ ! -s "\${MAIN_BAM}" ]]; then
     tracktx_error "generate_coverage_tracks" "Main BAM missing or empty: \${MAIN_BAM}" "Check align_reads_to_genome produced sample.bam"
   fi
-  MAIN_SIZE=\$(stat -c%s "\${MAIN_BAM}" 2>/dev/null || stat -f%z "\${MAIN_BAM}" 2>/dev/null || echo "unknown")
+  MAIN_SIZE=\$(tracktx_size "\${MAIN_BAM}")
   echo "TRACKS | VALIDATE | Main BAM: \${MAIN_SIZE} bytes"
 
   if [[ ! -s "\${ALLMAP_BAM}" ]]; then
     tracktx_error "generate_coverage_tracks" "AllMap BAM missing or empty: \${ALLMAP_BAM}" "Check align_reads_to_genome produced sample_allMap.bam"
   fi
-  ALLMAP_SIZE=\$(stat -c%s "\${ALLMAP_BAM}" 2>/dev/null || stat -f%z "\${ALLMAP_BAM}" 2>/dev/null || echo "unknown")
+  ALLMAP_SIZE=\$(tracktx_size "\${ALLMAP_BAM}")
   echo "TRACKS | VALIDATE | AllMap BAM: \${ALLMAP_SIZE} bytes"
 
   # Validate required tools
@@ -298,7 +298,7 @@ process generate_coverage_tracks {
       return 1
     fi
     
-    local bw_size=\$(stat -c%s "\${bigwig}" 2>/dev/null || stat -f%z "\${bigwig}" 2>/dev/null || echo "unknown")
+    local bw_size=\$(tracktx_size "\${bigwig}")
     echo "TRACKS | BIGWIG | Created: \$(basename \${bigwig}) (\${bw_size} bytes)"
     return 0
   }
@@ -347,7 +347,7 @@ process generate_coverage_tracks {
     fi
 
     local pos_lines=\$(wc -l < "\${prefix}.pos.bedgraph" | tr -d ' ')
-    local pos_size=\$(stat -c%s "\${prefix}.pos.bedgraph" 2>/dev/null || stat -f%z "\${prefix}.pos.bedgraph" 2>/dev/null || echo "unknown")
+    local pos_size=\$(tracktx_size "\${prefix}.pos.bedgraph")
     echo "TRACKS | COVERAGE | Positive strand: \${pos_lines} regions (\${pos_size} bytes)"
 
     # Negative strand coverage (mirrored with -scale -1), sorted in one pass.
@@ -365,7 +365,7 @@ process generate_coverage_tracks {
     fi
     
     local neg_lines=\$(wc -l < "\${prefix}.neg.bedgraph" | tr -d ' ')
-    local neg_size=\$(stat -c%s "\${prefix}.neg.bedgraph" 2>/dev/null || stat -f%z "\${prefix}.neg.bedgraph" 2>/dev/null || echo "unknown")
+    local neg_size=\$(tracktx_size "\${prefix}.neg.bedgraph")
     echo "TRACKS | COVERAGE | Negative strand: \${neg_lines} regions (\${neg_size} bytes)"
     
     # Convert to BigWig
@@ -798,185 +798,23 @@ process generate_coverage_tracks {
   echo "────────────────────────────────────────────────────────────────────────"
 
   cat > \${SAMPLE_ID}.README_tracks.txt <<DOCEOF
-================================================================================
 COVERAGE TRACKS — ${sample_id}
-================================================================================
-
-OVERVIEW
 ────────────────────────────────────────────────────────────────────────────
-  Strand-specific coverage tracks at nucleotide resolution for PRO-seq analysis.
-  
-  Track Types:
-    • 3' end coverage: Always generated (PRO-seq standard)
-    • 5' end coverage: Always generated (PE and SE)
-  
-  BAM Sources:
-    • Main BAM: Primary alignments ${params.umi?.enabled ? 'with UMI deduplication' : '(duplicates retained)'}
-    • AllMap BAM: All mapped reads (primary + secondary alignments)
+  Strand-specific, nucleotide-resolution coverage. 3' and 5' end coverage are
+  both always generated, for main BAM (${params.umi?.enabled ? 'UMI-deduplicated' : 'duplicates retained'})
+  and allMap BAM (primary + secondary), 32 files total (bedgraph+bw x pos/neg
+  x main/allMap x 3p/5p).
 
-CRITICAL IMPLEMENTATION DETAIL
-────────────────────────────────────────────────────────────────────────────
-  This module uses bedtools genomecov -ibam for CORRECT 3'/5' end extraction.
-  
-  Why not bamToBed pipeline?
-    The -3 and -5 flags require BAM CIGAR string information to determine
-    true alignment end positions. BED format lacks this data, so:
-    
-    ❌ INCORRECT: bamToBed | bedtools genomecov -i stdin -3
-       (produces wrong positions because CIGAR data is lost)
-    
-    ✅ CORRECT:   bedtools genomecov -ibam input.bam -3
-       (properly extracts 3' positions from alignment data)
+  3p/\${SAMPLE_ID}.3p.{pos,neg}.{bedgraph,bw}          (+ .allMap. variants)
+  5p/\${SAMPLE_ID}.5p.{pos,neg}.{bedgraph,bw}          (+ .allMap. variants)
+  \${SAMPLE_ID}.dedup_stats.txt, tracks.log
 
-FILES
-────────────────────────────────────────────────────────────────────────────
-
-3' End Coverage (Always Generated):
-  3p/${sample_id}.3p.pos.bedgraph    — Positive strand (main BAM)
-  3p/${sample_id}.3p.neg.bedgraph    — Negative strand (main BAM, mirrored)
-  3p/${sample_id}.3p.pos.bw          — BigWig format (positive)
-  3p/${sample_id}.3p.neg.bw          — BigWig format (negative)
-  
-  3p/${sample_id}.allMap.3p.pos.bedgraph — AllMap BAM positive strand
-  3p/${sample_id}.allMap.3p.neg.bedgraph — AllMap BAM negative strand (mirrored)
-  3p/${sample_id}.allMap.3p.pos.bw       — BigWig format
-  3p/${sample_id}.allMap.3p.neg.bw       — BigWig format
-
-5' End Coverage:
-  5p/${sample_id}.5p.pos.bedgraph        — Main BAM positive strand
-  5p/${sample_id}.5p.neg.bedgraph        — Main BAM negative strand (mirrored)
-  5p/${sample_id}.5p.pos.bw              — BigWig format
-  5p/${sample_id}.5p.neg.bw              — BigWig format
-  
-  5p/${sample_id}.allMap.5p.pos.bedgraph — AllMap BAM positive strand
-  5p/${sample_id}.allMap.5p.neg.bedgraph — AllMap BAM negative strand (mirrored)
-  5p/${sample_id}.allMap.5p.pos.bw       — BigWig format
-  5p/${sample_id}.allMap.5p.neg.bw       — BigWig format
-
-Statistics:
-  ${sample_id}.dedup_stats.txt       — UMI deduplication statistics
-  tracks.log                         — Complete processing log
-
-PROCESSING DETAILS
-────────────────────────────────────────────────────────────────────────────
-
-Pipeline Steps:
-  1. Optional UMI deduplication (if enabled)
-  2. Extract chromosome sizes from BAM header
-  3. Generate coverage with bedtools genomecov -ibam
-  4. Use -3 or -5 flags for end-specific coverage
-  5. Negative strand multiplied by -1 using -scale flag
-  6. Convert bedGraph to BigWig format
-
-Command Example:
-  # Positive strand 3' coverage
-  bedtools genomecov -ibam sample.bam -3 -strand + -bg > pos.bedgraph
-  
-  # Negative strand 3' coverage (mirrored)
-  bedtools genomecov -ibam sample.bam -3 -strand - -bg -scale -1 > neg.bedgraph
-
-Key Settings:
-  • Nucleotide resolution (single-base precision)
-  • Strand-specific (separate positive and negative tracks)
-  • Direct BAM processing (preserves alignment information)
-  • Negative strand mirrored for UCSC Genome Browser compatibility
-  • Chromosome sizes from BAM header (more reliable than FASTA)
-
-UMI Deduplication:
-  Status: ${params.umi?.enabled ? 'Enabled' : 'Disabled'}
-  ${params.umi?.enabled ? 'Length: ' + params.umi.length + ' bp' : ''}
-  ${params.umi?.enabled ? 'Duplicates removed before track generation' : 'Duplicates retained in coverage'}
-
-USAGE
-────────────────────────────────────────────────────────────────────────────
-
-For Genome Browsers:
-  • Load BigWig (.bw) files for visualization
-  • Positive tracks show forward strand signal
-  • Negative tracks show reverse strand signal (values < 0)
-  • Pre-mirrored for direct UCSC Genome Browser viewing
-
-For Computational Analysis:
-  • Use bedGraph files for downstream processing
-  • Values are RAW counts (not normalized at this stage)
-  • Normalization occurs in subsequent pipeline steps
-  • bedGraph format: chr<TAB>start<TAB>end<TAB>coverage
-
-Main vs AllMap BAM Tracks:
-  Main BAM tracks:
-    • Primary alignments only
-    • Cleaner signal
-    • Use for most analyses
-    • Recommended for peak calling
-  
-  AllMap BAM tracks:
-    • Includes secondary alignments (multimappers)
-    • Higher background signal
-    • Use for multimapper-aware analyses
-    • NOTE: divergent transcription detection uses the MAIN (primary) 3' tracks,
-      not allMap (see main.nf STEP 10 wiring)
-
-DOWNSTREAM USAGE
-────────────────────────────────────────────────────────────────────────────
-  These raw tracks will be:
-  1. Normalized to CPM and siCPM (next module)
-  2. Used for divergent transcription detection (main 3' tracks)
-  3. Used for functional region calling (main 3' tracks)
-  4. Used for Pol-II metrics calculation (normalized versions)
-
-FILE FORMAT DETAILS
-────────────────────────────────────────────────────────────────────────────
-
-bedGraph Format:
-  chromosome<TAB>start<TAB>end<TAB>coverage
-  
-  • Zero-based, half-open intervals [start, end)
-  • Coverage values are raw read counts
-  • Negative strand has negative values for visualization
-  • Contiguous regions with same coverage are merged
-
-BigWig Format:
-  • Binary indexed format (faster than bedGraph)
-  • Recommended for genome browser visualization
-  • Created from bedGraph using UCSC bedGraphToBigWig
-  • Allows efficient random access to genomic regions
-
-QUALITY CHECKS
-────────────────────────────────────────────────────────────────────────────
-
-Expected Output:
-  • 16 bedGraph + 16 BigWig files (32 total) for both PE and SE
-    - 8 files for 3' end coverage (4 main + 4 allMap)
-    - 8 files for 5' end coverage (4 main + 4 allMap)
-
-Troubleshooting:
-  • Empty bedGraph: Check if BAM has mapped reads
-  • BigWig conversion failure: bedGraph sorting issue (automatically handled)
-  • Large file sizes: Expected for high-coverage samples
-
-TECHNICAL NOTES
-────────────────────────────────────────────────────────────────────────────
-  • All coverage values are raw counts (not normalized)
-  • Negative strand uses -scale -1 (native bedtools feature)
-  • Chromosome sizes from BAM header ensure coordinate consistency
-  • BigWig creation uses 600-second timeout for large genomes
-  • bedGraph sorting is mandatory (automatically performed)
-
-PARAMETERS USED
-────────────────────────────────────────────────────────────────────────────
-  UMI deduplication:    ${params.umi?.enabled ? 'Enabled' : 'Disabled'}
-  UMI length:           ${params.umi?.length ?: 'N/A'} bp
-  Library type:         ${is_paired == "true" ? "Paired-end" : "Single-end"}
-  CPU threads:          ${task.cpus}
-
-GENERATED
-────────────────────────────────────────────────────────────────────────────
-  Pipeline: TrackTx PRO-seq
-  Module:   06_generate_coverage_tracks
-  Date:     \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Sample:   ${sample_id}
-
-================================================================================
+  Uses \`bedtools genomecov -ibam\` (not bamToBed | genomecov -- that path loses
+  the CIGAR data -3/-5 need for correct end positions). Negative strand is
+  mirrored (-scale -1) for genome-browser display. Values are RAW counts;
+  normalization happens in normalize_coverage_tracks (next module). Divergent-TX
+  calling and functional-region assignment use the MAIN (not allMap) tracks,
+  on whichever end params.signal_end selects (3' for PRO-seq, 5' for GRO-seq).
 DOCEOF
 
   echo "TRACKS | README | Documentation created"
@@ -1014,7 +852,7 @@ DOCEOF
     if [[ ! -s "\${file}" ]]; then
       tracktx_error "generate_coverage_tracks" "Missing or empty critical file: \${file}" "Check tracks.log in work dir"
     else
-      FILE_SIZE=\$(stat -c%s "\${file}" 2>/dev/null || stat -f%z "\${file}" 2>/dev/null || echo "unknown")
+      FILE_SIZE=\$(tracktx_size "\${file}")
       echo "TRACKS | VALIDATE | \${file}: \${FILE_SIZE} bytes"
     fi
   done

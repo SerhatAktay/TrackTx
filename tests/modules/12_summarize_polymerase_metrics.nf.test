@@ -1,0 +1,47 @@
+nextflow_process {
+
+    name "Test Process summarize_polymerase_metrics"
+    script "modules/12_summarize_polymerase_metrics.nf"
+    process "summarize_polymerase_metrics"
+
+    // Regression test for the malformed-sample-file bug: before this fix, a
+    // per-sample metrics file with missing/renamed required columns
+    // (bin/compare_pol_metrics.py's REQUIRED_METRIC_COLS) didn't fail the
+    // sample -- the missing columns were silently backfilled as NaN and the
+    // row was still merged into the cohort output. sample3 here is missing
+    // "pi_raw" (renamed to "pi_broken"); it must now be skipped entirely
+    // (load_sample_metrics returns None -> counted as a failed sample), not
+    // merged into pol_gene_metrics_merged.tsv as a garbage NaN row.
+    test("malformed sample file is skipped, not merged as NaN rows") {
+
+        when {
+            process {
+                """
+                input[0] = file("\${baseDir}/tests/fixtures/pol12_samples_manifest.tsv")
+                input[1] = [
+                    file("\${baseDir}/tests/fixtures/pol12_sample1.tsv"),
+                    file("\${baseDir}/tests/fixtures/pol12_sample2.tsv"),
+                    file("\${baseDir}/tests/fixtures/pol12_sample3_malformed.tsv")
+                ]
+                """
+            }
+        }
+
+        then {
+            assert process.success
+
+            def mergedLines = path(process.out.merged.get(0)).text.readLines().findAll { it }
+            // header + sample1 + sample2 only -- sample3 must be skipped
+            assert mergedLines.size() == 3
+            assert mergedLines.any { it.contains('sample1') }
+            assert mergedLines.any { it.contains('sample2') }
+            assert !mergedLines.any { it.contains('sample3') }
+
+            def logText = path(process.out.log.get(0)).text
+            assert logText.contains('sample3')
+            assert logText.toLowerCase().contains('missing column')
+        }
+
+    }
+
+}

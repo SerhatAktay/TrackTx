@@ -160,6 +160,21 @@ process normalize_coverage_tracks {
           path("3p/${sample_id}.3p.neg.sicpm.bedgraph"),
           emit: sicpm3p_bg
 
+    // Main 5' CPM/siCPM bedGraphs, same "always produced (real values, or an
+    // empty file)" contract as the 3' emits above. GRO-seq's Pol II position
+    // is the 5' end (see nextflow.config's signal_end doc), so STEP 11/12 in
+    // main.nf need these on a channel to route functional-region/Pol-density
+    // signal through the correct end instead of always using 3'.
+    tuple val(sample_id),
+          path("5p/${sample_id}.5p.pos.cpm.bedgraph"),
+          path("5p/${sample_id}.5p.neg.cpm.bedgraph"),
+          emit: cpm5p_bg
+
+    tuple val(sample_id),
+          path("5p/${sample_id}.5p.pos.sicpm.bedgraph"),
+          path("5p/${sample_id}.5p.neg.sicpm.bedgraph"),
+          emit: sicpm5p_bg
+
     // CPM 3' BigWigs handed to the per-sample report (module 14) via channel, so
     // its track-link availability no longer depends on probing the publish dir.
     // All four ALWAYS exist (0-byte placeholder when a track wasn't produced;
@@ -184,6 +199,8 @@ process normalize_coverage_tracks {
   """
   #!/usr/bin/env bash
   set -euo pipefail
+  # Ensure ERR trap propagates into functions/subshells (Bash)
+  set -o errtrace
   export LC_ALL=C
 
   # Stdout/stderr → log + terminal (kept separate for Nextflow "Command error")
@@ -284,7 +301,7 @@ process normalize_coverage_tracks {
     tracktx_error "normalize_coverage_tracks" "Counts master file missing or empty: \${COUNTS_MASTER}" "Check quantify_reads_per_gene produced counts TSV"
   fi
 
-  COUNTS_SIZE=\$(stat -c%s "\${COUNTS_MASTER}" 2>/dev/null || stat -f%z "\${COUNTS_MASTER}" 2>/dev/null || echo "unknown")
+  COUNTS_SIZE=\$(tracktx_size "\${COUNTS_MASTER}")
   COUNTS_LINES=\$(wc -l < "\${COUNTS_MASTER}" | tr -d ' ')
   echo "NORMALIZE | VALIDATE | Counts master: \${COUNTS_SIZE} bytes (\${COUNTS_LINES} lines)"
 
@@ -293,21 +310,16 @@ process normalize_coverage_tracks {
   for BG in "\${POS3}" "\${NEG3}" "\${AM3P_POS}" "\${AM3P_NEG}"; do
     if [[ -s "\${BG}" ]]; then
       INPUT_COUNT=\$((INPUT_COUNT + 1))
-      BG_SIZE=\$(stat -c%s "\${BG}" 2>/dev/null || stat -f%z "\${BG}" 2>/dev/null || echo "unknown")
+      BG_SIZE=\$(tracktx_size "\${BG}")
       echo "NORMALIZE | VALIDATE | Input bedGraph: \$(basename \${BG}) (\${BG_SIZE} bytes)"
     fi
   done
 
   echo "NORMALIZE | VALIDATE | Found \${INPUT_COUNT} non-empty input bedGraphs"
 
-  # Use micromamba run to ensure correct Python env when in container (Docker/Singularity)
-  if command -v micromamba >/dev/null 2>&1; then
-    PYTHON_CMD="micromamba run -n base python3"
-  elif [[ -x /opt/conda/bin/python3 ]]; then
-    PYTHON_CMD="/opt/conda/bin/python3"
-  else
-    PYTHON_CMD="python3"
-  fi
+  # Shared resolver (bin/tracktx_error_fragment.sh): micromamba (container) ->
+  # /opt/conda (container fallback) -> bare python3 (conda profile/local)
+  tracktx_resolve_python
 
   # Validate tools
   if ! \${PYTHON_CMD} --version >/dev/null 2>&1; then
@@ -640,7 +652,7 @@ PYSCRIPT
       : "\${SORT_MEM:=\$(( ${task.memory.toGiga()} * 70 / 100 ))G}"
       : "\${SORT_TMP:=\${SORT_TMPDIR:-/tmp}}"
       mkdir -p "\${SORT_TMP}" 2>/dev/null || SORT_TMP=/tmp
-      if ! LC_ALL=C sort -S "\${SORT_MEM}" -T "\${SORT_TMP}" --parallel="\${THREADS}" -k1,1 -k2,2n "\${bedgraph}" > "\${bedgraph}.sorted"; then
+      if ! LC_ALL=C sort -S "\${SORT_MEM}" -T "\${SORT_TMP}" --parallel="\${SORT_PARALLEL:-\${THREADS}}" -k1,1 -k2,2n "\${bedgraph}" > "\${bedgraph}.sorted"; then
         echo "NORMALIZE | ERROR | sort failed (likely OOM) for: \${bedgraph}"
         rm -f "\${bedgraph}.sorted"
         return 1
@@ -654,7 +666,7 @@ PYSCRIPT
     
     # Convert with timeout
     if timeout "\${TIMEOUT_BW}" bedGraphToBigWig "\${bedgraph}" genome.sizes "\${bigwig}"; then
-      BW_SIZE=\$(stat -c%s "\${bigwig}" 2>/dev/null || stat -f%z "\${bigwig}" 2>/dev/null || echo "unknown")
+      BW_SIZE=\$(tracktx_size "\${bigwig}")
       echo "NORMALIZE | BIGWIG | Created: \$(basename \${bigwig}) (\${BW_SIZE} bytes)"
     else
       echo "NORMALIZE | BIGWIG | WARNING: Conversion failed or timed out, creating empty BigWig"
@@ -702,6 +714,7 @@ PYSCRIPT
     if [[ \${EMIT_SICPM} -eq 1 && \${SICPM_AVAILABLE} -eq 1 ]]; then
       echo "NORMALIZE | SCALE | Writing CPM and siCPM..."
       awk -v fc="\${FAC_CPM}" -v fs="\${FAC_SICPM}" -v OFS='\\t' '
+        BEGIN { OFMT = "%.10f" }
         (NF>=4) && (\$0!~/^(track|browser|#)/) {
           cpm_val = \$4 * fc
           sicpm_val = \$4 * fs
@@ -712,6 +725,7 @@ PYSCRIPT
     else
       echo "NORMALIZE | SCALE | Writing CPM only..."
       awk -v fc="\${FAC_CPM}" -v OFS='\\t' '
+        BEGIN { OFMT = "%.10f" }
         (NF>=4) && (\$0!~/^(track|browser|#)/) {
           print \$1, \$2, \$3, \$4 * fc
         }
@@ -728,12 +742,12 @@ PYSCRIPT
     
     # Report output sizes
     CPM_LINES=\$(wc -l < "\${out_cpm_bg}" 2>/dev/null | tr -d ' ' || echo 0)
-    CPM_SIZE=\$(stat -c%s "\${out_cpm_bg}" 2>/dev/null || stat -f%z "\${out_cpm_bg}" 2>/dev/null || echo "unknown")
+    CPM_SIZE=\$(tracktx_size "\${out_cpm_bg}")
     echo "NORMALIZE | SCALE | CPM bedGraph: \${CPM_LINES} lines (\${CPM_SIZE} bytes)"
     
     if [[ -s "\${out_sicpm_bg}" ]]; then
       SICPM_LINES=\$(wc -l < "\${out_sicpm_bg}" 2>/dev/null | tr -d ' ' || echo 0)
-      SICPM_SIZE=\$(stat -c%s "\${out_sicpm_bg}" 2>/dev/null || stat -f%z "\${out_sicpm_bg}" 2>/dev/null || echo "unknown")
+      SICPM_SIZE=\$(tracktx_size "\${out_sicpm_bg}")
       echo "NORMALIZE | SCALE | siCPM bedGraph: \${SICPM_LINES} lines (\${SICPM_SIZE} bytes)"
     fi
     
@@ -745,73 +759,111 @@ PYSCRIPT
       : > "\${out_sicpm_bw}"
     fi
     
-    # Add to manifest
-    echo -e "\${SAMPLE_ID}\\t\${end_label}\\t\${set_label}\\t\${strand}\\tcpm\\t\${out_cpm_bg}" >> tracks_manifest.tsv
+    # Add to manifest. Written to a per-call fragment file (not appended to
+    # tracks_manifest.tsv directly) since normalize_bedgraph now runs several
+    # at once in the parallel fan-out below -- concurrent appends to one file
+    # from background jobs aren't safe. Fragments are concatenated after all
+    # jobs finish.
+    local manifest_frag="manifest_\${set_label}_\${end_label}_\${strand}.tsv"
+    : > "\${manifest_frag}"
+    echo -e "\${SAMPLE_ID}\\t\${end_label}\\t\${set_label}\\t\${strand}\\tcpm\\t\${out_cpm_bg}" >> "\${manifest_frag}"
     if [[ -s "\${out_sicpm_bg}" ]]; then
-      echo -e "\${SAMPLE_ID}\\t\${end_label}\\t\${set_label}\\t\${strand}\\tsicpm\\t\${out_sicpm_bg}" >> tracks_manifest.tsv
+      echo -e "\${SAMPLE_ID}\\t\${end_label}\\t\${set_label}\\t\${strand}\\tsicpm\\t\${out_sicpm_bg}" >> "\${manifest_frag}"
     fi
     
     echo "NORMALIZE | SCALE | Complete: \${end_label} \${set_label} \${strand}"
   }
 
   ###########################################################################
-  # 6) NORMALIZE MAIN 3' TRACKS
+  # 6-9) NORMALIZE ALL ENABLED TRACK SETS (parallel fan-out)
   ###########################################################################
-
-  echo "NORMALIZE | MAIN3P | Normalizing main 3' tracks..."
+  # Up to 8 independent normalize_bedgraph calls (main/allMap × 3p/5p ×
+  # pos/neg); each writes distinct output files, so they're safe to run
+  # concurrently. Throttled the same way module 06 throttles its coverage
+  # jobs: cap concurrency by task memory (each job's sort budgeted at ~2GB
+  # peak) and never more than the allotted CPUs, then divide SORT_MEM/THREADS
+  # across however many run at once so concurrent sorts don't oversubscribe
+  # either.
+  echo "NORMALIZE | SCALE | Normalizing enabled track sets (parallel)..."
 
   # Initialize manifest
   : > tracks_manifest.tsv
 
-  normalize_bedgraph "\${POS3}" "3p" "pos" "main"
-  normalize_bedgraph "\${NEG3}" "3p" "neg" "main"
+  MEM_GB=${task.memory.toGiga()}
+  MAX_PAR=\$(( MEM_GB * 70 / 100 / 2 ))
+  [ "\${MAX_PAR}" -lt 1 ] && MAX_PAR=1
+  [ "\${MAX_PAR}" -gt "\${THREADS}" ] && MAX_PAR=\${THREADS}
+  MAX_PAR=\${NORMALIZE_MAX_PAR:-\${MAX_PAR}}
 
-  echo "NORMALIZE | MAIN3P | Main 3' tracks complete"
+  SORT_MEM_GB=\$(( MEM_GB * 50 / 100 / MAX_PAR ))
+  [ "\${SORT_MEM_GB}" -lt 1 ] && SORT_MEM_GB=1
+  export SORT_MEM="\${SORT_MEM_GB}G"
+  export SORT_TMP="\${SORT_TMPDIR:-/tmp}"
+  SORT_PARALLEL=\$(( THREADS / MAX_PAR ))
+  [ "\${SORT_PARALLEL}" -lt 1 ] && SORT_PARALLEL=1
+  export SORT_PARALLEL
+  echo "NORMALIZE | SCALE | Concurrency: \${MAX_PAR} parallel job(s), SORT_MEM=\${SORT_MEM} each, SORT_PARALLEL=\${SORT_PARALLEL} (task mem=\${MEM_GB}G)"
 
-  ###########################################################################
-  # 7) NORMALIZE MAIN 5' TRACKS (if enabled)
-  ###########################################################################
+  NORM_FAIL_FLAG="normalize_fail.flag"
+  rm -f "\${NORM_FAIL_FLAG}"
+
+  NORM_PIDS=()
+  launch_norm() {
+    # Block until fewer than MAX_PAR of OUR jobs are still alive. Same
+    # tracked-PID pattern as module 06's launch_cov -- a bare \`wait\` would
+    # hang on the \`tee\` process-substitution children from \`exec >\` above.
+    while :; do
+      local alive=0 p
+      for p in "\${NORM_PIDS[@]:-}"; do
+        [ -n "\${p}" ] && kill -0 "\${p}" 2>/dev/null && alive=\$(( alive + 1 ))
+      done
+      [ "\${alive}" -lt "\${MAX_PAR}" ] && break
+      sleep 0.5
+    done
+    ( normalize_bedgraph "\$1" "\$2" "\$3" "\$4" || echo "FAIL: \$2 \$3 \$4" >> "\${NORM_FAIL_FLAG}" ) &
+    NORM_PIDS+=(\$!)
+  }
+
+  launch_norm "\${POS3}" "3p" "pos" "main"
+  launch_norm "\${NEG3}" "3p" "neg" "main"
 
   if [[ \${EMIT_5P} -eq 1 ]]; then
-    echo "NORMALIZE | MAIN5P | Normalizing main 5' tracks..."
-    
-    normalize_bedgraph "\${POS5}" "5p" "pos" "main"
-    normalize_bedgraph "\${NEG5}" "5p" "neg" "main"
-    
-    echo "NORMALIZE | MAIN5P | Main 5' tracks complete"
+    launch_norm "\${POS5}" "5p" "pos" "main"
+    launch_norm "\${NEG5}" "5p" "neg" "main"
   else
     echo "NORMALIZE | MAIN5P | Skipping 5' tracks (not enabled)"
   fi
 
-  ###########################################################################
-  # 8) NORMALIZE ALLMAP 3' TRACKS (if enabled)
-  ###########################################################################
-
   if [[ \${EMIT_ALLMAP} -eq 1 ]]; then
-    echo "NORMALIZE | ALLMAP3P | Normalizing allMap 3' tracks..."
-    
-    normalize_bedgraph "\${AM3P_POS}" "3p" "pos" "allMap"
-    normalize_bedgraph "\${AM3P_NEG}" "3p" "neg" "allMap"
-    
-    echo "NORMALIZE | ALLMAP3P | AllMap 3' tracks complete"
+    launch_norm "\${AM3P_POS}" "3p" "pos" "allMap"
+    launch_norm "\${AM3P_NEG}" "3p" "neg" "allMap"
   else
     echo "NORMALIZE | ALLMAP3P | Skipping allMap 3' tracks (not enabled)"
   fi
 
-  ###########################################################################
-  # 9) NORMALIZE ALLMAP 5' TRACKS (if both enabled)
-  ###########################################################################
-
   if [[ \${EMIT_ALLMAP} -eq 1 && \${EMIT_5P} -eq 1 ]]; then
-    echo "NORMALIZE | ALLMAP5P | Normalizing allMap 5' tracks..."
-    
-    normalize_bedgraph "\${AM5P_POS}" "5p" "pos" "allMap"
-    normalize_bedgraph "\${AM5P_NEG}" "5p" "neg" "allMap"
-    
-    echo "NORMALIZE | ALLMAP5P | AllMap 5' tracks complete"
+    launch_norm "\${AM5P_POS}" "5p" "pos" "allMap"
+    launch_norm "\${AM5P_NEG}" "5p" "neg" "allMap"
   else
     echo "NORMALIZE | ALLMAP5P | Skipping allMap 5' tracks"
   fi
+
+  for p in "\${NORM_PIDS[@]}"; do
+    wait "\${p}" || true
+  done
+
+  if [[ -s "\${NORM_FAIL_FLAG}" ]]; then
+    echo "NORMALIZE | ERROR | Failed normalization jobs:"
+    sed 's/^/NORMALIZE | ERROR |   /' "\${NORM_FAIL_FLAG}"
+    tracktx_error "normalize_coverage_tracks" "One or more track normalization jobs failed" "Check normalize_coverage_tracks.log for per-job error messages"
+  fi
+
+  # Merge per-job manifest fragments (see normalize_bedgraph) into the real
+  # manifest, then clean them up.
+  cat manifest_*.tsv >> tracks_manifest.tsv 2>/dev/null || true
+  rm -f manifest_*.tsv
+
+  echo "NORMALIZE | SCALE | All enabled track sets complete"
 
   ###########################################################################
   # 9c) GUARANTEE PER-SAMPLE-REPORT BIGWIGS EXIST
@@ -827,6 +879,25 @@ PYSCRIPT
     "3p/\${SAMPLE_ID}.allMap.3p.pos.cpm.bw" \\
     "3p/\${SAMPLE_ID}.allMap.3p.neg.cpm.bw"; do
     [[ -e "\${RBW}" ]] || : > "\${RBW}"
+  done
+
+  ###########################################################################
+  # 9d) GUARANTEE MAIN 5' CPM/siCPM BEDGRAPHS EXIST (cpm5p_bg/sicpm5p_bg outputs)
+  ###########################################################################
+  # GRO-seq routes its functional-region and Pol-II density signal through the
+  # 5' end (params.signal_end=5p; see main.nf STEP 11/12), so these need to be
+  # real declared outputs, not just files that happen to land in 5p/ when
+  # EMIT_5P=1. When EMIT_5P=0 (PRO-seq default, or emit_5p=false) section 7
+  # above never ran and these paths don't exist yet -- touch empty
+  # placeholders so the output binding always succeeds; an empty bedgraph is
+  # already the established "not available" convention (module 06's sentinel
+  # EMPTY_5P_*.bedgraph, EMIT_SICPM=0 path above, etc.).
+  for MAIN5P in \\
+    "5p/\${SAMPLE_ID}.5p.pos.cpm.bedgraph" \\
+    "5p/\${SAMPLE_ID}.5p.neg.cpm.bedgraph" \\
+    "5p/\${SAMPLE_ID}.5p.pos.sicpm.bedgraph" \\
+    "5p/\${SAMPLE_ID}.5p.neg.sicpm.bedgraph"; do
+    [[ -e "\${MAIN5P}" ]] || : > "\${MAIN5P}"
   done
 
   ###########################################################################
@@ -865,179 +936,27 @@ FACTOREOF
   echo "NORMALIZE | README | Creating documentation..."
 
   cat > README_normalization.txt <<DOCEOF
-================================================================================
 NORMALIZED TRACKS — ${sample_id}
-================================================================================
-
-OVERVIEW
 ────────────────────────────────────────────────────────────────────────────
-  Normalized coverage tracks for quantitative comparison across samples.
-  
-  Two normalization methods:
-    1. CPM (Counts Per Million): Standard library size normalization
-    2. siCPM (Spike-in CPM): Accounts for global changes via spike-in RNA
+  CPM   = (raw_count / sample_reads) x 1,000,000
+  siCPM = (raw_count / sample_spike) x (control_spike / control_reads) x 1,000,000
 
-NORMALIZATION FORMULAS
-────────────────────────────────────────────────────────────────────────────
+  Control for siCPM: condition == "\${CONTROL_LABEL}" (params.control_label),
+  lowest replicate number preferred. MUST be set per dataset to your real
+  baseline condition -- no fallback to "first sample with spike reads"; a
+  non-matching label disables siCPM (factor = 0) rather than guessing.
+  This sample: CPM factor=\${FAC_CPM}  siCPM factor=\${FAC_SICPM}
+  \$([ \${SICPM_AVAILABLE} -eq 0 ] && echo "  -> siCPM DISABLED for this sample" || echo "  -> siCPM available")
 
-CPM (Counts Per Million):
-  CPM = (raw_count / sample_reads) × 1,000,000
-  
-  Use when:
-    • Comparing samples with similar RNA content
-    • Standard differential expression analysis
-    • No spike-in RNA added
+  3p/${sample_id}.3p.{pos,neg}.{cpm,sicpm}.{bedgraph,bw}   — always generated
+  5p/${sample_id}.5p.{pos,neg}.{cpm,sicpm}.{bedgraph,bw}   — always generated
+  3p/${sample_id}.allMap.3p.*  (+ 5p equivalents)          — if emit_allmap
+  normalization_factors.tsv, tracks_manifest.tsv (sample/end/set/strand/scale/path)
 
-siCPM (Spike-in Normalized CPM):
-  siCPM = (raw_count / sample_spike) × (control_spike / control_reads) × 1,000,000
-  
-  Use when:
-    • Global transcription changes expected
-    • Spike-in RNA added during library prep
-    • Treatment affects overall RNA levels
-
-CONTROL SELECTION (for siCPM)
-────────────────────────────────────────────────────────────────────────────
-  Condition = "\${CONTROL_LABEL}" (params.control_label), lowest replicate
-  number preferred (a merged rep-0 track wins over stray per-replicate rows).
-
-  control_label MUST be set explicitly, per dataset, to your real baseline
-  condition name — there is no fallback to "first sample with spike reads"
-  if it doesn't match. A non-matching label disables siCPM (factor = 0)
-  rather than silently normalizing against the wrong sample.
-
-SAMPLE INFORMATION
-────────────────────────────────────────────────────────────────────────────
-  Sample:     ${sample_id}
-  Condition:  ${condition}
-  Timepoint:  ${timepoint}
-  Replicate:  ${replicate}
-
-NORMALIZATION FACTORS
-────────────────────────────────────────────────────────────────────────────
-  CPM factor:   \${FAC_CPM}
-  siCPM factor: \${FAC_SICPM}
-  
-  \$([ \${SICPM_AVAILABLE} -eq 0 ] && echo "  Note: siCPM disabled (factor = 0)" || echo "  siCPM enabled and available")
-
-FILES
-────────────────────────────────────────────────────────────────────────────
-
-Main 3' Tracks (Always Generated):
-  3p/${sample_id}.3p.pos.cpm.bedgraph       — Positive strand CPM
-  3p/${sample_id}.3p.neg.cpm.bedgraph       — Negative strand CPM
-  3p/${sample_id}.3p.pos.cpm.bw             — BigWig format
-  3p/${sample_id}.3p.neg.cpm.bw             — BigWig format
-  3p/${sample_id}.3p.pos.sicpm.bedgraph     — Positive strand siCPM
-  3p/${sample_id}.3p.neg.sicpm.bedgraph     — Negative strand siCPM
-  3p/${sample_id}.3p.pos.sicpm.bw           — BigWig format
-  3p/${sample_id}.3p.neg.sicpm.bw           — BigWig format
-
-Main 5' Tracks (PE Only):
-  5p/${sample_id}.5p.*.cpm.bedgraph         — CPM normalized
-  5p/${sample_id}.5p.*.cpm.bw               — BigWig format
-  5p/${sample_id}.5p.*.sicpm.bedgraph       — siCPM normalized
-  5p/${sample_id}.5p.*.sicpm.bw             — BigWig format
-
-AllMap Tracks (if emit_allmap=true):
-  3p/${sample_id}.allMap.3p.*.cpm.bedgraph
-  3p/${sample_id}.allMap.3p.*.sicpm.bedgraph
-  (Plus corresponding BigWig files)
-
-Legacy Symlinks (for compatibility):
-  3p/${sample_id}_pos3_cpm.bedgraph → 3p/${sample_id}.3p.pos.cpm.bedgraph
-  3p/${sample_id}_neg3_cpm.bedgraph → 3p/${sample_id}.3p.neg.cpm.bedgraph
-
-Metadata:
-  normalization_factors.tsv — CPM and siCPM scaling factors
-  tracks_manifest.tsv       — Complete list of all generated tracks
-  README_normalization.txt  — This documentation
-  normalize_coverage_tracks.log      — Processing log
-
-FILE FORMAT
-────────────────────────────────────────────────────────────────────────────
-  bedGraph: chr<TAB>start<TAB>end<TAB>normalized_coverage
-  BigWig:   Binary indexed format for genome browsers
-
-PROCESSING NOTES
-────────────────────────────────────────────────────────────────────────────
-  • Single-pass scaling: CPM and siCPM computed together for efficiency
-  • No coordinate clipping needed (validated by generate_coverage_tracks module)
-  • Negative strand values preserved from upstream mirroring
-  • BigWig timeout: \${TIMEOUT_BW} seconds
-  • Optional bedGraph sorting: \$([ \${FORCE_SORT} -eq 1 ] && echo "enabled" || echo "disabled")
-
-TRACKS MANIFEST
-────────────────────────────────────────────────────────────────────────────
-  The tracks_manifest.tsv file contains:
-    Column 1: sample       — Sample identifier
-    Column 2: end          — 3p or 5p
-    Column 3: set          — main or allMap
-    Column 4: strand       — pos or neg
-    Column 5: scale        — cpm or sicpm
-    Column 6: path         — Relative path to bedGraph file
-
-USAGE RECOMMENDATIONS
-────────────────────────────────────────────────────────────────────────────
-
-For Genome Browsers:
-  • Use BigWig (.bw) files for visualization
-  • Load both positive and negative strand tracks
-  • Negative values indicate reverse strand coverage
-
-For Downstream Analysis:
-  • Use CPM tracks for standard comparisons
-  • Use siCPM tracks when spike-in added
-  • bedGraph format recommended for computational analysis
-  • Manifest file helps programmatic access
-
-For Differential Analysis:
-  • CPM tracks suitable for DESeq2, edgeR input
-  • siCPM accounts for global expression changes
-  • Consider biological replicates for statistics
-
-QUALITY CHECKS
-────────────────────────────────────────────────────────────────────────────
-
-Expected Behavior:
-  • CPM values typically 0.01 - 1000 for expressed regions
-  • siCPM values should be similar to CPM if no global changes
-  • All tracks should have same number of intervals as input
-
-Troubleshooting:
-  • Empty outputs: Check input bedGraphs exist and non-empty
-  • Zero siCPM factor: control_label doesn't match any condition in your
-    samplesheet (most common — set it explicitly per dataset), or no
-    spike-in reads on this sample/its control. Check the log line
-    "NORMALIZE | FACTORS | Cause: ..." above for which one.
-  • BigWig conversion failure: Try --force_sort_bedgraph
-
-PARAMETERS USED
-────────────────────────────────────────────────────────────────────────────
-  Emit BigWig:      \$([ \${EMIT_BW} -eq 1 ] && echo "Yes" || echo "No")
-  Emit siCPM:       \$([ \${EMIT_SICPM} -eq 1 ] && echo "Yes" || echo "No")
-  Emit allMap:      \$([ \${EMIT_ALLMAP} -eq 1 ] && echo "Yes" || echo "No")
-  Emit 5' tracks:   \$([ \${EMIT_5P} -eq 1 ] && echo "Yes" || echo "No (auto)")
-  Control label:    \${CONTROL_LABEL}
-  BigWig timeout:   \${TIMEOUT_BW}s
-  Force sort:       \$([ \${FORCE_SORT} -eq 1 ] && echo "Yes" || echo "No")
-
-DOWNSTREAM MODULES
-────────────────────────────────────────────────────────────────────────────
-  These normalized tracks are used by:
-  • Divergent transcription detection (allMap 3' tracks)
-  • Functional region calling (main 3' tracks)
-  • Pol-II metrics calculation (CPM or siCPM depending on spike-in)
-  • Quality control and visualization
-
-GENERATED
-────────────────────────────────────────────────────────────────────────────
-  Pipeline: TrackTx PRO-seq
-  Date: \$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-  Sample: ${sample_id}
-  Module: 08_normalize_coverage_tracks
-
-================================================================================
+  BigWig timeout \${TIMEOUT_BW}s; force-sort bedGraph: \$([ \${FORCE_SORT} -eq 1 ] && echo "yes" || echo "no").
+  Downstream: divergent-TX calling and functional-region assignment use the
+  MAIN (not allMap) tracks on whichever end params.signal_end selects (3' for
+  PRO-seq, 5' for GRO-seq); Pol-II density uses siCPM when available, else CPM.
 DOCEOF
 
   echo "NORMALIZE | README | Documentation created"

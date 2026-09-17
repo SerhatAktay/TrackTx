@@ -1,4 +1,4 @@
-# CI for the TrackTx pipeline: two tiers.
+# CI for the TrackTx pipeline: three tiers.
 #
 # 1. structural-dry-run: `nextflow run main.nf -preview` validates the DSL2
 #    workflow (parameter handling, samplesheet parsing, channel/process
@@ -12,9 +12,15 @@
 # 2. module-tests: `nf-test` DOES execute real process bodies (against tiny
 #    synthetic fixtures under tests/fixtures/, not real genomes), so this
 #    catches a broken command/flag/script bug inside a process that -preview
-#    cannot see. Currently covers module 01 (annotation download/caching,
-#    including a regression test for the cache-key bug fixed in 2faa86e);
-#    add more tests/modules/*.nf.test files as coverage grows.
+#    cannot see. Currently covers modules 01, 08, 09, 11; add more
+#    tests/modules/*.nf.test files as coverage grows.
+#
+# 3. script-selftests: some bin/*.py scripts carry a built-in, dependency-free
+#    self-test (`--self-test`, or a bare `python3 script.py` for _common.py)
+#    that exercises their pure-logic functions directly with synthetic data --
+#    cheaper than fixturing a full Nextflow process when the fix being pinned
+#    never touches files/samtools/bedtools, just Python logic. Runs on the
+#    bare GitHub runner (stdlib only, no docker/conda needed).
 name: CI
 
 on:
@@ -74,3 +80,14 @@ jobs:
 
       - name: Run module tests (real process execution, tiny fixtures)
         run: nf-test test tests/ --profile docker
+
+  script-selftests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run bin/*.py self-tests
+        run: |
+          python3 bin/detect_barcode_umi.py --self-test
+          python3 bin/_common.py
