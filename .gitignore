@@ -52,7 +52,6 @@ params.yaml
 samplesheet.csv
 
 # Documentation (optional / local)
-CHANGELOG.md
 HOW.md
 
 # OS / editor noise

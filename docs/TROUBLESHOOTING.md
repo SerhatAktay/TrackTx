@@ -115,7 +115,7 @@ Java file-lock conflict. Common causes and fixes:
 
 **Finished tasks re-run from sample 1 (even with -resume):**
 - Nextflow's cache depends on input file path, size, and timestamp. NFS/network storage can give inconsistent timestamps; add `preprocess_reads_lenient_cache: true` to params.yaml or run with `--preprocess_reads_lenient_cache`.
-- Docker `:latest` changes when the image is updated; use a fixed tag (e.g. `tracktx:1.3.0`) for stable caching.
+- Docker `:latest` changes when the image is updated; use a fixed tag (e.g. `tracktx:1.4.0`) for stable caching.
 - Debug: `nextflow run ... -resume -dump-hashes 2>&1 | grep "cache hash"` and compare between runs.
 
 **preprocess_and_quality_filter_reads re-runs after stop/restart:**
