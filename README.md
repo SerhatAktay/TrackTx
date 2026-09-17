@@ -4,6 +4,7 @@
 
 **A Nextflow pipeline for PRO-seq and nascent RNA-seq analysis**
 
+[![CI](https://github.com/SerhatAktay/TrackTx/actions/workflows/ci.yml/badge.svg)](https://github.com/SerhatAktay/TrackTx/actions/workflows/ci.yml)
 [![Nextflow](https://img.shields.io/badge/nextflow%20DSL2-%E2%89%A526.04.0-23aa62.svg)](https://www.nextflow.io/)
 [![Docker](https://img.shields.io/badge/docker-supported-0db7ed.svg)](https://www.docker.com/)
 [![Conda](https://img.shields.io/badge/conda-supported-green.svg)](https://conda.io/)
@@ -14,11 +15,40 @@
 
 ---
 
+## Introduction
+
+TrackTx analyzes nascent RNA sequencing data (PRO-seq, GRO-seq) to measure real-time transcription: where RNA polymerase is engaged, how it pauses, and where transcription initiates divergently.
+
+**Pipeline summary:**
+
+1. Trim and quality-filter reads ([cutadapt](https://cutadapt.readthedocs.io/), [umi_tools](https://umi-tools.readthedocs.io/))
+2. Align to the reference and spike-in genome ([bowtie2](https://bowtie-bio.sourceforge.net/bowtie2/))
+3. Generate strand-specific coverage tracks ([bedtools](https://bedtools.readthedocs.io/), bedGraphToBigWig)
+4. Normalize to CPM and spike-in CPM
+5. Detect divergent transcription (Gaussian Mixture Model, FDR control)
+6. Assign signal to functional genomic regions and compute Pol II pausing indices
+7. QC and report, per-sample and cohort-wide ([MultiQC](https://multiqc.info/), [deepTools](https://deeptools.readthedocs.io/))
+
+```mermaid
+graph LR
+    A[FASTQ] --> B[cutadapt / umi_tools]
+    B --> C[bowtie2 alignment]
+    C --> D[bedtools coverage tracks]
+    D --> E[CPM / spike-in normalization]
+    E --> F[Divergent transcription + Pol II pausing]
+    F --> G[MultiQC + HTML reports]
+```
+
+One command takes raw reads to publication-ready outputs. It handles single- and paired-end data, PRO-seq and GRO-seq, UMIs, barcodes, and spike-in normalization, and runs the same way on a laptop, a workstation, or an HPC cluster.
+
+Every track set comes in two flavors: `main` (best alignment per read, for quantitative analysis) and `allMap` (every reported alignment, for spotting signal in repetitive regions), split by the `NH` tag.
+
+---
+
 ## Contents
 
 - [Quick Start](#quick-start)
 - [Testing the Pipeline](#testing-the-pipeline)
-- [What Does TrackTx Do?](#what-does-tracktx-do)
 - [Pipeline Modules](#pipeline-modules)
 - [Installation](#installation)
 - [Input Files](#input-files)
@@ -29,6 +59,7 @@
 - [Troubleshooting](#troubleshooting)
 - [Documentation](#documentation)
 - [Citation](#citation)
+- [Credits](#credits)
 - [License](#license)
 
 ---
@@ -76,55 +107,11 @@ The script will:
 
 ### Step 3: Monitor Progress (Real-time)
 
-Watch your pipeline in action with the **live monitor**:
-
 ```bash
-cd /path/to/tracktx
 python3 nfmon.py --from-start --tail 80
 ```
 
-- **Trace-aware progress**: nfmon reads the latest `results*/trace/trace.txt` to compute a snapshot-based progress bar (% of tasks that are done or cached out of all known tasks).
-- **Task runtimes**: per-task durations are taken from the Nextflow trace when available; running tasks show time since they started, not since nfmon was launched.
-- **Logs pane**: for TrackTx modules, nfmon tails the module logs (`preprocess_reads.log`, `align_reads.log`, `tracks.log`, etc.) and surfaces `PREP | ...`, `ALIGN | ...`, `TRACKS | ...` stage lines. When only Nextflow wrapper logs exist, it shows a small `<waiting for module logs>` placeholder instead of noisy `+ set -e` output.
-
-**Custom output dir?** nfmon auto-detects trace files in `results/` and `results_*/` (e.g. `results_test_PE3/trace/trace.txt`). To force a specific trace path:
-
-```bash
-python3 nfmon.py --trace results_test_PE3/trace/trace.txt
-```
-
-**Install Rich (optional, for enhanced UI):** The monitor works without it (basic curses fallback), but for a better layout, colors, and live updates:
-```bash
-pip install rich
-# or with conda:
-conda install -c conda-forge rich
-```
-
-Features:
-- Real-time task progress and resource usage (based on Nextflow trace)
-- Live log tailing for active tasks (TrackTx module logs preferred over `.command.*`)
-- CPU/memory/load monitoring
-- Per-task performance metrics and slow-task detection
-
-**Header fields in nfmon:**
-
-- `Run` / `Session`: extracted from `.nextflow.log`. If nfmon cannot find that log, these may show as `n/a`.
-- `Exec`: Nextflow executor (often `local`, even when using Docker).
-- `Container`: best-effort detection of container engine (e.g. `docker`, `singularity`) based on the Nextflow log.
-- `Mode`:
-  - `full`: both `.nextflow.log` and `trace.txt` available; all metrics accurate.
-  - `log_only`: only `.nextflow.log` found; progress/runtimes are approximate.
-  - `trace_only`: only trace file available; task metrics are good, but run metadata may be limited.
-  - `fs_only`: only `work/` is visible; nfmon falls back to filesystem heuristics.
-
-**Monitor options:**
-```bash
-python3 nfmon.py --help                          # All options
-python3 nfmon.py --filter "alignment"            # Watch specific tasks
-python3 nfmon.py --all-logs                      # See all task logs
-python3 nfmon.py --oneshot                       # Quick snapshot
-python3 nfmon.py --oneshot --json status.json    # Export JSON
-```
+Live progress bar, per-task runtimes, and tailed module logs, read from the Nextflow trace. Full reference: [docs/MONITORING.md](docs/MONITORING.md)
 
 ---
 
@@ -159,26 +146,6 @@ The script downloads from ENA, subsets to 10%, and removes the full files. Outpu
 ```
 
 The config uses `sample_source: "local"` and points to the subset FASTQs. See `test_PE/README.md` for dataset details.
-
----
-
-## What Does TrackTx Do?
-
-TrackTx analyzes nascent RNA sequencing data (PRO-seq, GRO-seq, etc.) to understand **real-time transcription**:
-
-```mermaid
-graph LR
-    A[FASTQ Files] --> B[QC and Trimming]
-    B --> C[Alignment]
-    C --> D[Track Generation]
-    D --> E[Normalization]
-    E --> F[Statistical Detection]
-    F --> G[Comprehensive Reports]
-```
-
-One command takes raw reads to publication-ready outputs. It handles single- and paired-end data, PRO-seq and GRO-seq, UMIs, barcodes, and spike-in normalization, and runs the same way on a laptop, a workstation, or an HPC cluster.
-
-Every track set comes in two flavors: `main` (best alignment per read, for quantitative analysis) and `allMap` (every reported alignment, for spotting signal in repetitive regions), split by the `NH` tag. Divergent transcription is called statistically, with a Gaussian Mixture Model and FDR control instead of manual thresholds, and signal is normalized to CPM and spike-in CPM for cross-sample comparison. Each sample gets an HTML report, and the cohort gets a combined dashboard.
 
 ---
 
@@ -481,6 +448,7 @@ Fixes for out-of-memory errors, exFAT/USB publish and file-lock failures, conda/
 | [docs/INSTALLATION.md](docs/INSTALLATION.md) | Full install instructions (Docker, Conda, manual, Windows/WSL, system requirements) |
 | [docs/MODULES.md](docs/MODULES.md) | What each of the 17 pipeline modules does |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Errors, fixes, and where to look when something breaks |
+| [docs/MONITORING.md](docs/MONITORING.md) | nfmon live-monitor reference (header fields, options) |
 
 ---
 
@@ -495,16 +463,14 @@ If TrackTx is useful for your research, please cite: [https://github.com/serhata
 
 ---
 
-## License
+## Credits
 
-TrackTx is released under the [MIT License](LICENSE).
+TrackTx is developed and maintained by [Serhat Aktay](https://github.com/SerhatAktay).
+
+Bug reports and feature requests: [GitHub Issues](https://github.com/serhataktay/tracktx/issues)
 
 ---
 
-<div align="center">
+## License
 
-**Star this repo if TrackTx is useful for your research!**
-
-[Issues](https://github.com/serhataktay/tracktx/issues) • [Releases](https://github.com/serhataktay/tracktx/releases)
-
-</div>
+TrackTx is released under the [MIT License](LICENSE).

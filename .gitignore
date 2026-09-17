@@ -35,6 +35,7 @@ assets/*.png
 assets/NO_GTF
 assets/EMPTY_SPIKE.fa
 assets/EMPTY_SPIKE_INDEX.fa
+.tracktx_io.lock
 
 # Conda and environments
 .conda/
@@ -60,6 +61,7 @@ HOW.md
 *.swo
 .idea/
 .vscode/
+.impeccable/
 
 # Logs
 *.log
