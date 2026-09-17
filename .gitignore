@@ -35,6 +35,8 @@ assets/*.png
 assets/NO_GTF
 assets/EMPTY_SPIKE.fa
 assets/EMPTY_SPIKE_INDEX.fa
+assets/NO_GENOME.fa
+.tracktx_io.lock
 
 # Conda and environments
 .conda/
