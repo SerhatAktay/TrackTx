@@ -66,7 +66,6 @@ def sanitizeGenomeId(raw) {
 // Paths inlined (def MOD = ... was a top-level statement, not allowed in strict)
 // ============================================================================
 
-include { validateParameters; paramsSummaryLog                      } from 'plugin/nf-schema'
 include { capture_tool_versions                                     } from './modules/00_capture_tool_versions.nf'
 include { download_genome_annotations                               } from './modules/01_download_genome_annotations.nf'
 include { download_sra_samples                                      } from './modules/02_download_sra_samples.nf'
@@ -160,13 +159,12 @@ Debug mode:       ${params.debug ?: false}
 
   // ── Parameter validation ───────────────────────────────────────────────────
 
-  // Schema-level check first (typos/wrong types on the ~25 flags a user
-  // actually types -- see nextflow_schema.json's $comment for why this
-  // deliberately does NOT enumerate every advanced/nested knob). The
-  // hand-written checks below remain the source of truth for conditional
-  // business rules (e.g. reference_genome=other requiring custom_genome_id)
-  // that a static schema expresses far less clearly than a plain error.
-  validateParameters()
+  // nf-schema's validateParameters() is disabled on this branch (its plugin
+  // loader needs symlink support the launch directory's storage doesn't
+  // have -- see nextflow.config). The hand-written checks below are the
+  // sole source of truth here for conditional business rules (e.g.
+  // reference_genome=other requiring custom_genome_id); typos/wrong types
+  // on flags won't be schema-checked on this branch.
 
   if (!params.output_dir) {
     error "PIPELINE | ERROR | Missing required parameter: --output_dir"
