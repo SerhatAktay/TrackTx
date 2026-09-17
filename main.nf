@@ -231,8 +231,11 @@ Debug mode:       ${params.debug ?: false}
     error "PIPELINE | ERROR | Samplesheet has no data rows. Expected format: sample,condition,timepoint,replicate,file1,file2"
   }
 
-  // Fail-fast: validate input files exist for local samples
-  if (params.sample_source != 'srr') {
+  // Fail-fast: validate input files exist for local samples.
+  // Skipped under `-preview`, which never reads process inputs -- a preview
+  // run against real params (e.g. the CI structural-dry-run job) shouldn't
+  // require the referenced fastq.gz fixtures to actually be on disk.
+  if (params.sample_source != 'srr' && !workflow.preview) {
     def header   = samplesheetLines[0]?.split(',')?.collect { col -> col.trim() }
     def sampleIdx = header?.findIndexOf { col -> col?.toLowerCase() == 'sample' }
     def file1Idx  = header?.findIndexOf { col -> col?.toLowerCase() == 'file1' }
@@ -481,10 +484,11 @@ Paths are relative to: ${projectDir}"""
   def noBGAm5pNegPath = "${assetsDir}/EMPTY_AM5P_NEG.bedgraph"
   def noSpikeFaPath   = "${assetsDir}/EMPTY_SPIKE.fa"
   def noSpikeIdxPath  = "${assetsDir}/EMPTY_SPIKE_INDEX.fa"
+  def noGenomeFaPath  = "${assetsDir}/NO_GENOME.fa"
 
   [noR2Path, noBGPath, noBGPosPath, noBGNegPath,
    noBG5pPosPath, noBG5pNegPath, noBGAm5pPosPath, noBGAm5pNegPath,
-   noSpikeFaPath, noSpikeIdxPath].each { path ->
+   noSpikeFaPath, noSpikeIdxPath, noGenomeFaPath].each { path ->
     if (!new File(path).exists()) new File(path).text = ''
   }
   new File(noSpikeFaPath).text  = ">none\nN\n"
@@ -507,9 +511,10 @@ Paths are relative to: ${projectDir}"""
     log.info "-".multiply(80)
   }
 
+  def localReferenceFa = file("${projectDir}/genomes/${params.reference_genome}.fa")
   def reference_fa = params.reference_genome == 'other'
     ? file(params.genome_fasta)
-    : file("${projectDir}/genomes/${params.reference_genome}.fa")
+    : (localReferenceFa.exists() ? localReferenceFa : file(noGenomeFaPath))
 
   if (params.verbose) log.info "STEP 5 | INDEX | Primary genome: ${params.reference_genome}"
 
@@ -535,9 +540,10 @@ Paths are relative to: ${projectDir}"""
   if (params.spikein_genome && params.spikein_genome != 'None') {
     if (params.verbose) log.info "STEP 5 | INDEX | Spike-in genome: ${params.spikein_genome}"
 
+    def localSpikeFa = file("${projectDir}/genomes/${params.spikein_genome}.fa")
     def spike_fa = params.spikein_genome == 'other'
       ? file(params.spikein_fasta)
-      : file("${projectDir}/genomes/${params.spikein_genome}.fa")
+      : (localSpikeFa.exists() ? localSpikeFa : file(noGenomeFaPath))
 
     spike_index(
       channel.value(tuple(
