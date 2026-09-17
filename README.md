@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**A powerful Nextflow pipeline for PRO-seq and nascent RNA-seq analysis**
+**A Nextflow pipeline for PRO-seq and nascent RNA-seq analysis**
 
 [![Nextflow](https://img.shields.io/badge/nextflow%20DSL2-%E2%89%A526.04.0-23aa62.svg)](https://www.nextflow.io/)
 [![Docker](https://img.shields.io/badge/docker-supported-0db7ed.svg)](https://www.docker.com/)
@@ -19,6 +19,7 @@
 - [Quick Start](#quick-start)
 - [Testing the Pipeline](#testing-the-pipeline)
 - [What Does TrackTx Do?](#what-does-tracktx-do)
+- [Pipeline Modules](#pipeline-modules)
 - [Installation](#installation)
 - [Input Files](#input-files)
 - [Outputs](#outputs)
@@ -32,12 +33,7 @@
 
 ---
 
-
----
-
 ## Quick Start
-
-Get started in **3 simple steps**:
 
 ### Step 1: Generate Configuration (Interactive, Recommended)
 
@@ -61,7 +57,7 @@ Use the **smart launcher** that auto-detects your environment:
 ./run_pipeline.sh
 ```
 
-That's it! The script will:
+The script will:
 - Auto-detect Docker, Conda, or local environment
 - Load your `params.yaml` and `samplesheet.csv`
 - Optimize resource allocation for your system
@@ -134,7 +130,7 @@ python3 nfmon.py --oneshot --json status.json    # Export JSON
 
 ## Testing the Pipeline
 
-Want to verify the pipeline works before running your own data? Use the bundled test setup with readymade samplesheets, params, and a script that downloads small test datasets.
+The bundled test setup (readymade samplesheets, params, and a download script for small test datasets) verifies the pipeline works before you run your own data.
 
 ### Step 1: Download test data (PE only)
 
@@ -180,76 +176,17 @@ graph LR
     F --> G[Comprehensive Reports]
 ```
 
-**Key capabilities:**
+One command takes raw reads to publication-ready outputs. It handles single- and paired-end data, PRO-seq and GRO-seq, UMIs, barcodes, and spike-in normalization, and runs the same way on a laptop, a workstation, or an HPC cluster.
 
-- **Automated** — raw reads to publication-ready outputs in one command
-- **Flexible** — handles SE and PE data, PRO-seq and GRO-seq, UMIs, barcodes, and spike-in normalization
-- **Multimapper-aware** — `main` tracks (best alignment per read) for quantitative analysis plus `allMap` tracks (every reported alignment) for spotting signal in repetitive regions, with unique-read filtering by the `NH` tag
-- **Statistical** — divergent transcription detection with Gaussian Mixture Models and FDR control, no manual thresholding required
-- **Quantitative** — CPM and spike-in CPM (siCPM) normalization for cross-sample comparisons
-- **Comprehensive** — per-sample HTML reports plus a cohort-wide dashboard
-- **Scalable** — runs identically on a laptop, workstation, or HPC cluster
+Every track set comes in two flavors: `main` (best alignment per read, for quantitative analysis) and `allMap` (every reported alignment, for spotting signal in repetitive regions), split by the `NH` tag. Divergent transcription is called statistically, with a Gaussian Mixture Model and FDR control instead of manual thresholds, and signal is normalized to CPM and spike-in CPM for cross-sample comparison. Each sample gets an HTML report, and the cohort gets a combined dashboard.
 
 ---
 
 ## Pipeline Modules
 
-TrackTx runs 17 modules in sequence. Here is what each one does.
+TrackTx runs 17 modules in sequence, from genome annotation download through alignment, coverage tracks, normalization, divergent transcription detection, Pol II pausing metrics, QC, and per-sample and cohort reports.
 
-**01 — Download Genome Annotations**
-Downloads GTF gene annotation files from Ensembl, RefSeq, or GENCODE for the chosen reference genome. Annotations drive gene-body boundary calls, divergent transcription pairing, and functional region assignment throughout the pipeline.
-
-**02 — Download SRA Samples**
-Retrieves FASTQ files from NCBI SRA or the European Nucleotide Archive (ENA) when `sample_source: srr` is set. Uses `fasterq-dump` with multi-threaded conversion and falls back to parallel ENA downloads automatically. Raw FASTQs are stored via Nextflow's `storeDir` at `{output_dir}/00_sra_cache/{SRR}/`, so re-downloads are skipped as long as those files exist — even after the `work/` directory has been deleted between runs.
-
-**03 — Preprocess and Quality Filter Reads**
-Trims adapter sequences, removes barcodes, and applies a minimum length filter in a single `cutadapt` pass. UMI extraction with `umi_tools` follows if enabled. FastQC runs on both raw and cleaned reads to confirm quality before alignment.
-
-**04 — Download Genome and Build Alignment Index**
-Downloads the reference (and spike-in) genome FASTA, then builds a `bowtie2` alignment index. Pre-built indexes are cached and reused across runs.
-
-**05 — Align Reads to Genome**
-Aligns cleaned reads to the reference genome with `bowtie2` (end-to-end mode). For PRO-seq, R1 is reverse-complemented and paired-end data is aligned with `--ff` (`-1` original R2, `-2` RC(R1)) so the nascent-RNA 3′ end maps to the polymerase position. Spike-in reads (the genome-unaligned set) are aligned separately to derive normalization factors and are **not** run in multimapping mode. Outputs include coordinate-sorted, indexed BAM files for primary, all-mapping, and spike-in alignments.
-
-*Multimapping (`align.multimap_k`, default 4):* bowtie2 reports up to *N* alignments per read (`-k N`). The full set becomes the **allMap** BAM — multimappers are kept at every reported locus, which makes signal visible in repetitive regions where a single best position is misleading. Filtering to one primary alignment per read (`-F 260`) gives the **main** BAM that drives counts, divergent detection, and functional-region calling. Because `-k` makes bowtie2 set MAPQ to 255, deterministic `NH:i` tags are added right after alignment (no second alignment pass), and every downstream "unique read" step selects `NH == 1`. Set `align.multimap_k: 1` for legacy single-best behaviour (then allMap ≡ main and uniqueness falls back to MAPQ).
-
-BAMs are published to `{output_dir}/02_alignments/{sample_id}/`. To force realignment for a sample, delete its folder: `rm -rf {output_dir}/02_alignments/{sample_id}`.
-
-**05b — Check and Merge Replicates** *(optional)*
-When replicate merging is enabled (`replicates.merge: true`), performs a pairwise Pearson correlation check across BAMs using `deepTools multiBamSummary`. Replicate groups that meet the concordance threshold are merged into a single BAM before coverage track generation, with a concordance TSV written for the cohort report.
-
-**06 — Generate Coverage Tracks**
-Produces strand-specific 3′-end and 5′-end coverage tracks in bedGraph format using `bedtools genomecov`, for both the **main** BAM (best alignment per read) and the **allMap** BAM (all reported alignments). Negative-strand tracks are mirrored with `-scale -1`, and each bedGraph is sorted inline and converted to BigWig. For paired-end libraries, only Read 2 (the RC(R1) mate carrying the nascent-RNA 3′ end = polymerase position) is used for coverage, so the other mate's end cannot contaminate the tracks — this mate filtering is applied consistently to all four track sets (main/allMap × 3′/5′). For single-end data the full read set is used.
-
-**07 — Collect Library Sizes**
-Collects per-sample library sizes with `samtools idxstats`: total mapped reads in the main BAM, the allMap BAM, and the spike-in BAM. These totals form the counts master file that drives CPM and siCPM normalization-factor calculation in the next module. (Per-gene read counting is not done here — that happens in module 11 directly on the alignments.)
-
-**08 — Normalize Coverage Tracks**
-Scales raw bedGraph signal to CPM (counts per million mapped reads) and siCPM (spike-in CPM) using pre-computed factors. Positive and negative strand tracks are normalized in parallel. Outputs both bedGraph and BigWig formats for all track sets (3p, 5p, main, and allMap).
-
-**09 — Detect Divergent Transcription**
-The statistical core of the pipeline. Operates on the **main** signal track (3′ for PRO-seq, 5′ for GRO-seq). Pairs upstream antisense peaks with downstream sense peaks, computes a suite of features (signal balance, local enrichment, strand specificity), and fits a two-component Gaussian Mixture Model to separate signal from noise. Divergent regions passing the FDR threshold are written as a BED file with confidence scores. No manual thresholds are required — set `divergent_threshold: auto` and the calibration percentile handles it.
-
-**10 — Assign Signal to Functional Regions**
-Assigns normalized coverage to a hierarchical set of genomic functional regions: active promoters, gene bodies, cleavage and polyadenylation sites, enhancers, termination windows, and non-localized signal. Each position is assigned to exactly one region by sequential masking, so the categories are mutually exclusive.
-
-**11 — Calculate Polymerase Occupancy Metrics**
-Computes two complementary views of Pol II occupancy. The density metrics approach sums normalized bedGraph signal over each functional region. The gene metrics approach operates on the filtered BAM directly, computing per-gene TSS-window and gene-body coverage from which pausing indices (PI = TSS density / body density) are derived. Both approaches run in parallel so neither waits on the other. Read counting is strand-specific so only sense-strand reads contribute to each gene's TSS and body counts, eliminating contamination from antisense transcription at convergent loci, and restricted to uniquely-mapped reads (`NH == 1` when `align.multimap_k > 1`, otherwise MAPQ ≥ `pol.mapq`) so ambiguous multimappers do not inflate gene quantification. The gene-body offset is automatically calibrated from the gene-length distribution in the annotation (25th-percentile-based), so the pipeline works correctly for compact genomes such as *D. melanogaster* and *C. elegans* without manual parameter tuning.
-
-**12 — Summarize Polymerase Metrics**
-Aggregates per-sample Pol II metrics across the cohort into summary TSVs — pausing index distributions, region density tables, and normalization factor comparisons — for use in the cohort report.
-
-**13 — Quality Control Aligned Reads**
-Calculates per-sample alignment QC: total and mapped read counts, duplicate rates, unique-read rate (`NH == 1` in multimapping mode, MAPQ ≥ `qc.mapq` otherwise — reported as `uniqueness_method` in the QC JSON), strand balance (critical for PRO-seq validation), fragment length distribution (PE only), and mean genome coverage depth. Results feed the per-sample HTML reports and cohort outlier detection.
-
-**14 — Generate Per-Sample Reports**
-Produces an interactive HTML report for each sample, summarising QC metrics (including the unique-read count with its method label, and a multimapper % = 1 − unique/mapped), coverage distributions, divergent transcription statistics, and Pol II pausing results, with inline visualizations. Track links distinguish the `main` (best-alignment) and `allMap` (multimapper-aware) BigWigs so the right track is used for each purpose.
-
-**15 — Combine Reports into Cohort**
-The final step — runs after module 16 so it can incorporate signal-QC outputs into the landing page. Merges all per-sample JSON reports into a cohort-level HTML dashboard (global_summary.html) covering: by-condition QC comparisons, mapping uniqueness and multimapper % per sample, divergent transcription patterns, Pol II pausing distributions, functional region composition, normalization factor validation, replicate consistency (coefficient of variation), and an interactive sample metrics table. Also generates a modern `index.html` landing page at the output root that embeds the run-on efficiency table, KPI stats, and links to all outputs.
-
-**16 — Cohort QC and Visualization**
-Cohort-level signal QC module that runs after all per-sample tracks are ready, and before module 15 so its outputs feed the landing page. Produces: (1) a **MultiQC** HTML report aggregating all alignment logs, flagstats, and trimming statistics into a single QC dashboard; (2) **deepTools** PCA plot and Pearson correlation heatmap computed from CPM-normalized 3′ BigWigs using 10 kb genome-wide bins; (3) an **IGV session XML** file that loads all sample tracks in one click, colour-coded by condition; and (4) a **run-on efficiency table** reporting the median 5′/3′ bedGraph signal ratio across long gene bodies per sample — values close to 1.0 indicate efficient NRO run-on.
+Full description of each module: [docs/MODULES.md](docs/MODULES.md)
 
 ---
 
@@ -261,155 +198,21 @@ Cohort-level signal QC module that runs after all per-sample tracks are ready, a
 > run of a given TrackTx version uses the exact same toolchain end to end, so citing one
 > image tag (or conda lockfile) in a paper's Methods section fully specifies every tool
 > version used, with no per-process container matrix to reconcile. The tradeoff is that
-> adding or upgrading one tool rebuilds the whole image — acceptable for a pipeline with
-> a fixed, curated toolchain rather than one that composes many independently-versioned
-> community modules.
+> adding or upgrading one tool rebuilds the whole image, which is fine for a pipeline
+> with a fixed, curated toolchain rather than one that composes many independently
+> versioned community modules.
 
-### Prerequisites
+You need **Nextflow** (≥26.04.0) plus **one** of Docker or Conda for the tools:
 
-You need **Nextflow** (the workflow engine) plus **one** of Docker or Conda (for the tools):
-
-| Requirement | Purpose | Install |
-|-------------|---------|---------|
-| **Nextflow** (≥26.04.0) | Runs the pipeline | See below |
-| **Docker Desktop** | Easiest—packages all tools | [Get Docker](https://docs.docker.com/get-docker/) |
-| **Miniconda** | Alternative if Docker unavailable | [Get Miniconda](https://docs.conda.io/en/latest/miniconda.html) |
-
-**Install Nextflow** (choose one):
-
-```bash
-# Option A: Conda (recommended if you use Conda)
-conda install -c bioconda nextflow
-
-# Option B: Standalone (works without Conda)
-curl -s https://get.nextflow.io | bash
-# Moves nextflow to your PATH, e.g.:
-sudo mv nextflow /usr/local/bin/   # Linux/macOS
-```
-
-**Verify:**
-```bash
-nextflow -version   # Must show 26.04.0 or higher
-docker --version   # If using Docker
-conda --version    # If using Conda
-```
-
----
-
-### Windows (WSL)
-
-On Windows, use **WSL2** (Windows Subsystem for Linux) with Ubuntu. This gives you a Linux environment where the pipeline runs natively.
-
-**Step 1: Install WSL with Ubuntu**
-```powershell
-wsl --install -d Ubuntu
-```
-Restart if prompted. After reboot, Ubuntu will open; complete the initial setup (username, password).
-
-**Step 2: Install dependencies and Nextflow** (run inside WSL/Ubuntu)
-```bash
-sudo apt update
-sudo apt install -y openjdk-17-jdk curl
-
-cd ~
-curl -s https://get.nextflow.io | bash
-chmod +x nextflow
-sudo mv nextflow /usr/local/bin/
-```
-
-**Step 3: Install Docker Desktop**
-- Download from [docker.com](https://www.docker.com/products/docker-desktop/)
-- During setup, enable **“Use the WSL 2 based engine”**
-- Start Docker Desktop and ensure it shows “Running”
-
-**Step 4: Clone and run**
-```bash
-cd /mnt/c/Users/YourUsername   # Replace with your Windows username; or use ~ for home
-git clone https://github.com/serhataktay/tracktx.git
-cd tracktx
-./run_pipeline.sh
-```
-*Tip:* In WSL, `C:\Users\YourName` is `/mnt/c/Users/YourName`. Store data on the Linux filesystem (`~` or `/home/you`) for better performance than `/mnt/c`.
-
-**Verify everything works:**
-```bash
-nextflow -version
-docker --version
-docker run --rm hello-world
-java -version
-```
-
----
-
-### Option 1: Docker (Recommended for Novices)
-
-Docker packages everything needed—no manual tool installation.
-
-**Step 1: Install Docker Desktop**
-- **macOS/Windows:** Download from [docker.com/get-started](https://www.docker.com/products/docker-desktop/)
-- **Linux:** `curl -fsSL https://get.docker.com | sh` (or use your package manager)
-- Start Docker Desktop and wait until it shows "Running"
-
-**Step 2: Install Git** (if not already installed)
-- **macOS:** `xcode-select --install` or install [Xcode Command Line Tools](https://developer.apple.com/xcode/)
-- **Windows:** Install [Git for Windows](https://git-scm.com/download/win)
-- **Linux:** `sudo apt install git` (Ubuntu/Debian) or equivalent
-
-**Step 3: Clone and run**
 ```bash
 git clone https://github.com/serhataktay/tracktx.git
 cd tracktx
 ./run_pipeline.sh
 ```
 
-The script auto-detects Docker and runs the pipeline. First run will download the container image (~2–5 min).
+`run_pipeline.sh` auto-detects Docker, Conda, or a local toolchain and runs the pipeline. First run downloads the container image or builds the conda environment.
 
-**Updating after git pull:** When you `git pull` and run again, `run_pipeline.sh` automatically pulls the Docker image (tag `tracktx:1.3.0` by default) so pipeline and container stay in sync. To skip the pull (e.g. offline): `TRACKTX_SKIP_PULL=1 ./run_pipeline.sh`
-
----
-
-### Option 2: Conda
-
-Use Conda if Docker is not available (e.g. restricted HPC, no admin rights).
-
-**Step 1: Install Miniconda**
-- Download the installer for your OS: [docs.conda.io/en/latest/miniconda.html](https://docs.conda.io/en/latest/miniconda.html)
-- Run the installer and follow prompts (accept license, choose install location)
-- Restart your terminal, then run `conda --version` to verify
-
-**Step 2: Clone and run**
-```bash
-git clone https://github.com/serhataktay/tracktx.git
-cd tracktx
-./run_pipeline.sh
-```
-
-The script auto-detects Conda and creates the pipeline environment on first run (~10–20 min).
-
----
-
-### Option 3: Manual (Advanced)
-
-If you already have Nextflow and the required tools installed:
-
-```bash
-git clone https://github.com/serhataktay/tracktx.git
-cd tracktx
-nextflow run main.nf -entry TrackTx -profile local --samplesheet samplesheet.csv -params-file params.yaml
-```
-
----
-
-### System Requirements
-
-| Component | Minimum | Recommended |
-|-----------|---------|-------------|
-| **OS** | Linux, macOS, Windows (WSL2) | Linux or macOS |
-| **CPU** | 2+ cores | 8+ cores |
-| **RAM** | 8+ GB | 32+ GB |
-| **Storage** | 50+ GB | 200+ GB (SSD) |
-
-**Note:** First run downloads reference genomes (~1–5 GB depending on species). Ensure enough free disk space.
+Full instructions (installing Nextflow, Windows/WSL, Docker/Conda/manual setup, system requirements) are in [docs/INSTALLATION.md](docs/INSTALLATION.md).
 
 ---
 
@@ -650,11 +453,7 @@ Typical sizes for a single-sample PE test run (10% subset):
 
 ## Troubleshooting
 
-### Reading Error Messages
-
-When a process fails, Nextflow prints the captured output. **Look for the TRACKTX ERROR block** — it summarizes the problem and fix:
-
-**Note:** Progress output is written to log files only. On failure, Nextflow shows stderr (errors and the TRACKTX ERROR block). Full output is in the work dir (see `Work dir:` in the error message).
+When a process fails, Nextflow prints the captured output. Look for the TRACKTX ERROR block; it names the problem and the fix:
 
 ```
 ═══════════════════════════════════════════════════════════════════════
@@ -666,116 +465,11 @@ Fix:     pip install numpy pandas scikit-learn scipy | Or use: -profile conda | 
 ═══════════════════════════════════════════════════════════════════════
 ```
 
-- **Quick find:** `grep -A 6 "TRACKTX ERROR"` in the output
-- **Full log:** Check the `.log` file in the work dir (shown at the end of the error)
-- **Resume:** Add `-resume` to continue after fixing the issue
+Full log is in the work dir (shown at the end of the error). Add `-resume` to continue after fixing the issue.
 
-### Common Issues
+Fixes for out-of-memory errors, exFAT/USB publish and file-lock failures, conda/Docker issues, stuck matplotlib font cache, unresumed runs, and more: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 
-**Docker not running:**
-```bash
-# Install Docker Desktop: https://docs.docker.com/get-docker/
-# Make sure it's running before starting pipeline
-```
-
-**Out of memory (exit 137):**
-
-OOM = **RAM exhaustion**, not disk space. Removing `work` and `.nextflow` frees disk space but does not fix OOM.
-
-Common causes when you "have enough space" (disk):
-
-1. **Docker memory limit:** Docker Desktop has its own RAM limit (Settings → Resources → Memory). The pipeline detects *host* RAM and allocates per-task memory accordingly—but containers only see Docker’s limit. If Docker has 8 GB and the pipeline assumes 64 GB, multiple tasks can exceed available RAM.
-   - **Fix:** `./run_pipeline.sh` auto-detects Docker memory when using the docker profile. If OOM persists: `export NXF_HOST_MEM=8` (match Docker limit), or increase Docker memory in Settings.
-2. **WSL2:** WSL reports host RAM, not its own memory limit. Set `NXF_HOST_MEM` to your WSL memory limit (e.g. in `.wslconfig`).
-3. **Parallelism:** Several tasks run at once; total RAM ≈ per-task × forks. If detection is wrong, total can exceed actual RAM.
-4. **Large samples:** Many unaligned reads (e.g. 20M+) need more memory for spike-in alignment.
-
-```bash
-# Tell Nextflow the actual available RAM (e.g. Docker or WSL limit)
-export NXF_HOST_MEM=8   # Use 8 if Docker/WSL has 8 GB
-export NXF_HOST_CPUS=4   # Reduce parallelism
-./run_pipeline.sh
-```
-
-**Conda environment fails:**
-```bash
-# Use Docker instead (more reliable)
-./run_pipeline.sh -profile docker
-
-# Or clean conda cache
-conda clean --all --yes
-```
-
-**"Missing Python dependencies" (divergent transcription step):**
-```bash
-# Use Docker (recommended; has all deps pre-installed)
-./run_pipeline.sh -profile docker
-
-# Or use conda profile (creates env from envs/tracktx.yaml)
-./run_pipeline.sh -profile conda
-
-# Or install manually: pip install -r envs/requirements-divergent.txt
-```
-
-**Pipeline seems slow:**
-- First run downloads reference genomes (~10-30 min)
-- Use SSD storage for better performance
-- Monitor with `python3 nfmon.py` to see bottlenecks
-
-**Low unique-read rate (e.g. &lt;30%):**
-- QC reports the unique-read rate via `uniqueness_method` in `qc_pol.json`: `NH==1` when `align.multimap_k > 1` (the default), or `MAPQ≥threshold` in single-best mode
-- PRO-seq often has 30–60% uniquely-mapped reads; subset data or repetitive genomes can be lower — the multimappers are still retained in the **allMap** tracks even when excluded from unique-read metrics and gene quantification
-- Single-best mode only: to use a lower MAPQ threshold add `qc: { mapq: 5 }` (or `pol: { mapq: 5 }`) to params.yaml. In `-k` mode uniqueness is exact (`NH==1`), so MAPQ thresholds don't apply
-- A high multimapper fraction in repetitive regions is expected for some datasets and is not an error
-
-**"Failed to publish file [link]"** (external drive / exFAT):
-
-Hard links don't work on exFAT (common on USB drives). Fix:
-
-```bash
-./run_pipeline.sh --external-drive        # Cache/work on local; fixes publish + file-lock errors
-```
-
-**OverlappingFileLockException** (e.g. `preprocess_and_quality_filter_reads`, `download_genome_annotations`):
-
-Java file-lock conflict. Common causes and fixes:
-
-1. **Multiple runs from same directory:** Only one Nextflow run per directory at a time. Stop other runs or use a separate project copy.
-2. **Stale lock from previous run:** If you used Ctrl+Z or killed the process uncleanly:
-   ```bash
-   rm -rf work .nextflow
-   ./run_pipeline.sh
-   ```
-3. **USB drive with exFAT/FAT32 (macOS) / OverlappingFileLockException:** exFAT and FAT32 do not support file locking. **Fix:** Use `./run_pipeline.sh --external-drive` — it puts cache, temp, and work (~10–50 GB) on local (`~/tmp/tracktx_cache`, `~/tmp/tracktx_work`); results stay on your project. Ensure ~20–50 GB free on internal drive. Or reformat the USB to **APFS** or **Mac OS Extended**.
-4. **NFS / network / cloud-synced storage:** File locking is unreliable on NFS, SMB, iCloud, Dropbox. Set work dir to internal disk or a USB drive formatted as APFS/ext4: `export NXF_WORK=/tmp/nextflow-work` or `export NXF_WORK=/Volumes/MySSD/nextflow-work` (macOS, SSD must be APFS/HFS+).
-5. **Conda profile:** Multiple tasks can contend on the conda cache. Try `./run_pipeline.sh -profile docker`, or set `export NXF_CONDA_CACHEDIR=/tmp/conda-$USER-$$` before running.
-6. **Upgrade Nextflow:** Pipeline requires ≥26.04.0; older versions have locking issues.
-
-**"matplotlib is building a font cache" seems stuck:**
-- Matplotlib scans system fonts on first import (30s–2min). **umi_tools** (preprocess, coverage) and report/aggregate tasks use it.
-- **Docker:** The image pre-builds the cache; pull the latest and rebuild if needed.
-- **Conda:** `MPLCONFIGDIR` is set to `$TMPDIR` in affected modules. Ensure `TMPDIR` points to local disk (not NFS).
-**Spike-in alignment fails (sample-specific):**
-- Samples with many unaligned reads (e.g. 20M+) need more memory for spike-in alignment
-- Increase Docker memory (Settings → Resources) or system RAM
-- Check `bowtie2_spikein.log` in the failed task's work dir for details
-
-**Finished tasks re-run from sample 1 (even with -resume):**
-- Nextflow’s cache depends on input file path, size, and timestamp. NFS/network storage can give inconsistent timestamps → add `preprocess_reads_lenient_cache: true` to params.yaml or run with `--preprocess_reads_lenient_cache`.
-- Docker `:latest` changes when the image is updated → use a fixed tag (e.g. `tracktx:1.3.0`) for stable caching.
-- Debug: `nextflow run ... -resume -dump-hashes 2>&1 | grep "cache hash"` and compare between runs.
-
-**preprocess_and_quality_filter_reads re-runs after stop/restart:**
-- When you Ctrl+C, running/queued tasks are cancelled and not cached
-- Only completed tasks are reused with `-resume`
-- Let the pipeline finish, or stop when no preprocess_and_quality_filter_reads tasks are active
-
-### Getting Help
-
-1. **Check logs**: `.nextflow.log` in the working directory
-2. **Review trace**: `{output_dir}/trace/report.html` for resource issues
-3. **Monitor live**: `python3 nfmon.py` to see what's happening
-4. **GitHub Issues**: [Report bugs](https://github.com/serhataktay/tracktx/issues)
+**Getting help:** `.nextflow.log` (run directory), `{output_dir}/trace/report.html` (resource issues), `python3 nfmon.py` (live monitor), or [open a GitHub issue](https://github.com/serhataktay/tracktx/issues).
 
 ---
 
@@ -784,6 +478,9 @@ Java file-lock conflict. Common causes and fixes:
 | Document | Description |
 |----------|-------------|
 | [TrackTx_config_generator.html](TrackTx_config_generator.html) | Interactive config and samplesheet generator |
+| [docs/INSTALLATION.md](docs/INSTALLATION.md) | Full install instructions (Docker, Conda, manual, Windows/WSL, system requirements) |
+| [docs/MODULES.md](docs/MODULES.md) | What each of the 17 pipeline modules does |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Errors, fixes, and where to look when something breaks |
 
 ---
 
