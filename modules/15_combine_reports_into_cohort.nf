@@ -707,7 +707,6 @@ COHORT-LEVEL REPORT AGGREGATION
   Input JSON discovery: *.summary.json / *.report.json / *.json, case-
   insensitive, robust to missing fields.
 DOCEOF
-DOCEOF
 
   echo \"COHORT | README | Documentation created\"
 

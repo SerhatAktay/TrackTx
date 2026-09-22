@@ -36,7 +36,6 @@
 //         pos3_sicpm_bg, neg3_sicpm_bg,  # Placeholders
 //         condition, timepoint, replicate)
 //   path(gtf_file)              # Interface stability (unused)
-//   path(functional_regions_py) # Python driver script
 //   path(genes_tsv)             # Gene annotations
 //   path(tss_bed)               # TSS positions (optional override)
 //   path(tes_bed)               # TES positions (optional override)
@@ -92,7 +91,6 @@ process assign_signal_to_functional_regions {
           path(pos3_sicpm_bg), path(neg3_sicpm_bg),
           val(condition), val(timepoint), val(replicate)
     path gtf_file
-    path functional_regions_py
     path genes_tsv
     path tss_bed
     path tes_bed
@@ -149,7 +147,7 @@ process assign_signal_to_functional_regions {
   GENES_TSV="${genes_tsv}"
   TSS_BED="${tss_bed}"
   TES_BED="${tes_bed}"
-  FGR_SCRIPT="${functional_regions_py}"
+  FGR_SCRIPT="\$(command -v functional_regions.py)"
 
   # Region geometry parameters
   PROM_UP=${params.functional_regions?.prom_up ?: 250}
