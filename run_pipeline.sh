@@ -1275,6 +1275,11 @@ main() {
     local CMD=(
         nextflow run main.nf
         -profile "$PROFILE"
+        # Piped through `tee` in run_all_samples.sh, so stdout isn't a tty --
+        # Nextflow still auto-detects some cases as interactive and redraws
+        # the whole live progress table every poll, bloating the log with
+        # repeated full-screen blocks. Force plain one-line-per-event output.
+        -ansi-log false
         --samplesheet "$SAMPLESHEET"
     )
 
