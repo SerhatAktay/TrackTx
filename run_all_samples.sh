@@ -51,10 +51,11 @@ while read -r sheet name; do
     ok=0
     for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
         log "START $name (attempt $attempt/$MAX_ATTEMPTS)"
+        # Not piped through tee: Nextflow only draws its live progress view on a tty.
+        # Full detail is in the .nextflow.log copy saved below.
         ./run_pipeline.sh --samplesheet "$samplesheet" --params-file "$params" \
-            -profile conda_server --skip-countdown --no-resume-prompt --no-docker-prompt \
-            2>&1 | tee -a "$LOG_FILE"
-        status=${PIPESTATUS[0]}
+            -profile conda_server --skip-countdown --no-resume-prompt --no-docker-prompt
+        status=$?
         cp -f .nextflow.log "logs_nextflow/$name.attempt$attempt.log" 2>/dev/null
         [[ $status -eq 130 ]] && { log "Interrupted, stopping."; exit 130; }
         [[ $status -eq 0 ]] && { ok=1; break; }

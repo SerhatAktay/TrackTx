@@ -1199,20 +1199,12 @@ main() {
     # Auto-detect resume: check for previous run artifacts
     # Only triggers resume if at least one task completed successfully
     if [[ $NO_AUTO_RESUME -eq 0 && -z "$RESUME" ]]; then
-        local trace_path="results/trace/trace.txt"
-        if [[ -n "$OUTPUT_DIR_OVERRIDE" ]]; then
-            trace_path="${OUTPUT_DIR_OVERRIDE}/trace/trace.txt"
-        elif [[ -f "$PARAMS_FILE" ]]; then
-            local out_from_params
-            out_from_params=$(awk -F': ' '/^output_dir:/{gsub(/["\047]/, "", $2); print $2}' "$PARAMS_FILE" 2>/dev/null || echo "")
-            [[ -n "$out_from_params" ]] && trace_path="${out_from_params}/trace/trace.txt"
-        fi
-
-        # Check both that a previous run exists AND that at least one task succeeded
+        # Check both that a previous run exists AND that at least one task succeeded.
+        # No pipe on purpose: `find ... | grep -q .` under pipefail fails once the
+        # work dir is big (grep -q exits early, find's writer gets SIGPIPE).
+        # The trace file can't be used: its `fields` list has no status column.
         local has_prior_run=0
-        if [[ -f "$trace_path" ]] && grep -q "COMPLETED" "$trace_path" 2>/dev/null; then
-            has_prior_run=1
-        elif [[ -d .nextflow ]] && find "${NXF_WORK:-work}" -name ".exitcode" -exec grep -lx "0" {} + 2>/dev/null | grep -q .; then
+        if [[ -d .nextflow && -n "$(find "${NXF_WORK:-work}" -name .exitcode -exec grep -qx 0 {} \; -print -quit 2>/dev/null)" ]]; then
             has_prior_run=1
         fi
 
@@ -1275,11 +1267,6 @@ main() {
     local CMD=(
         nextflow run main.nf
         -profile "$PROFILE"
-        # Piped through `tee` in run_all_samples.sh, so stdout isn't a tty --
-        # Nextflow still auto-detects some cases as interactive and redraws
-        # the whole live progress table every poll, bloating the log with
-        # repeated full-screen blocks. Force plain one-line-per-event output.
-        -ansi-log false
         --samplesheet "$SAMPLESHEET"
     )
 
