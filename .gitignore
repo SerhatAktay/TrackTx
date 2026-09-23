@@ -14,6 +14,8 @@ test_PE/test_data/
 dev_full_PE/data/
 samplesheets/
 params/
+run_all_samples.done
+logs_nextflow/
 
 # Large or generated assets
 assets/references/
@@ -36,6 +38,8 @@ assets/NO_GTF
 assets/EMPTY_SPIKE.fa
 assets/EMPTY_SPIKE_INDEX.fa
 assets/NO_GENOME.fa
+assets/NO_CONCORDANCE
+assets/NO_FILE
 .tracktx_io.lock
 
 # Conda and environments
@@ -53,6 +57,7 @@ params.yaml
 samplesheet.csv
 
 # Documentation (optional / local)
+CHANGELOG.md
 HOW.md
 
 # OS / editor noise
@@ -61,7 +66,6 @@ HOW.md
 *.swo
 .idea/
 .vscode/
-.impeccable/
 
 # Logs
 *.log

@@ -183,6 +183,29 @@ process align_reads_to_genome {
   # Check input files
   VALIDATION_OK=1
 
+  # Staging (stageInMode=copy, needed because the SMB work mount supports
+  # neither symlinks nor cross-volume hardlinks) can land a silently short
+  # file if the NAS hits an internal volume boundary mid-transfer -- Files.copy
+  # returns success, but the FASTQ's last record is truncated. bowtie2 then
+  # dies confusingly deep in alignment ("Saw ASCII character 10 but expected
+  # 33-based Phred qual" / abort). Catch that here instead, right after
+  # staging, so it fails loud with a clear cause and a Nextflow retry can
+  # re-stage a fresh copy.
+  validate_fastq_integrity() {
+    local file="\$1" label="\$2"
+    if [[ "\${file}" == *.gz ]]; then
+      if ! gzip -t -- "\${file}" 2>/dev/null; then
+        tracktx_error "align_reads_to_genome" "\${label} failed integrity check: \${file}" "gzip -t reports a truncated/corrupt archive -- likely an incomplete copy during staging. Delete this task's work dir and rerun with -resume."
+      fi
+    else
+      local lines
+      lines=\$(wc -l < "\${file}" | tr -d ' ')
+      if [[ \$(( lines % 4 )) -ne 0 ]] || [[ -n "\$(tail -c1 "\${file}")" ]]; then
+        tracktx_error "align_reads_to_genome" "\${label} failed integrity check: \${file}" "File has an incomplete final FASTQ record (line count not a multiple of 4, or missing trailing newline) -- likely a truncated copy during staging. Delete this task's work dir and rerun with -resume."
+      fi
+    fi
+  }
+
   for file in "\${R1}"; do
     if [[ ! -s "\${file}" ]]; then
       tracktx_error "align_reads_to_genome" "Read file missing or empty: \${file}" "Check samplesheet file1 paths"
@@ -190,6 +213,7 @@ process align_reads_to_genome {
       # NOTE: GNU stat reports symlink length unless -L is used; try dereference first
       FILE_SIZE=\$(stat -Lc%s "\${file}" 2>/dev/null || tracktx_size "\${file}")
     echo "ALIGN | VALIDATE | R1 size: \${FILE_SIZE} bytes"
+    validate_fastq_integrity "\${file}" "R1"
   done
 
   if [[ "\${IS_PE}" == "true" && ! -s "\${R2}" ]]; then
@@ -198,6 +222,7 @@ process align_reads_to_genome {
   if [[ "\${IS_PE}" == "true" ]]; then
     FILE_SIZE=\$(stat -Lc%s "\${R2}" 2>/dev/null || tracktx_size "\${R2}")
     echo "ALIGN | VALIDATE | R2 size: \${FILE_SIZE} bytes"
+    validate_fastq_integrity "\${R2}" "R2"
   fi
 
   # Validate required tools

@@ -161,12 +161,16 @@ Debug mode:       ${params.debug ?: false}
   // ── Parameter validation ───────────────────────────────────────────────────
 
   // Schema-level check first (typos/wrong types on the ~25 flags a user
-  // actually types -- see nextflow_schema.json's $comment for why this
-  // deliberately does NOT enumerate every advanced/nested knob). The
+  // actually types). Skipped only under conda_server: its plugin loader
+  // creates a symlink under .nextflow/plr/ in the launch directory, which
+  // fails with "Operation not supported" on that mount (SMB/CIFS, no
+  // symlink support). Every other profile keeps this check. The
   // hand-written checks below remain the source of truth for conditional
   // business rules (e.g. reference_genome=other requiring custom_genome_id)
   // that a static schema expresses far less clearly than a plain error.
-  validateParameters()
+  if (!(workflow.profile ?: '').split(',')*.trim().contains('conda_server')) {
+    validateParameters()
+  }
 
   if (!params.output_dir) {
     error "PIPELINE | ERROR | Missing required parameter: --output_dir"
@@ -485,10 +489,13 @@ Paths are relative to: ${projectDir}"""
   def noSpikeFaPath   = "${assetsDir}/EMPTY_SPIKE.fa"
   def noSpikeIdxPath  = "${assetsDir}/EMPTY_SPIKE_INDEX.fa"
   def noGenomeFaPath  = "${assetsDir}/NO_GENOME.fa"
+  def noConcordancePath = "${assetsDir}/NO_CONCORDANCE"
+  def noFilePath         = "${assetsDir}/NO_FILE"
 
   [noR2Path, noBGPath, noBGPosPath, noBGNegPath,
    noBG5pPosPath, noBG5pNegPath, noBGAm5pPosPath, noBGAm5pNegPath,
-   noSpikeFaPath, noSpikeIdxPath, noGenomeFaPath].each { path ->
+   noSpikeFaPath, noSpikeIdxPath, noGenomeFaPath,
+   noConcordancePath, noFilePath].each { path ->
     if (!new File(path).exists()) new File(path).text = ''
   }
   new File(noSpikeFaPath).text  = ">none\nN\n"
@@ -921,7 +928,6 @@ Paths are relative to: ${projectDir}"""
   assign_signal_to_functional_regions(
     func_input_ch,
     gtf_ch,
-    channel.value(file("${projectDir}/bin/functional_regions.py")),
     genes_ch,
     tss_ch,
     tes_ch
@@ -1314,16 +1320,16 @@ Paths are relative to: ${projectDir}"""
 
   def concordance_for_cohort = (params.replicates?.merge == true)
     ? channel.fromPath("${params.output_dir}/02_alignments/_merged/concordance_report.tsv", checkIfExists: false)
-             .ifEmpty(file("NO_CONCORDANCE"))
-    : channel.value(file("NO_CONCORDANCE"))
+             .ifEmpty(file(noConcordancePath))
+    : channel.value(file(noConcordancePath))
 
   // Optional outputs from module 16 — use sentinel file when not produced
   // (e.g. deepTools plots require ≥2 samples; MultiQC may not be installed)
-  def qc_multiqc_html  = cohort_qc_and_viz.out.multiqc_html .ifEmpty(file("NO_FILE"))
+  def qc_multiqc_html  = cohort_qc_and_viz.out.multiqc_html .ifEmpty(file(noFilePath))
   def qc_igv_session   = cohort_qc_and_viz.out.igv_session
   def qc_runon_tsv     = cohort_qc_and_viz.out.runon_efficiency
-  def qc_pca_plot      = cohort_qc_and_viz.out.pca_plot     .ifEmpty(file("NO_FILE"))
-  def qc_corr_heatmap  = cohort_qc_and_viz.out.corr_heatmap .ifEmpty(file("NO_FILE"))
+  def qc_pca_plot      = cohort_qc_and_viz.out.pca_plot     .ifEmpty(file(noFilePath))
+  def qc_corr_heatmap  = cohort_qc_and_viz.out.corr_heatmap .ifEmpty(file(noFilePath))
 
   combine_reports_into_cohort(
     per_sample_reports,

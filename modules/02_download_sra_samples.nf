@@ -184,7 +184,8 @@ process download_sra_samples {
       fi
       FILE_SIZE=\$(tracktx_size "\${CACHED}")
       echo "SRR | CACHE | Found: \$(basename "\${CACHED}") (\${FILE_SIZE} bytes)"
-      ln -sf "\${CACHED}" .
+      # symlink can fail on CIFS (results share has no symlink support) -> copy instead
+      ln -sf "\${CACHED}" . 2>/dev/null || cp -f "\${CACHED}" .
       CACHE_FOUND=1
     elif [[ -e "\${CACHED}" ]]; then
       echo "SRR | CACHE | Ignoring empty cache file (likely a truncated prior run): \$(basename "\${CACHED}")"
@@ -221,14 +222,23 @@ process download_sra_samples {
       FASTQ_OUTPUT=\$(mktemp)
       TEMP_ARG=""
       [[ -n "\${SRA_TMP}" ]] && mkdir -p "\${SRA_TMP}" && TEMP_ARG="--temp \${SRA_TMP}"
+      # Capture fasterq-dump's own exit status (PIPESTATUS survives the || branch) so a
+      # failed run (e.g. "disk-limit exeeded!") can't leave a partial FASTQ that passes
+      # the -f checks below; it falls through to the ENA fallback instead.
+      FQD_RC=0
       if [[ -n "\${TEMP_ARG}" ]]; then
-        fasterq-dump --split-files -e "\${THREADS}" \${TEMP_ARG} -O . "\${SRR}" 2>&1 | tee "\${FASTQ_OUTPUT}" || true
+        fasterq-dump --split-files -e "\${THREADS}" \${TEMP_ARG} -O . "\${SRR}" 2>&1 | tee "\${FASTQ_OUTPUT}" || FQD_RC=\${PIPESTATUS[0]}
       else
-        fasterq-dump --split-files -e "\${THREADS}" -O . "\${SRR}" 2>&1 | tee "\${FASTQ_OUTPUT}" || true
+        fasterq-dump --split-files -e "\${THREADS}" -O . "\${SRR}" 2>&1 | tee "\${FASTQ_OUTPUT}" || FQD_RC=\${PIPESTATUS[0]}
       fi
       grep -E "spots read|reads read|reads written" "\${FASTQ_OUTPUT}" 2>/dev/null || true
       rm -f "\${FASTQ_OUTPUT}"
-      [[ -f "\${SRR}_1.fastq" || -f "\${SRR}_2.fastq" || -f "\${SRR}.fastq" ]] && NCBI_OK=1
+      if [[ \${FQD_RC} -ne 0 ]]; then
+        echo "SRR | CONVERT | fasterq-dump failed (exit \${FQD_RC}); discarding partial output"
+        rm -f "\${SRR}_1.fastq" "\${SRR}_2.fastq" "\${SRR}.fastq"
+      elif [[ -f "\${SRR}_1.fastq" || -f "\${SRR}_2.fastq" || -f "\${SRR}.fastq" ]]; then
+        NCBI_OK=1
+      fi
     fi
     
     # ── Fallback to ENA if NCBI failed (or ena-only) ──
@@ -328,11 +338,14 @@ process download_sra_samples {
     echo "SRR | COMPRESS | Compression disabled, FASTQs will remain uncompressed"
   fi
 
-  # Ensure .fastq outputs exist for Nextflow (when compressed, symlink .fastq -> .fastq.gz)
+  # Ensure .fastq outputs exist for Nextflow. Rename (NOT symlink): a symlink output
+  # can't be moved onto the CIFS results share ("Operation not supported"). The file
+  # keeps gzip content under a .fastq name; preprocess_and_quality_filter_reads
+  # (fix_gzip_extension) detects the gzip magic bytes and handles it.
   for F in "\${SRR}_R1.fastq" "\${SRR}_R2.fastq"; do
     if [[ -f "\${F}.gz" && ! -e "\${F}" ]]; then
-      ln -sf "\$(basename "\${F}.gz")" "\${F}"
-      echo "SRR | OUTPUT | Created symlink \${F} -> \${F}.gz"
+      mv -f "\${F}.gz" "\${F}"
+      echo "SRR | OUTPUT | Renamed \${F}.gz -> \${F} (gzip content)"
     fi
   done
 
@@ -376,7 +389,8 @@ process download_sra_samples {
 
   # Quick header check for uncompressed files
   if [[ "\${R1_FILE}" == *.fastq ]]; then
-    FIRST_LINE=\$(head -n 1 "\${R1_FILE}" 2>/dev/null || echo "")
+    # gzip -cdf: transparent for plain FASTQ, decompresses gzip content kept under a .fastq name
+    FIRST_LINE=\$(gzip -cdf "\${R1_FILE}" 2>/dev/null | head -n 1 || echo "")
     if [[ ! "\${FIRST_LINE}" =~ ^@ ]]; then
       tracktx_error "download_sra_samples" "R1 FASTQ header validation failed (first line: \${FIRST_LINE})" "Check SRA data integrity"
     fi
@@ -394,7 +408,7 @@ process download_sra_samples {
 
     # Quick header check for uncompressed R2
     if [[ "\${R2_FILE}" == *.fastq ]]; then
-      FIRST_LINE=\$(head -n 1 "\${R2_FILE}" 2>/dev/null || echo "")
+      FIRST_LINE=\$(gzip -cdf "\${R2_FILE}" 2>/dev/null | head -n 1 || echo "")
       if [[ ! "\${FIRST_LINE}" =~ ^@ ]]; then
         tracktx_error "download_sra_samples" "R2 FASTQ header validation failed (first line: \${FIRST_LINE})" "Check SRA data integrity"
       fi
