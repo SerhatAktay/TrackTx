@@ -31,10 +31,9 @@ nextflow_process {
                     )
                 )
                 input[1] = file("\${baseDir}/tests/fixtures/func_test_gtf.gtf")
-                input[2] = file("\${baseDir}/bin/functional_regions.py")
-                input[3] = file("\${baseDir}/tests/fixtures/pe_mate_test_genes.tsv")
-                input[4] = file("\${baseDir}/tests/fixtures/func_test_tss.bed")
-                input[5] = file("\${baseDir}/tests/fixtures/func_test_tes.bed")
+                input[2] = file("\${baseDir}/tests/fixtures/pe_mate_test_genes.tsv")
+                input[3] = file("\${baseDir}/tests/fixtures/func_test_tss.bed")
+                input[4] = file("\${baseDir}/tests/fixtures/func_test_tes.bed")
                 """
             }
         }

@@ -3,12 +3,13 @@
 // ============================================================================
 //
 // Purpose:
-//   Final cohort-level QC and visualization module that runs once all samples
-//   are complete.  Produces:
-//     1. MultiQC HTML report aggregating all per-sample QC logs
-//     2. deepTools PCA plot and Pearson-correlation heatmap (BigWig-based)
-//     3. IGV session XML for one-click track loading
-//     4. Run-on efficiency table (5'/3' signal ratio per gene body)
+//   Final cohort-level QC and visualization, once all samples are complete.
+//   Four independent processes (no data dependency between them, so Nextflow
+//   runs them concurrently instead of the previous single sequential script):
+//     1. cohort_multiqc          — MultiQC HTML report over all per-sample QC logs
+//     2. cohort_deeptools_qc     — deepTools PCA plot + Pearson-correlation heatmap
+//     3. cohort_igv_session      — IGV session XML for one-click track loading
+//     4. cohort_runon_efficiency — Run-on efficiency table (positional 5'->3' falloff)
 //
 // Run-on efficiency:
 //   PRO-seq run-on produces signal across the full gene body.  Poor run-on
@@ -26,19 +27,17 @@
 //     <sample>  3p pos (CPM) / 3p neg (CPM) / allMap pos / allMap neg
 //   Colour-codes conditions automatically (up to 8 distinct colours).
 //
-// Inputs:
-//   path(multiqc_log_dir) : directory tree containing all QC logs
-//   val(bw_pos3_list)     : list of CPM 3' positive BigWig paths (all samples)
-//   val(bw_neg3_list)     : list of CPM 3' negative BigWig paths (all samples)
-//   val(bw_allmap_pos_list): allMap positive BigWig paths
-//   val(bw_allmap_neg_list): allMap negative BigWig paths
-//   val(sample_ids)        : sample identifiers (same order as BW lists)
-//   val(conditions)        : condition labels (same order)
-//   val(pos3_bg_list)      : raw 3' positive bedGraphs for run-on calculation
-//   val(neg3_bg_list)      : raw 3' negative bedGraphs
-//   val(pos5_bg_list)      : raw 5' positive bedGraphs
-//   val(neg5_bg_list)      : raw 5' negative bedGraphs
-//   path(genes_bed)        : BED6 gene annotation (from download_genome_annotations)
+// Inputs (per process -- see each process block below for its exact signature):
+//   path(multiqc_log_dir)  : directory tree containing all QC logs [multiqc]
+//   val(bw_pos3_list)      : CPM 3' positive BigWig paths [deeptools, igv, runon* via pos3_bg_list]
+//   val(bw_neg3_list)      : CPM 3' negative BigWig paths [igv]
+//   val(bw_allmap_pos_list): allMap positive BigWig paths [igv]
+//   val(bw_allmap_neg_list): allMap negative BigWig paths [igv]
+//   val(sample_ids)        : sample identifiers (same order as BW lists) [deeptools, igv, runon]
+//   val(conditions)        : condition labels (same order) [igv]
+//   val(pos3_bg_list)      : raw 3' positive bedGraphs for run-on calculation [runon]
+//   val(neg3_bg_list)      : raw 3' negative bedGraphs [runon]
+//   path(genes_bed)        : BED6 gene annotation (from download_genome_annotations) [runon]
 //
 // Outputs:
 //   ${params.output_dir}/12_cohort_qc/
@@ -55,7 +54,16 @@
 // ============================================================================
 
 
-process cohort_qc_and_viz {
+// Split into 4 independent processes (were one sequential script): MultiQC,
+// deepTools, IGV session XML, and run-on efficiency share no data dependency
+// between them -- all read from upstream channels only -- so running them
+// sequentially in one process meant the cheap IGV/run-on outputs always
+// waited behind the slowest step (deepTools' multiBigwigSummary, which scales
+// with sample count x genome size). As 4 processes, Nextflow schedules them
+// concurrently: the cohort barrier's wall-clock becomes max(4) instead of
+// sum(4). Output layout under ${params.output_dir}/12_cohort_qc/ is unchanged.
+
+process cohort_multiqc {
 
   label      'conda'
   cache      'lenient'
@@ -64,99 +72,29 @@ process cohort_qc_and_viz {
              mode: params.publish_mode,
              overwrite: true
 
-  // ── Inputs ────────────────────────────────────────────────────────────────
   input:
-    // Collected QC logs from all samples. Same-named files (e.g. every sample's
-    // bowtie2_primary.log / bowtie2_spikein.log) would collide if staged flat, so
-    // stage each into its own numbered subdir (1/, 2/, ...). MultiQC scans
-    // recursively via `multiqc .`, so it still finds them all.
-    path(multiqc_log_dir, stageAs: '?/*')   // collection of all QC log files
-    val   bw_pos3_list
-    val   bw_neg3_list
-    val   bw_allmap_pos_list
-    val   bw_allmap_neg_list
-    val   sample_ids
-    val   conditions
-    val   pos3_bg_list
-    val   neg3_bg_list
-    val   pos5_bg_list
-    val   neg5_bg_list
-    path  genes_bed
-    val   genome_id
+    // Same-named files (e.g. every sample's bowtie2_primary.log) would collide
+    // if staged flat, so stage each into its own numbered subdir (1/, 2/, ...).
+    // MultiQC scans recursively via `multiqc .`, so it still finds them all.
+    path(multiqc_log_dir, stageAs: '?/*')
 
-  // ── Outputs ───────────────────────────────────────────────────────────────
   output:
-    path "multiqc/multiqc_report.html",            emit: multiqc_html,    optional: true
-    path "multiqc/multiqc_data",                   emit: multiqc_data,    optional: true
-    path "deeptools/bigwig_summary.npz",           emit: bw_summary,      optional: true
-    path "deeptools/pca_plot.pdf",                 emit: pca_plot,        optional: true
-    path "deeptools/correlation_heatmap.pdf",      emit: corr_heatmap,    optional: true
-    path "igv_session.xml",                        emit: igv_session
-    path "runon_efficiency.tsv",                   emit: runon_efficiency
+    path "multiqc/multiqc_report.html", emit: multiqc_html, optional: true
+    path "multiqc/multiqc_data",        emit: multiqc_data, optional: true
 
-  // ── Main Script ───────────────────────────────────────────────────────────
   script:
-  // Groovy: materialise val lists into shell-accessible strings
-  bwPos3Str      = (bw_pos3_list      instanceof List ? bw_pos3_list      : [bw_pos3_list])
-                     .findAll { v -> v && v != 'null' }.join(' ')
-  bwNeg3Str      = (bw_neg3_list      instanceof List ? bw_neg3_list      : [bw_neg3_list])
-                     .findAll { v -> v && v != 'null' }.join(' ')
-  bwAmPos3Str    = (bw_allmap_pos_list instanceof List ? bw_allmap_pos_list : [bw_allmap_pos_list])
-                     .findAll { v -> v && v != 'null' }.join(' ')
-  bwAmNeg3Str    = (bw_allmap_neg_list instanceof List ? bw_allmap_neg_list : [bw_allmap_neg_list])
-                     .findAll { v -> v && v != 'null' }.join(' ')
-  sampleIdsStr   = (sample_ids  instanceof List ? sample_ids  : [sample_ids])
-                     .findAll { v -> v && v != 'null' }.join(' ')
-  conditionsStr  = (conditions  instanceof List ? conditions  : [conditions])
-                     .findAll { v -> v && v != 'null' }.join(' ')
-  pos3BgStr      = (pos3_bg_list instanceof List ? pos3_bg_list : [pos3_bg_list])
-                     .findAll { v -> v && v != 'null' }.join(' ')
-  neg3BgStr      = (neg3_bg_list instanceof List ? neg3_bg_list : [neg3_bg_list])
-                     .findAll { v -> v && v != 'null' }.join(' ')
-  pos5BgStr      = (pos5_bg_list instanceof List ? pos5_bg_list : [pos5_bg_list])
-                     .findAll { v -> v && v != 'null' }.join(' ')
-  neg5BgStr      = (neg5_bg_list instanceof List ? neg5_bg_list : [neg5_bg_list])
-                     .findAll { v -> v && v != 'null' }.join(' ')
   """
   #!/usr/bin/env bash
   set -euo pipefail
   export LC_ALL=C
 
-  exec > >(tee -a cohort_qc.log)
-  exec 2> >(tee -a cohort_qc.log >&2)
+  exec > >(tee -a cohort_multiqc.log)
+  exec 2> >(tee -a cohort_multiqc.log >&2)
 
-  # Shared error helper (defined once in bin/tracktx_error_fragment.sh)
   source tracktx_error_fragment.sh
-  trap 'rc=\$?; tracktx_error \"cohort_qc_and_viz\" \"Unexpected process failure\" \"Check cohort_qc.log in work dir\" \"\$rc\"' ERR
+  trap 'rc=\$?; tracktx_error \"cohort_multiqc\" \"Unexpected process failure\" \"Check cohort_multiqc.log in work dir\" \"\$rc\"' ERR
 
-  TIMESTAMP=\$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")
-  echo \"════════════════════════════════════════════════════════════════════════\"
-  echo \"COHORT_QC | START | ts=\${TIMESTAMP}\"
-  echo \"════════════════════════════════════════════════════════════════════════\"
-
-  # Materialise shell arrays from Nextflow-interpolated strings
-  read -ra BW_POS3       <<< \"${bwPos3Str}\"
-  read -ra BW_NEG3       <<< \"${bwNeg3Str}\"
-  read -ra BW_AMPOS3     <<< \"${bwAmPos3Str}\"
-  read -ra BW_AMNEG3     <<< \"${bwAmNeg3Str}\"
-  read -ra SAMPLE_IDS    <<< \"${sampleIdsStr}\"
-  read -ra CONDITIONS    <<< \"${conditionsStr}\"
-  read -ra POS3_BGS      <<< \"${pos3BgStr}\"
-  read -ra NEG3_BGS      <<< \"${neg3BgStr}\"
-  read -ra POS5_BGS      <<< \"${pos5BgStr}\"
-  read -ra NEG5_BGS      <<< \"${neg5BgStr}\"
-  GENES_BED=\"${genes_bed}\"
-  GENOME_ID=\"${genome_id}\"
-  N_SAMPLES=\"\${#SAMPLE_IDS[@]}\"
-
-  echo \"COHORT_QC | CONFIG | Samples: \${N_SAMPLES}\"
-  echo \"COHORT_QC | CONFIG | Sample IDs: \${SAMPLE_IDS[*]}\"
-
-  mkdir -p multiqc deeptools
-
-  ###########################################################################
-  # 1) MULTIQC
-  ###########################################################################
+  mkdir -p multiqc
 
   echo \"────────────────────────────────────────────────────────────────────────\"
   echo \"COHORT_QC | MULTIQC | Aggregating QC logs...\"
@@ -175,10 +113,48 @@ process cohort_qc_and_viz {
     echo \"COHORT_QC | MULTIQC | WARNING: multiqc not found — skipping\"
     echo \"COHORT_QC | MULTIQC | Install via: pip install multiqc\"
   fi
+  """
+}
 
-  ###########################################################################
-  # 2) DEEPTOOLS: PCA + CORRELATION HEATMAP
-  ###########################################################################
+process cohort_deeptools_qc {
+
+  label      'conda'
+  cache      'lenient'
+
+  publishDir "${params.output_dir}/12_cohort_qc",
+             mode: params.publish_mode,
+             overwrite: true
+
+  input:
+    val bw_pos3_list
+    val sample_ids
+
+  output:
+    path "deeptools/bigwig_summary.npz",      emit: bw_summary,  optional: true
+    path "deeptools/pca_plot.pdf",            emit: pca_plot,    optional: true
+    path "deeptools/correlation_heatmap.pdf", emit: corr_heatmap, optional: true
+
+  script:
+  bwPos3Str    = (bw_pos3_list instanceof List ? bw_pos3_list : [bw_pos3_list])
+                   .findAll { v -> v && v != 'null' }.join(' ')
+  sampleIdsStr = (sample_ids  instanceof List ? sample_ids  : [sample_ids])
+                   .findAll { v -> v && v != 'null' }.join(' ')
+  """
+  #!/usr/bin/env bash
+  set -euo pipefail
+  export LC_ALL=C
+
+  exec > >(tee -a cohort_deeptools.log)
+  exec 2> >(tee -a cohort_deeptools.log >&2)
+
+  source tracktx_error_fragment.sh
+  trap 'rc=\$?; tracktx_error \"cohort_deeptools_qc\" \"Unexpected process failure\" \"Check cohort_deeptools.log in work dir\" \"\$rc\"' ERR
+
+  mkdir -p deeptools
+
+  read -ra BW_POS3    <<< \"${bwPos3Str}\"
+  read -ra SAMPLE_IDS <<< \"${sampleIdsStr}\"
+  N_SAMPLES=\"\${#SAMPLE_IDS[@]}\"
 
   echo \"────────────────────────────────────────────────────────────────────────\"
   echo \"COHORT_QC | DEEPTOOLS | Building BigWig summary for PCA/correlation...\"
@@ -243,10 +219,61 @@ process cohort_qc_and_viz {
   [[ -s deeptools/bigwig_summary.npz ]]       || touch deeptools/bigwig_summary.npz
   [[ -s deeptools/pca_plot.pdf ]]             || touch deeptools/pca_plot.pdf
   [[ -s deeptools/correlation_heatmap.pdf ]]  || touch deeptools/correlation_heatmap.pdf
+  """
+}
 
-  ###########################################################################
-  # 3) IGV SESSION XML
-  ###########################################################################
+process cohort_igv_session {
+
+  label      'conda'
+  cache      'lenient'
+
+  publishDir "${params.output_dir}/12_cohort_qc",
+             mode: params.publish_mode,
+             overwrite: true
+
+  input:
+    val bw_pos3_list
+    val bw_neg3_list
+    val bw_allmap_pos_list
+    val bw_allmap_neg_list
+    val sample_ids
+    val conditions
+    val genome_id
+
+  output:
+    path "igv_session.xml", emit: igv_session
+
+  script:
+  bwPos3Str   = (bw_pos3_list       instanceof List ? bw_pos3_list       : [bw_pos3_list])
+                  .findAll { v -> v && v != 'null' }.join(' ')
+  bwNeg3Str   = (bw_neg3_list       instanceof List ? bw_neg3_list       : [bw_neg3_list])
+                  .findAll { v -> v && v != 'null' }.join(' ')
+  bwAmPos3Str = (bw_allmap_pos_list instanceof List ? bw_allmap_pos_list : [bw_allmap_pos_list])
+                  .findAll { v -> v && v != 'null' }.join(' ')
+  bwAmNeg3Str = (bw_allmap_neg_list instanceof List ? bw_allmap_neg_list : [bw_allmap_neg_list])
+                  .findAll { v -> v && v != 'null' }.join(' ')
+  sampleIdsStr  = (sample_ids instanceof List ? sample_ids : [sample_ids])
+                    .findAll { v -> v && v != 'null' }.join(' ')
+  conditionsStr = (conditions instanceof List ? conditions : [conditions])
+                    .findAll { v -> v && v != 'null' }.join(' ')
+  """
+  #!/usr/bin/env bash
+  set -euo pipefail
+  export LC_ALL=C
+
+  exec > >(tee -a cohort_igv.log)
+  exec 2> >(tee -a cohort_igv.log >&2)
+
+  source tracktx_error_fragment.sh
+  trap 'rc=\$?; tracktx_error \"cohort_igv_session\" \"Unexpected process failure\" \"Check cohort_igv.log in work dir\" \"\$rc\"' ERR
+
+  read -ra BW_POS3    <<< \"${bwPos3Str}\"
+  read -ra BW_NEG3    <<< \"${bwNeg3Str}\"
+  read -ra BW_AMPOS3  <<< \"${bwAmPos3Str}\"
+  read -ra BW_AMNEG3  <<< \"${bwAmNeg3Str}\"
+  read -ra SAMPLE_IDS <<< \"${sampleIdsStr}\"
+  read -ra CONDITIONS <<< \"${conditionsStr}\"
+  GENOME_ID=\"${genome_id}\"
 
   echo \"────────────────────────────────────────────────────────────────────────\"
   echo \"COHORT_QC | IGV | Generating IGV session file...\"
@@ -369,10 +396,49 @@ print(f\"IGV session written for {len(sample_ids)} sample(s), {len(unique_conds)
 PYEOF
 
   echo \"COHORT_QC | IGV | igv_session.xml created\"
+  """
+}
 
-  ###########################################################################
-  # 4) RUN-ON EFFICIENCY
-  ###########################################################################
+process cohort_runon_efficiency {
+
+  label      'conda'
+  cache      'lenient'
+
+  publishDir "${params.output_dir}/12_cohort_qc",
+             mode: params.publish_mode,
+             overwrite: true
+
+  input:
+    val  sample_ids
+    val  pos3_bg_list
+    val  neg3_bg_list
+    path genes_bed
+
+  output:
+    path "runon_efficiency.tsv", emit: runon_efficiency
+
+  script:
+  sampleIdsStr = (sample_ids  instanceof List ? sample_ids  : [sample_ids])
+                   .findAll { v -> v && v != 'null' }.join(' ')
+  pos3BgStr    = (pos3_bg_list instanceof List ? pos3_bg_list : [pos3_bg_list])
+                   .findAll { v -> v && v != 'null' }.join(' ')
+  neg3BgStr    = (neg3_bg_list instanceof List ? neg3_bg_list : [neg3_bg_list])
+                   .findAll { v -> v && v != 'null' }.join(' ')
+  """
+  #!/usr/bin/env bash
+  set -euo pipefail
+  export LC_ALL=C
+
+  exec > >(tee -a cohort_runon.log)
+  exec 2> >(tee -a cohort_runon.log >&2)
+
+  source tracktx_error_fragment.sh
+  trap 'rc=\$?; tracktx_error \"cohort_runon_efficiency\" \"Unexpected process failure\" \"Check cohort_runon.log in work dir\" \"\$rc\"' ERR
+
+  read -ra SAMPLE_IDS <<< \"${sampleIdsStr}\"
+  read -ra POS3_BGS   <<< \"${pos3BgStr}\"
+  read -ra NEG3_BGS   <<< \"${neg3BgStr}\"
+  GENES_BED=\"${genes_bed}\"
 
   echo \"────────────────────────────────────────────────────────────────────────\"
   echo \"COHORT_QC | RUNON | Calculating run-on efficiency...\"
@@ -394,8 +460,6 @@ PYEOF
     \"\${SAMPLE_IDS[@]}\" \\
     \"\${POS3_BGS[@]}\" \\
     \"\${NEG3_BGS[@]}\" \\
-    \"\${POS5_BGS[@]}\" \\
-    \"\${NEG5_BGS[@]}\" \\
     <<'PYEOF'
 import sys
 import os
@@ -406,8 +470,6 @@ n         = int(args[1])
 sids      = args[2:2+n]
 pos3      = args[2+n  :2+2*n]
 neg3      = args[2+2*n:2+3*n]
-pos5      = args[2+3*n:2+4*n]
-neg5      = args[2+4*n:2+5*n]
 
 # Run-on efficiency = POSITIONAL 5'->3' falloff of Pol II (3' end) signal along
 # long gene bodies. For each gene the body is split into a 5'-proximal half and a
@@ -420,7 +482,10 @@ neg5      = args[2+4*n:2+5*n]
 # regardless of run-on quality (it compared a number to itself). The positional
 # split is the real falloff measure AND uses only the 3' track, so it also works
 # for single-end (the old metric needed 5' tracks and was skipped for SE).
-# pos5/neg5 are still accepted as args for call-site stability but are unused.
+# pos5/neg5 bedGraphs are not needed for this metric -- dropped from this
+# process's inputs entirely (they used to be threaded through unused, which
+# meant Nextflow staged/hashed them into every cohort-QC task's cache key
+# for nothing).
 
 MIN_GENE_LEN = 10_000
 TSS_SKIP     = 500    # skip first 500 bp after TSS (avoid promoter-proximal pause)
@@ -579,29 +644,5 @@ print(\"Run-on efficiency table written.\", file=sys.stderr)
 PYEOF
 
   echo \"COHORT_QC | RUNON | runon_efficiency.tsv created\"
-
-  ###########################################################################
-  # FINAL SUMMARY
-  ###########################################################################
-
-  echo \"────────────────────────────────────────────────────────────────────────\"
-  echo \"COHORT_QC | SUMMARY\"
-  echo \"────────────────────────────────────────────────────────────────────────\"
-  [[ -s multiqc/multiqc_report.html ]] \\
-    && echo \"COHORT_QC | SUMMARY | ✓ MultiQC report\" \\
-    || echo \"COHORT_QC | SUMMARY | ✗ MultiQC report (skipped)\"
-  [[ -s deeptools/pca_plot.pdf ]] \\
-    && echo \"COHORT_QC | SUMMARY | ✓ deepTools PCA\" \\
-    || echo \"COHORT_QC | SUMMARY | ✗ deepTools PCA (skipped)\"
-  [[ -s deeptools/correlation_heatmap.pdf ]] \\
-    && echo \"COHORT_QC | SUMMARY | ✓ deepTools correlation heatmap\" \\
-    || echo \"COHORT_QC | SUMMARY | ✗ deepTools correlation heatmap (skipped)\"
-  echo \"COHORT_QC | SUMMARY | ✓ IGV session XML\"
-  echo \"COHORT_QC | SUMMARY | ✓ Run-on efficiency table\"
-
-  TIMESTAMP_END=\$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")
-  echo \"════════════════════════════════════════════════════════════════════════\"
-  echo \"COHORT_QC | COMPLETE | ts=\${TIMESTAMP_END}\"
-  echo \"════════════════════════════════════════════════════════════════════════\"
   """
 }

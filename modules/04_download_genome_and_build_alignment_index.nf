@@ -292,11 +292,11 @@ process download_genome_and_build_alignment_index {
         if [[ "\${fasta_path}" == *.gz ]]; then
           gunzip -c "\${fasta_path}" > "\${FASTA_CACHE}"
         else
-          cp -f "\${fasta_path}" "\${FASTA_CACHE}"
-          
+          tracktx_stage_immutable "\${fasta_path}" "\${FASTA_CACHE}"
+
           # Also copy .fai if present
           if [[ -s "\${fasta_path}.fai" ]]; then
-            cp -f "\${fasta_path}.fai" "\${FASTA_CACHE}.fai"
+            tracktx_stage_immutable "\${fasta_path}.fai" "\${FASTA_CACHE}.fai"
             echo "INDEX | FASTA | Copied FASTA index: \${fasta_path}.fai"
           fi
         fi
@@ -342,7 +342,7 @@ process download_genome_and_build_alignment_index {
         shopt -s nullglob
         COPIED_COUNT=0
         for index_file in "\${LOCAL_INDEX}".*.bt2*; do
-          cp -f "\${index_file}" "\${CACHE_DIR}/"
+          tracktx_stage_immutable "\${index_file}" "\${CACHE_DIR}/\$(basename "\${index_file}")"
           COPIED_COUNT=\$((COPIED_COUNT + 1))
         done
         shopt -u nullglob
@@ -394,7 +394,7 @@ process download_genome_and_build_alignment_index {
           echo "INDEX | FASTA | Decompressing gzipped FASTA..."
           gunzip -c "${fasta_in}" > "\${TEMP_DIR}/\${GENOME_ID}.fa"
         else
-          cp -f "${fasta_in}" "\${TEMP_DIR}/\${GENOME_ID}.fa"
+          tracktx_stage_immutable "${fasta_in}" "\${TEMP_DIR}/\${GENOME_ID}.fa"
         fi
       else
         # Download from UCSC (primary + chromFa fallback), then NCBI RefSeq
@@ -560,9 +560,9 @@ process download_genome_and_build_alignment_index {
   rm -f "\${GENOME_ID}.fa" "\${GENOME_ID}.fa.fai" "\${GENOME_ID}.genome.sizes" 2>/dev/null || true
 
   # Copy reference files
-  cp -f "\${FASTA_CACHE}" "\${GENOME_ID}.fa"
-  cp -f "\${FASTA_CACHE}.fai" "\${GENOME_ID}.fa.fai"
-  cp -f "\${CACHE_DIR}/\${GENOME_ID}.genome.sizes" "\${GENOME_ID}.genome.sizes"
+  tracktx_stage_immutable "\${FASTA_CACHE}" "\${GENOME_ID}.fa"
+  tracktx_stage_immutable "\${FASTA_CACHE}.fai" "\${GENOME_ID}.fa.fai"
+  tracktx_stage_immutable "\${CACHE_DIR}/\${GENOME_ID}.genome.sizes" "\${GENOME_ID}.genome.sizes"
 
   echo "INDEX | OUTPUT | Reference files staged"
 
@@ -570,7 +570,7 @@ process download_genome_and_build_alignment_index {
   shopt -s nullglob
   INDEX_COUNT=0
   for index_file in "\${INDEX_PREFIX}".*.bt2*; do
-    cp -f "\${index_file}" .
+    tracktx_stage_immutable "\${index_file}" "\$(basename "\${index_file}")"
     INDEX_COUNT=\$((INDEX_COUNT + 1))
   done
   shopt -u nullglob

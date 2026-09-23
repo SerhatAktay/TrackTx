@@ -75,3 +75,20 @@ tracktx_io_lock_init() {
 with_io_lock() {
   flock -w "${IO_LOCK_TIMEOUT}" "${IO_LOCK_FILE}" "$@"
 }
+
+# =============================================================================
+# tracktx_stage_immutable() — materialize a large, never-mutated-in-place
+# source file at a new path as cheaply as the filesystem allows.
+# =============================================================================
+# Hardlinks (instant, no extra disk) when source and destination share a
+# device; falls back to a real copy when that fails for any reason (cross-
+# device staging, or a filesystem without hardlink support, e.g. exFAT, or a
+# multi-volume network mount where EXDEV is common). Never symlinks: some
+# destinations (SMB/CIFS publish targets) reject the target being a symlink
+# outright. Only use this for files the caller will never edit in place --
+# a hardlink shares the same inode as the source.
+# Usage: tracktx_stage_immutable "$SRC" "$DST"
+tracktx_stage_immutable() {
+  local src="$1" dst="$2"
+  ln -f "${src}" "${dst}" 2>/dev/null || cp -f "${src}" "${dst}"
+}

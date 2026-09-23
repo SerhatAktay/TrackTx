@@ -526,7 +526,7 @@ process generate_coverage_tracks {
   if [[ "\${UMI_ENABLED}" == "true" && \${UMI_LENGTH} -gt 0 ]]; then
     if command -v umi_tools >/dev/null 2>&1; then
       # Create working copy and index
-      with_io_lock cp "\${MAIN_BAM}" aligned.bam
+      with_io_lock tracktx_stage_immutable "\${MAIN_BAM}" aligned.bam
       with_io_lock samtools index -@ \${THREADS} aligned.bam
       
       # Perform deduplication
@@ -575,7 +575,7 @@ process generate_coverage_tracks {
   if [[ "\${UMI_ENABLED}" == "true" && \${UMI_LENGTH} -gt 0 && "\${DEDUP_ALLMAP}" == "true" ]] \\
      && command -v umi_tools >/dev/null 2>&1; then
     echo "TRACKS | DEDUP | Also UMI-deduplicating allMap BAM (experimental for multimappers)..."
-    with_io_lock cp "\${ALLMAP_BAM}" allmap_in.bam
+    with_io_lock tracktx_stage_immutable "\${ALLMAP_BAM}" allmap_in.bam
     with_io_lock samtools index -@ \${THREADS} allmap_in.bam
     if perform_umi_dedup "allmap_in.bam" "allmap_dedup.bam" "\${IS_PE}" "allmap_dedup_stats.txt"; then
       ALLMAP_BAM="allmap_dedup.bam"
@@ -622,12 +622,16 @@ process generate_coverage_tracks {
     echo "TRACKS | PE_FILTER | Paired-end: keeping only the signal mate (\${PE_SIGNAL_MATE}, flag \${PE_MATE_FLAG}) for coverage..."
     echo "────────────────────────────────────────────────────────────────────────"
 
-    samtools view -@ "\${THREADS}" -f \${PE_MATE_FLAG} -b "\${INPUT_BAM}" \\
-      | samtools sort -@ "\${THREADS}" -o pe_r2_main.bam
+    # INPUT_BAM/ALLMAP_BAM are already coordinate-sorted at this point (module 05
+    # sorts on output; UMI dedup, when it runs, preserves that order -- confirmed
+    # by the fact bam_for_downstream.bam is samtools index'd with no intervening
+    # sort below). A flag-only filter never reorders records, so re-sorting the
+    # already-sorted filtered stream was a wasted full pass; verified byte-identical
+    # output against the old view|sort pipeline on tests/fixtures/pe_mate_test.bam.
+    samtools view -@ "\${THREADS}" -f \${PE_MATE_FLAG} -b -o pe_r2_main.bam "\${INPUT_BAM}"
     samtools index -@ "\${THREADS}" pe_r2_main.bam
 
-    samtools view -@ "\${THREADS}" -f \${PE_MATE_FLAG} -b "\${ALLMAP_BAM}" \\
-      | samtools sort -@ "\${THREADS}" -o pe_r2_allmap.bam
+    samtools view -@ "\${THREADS}" -f \${PE_MATE_FLAG} -b -o pe_r2_allmap.bam "\${ALLMAP_BAM}"
     samtools index -@ "\${THREADS}" pe_r2_allmap.bam
 
     R2_MAIN_COUNT=\$(samtools view -c -F 4 pe_r2_main.bam)
@@ -651,7 +655,7 @@ process generate_coverage_tracks {
   # keeps gene-level TSS/body counts consistent with the published tracks
   # instead of counting both mates in PE.
   echo "TRACKS | OUTPUT | Copying BAM used for tracks + Pol-II metrics (deduped when UMI on)..."
-  with_io_lock cp "\${BAM_FOR_COVERAGE}" bam_for_downstream.bam
+  with_io_lock tracktx_stage_immutable "\${BAM_FOR_COVERAGE}" bam_for_downstream.bam
   with_io_lock samtools index -@ \${THREADS} bam_for_downstream.bam
 
   ###########################################################################

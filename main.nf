@@ -87,7 +87,7 @@ include { summarize_polymerase_metrics                              } from './mo
 include { quality_control_aligned_reads                             } from './modules/13_quality_control_aligned_reads.nf'
 include { generate_per_sample_reports                               } from './modules/14_generate_per_sample_reports.nf'
 include { combine_reports_into_cohort                               } from './modules/15_combine_reports_into_cohort.nf'
-include { cohort_qc_and_viz                                         } from './modules/16_cohort_qc_and_viz.nf'
+include { cohort_multiqc; cohort_deeptools_qc; cohort_igv_session; cohort_runon_efficiency } from './modules/16_cohort_qc_and_viz.nf'
 
 // ============================================================================
 // MAIN WORKFLOW
@@ -1266,8 +1266,6 @@ Paths are relative to: ${projectDir}"""
   def cohort_conditions = cohort_sorted.map { rows -> rows.collect { it[5] ?: 'unknown' } }
   def cohort_pos3_bg    = cohort_sorted.map { rows -> rows.collect { it[1].toString()  } }
   def cohort_neg3_bg    = cohort_sorted.map { rows -> rows.collect { it[2].toString()  } }
-  def cohort_pos5_bg    = cohort_sorted.map { rows -> rows.collect { it[8].toString()  } }
-  def cohort_neg5_bg    = cohort_sorted.map { rows -> rows.collect { it[9].toString()  } }
 
   // Collect all QC log files staged into a single directory for MultiQC.
   // Includes: bowtie2 logs, flagstats, trimming logs — all already emitted
@@ -1281,24 +1279,18 @@ Paths are relative to: ${projectDir}"""
   // IGV session file declares the correct reference instead of a hardcoded one.
   def cohort_genome_id = (params.reference_genome == 'other') ? customGenomeId : params.reference_genome
 
-  cohort_qc_and_viz(
-    multiqc_logs_ch,
-    cohort_bw_pos3,
-    cohort_bw_neg3,
-    cohort_bw_ampos3,
-    cohort_bw_amneg3,
-    cohort_sample_ids,
-    cohort_conditions,
-    cohort_pos3_bg,
-    cohort_neg3_bg,
-    cohort_pos5_bg,
-    cohort_neg5_bg,
-    genes_ch,
-    cohort_genome_id
+  // Four independent processes (no data dependency between them) run
+  // concurrently instead of the previous single sequential script.
+  cohort_multiqc(multiqc_logs_ch)
+  cohort_deeptools_qc(cohort_bw_pos3, cohort_sample_ids)
+  cohort_igv_session(
+    cohort_bw_pos3, cohort_bw_neg3, cohort_bw_ampos3, cohort_bw_amneg3,
+    cohort_sample_ids, cohort_conditions, cohort_genome_id
   )
+  cohort_runon_efficiency(cohort_sample_ids, cohort_pos3_bg, cohort_neg3_bg, genes_ch)
 
   if (params.verbose) {
-    cohort_qc_and_viz.out.runon_efficiency.subscribe { tsv ->
+    cohort_runon_efficiency.out.runon_efficiency.subscribe { tsv ->
       log.info "STEP 16 | COMPLETE | Run-on efficiency: ${tsv.name}"
     }
   }
@@ -1325,11 +1317,11 @@ Paths are relative to: ${projectDir}"""
 
   // Optional outputs from module 16 — use sentinel file when not produced
   // (e.g. deepTools plots require ≥2 samples; MultiQC may not be installed)
-  def qc_multiqc_html  = cohort_qc_and_viz.out.multiqc_html .ifEmpty(file(noFilePath))
-  def qc_igv_session   = cohort_qc_and_viz.out.igv_session
-  def qc_runon_tsv     = cohort_qc_and_viz.out.runon_efficiency
-  def qc_pca_plot      = cohort_qc_and_viz.out.pca_plot     .ifEmpty(file(noFilePath))
-  def qc_corr_heatmap  = cohort_qc_and_viz.out.corr_heatmap .ifEmpty(file(noFilePath))
+  def qc_multiqc_html  = cohort_multiqc.out.multiqc_html        .ifEmpty(file(noFilePath))
+  def qc_igv_session   = cohort_igv_session.out.igv_session
+  def qc_runon_tsv     = cohort_runon_efficiency.out.runon_efficiency
+  def qc_pca_plot      = cohort_deeptools_qc.out.pca_plot       .ifEmpty(file(noFilePath))
+  def qc_corr_heatmap  = cohort_deeptools_qc.out.corr_heatmap   .ifEmpty(file(noFilePath))
 
   combine_reports_into_cohort(
     per_sample_reports,
