@@ -197,6 +197,7 @@ class Task:
     state: str = ""  # SUBMITTED/RUNNING/COMPLETED/FAILED/CACHED/KILLED/RETRYING
     first_ts: float = field(default_factory=time.time)
     last_ts: float = field(default_factory=time.time)
+    started: bool = False  # first_ts has been reset to the real start (Submitted/RUNNING), not queue time
     retries: int = 0
     workdir: str = ""
     pid: Optional[int] = None
@@ -328,6 +329,8 @@ class World:
     
     # Cumulative stats (survive task pruning)
     seen_ids: set = field(default_factory=set)
+    # short hash ("ab/123456") -> key in tasks; the log mixes short and full hashes for one task
+    short_idx: Dict[str, str] = field(default_factory=dict)
     cum_seen: int = 0
     cum_done: int = 0
     cum_cached: int = 0
@@ -833,8 +836,22 @@ def _prekey(name: str, tag: str) -> str:
     """Generate provisional key for tasks without hash yet"""
     return f"_pre:{name}|{tag}"
 
+def _task_key(world: World, key: str) -> str:
+    """Canonical world.tasks key for a task hash. Nextflow logs the same task as
+    'ab/123456' (Submitted line) and as the full 'ab/123456...' workDir (TaskHandler
+    lines); without this each got its own Task, and the full-hash one kept the
+    time the task was first *queued* as its start."""
+    if key.startswith("_pre:"):
+        return key
+    k = world.short_idx.get(key[:9])
+    if k and k in world.tasks:
+        return k
+    world.short_idx[key[:9]] = key
+    return key
+
 def _ensure(world: World, key: str, name: str, tag: str, now: float, provisional: bool) -> Task:
     """Get or create task"""
+    key = _task_key(world, key)
     t = world.tasks.get(key)
     # A provisional key is only name|tag (no hash), unlike a real tid which
     # always identifies one specific task instance. So a provisional key can
@@ -866,10 +883,18 @@ def _apply(world: World, name: str, tag: str, tid: str, token: str, now: float):
     
     if tid:
         t = _ensure(world, tid, name, tag, now, provisional=False)
-        
+
+        # A task sits in the log as status NEW (queued, re-dumped every poll) for
+        # as long as it waits for a slot. Age counts from when it actually
+        # started: the "Submitted process" line or the TaskHandler RUNNING status.
+        tok = token.strip().lower()
+        if not t.started and (tok.startswith("submitted") or tok == "running"):
+            t.started = True
+            t.first_ts = now
+
         # Cumulative tracking
-        if tid not in world.seen_ids:
-            world.seen_ids.add(tid)
+        if tid[:9] not in world.seen_ids:
+            world.seen_ids.add(tid[:9])
             world.cum_seen += 1
         
         if st == "RETRYING":
@@ -975,8 +1000,8 @@ def parse_line(world: World, line: str, now: float):
         _apply(world, name, tag, tid, status, now)
         
         # Also update workdir if we have the task
-        if tid and tid in world.tasks:
-             world.tasks[tid].workdir = wd
+        if tid and _task_key(world, tid) in world.tasks:
+             world.tasks[_task_key(world, tid)].workdir = wd
         return
 
     m = RE_PREFIX.search(line)
@@ -1005,7 +1030,7 @@ def parse_log_timestamp(line: str, ref_now: float) -> Optional[float]:
         return None
     try:
         ref_dt = datetime.fromtimestamp(ref_now)
-        dt = datetime.strptime(m.group("ts"), "%b-%d %H:%M:%S.%f").replace(year=ref_dt.year)
+        dt = datetime.strptime(f"{ref_dt.year} {m.group('ts')}", "%Y %b-%d %H:%M:%S.%f")
         ts = dt.timestamp()
         if ts > ref_now + 86400:
             dt = dt.replace(year=ref_dt.year - 1)
@@ -1638,29 +1663,16 @@ def classify(world: World):
         seen_ids.add(tid)
         
         # Try to find task by full hash or by short hash prefix
-        t = world.tasks.get(tid)
-        if not t:
-            # Try matching by short hash prefix (log uses short, filesystem uses full)
-            short_tid = tid[:9]  # e.g., "a6/124fb1" from "a6/124fb197de9c92cb7845294a2788ae"
-            for key, task in world.tasks.items():
-                if key.startswith(short_tid) or short_tid.startswith(key[:9]):
-                    t = task
-                    # Update task ID to full hash for consistency
-                    t.id = tid
-                    # Also update the dictionary key
-                    world.tasks[tid] = t
-                    if key != tid:
-                        try:
-                            del world.tasks[key]
-                        except Exception:
-                            pass
-                    break
-        
-        if not t:
+        # (log uses short hashes, filesystem uses full; _task_key maps both to one key)
+        key = _task_key(world, tid)
+        t = world.tasks.get(key)
+        if t:
+            t.id = tid  # full hash, so the stale-running prune below matches seen_ids
+        else:
             # Construct from dir
             name, tag = label_from_dir(d)
             t = Task(id=tid, name=name, tag=tag, state="RUNNING", first_ts=os.path.getmtime(d), last_ts=time.time())
-            world.tasks[tid] = t
+            world.tasks[key] = t
         
         t.workdir = d
         t.state = "RUNNING"
