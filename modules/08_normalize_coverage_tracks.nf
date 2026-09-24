@@ -923,9 +923,9 @@ FACTOREOF
 
   echo "NORMALIZE | LEGACY | Creating legacy symlinks for compatibility..."
 
-  # Legacy symlinks for downstream compatibility
-  ln -sf "\${SAMPLE_ID}.3p.pos.cpm.bedgraph" "3p/\${SAMPLE_ID}_pos3_cpm.bedgraph"
-  ln -sf "\${SAMPLE_ID}.3p.neg.cpm.bedgraph" "3p/\${SAMPLE_ID}_neg3_cpm.bedgraph"
+  # Legacy hard links for downstream compatibility (CIFS mount: no symlink support)
+  ln -f "3p/\${SAMPLE_ID}.3p.pos.cpm.bedgraph" "3p/\${SAMPLE_ID}_pos3_cpm.bedgraph"
+  ln -f "3p/\${SAMPLE_ID}.3p.neg.cpm.bedgraph" "3p/\${SAMPLE_ID}_neg3_cpm.bedgraph"
 
   echo "NORMALIZE | LEGACY | Legacy symlinks created"
 
