@@ -66,7 +66,6 @@ def sanitizeGenomeId(raw) {
 // Paths inlined (def MOD = ... was a top-level statement, not allowed in strict)
 // ============================================================================
 
-include { validateParameters; paramsSummaryLog                      } from 'plugin/nf-schema'
 include { capture_tool_versions                                     } from './modules/00_capture_tool_versions.nf'
 include { download_genome_annotations                               } from './modules/01_download_genome_annotations.nf'
 include { download_sra_samples                                      } from './modules/02_download_sra_samples.nf'
@@ -160,17 +159,10 @@ Debug mode:       ${params.debug ?: false}
 
   // ── Parameter validation ───────────────────────────────────────────────────
 
-  // Schema-level check first (typos/wrong types on the ~25 flags a user
-  // actually types). Skipped only under conda_server: its plugin loader
-  // creates a symlink under .nextflow/plr/ in the launch directory, which
-  // fails with "Operation not supported" on that mount (SMB/CIFS, no
-  // symlink support). Every other profile keeps this check. The
-  // hand-written checks below remain the source of truth for conditional
-  // business rules (e.g. reference_genome=other requiring custom_genome_id)
-  // that a static schema expresses far less clearly than a plain error.
-  if (!(workflow.profile ?: '').split(',')*.trim().contains('conda_server')) {
-    validateParameters()
-  }
+  // nf-schema is disabled on this branch: its plugin loader creates a symlink
+  // under .nextflow/plr/ in the launch directory, which fails with "Operation
+  // not supported" on the ag-vm1 CIFS mount (see nextflow.config). The
+  // hand-written checks below are the sole parameter validation here.
 
   if (!params.output_dir) {
     error "PIPELINE | ERROR | Missing required parameter: --output_dir"
