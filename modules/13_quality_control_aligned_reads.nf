@@ -268,29 +268,41 @@ process quality_control_aligned_reads {
 
   STATS_START=\$(date +%s)
 
-  # Total reads (primary alignments, not secondary/supplementary)
-  echo "QC | STATS | Counting total reads..."
-  TOTAL_READS=\$(samtools view -@ \${THREADS} -c -F 0x900 "\${BAM_FILE}")
+  # Pass 1/2: total/mapped/dup in one scan of BAM_FILE instead of three. Each
+  # count matches the original standalone `samtools view -c ...` call exactly
+  # (all three used -F 0x900 as their primary-alignment baseline).
+  echo "QC | STATS | Counting total/mapped/duplicate reads..."
+  read TOTAL_READS MAPPED_READS DUP_READS < <(
+    samtools view -@ \${THREADS} -F 0x900 "\${BAM_FILE}" | awk '
+      { total++; if (!and(\$2,4)) mapped++; if (and(\$2,1024)) dup++ }
+      END { print total+0, mapped+0, dup+0 }')
   echo "QC | STATS | Total reads: \${TOTAL_READS}"
-
-  # Mapped reads (primary, not unmapped)
-  echo "QC | STATS | Counting mapped reads..."
-  MAPPED_READS=\$(samtools view -@ \${THREADS} -c -F 0x904 "\${BAM_FILE}")
   echo "QC | STATS | Mapped reads: \${MAPPED_READS}"
-
-  # Duplicate reads
-  echo "QC | STATS | Counting duplicate reads..."
-  DUP_READS=\$(samtools view -@ \${THREADS} -c -f 0x400 -F 0x900 "\${BAM_FILE}")
   echo "QC | STATS | Duplicate reads: \${DUP_READS}"
 
-  # Unique reads (primary, mapped, NH==1 in -k mode / MAPQ≥threshold otherwise)
-  echo "QC | STATS | Counting unique (\${UNIQUE_LABEL}) reads..."
-  MAPQ_READS=\$(samtools view -@ \${THREADS} -c -F 0x904 \${MAPQ_ARG} "\${QC_BAM}")
+  # Pass 2/2: mapq(-nodup) + strand bias in one scan of QC_BAM instead of
+  # three. mapq_reads/mapq_nodup_reads match the original -F 0x904 / -F 0xD04
+  # `samtools view -c` calls exactly (0xD04 = 0x904 | dup-flag, so nodup is
+  # just "not dup" within the same 0x904-filtered stream). Strand bias used to
+  # be its own separate scan, but strand_frag_exclude_flag is always either
+  # 0x904 or 0xD04 -- i.e. exactly one of the two streams already being read
+  # here -- so it's tallied in the same pass: over the nodup subset when dedup
+  # is enabled (matching -F 0xD04), else over the full mapq-filtered stream
+  # (matching -F 0x904).
+  echo "QC | STATS | Counting unique (\${UNIQUE_LABEL}) [+ no-dup, + strand] reads..."
+  read MAPQ_READS MAPQ_NODUP_READS PLUS_READS MINUS_READS < <(
+    samtools view -@ \${THREADS} -F 0x904 \${MAPQ_ARG} "\${QC_BAM}" | \
+      awk -v want_nodup=${dedup_enabled ? 1 : 0} '
+        {
+          mapq_reads++
+          is_dup = and(\$2,1024) ? 1 : 0
+          if (!is_dup) mapq_nodup++
+          if (want_nodup == 0 || !is_dup) {
+            if (and(\$2,16)) minus++; else plus++
+          }
+        }
+        END { print mapq_reads+0, mapq_nodup+0, plus+0, minus+0 }')
   echo "QC | STATS | Unique (\${UNIQUE_LABEL}) reads: \${MAPQ_READS}"
-
-  # Unique + deduplicated reads
-  echo "QC | STATS | Counting unique (\${UNIQUE_LABEL}) + non-duplicate reads..."
-  MAPQ_NODUP_READS=\$(samtools view -@ \${THREADS} -c -F 0xD04 \${MAPQ_ARG} "\${QC_BAM}")
   echo "QC | STATS | Unique (\${UNIQUE_LABEL}) no-dup: \${MAPQ_NODUP_READS}"
 
   STATS_END=\$(date +%s)
@@ -305,26 +317,14 @@ process quality_control_aligned_reads {
 
   STRAND_START=\$(date +%s)
 
-  # Count reads on each strand (after MAPQ filtering)
-  # Flag 0x10 = reverse strand
-  samtools view -@ \${THREADS} ${strand_frag_exclude_flag} \${MAPQ_ARG} "\${QC_BAM}" | \
-    awk '{
-      if (and(\$2, 16)) {
-        strand = "-"
-      } else {
-        strand = "+"
-      }
-      count[strand]++
-    }
-    END {
-      print "strand\\tcount"
-      print "+\\t" (count["+"] ? count["+"] : 0)
-      print "-\\t" (count["-"] ? count["-"] : 0)
-    }' > qc_strand_bias.tsv
+  # Counts already tallied in the pass above (same stream strand bias always
+  # used: strand_frag_exclude_flag is 0x904 or 0xD04, matching mapq/mapq-nodup).
+  {
+    echo -e "strand\\tcount"
+    echo -e "+\\t\${PLUS_READS}"
+    echo -e "-\\t\${MINUS_READS}"
+  } > qc_strand_bias.tsv
 
-  # Parse strand counts
-  PLUS_READS=\$(awk 'NR==2 {print \$2}' qc_strand_bias.tsv)
-  MINUS_READS=\$(awk 'NR==3 {print \$2}' qc_strand_bias.tsv)
   TOTAL_STRAND=\$((PLUS_READS + MINUS_READS))
 
   echo "QC | STRAND | Plus strand: \${PLUS_READS}"

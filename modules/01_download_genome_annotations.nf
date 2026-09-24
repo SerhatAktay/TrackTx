@@ -332,11 +332,11 @@ process download_genome_annotations {
     echo "GTF | CACHE | Reusing: \${CACHE_TSS}"
     echo "GTF | CACHE | Reusing: \${CACHE_TES}"
     
-    cp -f "\${CACHE_GTF}"   "\${OUT_GTF}"
-    cp -f "\${CACHE_GENES}" "\${OUT_GENES}"
-    cp -f "\${CACHE_TSS}"   "\${OUT_TSS}"
-    cp -f "\${CACHE_TES}"   "\${OUT_TES}"
-    
+    tracktx_stage_immutable "\${CACHE_GTF}"   "\${OUT_GTF}"
+    tracktx_stage_immutable "\${CACHE_GENES}" "\${OUT_GENES}"
+    tracktx_stage_immutable "\${CACHE_TSS}"   "\${OUT_TSS}"
+    tracktx_stage_immutable "\${CACHE_TES}"   "\${OUT_TES}"
+
     TIMESTAMP_END=\$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     echo "════════════════════════════════════════════════════════════════════════"
     echo "GTF | COMPLETE | Using cached files | ts=\${TIMESTAMP_END}"
@@ -350,7 +350,7 @@ process download_genome_annotations {
 
   if [[ -s "\${CACHE_GTF}" ]]; then
     echo "GTF | CACHE | GTF found in cache, will regenerate derived files"
-    cp -f "\${CACHE_GTF}" "\${OUT_GTF}"
+    tracktx_stage_immutable "\${CACHE_GTF}" "\${OUT_GTF}"
   else
     echo "GTF | FETCH | GTF not in cache, downloading..."
     
@@ -489,7 +489,7 @@ process download_genome_annotations {
 
     # Move to cache
     mv -f "\${GTF_TEMP}" "\${CACHE_GTF}"
-    cp -f "\${CACHE_GTF}" "\${OUT_GTF}"
+    tracktx_stage_immutable "\${CACHE_GTF}" "\${OUT_GTF}"
     echo "GTF | FETCH | GTF saved to cache: \${CACHE_GTF}"
   fi
 
@@ -553,11 +553,13 @@ process download_genome_annotations {
   mv -f "\${WORK_DIR}/tes.bed"   "\${CACHE_TES}"
   echo "GTF | PROCESS | Catalogs saved to cache"
 
-  # Copy to output
-  cp -f "\${CACHE_GTF}"   "\${OUT_GTF}"
-  cp -f "\${CACHE_GENES}" "\${OUT_GENES}"
-  cp -f "\${CACHE_TSS}"   "\${OUT_TSS}"
-  cp -f "\${CACHE_TES}"   "\${OUT_TES}"
+  # Copy to output. GTF is NOT re-staged here: OUT_GTF was already populated
+  # above (either the cache-hit branch or the fresh-download branch writes it
+  # before this section runs), so re-copying the same content a second time
+  # was pure waste on every invocation.
+  tracktx_stage_immutable "\${CACHE_GENES}" "\${OUT_GENES}"
+  tracktx_stage_immutable "\${CACHE_TSS}"   "\${OUT_TSS}"
+  tracktx_stage_immutable "\${CACHE_TES}"   "\${OUT_TES}"
 
   ###########################################################################
   # 5) VALIDATION
