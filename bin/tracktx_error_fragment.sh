@@ -76,6 +76,8 @@ tracktx_io_lock_init() {
 # cannot run shell functions (e.g. tracktx_stage_immutable). A lock timeout
 # exits the subshell non-zero, so the caller's ERR trap still fires.
 with_io_lock() {
+  # Opt-in: only serialize when TRACKS_IO_LOCK=1 (set by -profile conda_server).
+  [[ "${TRACKS_IO_LOCK:-0}" == "1" ]] || { "$@"; return; }
   (
     flock -w "${IO_LOCK_TIMEOUT}" 9 || exit 1
     "$@"
