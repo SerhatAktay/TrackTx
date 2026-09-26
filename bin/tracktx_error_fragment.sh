@@ -72,8 +72,14 @@ tracktx_io_lock_init() {
   IO_LOCK_TIMEOUT="${TRACKS_IO_LOCK_TIMEOUT:-1800}"
 }
 
+# Lock via fd in a subshell, not `flock FILE CMD`: the latter execs CMD and
+# cannot run shell functions (e.g. tracktx_stage_immutable). A lock timeout
+# exits the subshell non-zero, so the caller's ERR trap still fires.
 with_io_lock() {
-  flock -w "${IO_LOCK_TIMEOUT}" "${IO_LOCK_FILE}" "$@"
+  (
+    flock -w "${IO_LOCK_TIMEOUT}" 9 || exit 1
+    "$@"
+  ) 9>>"${IO_LOCK_FILE}"
 }
 
 # =============================================================================
