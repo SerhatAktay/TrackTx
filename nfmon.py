@@ -8,7 +8,7 @@
 # - Multiple interactive views
 # stdlib-only core, Python 3.8+, macOS/Linux
 
-import argparse, curses, io, json, os, re, signal, subprocess, sys, time
+import argparse, calendar, curses, io, json, os, re, signal, subprocess, sys, time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, List, Tuple
 from collections import deque, defaultdict
@@ -1017,24 +1017,70 @@ def parse_line(world: World, line: str, now: float):
         token = "Completed" if ("succeed" in tail or "completed" in tail) else tail
         _apply(world, (m.group("name") or "").strip(), (m.group("tag") or "").strip(), (m.group("id") or "").strip(), token, now)
 
-def parse_log_timestamp(line: str, ref_now: float) -> Optional[float]:
+def _naive_utc_ts(dt: datetime) -> float:
+    """Epoch for a naive datetime read as a plain UTC wall-clock reading
+    (ignores the parsing machine's local zone entirely)."""
+    return calendar.timegm(dt.timetuple()) + dt.microsecond / 1e6
+
+def _calibrate_log_tz_offset(lines: List[str], log_path: str, ref_now: float) -> float:
+    """nextflow writes its own log timestamps in the log-writing host's local
+    time with no timezone marker (e.g. 'Aug-27 09:12:54.016'). Interpreting
+    that naive string as the *parsing* machine's local time -- which
+    dt.timestamp() on a naive datetime does -- is only correct when nfmon
+    runs on the same host/timezone that wrote the log. Running nfmon locally
+    against a log written by the pipeline on a different-timezone host (e.g.
+    the remote server) silently shifted every bootstrapped task's first_ts,
+    breaking Age/ETA for anything already running or finished before nfmon
+    started.
+
+    Calibrate once per bootstrap using the log file's own mtime -- a plain,
+    timezone-independent epoch number -- against the last timestamped
+    line's naive-as-UTC reading, rounded to the nearest 15 minutes (the
+    finest real UTC offset granularity). This self-corrects regardless of
+    which machine/timezone runs nfmon."""
+    last_line = None
+    for ln in reversed(lines):
+        if RE_LOG_TS.match(ln):
+            last_line = ln
+            break
+    if last_line is None:
+        return 0.0
+    m = RE_LOG_TS.match(last_line)
+    try:
+        ref_dt = datetime.fromtimestamp(ref_now)
+        dt = datetime.strptime(f"{ref_dt.year} {m.group('ts')}", "%Y %b-%d %H:%M:%S.%f")
+        naive_ts = _naive_utc_ts(dt)
+        # Same day-in-future guard as parse_log_timestamp: the log's last
+        # line can't be from the future relative to its own mtime.
+        mtime = os.stat(log_path).st_mtime
+        if naive_ts > mtime + 86400:
+            dt = dt.replace(year=ref_dt.year - 1)
+            naive_ts = _naive_utc_ts(dt)
+        offset = round((mtime - naive_ts) / 900) * 900
+        return max(-14 * 3600, min(14 * 3600, offset))
+    except Exception:
+        return 0.0
+
+def parse_log_timestamp(line: str, ref_now: float, tz_offset: float = 0.0) -> Optional[float]:
     """Parse the leading timestamp nextflow writes on each .nextflow.log line
     (e.g. 'Aug-27 09:12:54.016') into a real epoch time. The log has no year,
     so the current year is assumed; if that would place the timestamp more
     than a day in the future relative to ref_now (e.g. bootstrap runs in
     January against a log written the previous December), the previous year
-    is assumed instead. Returns None for lines with no leading timestamp
-    (continuation lines, stack traces, etc.)."""
+    is assumed instead. tz_offset (from _calibrate_log_tz_offset) corrects
+    for the log-writing host's timezone differing from nfmon's own -- see
+    that function's docstring. Returns None for lines with no leading
+    timestamp (continuation lines, stack traces, etc.)."""
     m = RE_LOG_TS.match(line)
     if not m:
         return None
     try:
         ref_dt = datetime.fromtimestamp(ref_now)
         dt = datetime.strptime(f"{ref_dt.year} {m.group('ts')}", "%Y %b-%d %H:%M:%S.%f")
-        ts = dt.timestamp()
+        ts = _naive_utc_ts(dt) + tz_offset
         if ts > ref_now + 86400:
             dt = dt.replace(year=ref_dt.year - 1)
-            ts = dt.timestamp()
+            ts = _naive_utc_ts(dt) + tz_offset
         return ts
     except Exception:
         return None
@@ -1064,9 +1110,11 @@ def bootstrap(world: World, log_path: str):
     """
     bootstrap_now = time.time()
     last_ts = bootstrap_now
-    for ln in read_all_lines(log_path):
+    lines = read_all_lines(log_path)
+    tz_offset = _calibrate_log_tz_offset(lines, log_path, bootstrap_now)
+    for ln in lines:
         update_meta(world, ln)
-        parsed_ts = parse_log_timestamp(ln, bootstrap_now)
+        parsed_ts = parse_log_timestamp(ln, bootstrap_now, tz_offset)
         if parsed_ts is not None:
             last_ts = parsed_ts
         parse_line(world, ln, last_ts)
