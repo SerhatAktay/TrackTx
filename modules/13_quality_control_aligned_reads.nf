@@ -374,11 +374,24 @@ process quality_control_aligned_reads {
       FRAG_COUNT=\$(tail -n +2 qc_fragment_length.tsv | wc -l | tr -d ' ')
       echo "QC | FRAGMENT | Insert sizes: \${FRAG_COUNT} bins"
 
-      # Calculate median (expand counts, sort, take middle)
+      # Calculate weighted median directly on the (length,count) bins -- avoids
+      # expanding every read into its own line (OOM/slow-disk risk at high depth,
+      # and a pipe-wide `|| echo NA` fallback could double-emit "value\\nNA" if a
+      # stage hiccuped after already printing, corrupting the JSON below).
       MEDIAN_FRAG=\$(tail -n +2 qc_fragment_length.tsv | \
-                     awk '\$1+0==\$1 && \$2+0==\$2 && \$2>0 {for(i=0;i<\$2;i++)print \$1}' | \
-                     sort -n | \
-                     awk '{a[NR]=\$1} END{print (NR>0 && NR%2==1)?a[(NR+1)/2]:(NR>0?(a[NR/2]+a[NR/2+1])/2:"NA")}' || echo "NA")
+                     sort -k1,1n | \
+                     awk '\$1+0==\$1 && \$2+0==\$2 && \$2>0 {n++; len[n]=\$1; cnt[n]=\$2; total+=\$2}
+                          END{
+                            if (total==0) { print "NA"; exit }
+                            mid1=int((total+1)/2); mid2=(total%2==0)?mid1+1:mid1
+                            cum=0; m1=""; m2=""
+                            for (i=1;i<=n;i++) {
+                              cum+=cnt[i]
+                              if (m1=="" && cum>=mid1) m1=len[i]
+                              if (cum>=mid2) { m2=len[i]; break }
+                            }
+                            print (m1==m2)?m1:(m1+m2)/2
+                          }')
 
       if [[ "\${MEDIAN_FRAG}" != "NA" && "\${MEDIAN_FRAG}" != "" ]]; then
         echo "QC | FRAGMENT | Median insert size: \${MEDIAN_FRAG} bp"
