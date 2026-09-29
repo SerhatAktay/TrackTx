@@ -219,9 +219,8 @@ optgroup{ color:var(--fg); }
       <ol>
         <li>Work through sections 1–8. Defaults are sensible, so change only what applies to your experiment. At minimum, give a project name, choose the genome, and add your samples.</li>
         <li>In section 9, click <strong>Download ZIP</strong> to get your files.</li>
-        <li>To send your configuration to the TrackTx maintainer, use <strong>Email to Serhat</strong> in section 9.</li>
       </ol>
-      Not sure about an option? Leave the default and mention the question in your email.
+      Not sure about an option? Leave the default.
     </div>
 
     <div class="callout">
@@ -1414,9 +1413,6 @@ optgroup{ color:var(--fg); }
         <button class="button is-info is-large" onclick="saveZipToLocation()" title="Pick where to save the ZIP (e.g. same folder as this config)">
           📁 Save ZIP to…
         </button>
-        <button class="button is-link is-large" onclick="emailToSerhat()" title="Downloads the ZIP and opens a pre-filled email to attach it to">
-          ✉️ Email to Serhat
-        </button>
         <button class="button is-light" onclick="fillPreview()">
           👁️ Preview YAML
         </button>
@@ -2269,8 +2265,8 @@ function validateBeforeBuild(verb){
   return true;
 }
 
-async function downloadZip(skipValidation){
-  if(skipValidation !== true && !validateBeforeBuild('downloading')) return;
+async function downloadZip(){
+  if(!validateBeforeBuild('downloading')) return;
 
   const zip = new JSZip();
   const yaml = buildYAML();
@@ -2286,18 +2282,6 @@ async function downloadZip(skipValidation){
   a.href = url; a.download = "TrackTx_Config.zip";
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
-}
-
-// A static page cannot attach files or send mail itself: download the ZIP,
-// then open a pre-filled mail draft the user attaches it to.
-async function emailToSerhat(){
-  if(!validateBeforeBuild('downloading')) return;
-  await downloadZip(true);
-  const project = ($('#project_name')?.value || '').trim() || 'unnamed project';
-  const subject = `TrackTx config: ${project}`;
-  const body = `Hi Serhat,\n\nPlease find my TrackTx configuration attached (TrackTx_Config.zip).\n\nName / lab:\nNotes / questions:\n`;
-  alert('The ZIP was downloaded. Your email app will open next — attach TrackTx_Config.zip from your Downloads folder and send.');
-  location.href = `mailto:serhat.aktay@scilifelab.se?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 }
 
 async function saveZipToLocation(){
