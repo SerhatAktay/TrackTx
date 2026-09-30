@@ -2809,9 +2809,9 @@ def main():
                     Layout(name="body")
                 )
                 layout["body"].split_row(Layout(name="right", ratio=1))
-                # Ratio-based: table 3, log 5, errors 1; help is a fixed 1-line panel
+                # Table sized to its rows (title+edges+header = 5 extra lines) so log sits right below; log takes the rest
                 layout["right"].split_column(
-                    Layout(rt, ratio=3, minimum_size=4),
+                    Layout(rt, size=max(4, rt.row_count + 5)),
                     Layout(log_panel, ratio=5, minimum_size=5),
                     Layout(err_panel, ratio=1, minimum_size=2),
                     Layout(help_panel, size=3)
