@@ -2604,23 +2604,9 @@ def main():
             # Help panel content is static -- build once instead of on every
             # frame (render() is called at every refresh tick).
             _help_txt = Text()
-            _help_txt.append("NAVIGATION\n", style="bold cyan")
-            _help_txt.append("  j  or  Down  ", style="yellow")
-            _help_txt.append("Move down to next running task\n", style="dim")
-            _help_txt.append("  k  or  Up    ", style="yellow")
-            _help_txt.append("Move up to previous task\n", style="dim")
-            _help_txt.append("FILTER & SORT\n", style="bold cyan")
-            _help_txt.append("  f  ", style="yellow")
-            _help_txt.append("Filter by process: show only one module at a time (cycle through)\n", style="dim")
-            _help_txt.append("  s  ", style="yellow")
-            _help_txt.append("Sort: default → by CPU% → by memory → by age\n", style="dim")
-            _help_txt.append("VIEW\n", style="bold cyan")
-            _help_txt.append("  a  ", style="yellow")
-            _help_txt.append("Toggle all-logs: show every task's log, or just the focused one\n", style="dim")
-            _help_txt.append("QUIT\n", style="bold cyan")
-            _help_txt.append("  q  or  Esc  ", style="yellow")
-            _help_txt.append("Exit the monitor\n", style="dim")
-            _help_txt.append("Columns: Module=process name, Sample=task tag, CPU%=usage, RSS=memory (MB)", style="dim")
+            for _k, _d in (("j/k", "nav"), ("f", "filter module"), ("s", "sort: cpu/mem/age"), ("a", "all logs"), ("q/Esc", "quit")):
+                _help_txt.append(f" {_k} ", style="yellow")
+                _help_txt.append(_d + "  ", style="dim")
             help_panel = Panel(_help_txt, title="Help", border_style="bright_black", padding=(0, 1))
 
             def render():
@@ -2823,12 +2809,12 @@ def main():
                     Layout(name="body")
                 )
                 layout["body"].split_row(Layout(name="right", ratio=1))
-                # Ratio-based: table 2, log 5, errors 1, help gets enough for full text
+                # Ratio-based: table 3, log 5, errors 1; help is a fixed 1-line panel
                 layout["right"].split_column(
-                    Layout(rt, ratio=2, minimum_size=4),
+                    Layout(rt, ratio=3, minimum_size=4),
                     Layout(log_panel, ratio=5, minimum_size=5),
                     Layout(err_panel, ratio=1, minimum_size=2),
-                    Layout(help_panel, ratio=1, minimum_size=14)
+                    Layout(help_panel, size=3)
                 )
                 return layout
 
