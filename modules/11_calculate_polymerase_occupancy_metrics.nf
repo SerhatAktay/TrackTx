@@ -356,10 +356,10 @@ process calculate_polymerase_occupancy_metrics {
   # Merge positive and negative strands (|pos| + |neg|)
   echo "POL | DENSITY | Merging strands..."
   
-  cat pos.abs.bedgraph neg.abs.bedgraph | \\
-    LC_ALL=C sort -k1,1 -k2,2n -k3,3n | \\
-    bedtools merge -i - -c 4 -o sum > combined.norm.bedgraph || \\
-    : > combined.norm.bedgraph
+  # Inputs are already sorted: sort -m streams them (no memory blowup on large
+  # T2T tracks). No error fallback: a failure here must fail the process.
+  LC_ALL=C sort -m -k1,1 -k2,2n -k3,3n pos.abs.bedgraph neg.abs.bedgraph | \\
+    bedtools merge -i - -c 4 -o sum > combined.norm.bedgraph
 
   COMBINED_LINES=\$(wc -l < combined.norm.bedgraph | tr -d ' ')
   COMBINED_SIZE=\$(tracktx_size combined.norm.bedgraph)

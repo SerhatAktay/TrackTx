@@ -245,8 +245,8 @@ def main():
         ren = {}
         for a,b in (("chrom","chr"),("contig","chr")):
             if a in low: ren[density.columns[low.index(a)]] = b
-    for k in ("start","end","name","score","strand","cpm","signal","raw_count","count","raw"):
-        if k in low: ren[density.columns[low.index(k)]] = k
+        for k in ("start","end","name","score","strand","cpm","signal","raw_count","count","raw"):
+            if k in low: ren[density.columns[low.index(k)]] = k
         density = density.rename(columns=ren)
     for k in ("start","end","raw_count","count","cpm","signal"):
         if k in density.columns:
