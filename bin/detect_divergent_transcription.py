@@ -129,6 +129,20 @@ Output:
                          "genuinely noisy/empty sample legitimately yields no sites.")
     
     # Calibration parameters (when using auto)
+    ap.add_argument("--calibration-method", choices=["target_peaks", "percentile"],
+                    default="target_peaks",
+                    help="How auto-calibration picks the per-bin threshold. target_peaks "
+                         "(default): smallest threshold giving <= --target-peaks peaks on "
+                         "each strand. percentile: --calibration-percentile of the signal "
+                         "distribution; on single-base PRO-seq bedGraphs the p65-p75 is just "
+                         "1 read, so calls track sequencing depth.")
+    ap.add_argument("--target-peaks", type=int, default=100000,
+                    help="target_peaks method: max peaks per strand (default: 100000, the "
+                         "50-100K-sites range typical for mammalian PRO-seq)")
+    ap.add_argument("--exclude-contigs", default=r"^(chr)?(M|MT|Mt|Pt|ChrM|ChrC|chrM|chrC)$",
+                    help="Regex of contigs (mitochondrion/plastid) dropped before calibration "
+                         "and calling: their signal is orders of magnitude above the nuclear "
+                         "genome and skews the shared threshold. Empty string disables.")
     ap.add_argument("--calibration-percentile", type=float, default=75.0,
                     help="Percentile for threshold when auto-calibrating (default: 75, more permissive than 95)")
     ap.add_argument("--calibration-sum-multiplier", type=float, default=3.0,
@@ -384,6 +398,76 @@ def auto_scale_window_params(
     log(f"Apparent genome size ~{genome_size:,} bp (< {COMPACT_GENOME_BP:,} bp) → "
         f"compact genome; auto-scaling windows {defaults} → {scaled}", quiet)
     return scaled
+
+
+THRESHOLD_LADDER = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 48, 64, 96, 128]
+
+
+def drop_contigs(df: pd.DataFrame, pattern: str, role: str, quiet: bool = False) -> pd.DataFrame:
+    """Remove rows on contigs matching the regex (mito/plastid by default)."""
+    if not pattern:
+        return df
+    import re
+    rx = re.compile(pattern)
+    drop = df['chr'].astype(str).map(lambda c: bool(rx.match(c)))
+    if drop.any():
+        log(f"  Excluding {sorted(df.loc[drop, 'chr'].unique())} from {role} strand "
+            f"({int(drop.sum()):,} bedGraph rows; --exclude-contigs)", quiet)
+        df = df.loc[~drop].reset_index(drop=True)
+    return df
+
+
+def calibrate_target_peaks(pos_df: pd.DataFrame, neg_df: pd.DataFrame,
+                           target_peaks: int, sum_multiplier: float,
+                           bin_gap: int, quiet: bool = False) -> Dict[str, float]:
+    """
+    Pick the smallest per-bin threshold from THRESHOLD_LADDER whose peak calls
+    stay <= target_peaks on each strand (bisection; peak count falls as the
+    threshold rises).
+
+    Why not a percentile or a null-FDR target: PRO-seq 3' bedGraphs are single
+    bases, so the p65-p75 of the signal is 1 read and the result is just
+    "any 2 reads within bin_gap" -- the number of calls then follows depth
+    (4.7x more sites for 1.3x more reads in GSE89230). A null-FDR target does
+    not work either: within-chromosome value shuffles keep the occupied
+    positions, and on GSE89230 chr1 null pairs exceeded real pairs at every
+    threshold up to 24 reads (ratio 1.5 -> 6.5 -> 1.3). A peak-count ceiling
+    gives every sample the same sensitivity regardless of depth.
+    """
+    log(f"Auto-calibrating thresholds (target <= {target_peaks:,} peaks per strand)...", quiet)
+    cache: Dict[int, int] = {}
+
+    def n_peaks(i: int) -> int:
+        if i not in cache:
+            t = float(THRESHOLD_LADDER[i])
+            sthr = max(t * sum_multiplier, 1.0)
+            cache[i] = max(len(call_peaks(pos_df, t, sthr, bin_gap)),
+                           len(call_peaks(neg_df, t, sthr, bin_gap)))
+            log(f"  threshold {t:g} (sum_thr {sthr:g}): {cache[i]:,} peaks on the busier strand", quiet)
+        return cache[i]
+
+    lo, hi = 0, len(THRESHOLD_LADDER) - 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if n_peaks(mid) <= target_peaks:
+            hi = mid
+        else:
+            lo = mid + 1
+    reached = n_peaks(lo) <= target_peaks
+    if not reached:
+        log(f"  WARNING: even threshold {THRESHOLD_LADDER[lo]} gives {cache[lo]:,} peaks "
+            f"(> {target_peaks:,}); using it anyway", quiet)
+    threshold = float(THRESHOLD_LADDER[lo])
+    sum_thr = max(threshold * sum_multiplier, 1.0)
+    log(f"  Using threshold {threshold:g}, sum_thr {sum_thr:g}", quiet)
+    return {
+        'threshold': threshold,
+        'sum_thr': sum_thr,
+        'method': 'target_peaks',
+        'target_peaks': target_peaks,
+        'peaks_at_threshold': cache[lo],
+        'sum_multiplier': sum_multiplier,
+    }
 
 
 def auto_calibrate(pos_df: pd.DataFrame, neg_df: pd.DataFrame,
@@ -1152,7 +1236,11 @@ def generate_qc_report(
         f.write("-"*70 + "\n")
         f.write(f"  Threshold used:           {actual_threshold:.3f}\n")
         f.write(f"  Sum threshold used:       {actual_sum_thr:.3f}\n")
-        f.write(f"  (Auto-calibrated p{int(calibration.get('percentile', 75))}: {calibration['threshold']:.3f})\n")
+        if calibration.get('method') == 'target_peaks':
+            f.write(f"  (Auto-calibrated, target <= {calibration['target_peaks']:,} peaks/strand: "
+                    f"{calibration['threshold']:.3f}; {calibration['peaks_at_threshold']:,} peaks on busier strand)\n")
+        else:
+            f.write(f"  (Auto-calibrated p{int(calibration.get('percentile', 75))}: {calibration['threshold']:.3f})\n")
         f.write(f"  (Auto-calibrated sum_thr:  {calibration['sum_thr']:.3f})\n\n")
         
         f.write("Peak Calling\n")
@@ -1256,8 +1344,8 @@ def main():
 
     # Load bedGraphs
     log("[1/7] Loading bedGraphs...")
-    pos_df = read_bedgraph(args.pos, "pos", args.quiet)
-    neg_df = read_bedgraph(args.neg, "neg", args.quiet)
+    pos_df = drop_contigs(read_bedgraph(args.pos, "pos", args.quiet), args.exclude_contigs, "pos", args.quiet)
+    neg_df = drop_contigs(read_bedgraph(args.neg, "neg", args.quiet), args.exclude_contigs, "neg", args.quiet)
     
     # Build chromosome indices
     log("[2/7] Indexing chromosomes...")
@@ -1283,13 +1371,21 @@ def main():
 
     # Auto-calibrate thresholds
     log("[3/7] Calibrating thresholds...")
-    calibration = auto_calibrate(
-        pos_df, neg_df,
-        percentile=args.calibration_percentile,
-        sum_multiplier=args.calibration_sum_multiplier,
-        use_lower_background=args.calibration_background_lower,
-        quiet=args.quiet
-    )
+    if args.calibration_method == "target_peaks" and (args.threshold is None or args.sum_thr is None):
+        calibration = calibrate_target_peaks(
+            pos_df, neg_df, args.target_peaks, args.calibration_sum_multiplier,
+            bin_gap, quiet=args.quiet
+        )
+    else:
+        calibration = auto_calibrate(
+            pos_df, neg_df,
+            percentile=args.calibration_percentile,
+            sum_multiplier=args.calibration_sum_multiplier,
+            use_lower_background=args.calibration_background_lower,
+            quiet=args.quiet
+        )
+        calibration['method'] = 'percentile'
+        calibration['peaks_at_threshold'] = None
     
     # Use user-specified or auto-calibrated values
     if args.threshold is not None:

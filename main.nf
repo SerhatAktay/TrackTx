@@ -632,19 +632,49 @@ Paths are relative to: ${projectDir}"""
       // Use genome_overall_aln_rate_pct (the REAL bowtie2 rate), not
       // genome_map_rate_pct (post-filter, always ~100%). spike_fraction_pct =
       // spike-mapped / genome-mapped × 100 — a real Drosophila spike-in is
-      // typically 1–10%; <~0.5% means there is effectively no spike-in and
-      // siCPM normalization is not trustworthy.
+      // typically 0.2–5% in this cohort; below norm.spike_min_fraction_pct
+      // (0.1%) it is cross-mapping noise and siCPM normalization is not trustworthy.
       // PE note: both counts are per-read-RECORD (genome primary flagstat counts
       // both mates; spike is SE-aligned on the unaligned mates), so the ratio is
       // dimensionally consistent in PE — do NOT "halve" it for paired-end.
       def gmap = (m['genome_mapped_reads'] ?: '').isInteger() ? (m['genome_mapped_reads'] as long) : 0L
       def smap = (m['spike_mapped_reads'] ?: '').isInteger() ? (m['spike_mapped_reads'] as long) : 0L
-      def spikeFrac = (gmap > 0) ? String.format(Locale.US, '%.3f', (smap / (gmap as double)) * 100.0) : 'NA'
-      "${sid}\t${c}\t${t}\t${r}\t${m['genome_total_reads'] ?: 'NA'}\t${m['genome_mapped_reads'] ?: 'NA'}\t${m['genome_overall_aln_rate_pct'] ?: 'NA'}\t${m['spike_mapped_reads'] ?: 'NA'}\t${spikeFrac}"
+      def spikeFrac = (gmap > 0) ? (smap / (gmap as double)) * 100.0 : null
+      [sid: sid, c: c.toString(), t: t.toString(), r: r.toString(),
+       total: (m['genome_total_reads'] ?: 'NA'), gmap: gmap,
+       rate: (m['genome_overall_aln_rate_pct'] ?: 'NA'), smap: smap, frac: spikeFrac]
     }
-    .toSortedList()
-    .map { lines ->
-      def header = 'sample_id\tcondition\ttimepoint\treplicate\tgenome_total_reads\tgenome_mapped_reads\tgenome_overall_aln_rate_pct\tspike_mapped_reads\tspike_fraction_pct'
+    .toList()
+    .map { rows ->
+      rows = rows.sort { it.sid }
+      // Per-replicate factors, same convention as module 08's merged-track factors:
+      //   cpm_factor   = 1e6 / genome reads
+      //   sicpm_factor = (control_spike / sample_spike) x (1e6 / control_genome), control =
+      //                  the pooled control_label condition (0 if no spike or no control).
+      // spike_flag: LOW (< norm.spike_min_fraction_pct, likely no real spike-in),
+      //             SPREAD (replicates of one condition differ >3x in spike fraction), OK, NA.
+      def minPct = (params.norm?.spike_min_fraction_pct ?: 0.1) as double
+      def ctl = (params.control_label ?: '').toString().trim().toLowerCase()
+      def ctlRows = rows.findAll { it.c.trim().toLowerCase() == ctl && it.smap > 0 && it.gmap > 0 }
+      def ctlSpike = ctlRows.sum { it.smap } ?: 0L
+      def ctlGmap  = ctlRows.sum { it.gmap } ?: 0L
+      def groups = rows.groupBy { "${it.c}|${it.t}" }
+      def spread = groups.findAll { k, v ->
+        def f = v.findAll { it.frac != null && it.frac > 0 }.collect { it.frac }
+        f.size() >= 2 && f.max() / f.min() > 3.0
+      }.keySet()
+      def lines = rows.collect { x ->
+        def cpm = x.gmap > 0 ? 1.0e6 / x.gmap : 0.0
+        def si  = (ctlSpike > 0 && ctlGmap > 0 && x.smap > 0) ? (ctlSpike / (x.smap as double)) * (1.0e6 / ctlGmap) : 0.0
+        def flag = (x.frac == null || x.smap == 0) ? 'NA' : (x.frac < minPct ? 'LOW' : (spread.contains("${x.c}|${x.t}".toString()) ? 'SPREAD' : 'OK'))
+        [x.sid, x.c, x.t, x.r, x.total, x.gmap, x.rate, x.smap,
+         x.frac == null ? 'NA' : String.format(Locale.US, '%.3f', x.frac),
+         String.format(Locale.US, '%.10f', cpm), String.format(Locale.US, '%.10f', si), flag].join('\t')
+      }
+      def lowSamples = rows.findAll { it.frac != null && it.frac < minPct && it.smap > 0 }.collect { it.sid }
+      if (lowSamples) log.warn "STEP 6c | SPIKE-IN | spike fraction < ${minPct}% in ${lowSamples.size()} sample(s) (${lowSamples.take(4).join(', ')}${lowSamples.size() > 4 ? ', ...' : ''}): likely cross-mapping noise, not a real spike-in; siCPM is not trustworthy. If this library has no spike-in, set spikein_genome: null and norm.emit_sicpm: false."
+      if (spread) log.warn "STEP 6c | SPIKE-IN | replicates differ >3x in spike fraction within: ${spread.join(', ')} (see spike_flag in 02_alignments/alignment_rates_summary.tsv); spike-in factors for these conditions are noisy."
+      def header = 'sample_id\tcondition\ttimepoint\treplicate\tgenome_total_reads\tgenome_mapped_reads\tgenome_overall_aln_rate_pct\tspike_mapped_reads\tspike_fraction_pct\tcpm_factor\tsicpm_factor\tspike_flag'
       ([header] + lines).join('\n') + '\n'
     }
     .collectFile(

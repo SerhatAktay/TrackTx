@@ -89,13 +89,24 @@
 //                                Selection above) — set control_label
 //                                explicitly for any multi-arm design.
 //   params.norm.timeout_bw    : BigWig timeout seconds (default: 900)
-//   params.norm.gene_end_method   : none | tes_window | gene_body (default: none)
+//   params.norm.gene_end_method   : none | tes_window | gene_body | long_gene (default: none)
 //                                    Alternative CPM denominator computed from
 //                                    raw 3' signal in a per-gene end region
 //                                    (written to normalization_factors.tsv as
-//                                    gene_end_<method>; no track is scaled by it).
+//                                    gene_end_<method>; also scales the *.geneend.* tracks).
 //   params.norm.gene_end_window   : bp window for tes_window method (default: 500)
 //   params.norm.gene_end_min_reads: min reads/gene to count toward the total (default: 10)
+//   params.norm.gene_end_min_gene_len: min gene length (bp) to contribute (default: 0 = all;
+//                                    long_gene uses 150000 when this is 0)
+//   params.norm.gene_end_tss_offset: long_gene only. Region starts this many bp downstream of the
+//                                    TSS (default 120000; Vihervaara 2017/2021 use +120 kb, Himanen 2025 +100 kb)
+//   params.norm.gene_end_tail     : long_gene only. Region ends this many bp before the TES (default 500)
+//   long_gene = the published long-gene-end scheme (Mahat 2016; Vihervaara 2017, 2021; Himanen 2025): reads in
+//               [TSS + tss_offset, TES - tail] of genes longer than min_gene_len, i.e. beyond the reach of the
+//               advancing/receding Pol II wave during a short stress.
+//   When gene_end_method != none, *.geneend.{bedgraph,bw} tracks (CPM-style, scaled by the
+//   gene-end factor) are written next to the cpm/sicpm tracks.
+//   params.norm.spike_min_fraction_pct: warn when spike/genome reads is below this (default 0.1)
 //
 // ============================================================================
 
@@ -144,6 +155,10 @@ process normalize_coverage_tracks {
           path("normalization_factors.tsv"),
           val(condition), val(timepoint), val(replicate),
           emit: norm_tuple
+
+    // Gene-end scaled tracks (only when norm.gene_end_method != none and the
+    // factor is usable); optional so runs without them still succeed.
+    path "{3p,5p}/*.geneend.{bedgraph,bw}", optional: true, emit: geneend_tracks
 
     // Main CPM tracks
     path "3p/${sample_id}.3p.pos.cpm.bedgraph", emit: pos3_cpm_bg
@@ -235,6 +250,11 @@ process normalize_coverage_tracks {
   GENE_END_METHOD="${params.norm?.gene_end_method ?: 'none'}"
   GENE_END_WINDOW=${params.norm?.gene_end_window ?: 500}
   GENE_END_MIN_READS=${params.norm?.gene_end_min_reads ?: 10}
+  GENE_END_MIN_GENE_LEN=${params.norm?.gene_end_min_gene_len ?: 0}
+  GENE_END_TSS_OFFSET=${params.norm?.gene_end_tss_offset ?: 120000}
+  GENE_END_TAIL=${params.norm?.gene_end_tail ?: 500}
+  if [[ "\${GENE_END_METHOD}" == "long_gene" && "\${GENE_END_MIN_GENE_LEN}" -eq 0 ]]; then GENE_END_MIN_GENE_LEN=150000; fi
+  SPIKE_MIN_PCT=${params.norm?.spike_min_fraction_pct ?: 0.1}
   
   # Input bedGraphs
   POS3="${pos3_bg}"
@@ -523,6 +543,14 @@ PYSCRIPT
     SICPM_AVAILABLE=0
   fi
 
+  # Spike-in sanity check (warning only): a real spike-in is >=0.17% of genome
+  # reads in this cohort; ~0.02% means cross-mapping noise, not a usable spike.
+  SPIKE_PCT=\$(awk -F'\\t' -v s="\${SAMPLE_ID}" 'NR>1 && \$1==s && \$2>0 {printf "%.4f", 100.0*\$4/\$2}' "\${COUNTS_MASTER}")
+  SPIKE_PCT=\${SPIKE_PCT:-0}
+  if [[ \${SICPM_AVAILABLE} -eq 1 ]] && awk -v x="\${SPIKE_PCT}" -v m="\${SPIKE_MIN_PCT}" 'BEGIN{exit (x<m?0:1)}'; then
+    echo "NORMALIZE | FACTORS | WARNING: spike-in is only \${SPIKE_PCT}% of genome reads (< \${SPIKE_MIN_PCT}%): likely cross-mapping noise, siCPM is NOT trustworthy. Set spikein_genome: null / emit_sicpm: false if this library has no spike-in."
+  fi
+
   ###########################################################################
   # 3b) COMPUTE GENE-END NORMALIZATION FACTOR (optional)
   ###########################################################################
@@ -539,19 +567,23 @@ PYSCRIPT
 
   FAC_GENEEND="0.0000000000"
   if [[ "\${GENE_END_METHOD}" != "none" ]]; then
-    echo "NORMALIZE | FACTORS | Computing gene-end factor (method=\${GENE_END_METHOD}, window=\${GENE_END_WINDOW}bp, min_reads=\${GENE_END_MIN_READS})..."
+    echo "NORMALIZE | FACTORS | Computing gene-end factor (method=\${GENE_END_METHOD}, window=\${GENE_END_WINDOW}bp, min_reads=\${GENE_END_MIN_READS}, min_gene_len=\${GENE_END_MIN_GENE_LEN}bp, tss_offset=\${GENE_END_TSS_OFFSET}bp, tail=\${GENE_END_TAIL}bp)..."
 
     if [[ ! -s "\${GENES_TSV}" ]]; then
       echo "NORMALIZE | FACTORS | WARNING: gene-end factor disabled (genes.tsv missing/empty)"
     else
       # genes.tsv: gene_id  gene_name  chr  strand  start  end  tss  tes  biotype
       # (start/end/tss/tes are 1-based GTF coords; emit 0-based BED6 here)
-      awk -F'\t' -v OFS='\t' -v method="\${GENE_END_METHOD}" -v win="\${GENE_END_WINDOW}" '
+      awk -F'\t' -v OFS='\t' -v method="\${GENE_END_METHOD}" -v win="\${GENE_END_WINDOW}" -v minlen="\${GENE_END_MIN_GENE_LEN}" -v toff="\${GENE_END_TSS_OFFSET}" -v tail="\${GENE_END_TAIL}" '
         NR==1 { next }
         {
-          chrom=\$3; strand=\$4; start=\$5; end=\$6; tes=\$8
+          chrom=\$3; strand=\$4; start=\$5; end=\$6; tss=\$7; tes=\$8
+          if (end - start + 1 < minlen) next
           if (method == "gene_body") {
             lo = start - 1; hi = end
+          } else if (method == "long_gene") {
+            if (strand == "+") { lo = tss - 1 + toff; hi = tes - tail }
+            else               { lo = tes - 1 + tail; hi = tss - toff }
           } else if (strand == "+") {
             lo = tes - win; if (lo < 0) lo = 0; hi = tes
           } else {
@@ -692,6 +724,10 @@ PYSCRIPT
     local out_cpm_bw="\${end_label}/\${prefix}.cpm.bw"
     local out_sicpm_bg="\${end_label}/\${prefix}.sicpm.bedgraph"
     local out_sicpm_bw="\${end_label}/\${prefix}.sicpm.bw"
+    local out_ge_bg="\${end_label}/\${prefix}.geneend.bedgraph"
+    local out_ge_bw="\${end_label}/\${prefix}.geneend.bw"
+    local want_ge=0
+    if [[ "\${GENE_END_METHOD}" != "none" ]] && awk -v x="\${FAC_GENEEND}" 'BEGIN{exit (x>0?0:1)}'; then want_ge=1; fi
     
     echo "NORMALIZE | SCALE | Processing: \${end_label} \${set_label} \${strand}"
     
@@ -751,6 +787,15 @@ PYSCRIPT
       echo "NORMALIZE | SCALE | siCPM bedGraph: \${SICPM_LINES} lines (\${SICPM_SIZE} bytes)"
     fi
     
+    # Gene-end scaled track (separate pass; only when the gene-end factor is usable)
+    if [[ \${want_ge} -eq 1 ]]; then
+      awk -v fg="\${FAC_GENEEND}" -v OFS='\\t' '
+        BEGIN { OFMT = "%.10f" }
+        (NF>=4) && (\$0!~/^(track|browser|#)/) { print \$1, \$2, \$3, \$4 * fg }
+      ' "\${input_bg}" > "\${out_ge_bg}"
+      make_bigwig "\${out_ge_bg}" "\${out_ge_bw}"
+    fi
+
     # Convert to BigWig
     make_bigwig "\${out_cpm_bg}" "\${out_cpm_bw}"
     if [[ -s "\${out_sicpm_bg}" ]]; then
@@ -767,6 +812,9 @@ PYSCRIPT
     local manifest_frag="manifest_\${set_label}_\${end_label}_\${strand}.tsv"
     : > "\${manifest_frag}"
     echo -e "\${SAMPLE_ID}\\t\${end_label}\\t\${set_label}\\t\${strand}\\tcpm\\t\${out_cpm_bg}" >> "\${manifest_frag}"
+    if [[ \${want_ge} -eq 1 ]]; then
+      echo -e "\${SAMPLE_ID}\\t\${end_label}\\t\${set_label}\\t\${strand}\\tgeneend\\t\${out_ge_bg}" >> "\${manifest_frag}"
+    fi
     if [[ -s "\${out_sicpm_bg}" ]]; then
       echo -e "\${SAMPLE_ID}\\t\${end_label}\\t\${set_label}\\t\${strand}\\tsicpm\\t\${out_sicpm_bg}" >> "\${manifest_frag}"
     fi
@@ -914,6 +962,7 @@ FACTOREOF
   if [[ "\${GENE_END_METHOD}" != "none" ]]; then
     echo -e "gene_end_\${GENE_END_METHOD}\t\${FAC_GENEEND}" >> normalization_factors.tsv
   fi
+  echo -e "spike_fraction_pct\t\${SPIKE_PCT}" >> normalization_factors.tsv
 
   echo "NORMALIZE | OUTPUT | Normalization factors written"
 
@@ -950,6 +999,8 @@ NORMALIZED TRACKS — ${sample_id}
 
   3p/${sample_id}.3p.{pos,neg}.{cpm,sicpm}.{bedgraph,bw}   — always generated
   5p/${sample_id}.5p.{pos,neg}.{cpm,sicpm}.{bedgraph,bw}   — always generated
+  {3p,5p}/${sample_id}.*.{pos,neg}.geneend.{bedgraph,bw}  — if gene_end_method != none
+                                                             (CPM-style, scaled by the gene-end factor)
   3p/${sample_id}.allMap.3p.*  (+ 5p equivalents)          — if emit_allmap
   normalization_factors.tsv, tracks_manifest.tsv (sample/end/set/strand/scale/path)
 

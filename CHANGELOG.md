@@ -4,6 +4,16 @@ All notable changes to TrackTx are documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `modules/08`: `norm.gene_end_min_gene_len` (genes shorter than this are excluded from the gene-end total; 150000 reproduces the long-gene 3' ends scheme of Vihervaara 2017) and `*.geneend.{bedgraph,bw}` tracks scaled by the gene-end factor (previously the factor was only written to `normalization_factors.tsv`). `normalization_factors.tsv` also gets a `spike_fraction_pct` row.
+- Spike-in sanity warning (`norm.spike_min_fraction_pct`, default 0.1): module 08 warns per sample, and step 6c warns per run, when spike reads are below that share of genome reads (a no-spike library aligned to dm6 gives ~0.02%), or when replicates of one condition differ >3x.
+- `02_alignments/alignment_rates_summary.tsv` gains per-replicate `cpm_factor`, `sicpm_factor` (same convention as the merged-track factors, control = pooled `control_label` condition) and `spike_flag` (OK / LOW / SPREAD / NA).
+- `modules/08`: `norm.gene_end_method: long_gene`, the published long-gene-end scheme (Mahat 2016; Vihervaara 2017, 2021; Himanen 2025): reads in `[TSS + norm.gene_end_tss_offset, TES - norm.gene_end_tail]` (defaults 120000 and 500) of genes longer than `norm.gene_end_min_gene_len` (150000 when left at 0). The previous `tes_window` / `gene_body` methods cannot express this region. nf-test case added; the config generator (`docs/index.html`, `TrackTx_config_generator.html`) gets the new method and the min-gene-length, offset and tail fields.
+- `bin/detect_divergent_transcription.py`: `--calibration-method target_peaks` (new default, `--target-peaks`, default 100000 per strand) and `--exclude-contigs` (mito/plastid dropped before calibration and calling).
+
+### Changed
+- Divergent-transcription auto-calibration no longer takes a percentile of the signal. On single-base PRO-seq bedGraphs p65-p75 is 1 read, so the threshold was "any 2 reads within the bin gap" and the number of sites followed sequencing depth (GSE89230: 484k vs 104k sites for 1.3x the reads, empirical-null FDR 0.65-0.70). It now picks the smallest threshold that keeps each strand at or below `divergent_target_peaks`. The old behaviour is `divergent_calibration_method: percentile`.
+
 ## [1.4.0] - 2026-09-17
 
 54 commits since 1.3.0: correctness fixes across the compute path (divergent-transcription calling, pol metrics, normalization), a new barcode/UMI auto-detection mode, first nf-test coverage, and a full README/CHANGELOG restructure.

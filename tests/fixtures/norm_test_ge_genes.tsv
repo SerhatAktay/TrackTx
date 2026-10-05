@@ -1,0 +1,4 @@
+gene_id	gene_name	chr	strand	start	end	tss	tes	biotype
+g_plus	g_plus	chr1	+	101	1100	101	1100	protein_coding
+g_minus	g_minus	chr1	-	1201	1900	1900	1201	protein_coding
+g_short	g_short	chr1	+	1500	1550	1500	1550	protein_coding

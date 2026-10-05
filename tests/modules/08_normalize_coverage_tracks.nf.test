@@ -84,4 +84,61 @@ nextflow_process {
 
     }
 
+    // long_gene gene-end factor (published long-gene-end scheme). Fixture genes:
+    //   g_plus  (+, 101-1100, len 1000) -> region [TSS+200, TES-100) = chr1:300-1000 (0-based BED)
+    //   g_minus (-, 1201-1900, len 700) -> region [TES+100, TSS-200) = chr1:1300-1700
+    //   g_short (+, len 51) is below gene_end_min_gene_len=500 and must be ignored
+    // Signal inside the regions: pos 5 (chr1:400) and neg -4 (chr1:1400); the 7, 9, 100
+    // and -6 intervals lie outside every region. So total = 9 reads and
+    // factor = 1e6 / 9. A track scaled by it must carry 5 * factor at chr1:400.
+    test("long_gene gene-end factor uses [TSS+offset, TES-tail] of long genes only") {
+
+        when {
+            params {
+                norm = [emit_5p: true, emit_allmap: true, emit_bw: true,
+                        gene_end_method: 'long_gene', gene_end_tss_offset: 200, gene_end_tail: 100,
+                        gene_end_min_gene_len: 500, gene_end_min_reads: 1]
+                control_label = 'CTRL'
+            }
+            process {
+                """
+                input[0] = Channel.of(
+                    tuple(
+                        'sampleZ',
+                        file("\${baseDir}/tests/fixtures/norm_test_ge_pos3.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/norm_test_ge_neg3.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/norm_test_pos5.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/norm_test_neg5.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/norm_test_am3p_pos.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/norm_test_am3p_neg.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/norm_test_am5p_pos.bedgraph"),
+                        file("\${baseDir}/tests/fixtures/norm_test_am5p_neg.bedgraph"),
+                        'TREAT', '0', '1',
+                        file("\${baseDir}/tests/fixtures/norm_test_counts_master.tsv"),
+                        file("\${baseDir}/tests/fixtures/norm_test_ge_genes.tsv")
+                    )
+                )
+                input[1] = file("\${baseDir}/tests/fixtures/norm_test_ge_genome.fa")
+                """
+            }
+        }
+
+        then {
+            assert process.success
+
+            def factors = path(process.out.norm_tuple.get(0)[3]).text.readLines()
+                .findAll { it.trim() }.collectEntries { def f = it.trim().split(/\s+/); [(f[0]): f.size() > 1 ? f[1] : ''] }
+            assert factors.containsKey('gene_end_long_gene')
+            assert Math.abs((factors['gene_end_long_gene'] as double) - 1.0e6 / 9) < 1.0e-3
+
+            // gene-end scaled 3' track: signal 5 at chr1:400 -> 5 * 1e6/9
+            def geTracks = process.out.geneend_tracks.get(0).collect { path(it).toString() }
+            def posGe = geTracks.find { it.endsWith('3p.pos.geneend.bedgraph') }
+            assert posGe
+            def row = path(posGe).text.readLines().find { it.startsWith('chr1\t400\t') }
+            assert Math.abs((row.split('\t')[3] as double) - 5 * 1.0e6 / 9) < 1.0e-2
+        }
+
+    }
+
 }

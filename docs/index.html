@@ -1303,22 +1303,34 @@ optgroup{ color:var(--fg); }
         <div class="column is-one-third">
           <label class="label">Gene-end normalization</label>
           <div class="select">
-            <select id="normGeneEndMethod" onchange="toggleBlock('geneEndOptions', this.value !== 'none'); toggleBlock('geneEndOptions2', this.value !== 'none')">
+            <select id="normGeneEndMethod" onchange="updateGeneEndUI()">
               <option value="none" selected>none (library-size CPM only)</option>
-              <option value="tes_window">tes_window</option>
-              <option value="gene_body">gene_body</option>
+              <option value="tes_window">tes_window (last N bp of every gene)</option>
+              <option value="gene_body">gene_body (whole gene)</option>
+              <option value="long_gene">long_gene (published long-gene-end scheme)</option>
             </select>
           </div>
-          <p class="help">Alternative CPM denominator from raw 3' signal near each gene's end, less sensitive to global pausing shifts than library-size CPM. Written to normalization_factors.tsv only — does not change any bedGraph/BigWig.</p>
+          <p class="help">Alternative CPM denominator from raw 3' signal near each gene's end, less sensitive to global pausing shifts than library-size CPM. The factor is written to normalization_factors.tsv, and extra *.geneend.bedgraph/bw tracks scaled by it are produced. <b>long_gene</b> reproduces the scheme of Mahat 2016, Vihervaara 2017/2021 and Himanen 2025: reads between TSS+offset and TES-tail of genes longer than 150 kb, a region the Pol II wave of a short heat shock does not reach. Needs organisms with many long genes (human, dog, mouse); not usable for Arabidopsis or small genomes.</p>
         </div>
-        <div id="geneEndOptions" style="display:none" class="column is-one-third">
+        <div id="geneEndOptions" style="display:none" class="column is-one-quarter">
           <label class="label">Window (bp, tes_window only)</label>
           <input class="input small-input" id="normGeneEndWindow" type="number" min="10" value="500">
         </div>
-        <div id="geneEndOptions2" style="display:none" class="column is-one-third">
+        <div id="geneEndOptions2" style="display:none" class="column is-one-quarter">
           <label class="label">Min reads/gene</label>
           <input class="input small-input" id="normGeneEndMinReads" type="number" min="0" value="10">
           <p class="help">Genes below this are excluded from the gene-end total.</p>
+        </div>
+        <div id="geneEndOptions3" style="display:none" class="column is-one-quarter">
+          <label class="label">Min gene length (bp)</label>
+          <input class="input small-input" id="normGeneEndMinLen" type="number" min="0" value="0">
+          <p class="help">0 = all genes (150000 is used for long_gene).</p>
+        </div>
+        <div id="geneEndOptions4" style="display:none" class="column is-one-quarter">
+          <label class="label">long_gene: start (bp after TSS) / end (bp before TES)</label>
+          <input class="input small-input" id="normGeneEndTssOffset" type="number" min="0" value="120000">
+          <input class="input small-input" id="normGeneEndTail" type="number" min="0" value="500">
+          <p class="help">Published: +120 kb (Vihervaara 2017, 2021) or +100 kb (Himanen 2025), tail 500 bp.</p>
         </div>
       </div>
 
@@ -1459,6 +1471,13 @@ const source = () => document.querySelector('input[name="sample_source"]:checked
 const libType = () => (document.querySelector('input[name="library_type"]:checked') || {value:'proseq'}).value;
 
 /* ====================== UI Toggles ====================== */
+function updateGeneEndUI() {
+  const m = document.getElementById('normGeneEndMethod').value;
+  toggleBlock('geneEndOptions',  m === 'tes_window');
+  toggleBlock('geneEndOptions2', m !== 'none');
+  toggleBlock('geneEndOptions3', m !== 'none');
+  toggleBlock('geneEndOptions4', m === 'long_gene');
+}
 function toggleBlock(id, show){
   const el = document.getElementById(id);
   if(!el) return;
@@ -1846,6 +1865,9 @@ function buildYAML(){
   const geneEndMethod   = $('#normGeneEndMethod').value;
   const geneEndWindow   = parseInt($('#normGeneEndWindow').value || '500', 10) || 500;
   const geneEndMinReads = parseInt($('#normGeneEndMinReads').value || '10', 10) || 10;
+  const geneEndMinLen   = parseInt($('#normGeneEndMinLen').value || '0', 10) || 0;
+  const geneEndTssOff   = parseInt($('#normGeneEndTssOffset').value || '120000', 10);
+  const geneEndTail     = parseInt($('#normGeneEndTail').value || '500', 10);
 
   const repMerge            = $('#replicatesMerge').checked;
   const repConcordanceMethod = $('#replicatesConcordanceMethod').value;
@@ -1977,10 +1999,15 @@ function buildYAML(){
   y += `  emit_sicpm: ${out.sicpm}\n`;
   y += `  emit_allmap: ${normEmitAllMap}\n`;
   y += `  emit_5p: ${!$('#emit5pTracks').checked ? 'false' : (normForce5p ? 'true' : 'null')}   # false = skip 5' tracks\n`;
-  y += `  gene_end_method: ${mono(geneEndMethod)}   # none | tes_window | gene_body\n`;
+  y += `  gene_end_method: ${mono(geneEndMethod)}   # none | tes_window | gene_body | long_gene\n`;
   if (geneEndMethod !== 'none') {
-    y += `  gene_end_window: ${geneEndWindow}    # bp for tes_window method\n`;
+    if (geneEndMethod === 'tes_window') y += `  gene_end_window: ${geneEndWindow}    # bp for tes_window method\n`;
     y += `  gene_end_min_reads: ${geneEndMinReads}  # min reads/gene to count toward the gene-end total\n`;
+    y += `  gene_end_min_gene_len: ${geneEndMinLen}   # min gene length (bp); 0 = all genes (150000 is used for long_gene)\n`;
+    if (geneEndMethod === 'long_gene') {
+      y += `  gene_end_tss_offset: ${geneEndTssOff}   # long_gene: region starts this many bp after the TSS\n`;
+      y += `  gene_end_tail: ${geneEndTail}   # long_gene: region ends this many bp before the TES\n`;
+    }
   }
   y += `\n`;
 

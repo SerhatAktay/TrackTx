@@ -81,7 +81,10 @@
 //   divergent_threshold    : Per-bin signal threshold (default: auto)
 //   divergent_sum_thr      : Minimum peak total signal (default: auto)
 //   divergent_fdr          : Score-stringency knob, NOT a calibrated FDR (default: 0.08; see "On FDR" above)
-//   divergent_calibration_percentile : Percentile for auto threshold (default: 65)
+//   divergent_calibration_method : target_peaks (default) | percentile
+//   divergent_target_peaks : target_peaks method, max peaks per strand (default: 100000)
+//   divergent_exclude_contigs : regex of mito/plastid contigs dropped (default chrM/MT/Pt/ChrC...)
+//   divergent_calibration_percentile : percentile method only (default: 65)
 //   divergent_calibration_sum_multiplier : sum_thr = threshold * N (default: 1.5)
 //   divergent_calibration_background_lower : Use lower 50% bins (default: false)
 //   divergent_merge_gap    : Merge overlapping regions within N bp (default: 'auto' -- organism-aware, 500bp ceiling)
@@ -209,7 +212,7 @@ process detect_divergent_transcription {
   echo ""
   echo "DIVERGENT | CONFIG | Detection Parameters (statistical):"
   echo "DIVERGENT | CONFIG |   Algorithm: Gaussian Mixture Model with FDR control"
-  echo "DIVERGENT | CONFIG |   Threshold: \${THRESHOLD} (auto = \${CAL_PERCENTILE}th percentile)"
+  echo "DIVERGENT | CONFIG |   Threshold: \${THRESHOLD} (auto = smallest threshold giving <= ${params.advanced?.divergent_target_peaks ?: 100000} peaks/strand; or p\${CAL_PERCENTILE} if divergent_calibration_method=percentile)"
   echo "DIVERGENT | CONFIG |   Sum threshold: \${SUM_THR} (auto = \${CAL_SUM_MULT}x threshold)"
   echo "DIVERGENT | CONFIG |   Merge gap: \${MERGE_GAP} bp (0=disabled)"
   echo "DIVERGENT | CONFIG |   FDR threshold: \${FDR}"
@@ -337,6 +340,11 @@ process detect_divergent_transcription {
   CAL_BG_ARG=""
   [[ "\${CAL_BG_LOWER}" == "true" ]] && CAL_BG_ARG="--calibration-background-lower"
 
+  # Calibration method: target_peaks (default) | percentile; mito/plastid contigs dropped
+  CAL_METHOD="${params.advanced?.divergent_calibration_method ?: 'target_peaks'}"
+  TARGET_PEAKS="${params.advanced?.divergent_target_peaks ?: 100000}"
+  EXCLUDE_CONTIGS='${params.advanced?.divergent_exclude_contigs != null ? params.advanced.divergent_exclude_contigs : '^(chr)?(M|MT|Mt|Pt|ChrM|ChrC|chrM|chrC)\$'}'
+
   # Run detector (capture exit code)
   DETECT_START=\$(date +%s)
   set +e
@@ -349,6 +357,9 @@ process detect_divergent_transcription {
     --out          "divergent_transcription.bed" \\
     --fdr          "\${FDR}" \\
     --balance      "\${BALANCE}" \\
+    --calibration-method "\${CAL_METHOD}" \
+    --target-peaks "\${TARGET_PEAKS}" \
+    --exclude-contigs "\${EXCLUDE_CONTIGS}" \
     --calibration-percentile "\${CAL_PERCENTILE}" \\
     --calibration-sum-multiplier "\${CAL_SUM_MULT}" \\
     --fallback-top-frac "\${FALLBACK_TOP_FRAC}" \\
