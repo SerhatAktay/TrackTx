@@ -108,6 +108,7 @@ process preprocess_and_quality_filter_reads {
   tag    { sample_id }
   label  'conda'
   cache      'lenient'
+  storeDir   { Stamp.dir('03_preprocess_and_quality_filter_reads', params, projectDir, [sample_id, reads, condition, timepoint, replicate, data_type], sample_id) }
 
   publishDir { "${params.output_dir}/01_trimmed_fastq/${sample_id}" },
              mode: params.publish_mode,

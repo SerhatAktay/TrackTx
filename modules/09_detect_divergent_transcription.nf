@@ -105,6 +105,7 @@ process detect_divergent_transcription {
   tag        { sample_id }
   label      'conda'
   cache      'lenient'
+  storeDir   { Stamp.dir('09_detect_divergent_transcription', params, projectDir, [sample_id, pos_bg, neg_bg, condition, timepoint, replicate, genome_sizes, library_type, threshold, sum_thr, fdr, nt_window, balance, bin_gap, calibration_percentile, calibration_sum_multiplier, calibration_background_lower, merge_gap, fallback_top_frac], sample_id) }
 
   publishDir { "${params.output_dir}/06_divergent_tx/${sample_id}" },
              mode: params.publish_mode,

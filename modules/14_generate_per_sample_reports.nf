@@ -63,6 +63,7 @@ process generate_per_sample_reports {
   tag        { sample_id }
   label      'conda'
   cache      'lenient'
+  storeDir   { Stamp.dir('14_generate_per_sample_reports', params, projectDir, [sample_id, div_bed, func_sum, pol_density, pausing_idx, norm_factors, dedup_stats, qc_json, allmap3p_pos_raw, allmap3p_neg_raw, pos3_cpm_bw, neg3_cpm_bw, allmap3p_pos_cpm_bw, allmap3p_neg_cpm_bw, condition, timepoint, replicate], sample_id) }
 
   publishDir { "${params.output_dir}/11_reports/samples/${sample_id}" },
              mode: params.publish_mode,

@@ -116,6 +116,7 @@ process normalize_coverage_tracks {
   tag        { sample_id }
   label      'conda'
   cache      'lenient'
+  storeDir   { Stamp.dir('08_normalize_coverage_tracks', params, projectDir, [sample_id, pos3_bg, neg3_bg, pos5_bg, neg5_bg, am3p_pos_bg, am3p_neg_bg, am5p_pos_bg, am5p_neg_bg, condition, timepoint, replicate, counts_master_tsv, genes_tsv, genome_fa], sample_id) }
 
   publishDir { "${params.output_dir}/05_normalized_tracks/${sample_id}" },
              mode: params.publish_mode,

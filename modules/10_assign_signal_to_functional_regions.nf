@@ -76,6 +76,7 @@ process assign_signal_to_functional_regions {
   tag        { sample_id }
   label      'conda'
   cache      'lenient'
+  storeDir   { Stamp.dir('10_assign_signal_to_functional_regions', params, projectDir, [sample_id, divergent_bed, pos3_cpm_bg, neg3_cpm_bg, pos3_sicpm_bg, neg3_sicpm_bg, condition, timepoint, replicate, gtf_file, genes_tsv, tss_bed, tes_bed], sample_id) }
 
   publishDir { "${params.output_dir}/07_functional_regions/${sample_id}" },
              mode: params.publish_mode,

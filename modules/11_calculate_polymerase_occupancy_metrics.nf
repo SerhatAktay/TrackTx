@@ -65,6 +65,7 @@ process calculate_polymerase_occupancy_metrics {
   tag        { sid }
   label      'conda'
   cache      'lenient'
+  storeDir   { Stamp.dir('11_calculate_polymerase_occupancy_metrics', params, projectDir, [sid, in_bam, func_bed, pos3_cpm_bg, neg3_cpm_bg, pos3_sicpm_bg, neg3_sicpm_bg, cond, tp, rep, genes_cat], sid) }
 
   publishDir { "${params.output_dir}/08_pol_metrics/${sid}" },
              mode: params.publish_mode,

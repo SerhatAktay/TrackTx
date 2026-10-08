@@ -77,6 +77,7 @@ process quality_control_aligned_reads {
   tag        { sample_id }
   label      'conda'
   cache      'lenient'
+  storeDir   { Stamp.dir('13_quality_control_aligned_reads', params, projectDir, [sample_id, aligned_bam, dedup_stats, condition, timepoint, replicate], sample_id) }
 
   publishDir { "${params.output_dir}/10_qc/${sample_id}" },
              mode: params.publish_mode,

@@ -62,6 +62,7 @@ process summarize_polymerase_metrics {
   tag        'pol-aggregate'
   label      'conda'
   cache      'lenient'
+  storeDir   { Stamp.dir('12_summarize_polymerase_metrics', params, projectDir, [samples_tsv, metric_files], 'pol-aggregate') }
 
   publishDir "${params.output_dir}/09_pol_aggregate",
              mode: params.publish_mode,
@@ -73,7 +74,7 @@ process summarize_polymerase_metrics {
   // NOTE: Each file is staged as "metric_N" where N is the index
   input:
     path(samples_tsv, stageAs: 'samples.tsv')
-    path('metric_*')  // Will stage as metric_1, metric_2, etc.
+    path(metric_files, stageAs: 'metric_*')  // Will stage as metric_1, metric_2, etc.
 
   // ── Outputs ───────────────────────────────────────────────────────────────
   output:

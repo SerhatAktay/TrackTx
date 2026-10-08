@@ -56,6 +56,7 @@ process combine_reports_into_cohort {
   tag        { "cohort" }
   label      'conda'
   cache      'lenient'
+  storeDir   { Stamp.dir('15_combine_reports_into_cohort', params, projectDir, [report_files, concordance_tsv, qc_multiqc_html, qc_igv_session, qc_runon_tsv, qc_pca_plot, qc_corr_heatmap], 'cohort') }
 
   publishDir "${params.output_dir}/11_reports/cohort",
              mode: params.publish_mode,
@@ -66,7 +67,7 @@ process combine_reports_into_cohort {
   // ── Inputs ────────────────────────────────────────────────────────────────
   // Stage files with sequential names to avoid collisions (like metric_1, metric_2, etc.)
   input:
-    path 'report_*.json'
+    path(report_files, stageAs: 'report_*.json')
     path concordance_tsv
     // Module 16 outputs — staged here so the landing page can embed/link them.
     // Files named "NO_FILE" are sentinel placeholders for optional outputs.

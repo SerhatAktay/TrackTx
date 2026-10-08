@@ -35,6 +35,7 @@ process collect_pol_metrics_per_replicate {
   tag        'per-replicate'
   label      'conda'
   cache      'lenient'
+  storeDir   { Stamp.dir('11b_collect_pol_metrics_per_replicate', params, projectDir, [samples_tsv, metric_files], 'per-replicate') }
 
   publishDir { "${params.output_dir}/08b_pol_metrics_per_replicate" },
              mode: params.publish_mode,
@@ -44,7 +45,7 @@ process collect_pol_metrics_per_replicate {
 
   input:
     path(samples_tsv, stageAs: 'samples.tsv')
-    path('metric_*')
+    path(metric_files, stageAs: 'metric_*')
 
   output:
     path 'pol_gene_metrics_per_replicate.tsv', emit: table

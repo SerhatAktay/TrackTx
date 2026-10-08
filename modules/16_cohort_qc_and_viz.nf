@@ -67,6 +67,7 @@ process cohort_multiqc {
 
   label      'conda'
   cache      'lenient'
+  storeDir   { Stamp.dir('16_cohort_qc_and_viz', params, projectDir, ['multiqc', multiqc_log_dir], 'multiqc') }
 
   publishDir "${params.output_dir}/12_cohort_qc",
              mode: params.publish_mode,
@@ -120,6 +121,7 @@ process cohort_deeptools_qc {
 
   label      'conda'
   cache      'lenient'
+  storeDir   { Stamp.dir('16_cohort_qc_and_viz', params, projectDir, ['deeptools', bw_pos3_list, sample_ids], 'deeptools') }
 
   publishDir "${params.output_dir}/12_cohort_qc",
              mode: params.publish_mode,
@@ -226,6 +228,7 @@ process cohort_igv_session {
 
   label      'conda'
   cache      'lenient'
+  storeDir   { Stamp.dir('16_cohort_qc_and_viz', params, projectDir, ['igv', bw_pos3_list, bw_neg3_list, bw_allmap_pos_list, bw_allmap_neg_list, sample_ids, conditions, genome_id], 'igv') }
 
   publishDir "${params.output_dir}/12_cohort_qc",
              mode: params.publish_mode,
@@ -403,6 +406,7 @@ process cohort_runon_efficiency {
 
   label      'conda'
   cache      'lenient'
+  storeDir   { Stamp.dir('16_cohort_qc_and_viz', params, projectDir, ['runon', sample_ids, pos3_bg_list, neg3_bg_list, genes_bed], 'runon') }
 
   publishDir "${params.output_dir}/12_cohort_qc",
              mode: params.publish_mode,

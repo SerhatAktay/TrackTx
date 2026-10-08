@@ -5,6 +5,7 @@ All notable changes to TrackTx are documented in this file.
 ## [Unreleased]
 
 ### Added
+- Stage store (`lib/Stamp.groovy`, `storeDir` on modules 03 to 16, `scripts/prune_stage_store.sh`): each stage writes to `.store/<module>/<label>-<stamp>/`, where the stamp hashes the module, the `bin/` scripts it calls, the params it references, the container tag and its inputs. An unchanged stage is skipped without `work/` or `-resume`; a changed one reruns together with its downstream stages only. See README "Resuming and the stage store".
 - `modules/08`: `norm.gene_end_min_gene_len` (genes shorter than this are excluded from the gene-end total; 150000 reproduces the long-gene 3' ends scheme of Vihervaara 2017) and `*.geneend.{bedgraph,bw}` tracks scaled by the gene-end factor (previously the factor was only written to `normalization_factors.tsv`). `normalization_factors.tsv` also gets a `spike_fraction_pct` row.
 - Spike-in sanity warning (`norm.spike_min_fraction_pct`, default 0.1): module 08 warns per sample, and step 6c warns per run, when spike reads are below that share of genome reads (a no-spike library aligned to dm6 gives ~0.02%), or when replicates of one condition differ >3x.
 - `02_alignments/alignment_rates_summary.tsv` gains per-replicate `cpm_factor`, `sicpm_factor` (same convention as the merged-track factors, control = pooled `control_label` condition) and `spike_flag` (OK / LOW / SPREAD / NA).
@@ -12,6 +13,7 @@ All notable changes to TrackTx are documented in this file.
 - `bin/detect_divergent_transcription.py`: `--calibration-method target_peaks` (new default, `--target-peaks`, default 100000 per strand) and `--exclude-contigs` (mito/plastid dropped before calibration and calling).
 
 ### Changed
+- `main.nf` no longer skips preprocessing when `01_trimmed_fastq/<sample>/final_R1.fastq` exists. That shortcut fed alignment from the published path instead of the task output, which changed alignment's cache key, so a resume after a late failure re-aligned every sample. Module 03's stamped store now provides the skip.
 - Divergent-transcription auto-calibration no longer takes a percentile of the signal. On single-base PRO-seq bedGraphs p65-p75 is 1 read, so the threshold was "any 2 reads within the bin gap" and the number of sites followed sequencing depth (GSE89230: 484k vs 104k sites for 1.3x the reads, empirical-null FDR 0.65-0.70). It now picks the smallest threshold that keeps each strand at or below `divergent_target_peaks`. The old behaviour is `divergent_calibration_method: percentile`.
 
 ## [1.4.0] - 2026-09-17

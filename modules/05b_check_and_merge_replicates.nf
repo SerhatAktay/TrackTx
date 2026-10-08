@@ -62,6 +62,7 @@ process check_and_merge_replicates {
   tag        { "${condition}_${timepoint}" }
   label      'conda'
   cache      'lenient'
+  storeDir   { Stamp.dir('05b_check_and_merge_replicates', params, projectDir, [condition, timepoint, sample_ids, bam_files, allmap_bams, spike_bams], "${condition}_${timepoint}") }
 
   publishDir "${params.output_dir}/02_alignments/_merged",
              mode: params.publish_mode,

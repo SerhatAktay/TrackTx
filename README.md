@@ -385,6 +385,23 @@ This automatically:
 
 **Note:** `--external-drive` puts cache, temp, and work (~10–50 GB) on local disk (`~/tmp/tracktx_*`); only results stay on the project dir. Ensure ~20–50 GB free on your internal drive.
 
+### Resuming and the stage store
+
+Every stage (modules 03 to 16) keeps its outputs in `<output_dir>/.store/<module>/<label>-<stamp>/`. The stamp is a hash of the module source, the `bin/` scripts it calls, the params it references, the container tag and its inputs. Files in `results/` are hardlinks into the store.
+
+- If the stamp is unchanged and the outputs exist, the stage is skipped, **with or without a `work/` dir** and with or without `-resume`. `work/` can be deleted after every run.
+- Change a module, a script or a param and only that stage reruns, plus the stages that consume its output (their stamps chain through the store paths). Everything upstream is skipped.
+- A past run can be restored weeks later by running it again with its params and samplesheet. Every stage whose stamp still matches is skipped.
+- `.store/_manifests/<module>/<label>-<stamp>.txt` lists what went into each stamp. Diff two of them to see why a stage reran.
+- Superseded stamps stay on disk. `scripts/prune_stage_store.sh <output_dir>` lists them (dry run); `--apply` removes all but the newest per sample and stage.
+
+Things to know:
+
+- The store holds **every declared output** of each stage, including the ones that are not published (e.g. trimmed FASTQs with `publish_trimmed_fastq: false`, merged BAMs). With `publish_mode: link` published files cost nothing extra. With `copy` (exFAT/NAS) they are stored twice.
+- Stamps see params from `-params-file` and `nextflow.config`, not undeclared `--key value` command-line overrides. Put changes in the params file.
+- `capture_tool_versions` runs every time so `pipeline_info/versions.yml` always describes the environment actually used.
+- A stage skipped because its stamp matches is not re-validated against the data on disk. If you edit or delete files inside `.store/` by hand, delete that stage's directory too.
+
 ### Storage Footprint
 
 Typical sizes for a single-sample PE test run (10% subset):

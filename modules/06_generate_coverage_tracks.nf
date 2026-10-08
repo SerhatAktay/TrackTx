@@ -57,6 +57,7 @@ process generate_coverage_tracks {
   tag        { sample_id }
   label      'conda'
   cache      'lenient'
+  storeDir   { Stamp.dir('06_generate_coverage_tracks', params, projectDir, [sample_id, filtered_bam, spikein_bam, condition, timepoint, replicate, genome_fa, is_paired, allmap_bam], sample_id) }
 
   publishDir { "${params.output_dir}/03_genome_tracks/${sample_id}" },
              mode: params.publish_mode,

@@ -63,6 +63,7 @@ process quantify_reads_per_gene {
   tag        { sid }
   label      'conda'
   cache      'lenient'
+  storeDir   { Stamp.dir('07_quantify_reads_per_gene', params, projectDir, [sid, main_bam, allmap_bam, spike_in, cond, tp, rep], sid) }
 
   publishDir { "${params.output_dir}/04_counts/${sid}" },
              mode: params.publish_mode,

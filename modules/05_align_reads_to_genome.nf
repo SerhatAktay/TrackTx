@@ -39,6 +39,7 @@ process align_reads_to_genome {
   tag        { sample_id }
   label      'conda'
   cache      'lenient'  // name+size hashing: stable across USB copies, cheap on -resume
+  storeDir   { Stamp.dir('05_align_reads_to_genome', params, projectDir, [sample_id, read1, read2, condition, timepoint, replicate, genome_id, source, genome_fa, genome_bt2, spike_id, spike_source, spike_fa, spike_bt2, is_paired_end, do_revcomp, multimap_k], sample_id) }
 
   publishDir { "${params.output_dir}/02_alignments/${sample_id}" },
              mode: params.publish_mode,

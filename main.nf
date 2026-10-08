@@ -382,8 +382,6 @@ Paths are relative to: ${projectDir}"""
     def isPairedEnd = params.paired_end ? true : false
     def outputDir   = params.output_dir.toString()
 
-    if (params.verbose) log.info "STEP 3 | CHECK | Scanning for pre-existing trimmed FASTQs in ${outputDir}/01_trimmed_fastq/"
-
     // storeDir cache location for raw SRA FASTQs (must mirror the storeDir
     // closure in modules/02_download_sra_samples.nf).
     def sraCacheDir = params.get('sra_cache_dir')
@@ -392,29 +390,18 @@ Paths are relative to: ${projectDir}"""
             ? "${outputDir}/00_sra_cache"
             : "${outputDir}/.sra_cache")
 
-    // 1) Samples already preprocessed (trimmed FASTQs present) → skip download
-    //    AND preprocessing entirely.
-    def by_trimmed = samples_ch.branch { item ->
-      def sid        = item[0]
-      def r1_trimmed = file("${outputDir}/01_trimmed_fastq/${sid}/final_R1.fastq")
-      trimmed_exists: r1_trimmed.exists() && r1_trimmed.size() > 0
-      needs_reads:    true
-    }
-
-    preexisting_clean_ch = by_trimmed.trimmed_exists.map { sid, _reads, c, t, r ->
-      def r1 = file("${outputDir}/01_trimmed_fastq/${sid}/final_R1.fastq")
-      def r2 = file("${outputDir}/01_trimmed_fastq/${sid}/final_R2.fastq")
-      if (params.verbose) log.info "STEP 3 | SKIP | ${sid}: trimmed FASTQs found in results — skipping download and preprocessing"
-      tuple(sid, r1, r2, c, t, r)
-    }
-
-    // 2) Of the rest, split those whose raw FASTQs are already in the storeDir
-    //    cache from those that still need downloading. A fully-stored storeDir
-    //    task is SKIPPED and does NOT re-emit its outputs (Nextflow behaviour),
-    //    which would close the downstream channel empty and deadlock the DAG.
-    //    So we build the input tuple for cached samples directly from disk and
-    //    only run download_sra_samples for the ones actually missing.
-    def by_cache = by_trimmed.needs_reads.branch { item ->
+    // Already-preprocessed samples are NOT short-circuited here: module 03 has a
+    // stamped storeDir (see lib/Stamp.groovy), so an unchanged sample is skipped
+    // there and re-emits its stored trimmed FASTQs. Bypassing the module from
+    // here would hand align a different input path and defeat its cache key.
+    //
+    // Split samples whose raw FASTQs are already in the storeDir cache from those
+    // that still need downloading. A fully-stored storeDir task is SKIPPED and
+    // does NOT re-emit its outputs (Nextflow behaviour), which would close the
+    // downstream channel empty and deadlock the DAG. So we build the input tuple
+    // for cached samples directly from disk and only run download_sra_samples for
+    // the ones actually missing.
+    def by_cache = samples_ch.branch { item ->
       def srr = item[1][0]
       def r1c = file("${sraCacheDir}/${srr}/${srr}_R1.fastq")
       cached:         r1c.exists() && r1c.size() > 0
