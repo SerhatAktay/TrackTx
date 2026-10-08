@@ -58,7 +58,9 @@ class Stamp {
     deps(projectDir, modText).each { n -> parts << "bin/${n}=${sha(read(new File(projectDir.toString(), "bin/${n}")))}".toString() }
     parts << "lib=${sha(libText(projectDir))}".toString()
     parts << "container=${containerTag(projectDir)}".toString()
-    paramKeys(modText).each { k -> parts << "param.${k}=${canon(params[k], root)}".toString() }
+    // containsKey: a name found only in module comments (e.g. "params.yaml") is not a
+    // real param, and reading it with [] would make Nextflow warn about an undefined one.
+    paramKeys(modText).each { k -> parts << "param.${k}=${canon(params.containsKey(k) ? params[k] : null, root)}".toString() }
     inputs.eachWithIndex { v, i -> parts << "in${i}=${canon(v, root)}".toString() }
     return parts
   }
