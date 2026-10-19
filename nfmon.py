@@ -12,7 +12,7 @@ import argparse, calendar, curses, io, json, os, re, signal, subprocess, sys, ti
 from dataclasses import dataclass, field
 from typing import Dict, Optional, List, Tuple
 from collections import deque, defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Python version compatibility
 try:
@@ -1592,7 +1592,8 @@ def extract_timestamp_from_log(lines: List[str]) -> Optional[str]:
     for ln in reversed(lines or []):
         m = re.search(r"ts=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)", ln)
         if m:
-            ts = m.group(1)
+            # modules write UTC (date -u); show in the viewing machine's local zone
+            ts = datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
             if "COMPLETE" in ln:
                 return f"Completed {ts}"
             if "START" in ln:
