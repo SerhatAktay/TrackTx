@@ -65,6 +65,7 @@ ap.add_argument("--tes", default=None)          # optional BED6 1bp
 ap.add_argument("--tss-active-pm", type=int, default=500)  # half-window for active gene detection
 
 # Geometry
+ap.add_argument("--cps-pm",     type=int, default=500)   # CPS half-window (TES +-cps_pm); also the CPS->TW and gene-body-end offset
 ap.add_argument("--prom-up",    type=int, default=250)
 ap.add_argument("--prom-down",  type=int, default=250)
 ap.add_argument("--div-inner",  type=int, default=250)
@@ -251,26 +252,26 @@ def build_coordinate_lists(genes_tsv: str, tss_map: dict, tes_map: dict):
                 DIVs = TSS - args.div_outer    # TSS - 750
                 DIVe = TSS - args.div_inner    # TSS - 251
                 PPs = TSS - args.prom_up       # TSS - 250
-                PPe = TSS + 249                # TSS + 249 (old script exact value)
+                PPe = TSS + args.prom_down - 1   # TSS + 249 at default prom_down=250 (old script exact value)
                 GBs = TSS + args.prom_down     # TSS + 250
-                GBe = CPS - 501                # CPS - 501
-                CPSs = CPS - 500
-                CPSe = CPS + 499
-                TWs = CPS + 500
-                TWe = CPS + 500 + args.tw_length - 1   # default tw_length=10000 -> CPS+10499 (old script exact value)
+                GBe = CPS - args.cps_pm - 1      # CPS - 501 at cps_pm=500
+                CPSs = CPS - args.cps_pm
+                CPSe = CPS + args.cps_pm - 1
+                TWs = CPS + args.cps_pm
+                TWe = CPS + args.cps_pm + args.tw_length - 1   # default tw_length=10000 -> CPS+10499 (old script exact value)
             else:  # strand == "-"
                 TSS = tss
                 CPS = tes
                 DIVs = TSS + args.div_inner    # TSS + 251
                 DIVe = TSS + args.div_outer    # TSS + 750
-                PPs = TSS - 249                # TSS - 249 (old script exact value)
+                PPs = TSS - args.prom_down + 1   # TSS - 249 at default prom_down=250 (old script exact value)
                 PPe = TSS + args.prom_up       # TSS + 250
-                GBs = CPS + 501                # CPS + 501
+                GBs = CPS + args.cps_pm + 1      # CPS + 501 at cps_pm=500
                 GBe = TSS - args.prom_down     # TSS - 250
-                CPSs = CPS - 499
-                CPSe = CPS + 500
-                TWs = CPS - 500 - args.tw_length + 1   # default tw_length=10000 -> CPS-10499 (old script exact value)
-                TWe = CPS - 500
+                CPSs = CPS - args.cps_pm + 1
+                CPSe = CPS + args.cps_pm
+                TWs = CPS - args.cps_pm - args.tw_length + 1   # default tw_length=10000 -> CPS-10499 (old script exact value)
+                TWe = CPS - args.cps_pm
 
             # Store gene info (use transcript length like old script: |txEnd - txStart|)
             # For minus strand, tes < tss; use abs to avoid negative gene_length

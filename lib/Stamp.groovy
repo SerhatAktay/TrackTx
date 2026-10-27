@@ -60,7 +60,21 @@ class Stamp {
     parts << "container=${containerTag(projectDir)}".toString()
     // containsKey: a name found only in module comments (e.g. "params.yaml") is not a
     // real param, and reading it with [] would make Nextflow warn about an undefined one.
-    paramKeys(modText).each { k -> parts << "param.${k}=${canon(params.containsKey(k) ? params[k] : null, root)}".toString() }
+    // Map-valued params (advanced, qc, pol, ...) are hashed per sub-key the module actually
+    // reads, so changing e.g. advanced.divergent_fdr does not invalidate a module that only
+    // reads advanced.prep_insert_minlen (that used to rerun preprocessing and alignment).
+    paramRefs(modText).each { k, subs ->
+      def v = params.containsKey(k) ? params[k] : null
+      if (subs == null || !(v instanceof Map)) {
+        parts << "param.${k}=${canon(v, root)}".toString()
+      } else {
+        subs.each { s ->
+          // a trailing "_" is a dynamic name (params.norm.emit_${x}): hash every key with that prefix
+          def names = s.endsWith('_') ? v.keySet().collect { it.toString() }.findAll { it.startsWith(s) }.sort() : [s]
+          names.each { n -> parts << "param.${k}.${n}=${canon(v[n], root)}".toString() }
+        }
+      }
+    }
     inputs.eachWithIndex { v, i -> parts << "in${i}=${canon(v, root)}".toString() }
     return parts
   }
@@ -73,7 +87,7 @@ class Stamp {
 
   private static String libText(Path projectDir) {
     def d = new File(projectDir.toString(), 'lib')
-    (d.listFiles() ?: [] as File[]).findAll { it.name.endsWith('.groovy') }.sort { it.name }
+    (d.listFiles() ?: [] as File[]).findAll { it.name.endsWith('.groovy') && it.name != 'Stamp.groovy' }.sort { it.name }
       .collect { read(it) }.join('\n')
   }
 
@@ -100,14 +114,21 @@ class Stamp {
     return seen.toList()
   }
 
-  private static List<String> paramKeys(String modText) {
-    def keys = new TreeSet<String>()
-    def m = (modText =~ /params\.(?:get\(\s*['"]([A-Za-z_]\w*)['"]|([A-Za-z_]\w*))/)
+  // param name -> sub-keys read (null = the whole value is read, or it is not a map)
+  private static Map<String, Set<String>> paramRefs(String modText) {
+    def refs = new TreeMap<String, Set<String>>()
+    def m = (modText =~ /params(?:\.get\(\s*['"]([A-Za-z_]\w*)['"]|\??\.([A-Za-z_]\w*)(?:\??\.([A-Za-z_]\w*))?)/)
     while (m.find()) {
       def k = m.group(1) ?: m.group(2)
-      if (!IGNORE.contains(k)) keys << k
+      if (IGNORE.contains(k)) continue
+      def sub = m.group(3)
+      def next = m.end() < modText.length() ? modText.charAt(m.end()) : ' '
+      if (sub == null && next == (char) '.') continue    // "params.advanced.*" in a comment
+      if (sub == null) { refs[k] = null; continue }
+      if (!refs.containsKey(k)) refs[k] = new TreeSet<String>()
+      if (refs[k] != null) refs[k] << sub
     }
-    return keys.toList()
+    return refs
   }
 
   // ── canonical values ─────────────────────────────────────────────────────

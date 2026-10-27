@@ -48,6 +48,7 @@
 //     └── functional_regions.log              — Processing log
 //
 // Parameters (params.functional_regions.*):
+//   cps_pm              : CPS half-window, TES +-N bp (default: 500 bp)
 //   prom_up             : Promoter upstream (default: 250 bp)
 //   prom_down           : Promoter downstream (default: 250 bp)
 //   div_inner           : Divergent inner bound (default: 250 bp)
@@ -151,6 +152,7 @@ process assign_signal_to_functional_regions {
   FGR_SCRIPT="\$(command -v functional_regions.py)"
 
   # Region geometry parameters
+  CPS_PM=${params.functional_regions?.cps_pm ?: 500}
   PROM_UP=${params.functional_regions?.prom_up ?: 250}
   PROM_DOWN=${params.functional_regions?.prom_down ?: 250}
   DIV_INNER=${params.functional_regions?.div_inner ?: 250}
@@ -184,7 +186,7 @@ process assign_signal_to_functional_regions {
   echo "FUNCREGION | CONFIG | Region Geometry:"
   echo "FUNCREGION | CONFIG |   Promoter: TSS -\${PROM_UP} to +\${PROM_DOWN} bp"
   echo "FUNCREGION | CONFIG |   Divergent: TSS -\${DIV_OUTER} to -\${DIV_INNER} bp (opposite strand)"
-  echo "FUNCREGION | CONFIG |   CPS: TES ±500 bp (fixed)"
+  echo "FUNCREGION | CONFIG |   CPS: TES ±\${CPS_PM} bp"
   echo "FUNCREGION | CONFIG |   Termination window: \${TW_LENGTH} bp downstream of CPS"
   echo "FUNCREGION | CONFIG |   TSS active window: ±\${TSS_ACTIVE_PM} bp"
   echo "FUNCREGION | CONFIG |   Active slop: \${ACTIVE_SLOP} bp"
@@ -277,6 +279,7 @@ process assign_signal_to_functional_regions {
     --neg "\${NEG_BG}" \\
     --tss "\${TSS_BED}" \\
     --tes "\${TES_BED}" \\
+    --cps-pm "\${CPS_PM}" \\
     --prom-up "\${PROM_UP}" \\
     --prom-down "\${PROM_DOWN}" \\
     --div-inner "\${DIV_INNER}" \\
